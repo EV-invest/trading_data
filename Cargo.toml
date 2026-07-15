@@ -3,6 +3,12 @@ cargo-features = ["codegen-backend"]
 name = "trading_data"
 version = "0.1.0"
 edition = "2024"
+authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
+description = "Trading data collection and processing"
+license = "BlueOak-1.0.0"
+repository = "https://github.com/valeratrades/trading_data"
+keywords = ["trading", "finance", "market-data"]
+categories = ["command-line-utilities"]
 
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
