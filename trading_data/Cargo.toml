@@ -1,0 +1,26 @@
+[package]
+name = "trading_data"
+version = "0.1.0"
+edition = "2024"
+authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
+description = "Trading data collection and processing"
+license = "BlueOak-1.0.0"
+repository = "https://github.com/valeratrades/trading_data"
+documentation = "https://docs.rs/trading_data"
+readme = "../README.md"
+keywords = ["trading", "finance", "market-data"]
+categories = ["command-line-utilities"]
+
+[package.metadata.docs.rs]
+cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
+
+[dependencies]
+clap.workspace = true
+color-eyre.workspace = true
+derive-new.workspace = true
+miette.workspace = true
+trading_data_macros.workspace = true
+v_utils.workspace = true
+
+[lints]
+workspace = true

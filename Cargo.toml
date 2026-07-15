@@ -1,26 +1,11 @@
 cargo-features = ["codegen-backend"]
-[package]
-name = "trading_data"
-version = "0.1.0"
-edition = "2024"
-authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
-description = "Trading data collection and processing"
-license = "BlueOak-1.0.0"
-repository = "https://github.com/valeratrades/trading_data"
-keywords = ["trading", "finance", "market-data"]
-categories = ["command-line-utilities"]
 
-[package.metadata.docs.rs]
-cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
+[workspace]
+members = ["trading_data", "trading_data_macros"]
+default-members = ["trading_data"]
+resolver = "3"
 
-[dependencies]
-clap = { version = "^4.5.4", features = ["derive"] }
-color-eyre = "^0.6.5"
-derive-new = "^0"
-miette = { version = "^7.6.0", features = ["fancy", "serde", "syntect-highlighter"] }
-v_utils = { version = "^2.15.0", features = ["io", "macros", "cli"] }
-
-[lints.clippy]
+[workspace.lints.clippy]
 # Stable
 float_cmp = "allow" # is bad for `==` direct comparisons, but `<` and `>` should be allowed
 len_zero = "allow" # `.empty()` is O(1) but on &str only
@@ -34,5 +19,16 @@ get_first = "allow"
 get_last_with_len = "allow"
 manual_is_multiple_of = "allow"
 
-[lints.rust]
+[workspace.lints.rust]
 unused_features = "allow"
+
+[workspace.dependencies]
+clap = { version = "^4.5.4", features = ["derive"] }
+color-eyre = "^0.6.5"
+derive-new = "^0"
+miette = { version = "^7.6.0", features = ["fancy", "serde", "syntect-highlighter"] }
+proc-macro2 = "^1"
+quote = "^1"
+syn = { version = "^2", features = ["full", "extra-traits"] }
+trading_data_macros = { path = "trading_data_macros", version = "0.1.0" }
+v_utils = { version = "^2.15.0", features = ["io", "macros", "cli"] }
