@@ -29,7 +29,12 @@
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
-        rs = v_flakes.rs { inherit pkgs rust; };
+        rs = v_flakes.rs {
+          inherit pkgs rust;
+          build.workspace = {
+            "./trading_data/" = [ "git_version" "log_directives" ];
+          };
+        };
         github = v_flakes.github {
           inherit pkgs pname rs;
           enable = true;
