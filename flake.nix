@@ -5,25 +5,17 @@
   };
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rust-overlay.url = "github:oxalica/rust-overlay";
-    flake-utils.url = "github:numtide/flake-utils";
-    pre-commit-hooks.url = "github:cachix/git-hooks.nix";
     v_flakes.url = "github:valeratrades/v_flakes?ref=v1.6";
   };
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v_flakes }:
+  outputs = { self, v_flakes }:
+    let
+      inherit (v_flakes) flake-utils pre-commit-hooks;
+    in
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        overlays = [ (import rust-overlay) ];
-        pkgs = import nixpkgs {
-          inherit system overlays;
-          allowUnfree = true;
-        };
-        #NB: can't load rust-bin from nightly.latest, as there are week guarantees of which components will be available on each day.
-        rust = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
-          extensions = [ "rust-src" "rust-analyzer" "rust-docs" "rustc-codegen-cranelift-preview" ];
-        });
+        pkgs = import v_flakes.default_nixpkgs { inherit system; config.allowUnfree = true; };
+        rust = v_flakes.rs.default_nightly system;
         pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
         manifest = (pkgs.lib.importTOML ./trading_data/Cargo.toml).package;
         pname = manifest.name;
