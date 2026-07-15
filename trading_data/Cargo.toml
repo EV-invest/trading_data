@@ -15,12 +15,27 @@ categories = ["command-line-utilities"]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
+arrow.workspace = true
 clap.workspace = true
 color-eyre.workspace = true
 derive-new.workspace = true
+jiff.workspace = true
 miette.workspace = true
+parquet.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 trading_data_macros.workspace = true
+v_exchanges.workspace = true
 v_utils.workspace = true
+
+[dev-dependencies]
+iai-callgrind.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[[bench]]
+name = "write_throughput"
+harness = false
 
 [lints]
 workspace = true
