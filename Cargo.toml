@@ -1,0 +1,30 @@
+cargo-features = ["codegen-backend"]
+[package]
+name = "trading_data"
+version = "0.1.0"
+edition = "2024"
+
+[package.metadata.docs.rs]
+cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
+
+[lints.clippy]
+# Stable
+float_cmp = "allow" # is bad for `==` direct comparisons, but `<` and `>` should be allowed
+len_zero = "allow" # `.empty()` is O(1) but on &str only
+undocumented_unsafe_blocks = "warn"
+tabs_in_doc_comments = "allow"
+doc_lazy_continuation = "allow" # tries to make me add a newline after a list in docs
+
+# Questionable
+# const fns, so actually more performant
+get_first = "allow"
+get_last_with_len = "allow"
+manual_is_multiple_of = "allow"
+
+
+[dependencies]
+derive-new = "^0"
+color-eyre = "^0.6.5"
+miette = { version = "^7.6.0", features = ["fancy", "serde", "syntect-highlighter"] }
+clap = { version = "^4.5.4", features = ["derive"] }
+v_utils = { version = "^2.15.0", features = ["io", "macros", "cli"] }
