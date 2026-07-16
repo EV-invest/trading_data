@@ -25,13 +25,13 @@ parquet.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 trading_data_macros.workspace = true
-v_exchanges.workspace = true
 v_utils.workspace = true
 
 [dev-dependencies]
 iai-callgrind.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
+v_exchanges.workspace = true
 
 [[bench]]
 name = "write_throughput"

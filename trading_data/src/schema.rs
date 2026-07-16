@@ -320,7 +320,7 @@ fn col_u32_list(b: &RecordBatch, idx: usize) -> Vec<Vec<u32>> {
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use v_exchanges::{ExchangeName, Instrument, Symbol};
+	use v_utils::trades::{ExchangeName, Instrument, Symbol};
 
 	use super::*;
 	use crate::{

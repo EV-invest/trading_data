@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use v_exchanges::{BookShape, ExchangeName, Instrument, PrecisionPriceQty, Symbol};
-use v_utils::trades::Pair;
+use v_utils::trades::{ExchangeName, Instrument, Pair, PrecisionPriceQty, Symbol};
 
 use crate::{
+	book::BookShape,
 	catalog::{Catalog, CatalogError, Lane, LaneKey},
 	clock::Clock,
 	feather::{Feather, RotationPolicy},

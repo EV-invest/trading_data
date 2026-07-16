@@ -7,7 +7,7 @@ use trading_data::{
 	catalog::{Lane, LaneKey},
 	schema::{BookDelta, FileMetadata},
 };
-use v_exchanges::{ExchangeName, Instrument, Symbol};
+use v_utils::trades::{ExchangeName, Instrument, Symbol};
 
 const N_DELTAS: u64 = 100_000;
 const N_SNAPSHOTS: u64 = 200;

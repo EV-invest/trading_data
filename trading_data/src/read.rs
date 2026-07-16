@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, collections::BinaryHeap, time::Duration};
 
 use arrow::array::RecordBatch;
-use v_exchanges::{ExchangeName, Symbol};
+use v_utils::trades::{ExchangeName, Symbol};
 
 use crate::{
 	catalog::{Catalog, CatalogError, FileEntry, Lane, LaneKey},
@@ -16,6 +16,7 @@ impl Row for BookSnapshot {
 	fn ts_event(&self) -> UnixNanos {
 		self.ts_event
 	}
+
 	fn into_data(self) -> Data {
 		Data::Snapshot(self)
 	}
@@ -24,6 +25,7 @@ impl Row for BookDelta {
 	fn ts_event(&self) -> UnixNanos {
 		self.ts_event
 	}
+
 	fn into_data(self) -> Data {
 		Data::Delta(self)
 	}
@@ -32,6 +34,7 @@ impl Row for Trade {
 	fn ts_event(&self) -> UnixNanos {
 		self.ts_event
 	}
+
 	fn into_data(self) -> Data {
 		Data::Trade(self)
 	}
@@ -40,6 +43,7 @@ impl Row for Close {
 	fn ts_event(&self) -> UnixNanos {
 		self.ts_event
 	}
+
 	fn into_data(self) -> Data {
 		Data::Close(self)
 	}
@@ -78,42 +82,24 @@ impl<T: Row> Iterator for LaneReader<T> {
 	}
 }
 
-fn lane_reader<T>(catalog: &Catalog, key: LaneKey, start: UnixNanos, end: UnixNanos, decode: fn(&RecordBatch) -> Vec<T>) -> Result<LaneReader<T>, CatalogError> {
-	let files = catalog.list_range(&key, start, end)?;
-	Ok(LaneReader {
-		catalog: catalog.clone(),
-		files: files.into_iter(),
-		batches: Vec::new().into_iter(),
-		rows: Vec::new().into_iter(),
-		decode,
-		start,
-		end,
-	})
-}
-
 pub fn read_snapshots(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<BookSnapshot>, CatalogError> {
 	lane_reader(catalog, LaneKey::book(Lane::Snapshots, exchange, symbol), start, end, decode_snapshots)
 }
-
 pub fn read_deltas(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<BookDelta>, CatalogError> {
 	lane_reader(catalog, LaneKey::book(Lane::Deltas, exchange, symbol), start, end, decode_deltas)
 }
-
 pub fn read_trades(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<Trade>, CatalogError> {
 	lane_reader(catalog, LaneKey::book(Lane::Trades, exchange, symbol), start, end, decode_trades)
 }
-
 pub fn read_closes(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<Close>, CatalogError> {
 	lane_reader(catalog, LaneKey::book(Lane::Closes, exchange, symbol), start, end, decode_closes)
 }
-
 #[derive(Clone, Debug)]
 pub struct ReplayConfig {
 	pub start: UnixNanos,
 	pub end: UnixNanos,
 	pub max_anchor_age: Duration,
 }
-
 impl ReplayConfig {
 	pub fn new(start: UnixNanos, end: UnixNanos) -> Self {
 		Self {
@@ -124,29 +110,6 @@ impl ReplayConfig {
 	}
 }
 
-struct HeapEntry {
-	key: (UnixNanos, u64),
-	src: usize,
-	data: Data,
-}
-impl PartialEq for HeapEntry {
-	fn eq(&self, other: &Self) -> bool {
-		(self.key, self.src) == (other.key, other.src)
-	}
-}
-impl Eq for HeapEntry {}
-impl Ord for HeapEntry {
-	fn cmp(&self, other: &Self) -> Ordering {
-		// Reversed: BinaryHeap is a max-heap, we want the smallest (ts_event, monotonic_seq) first.
-		(other.key, other.src).cmp(&(self.key, self.src))
-	}
-}
-impl PartialOrd for HeapEntry {
-	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-		Some(self.cmp(other))
-	}
-}
-
 /// Lazy k-way merge of the typed lane readers into one time-ordered `Data` stream. The anchor
 /// snapshot, when present, is emitted first to seed the book.
 pub struct Replay {
@@ -154,26 +117,6 @@ pub struct Replay {
 	sources: Vec<Box<dyn Iterator<Item = Data>>>,
 	heap: BinaryHeap<HeapEntry>,
 }
-
-impl Iterator for Replay {
-	type Item = Data;
-
-	fn next(&mut self) -> Option<Data> {
-		if let Some(a) = self.anchor.take() {
-			return Some(a);
-		}
-		let entry = self.heap.pop()?;
-		if let Some(data) = self.sources[entry.src].next() {
-			self.heap.push(HeapEntry {
-				key: (data.ts_event(), data.monotonic_seq()),
-				src: entry.src,
-				data,
-			});
-		}
-		Some(entry.data)
-	}
-}
-
 /// One symbol only. Cross-symbol ordering is the backtester's job.
 pub fn replay(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, config: &ReplayConfig) -> Result<Replay, CatalogError> {
 	let anchor = pick_anchor(catalog, exchange, symbol, config)?;
@@ -202,6 +145,60 @@ pub fn replay(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, config:
 		sources,
 		heap,
 	})
+}
+fn lane_reader<T>(catalog: &Catalog, key: LaneKey, start: UnixNanos, end: UnixNanos, decode: fn(&RecordBatch) -> Vec<T>) -> Result<LaneReader<T>, CatalogError> {
+	let files = catalog.list_range(&key, start, end)?;
+	Ok(LaneReader {
+		catalog: catalog.clone(),
+		files: files.into_iter(),
+		batches: Vec::new().into_iter(),
+		rows: Vec::new().into_iter(),
+		decode,
+		start,
+		end,
+	})
+}
+
+struct HeapEntry {
+	key: (UnixNanos, u64),
+	src: usize,
+	data: Data,
+}
+impl PartialEq for HeapEntry {
+	fn eq(&self, other: &Self) -> bool {
+		(self.key, self.src) == (other.key, other.src)
+	}
+}
+impl Eq for HeapEntry {}
+impl Ord for HeapEntry {
+	fn cmp(&self, other: &Self) -> Ordering {
+		// Reversed: BinaryHeap is a max-heap, we want the smallest (ts_event, monotonic_seq) first.
+		(other.key, other.src).cmp(&(self.key, self.src))
+	}
+}
+impl PartialOrd for HeapEntry {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+impl Iterator for Replay {
+	type Item = Data;
+
+	fn next(&mut self) -> Option<Data> {
+		if let Some(a) = self.anchor.take() {
+			return Some(a);
+		}
+		let entry = self.heap.pop()?;
+		if let Some(data) = self.sources[entry.src].next() {
+			self.heap.push(HeapEntry {
+				key: (data.ts_event(), data.monotonic_seq()),
+				src: entry.src,
+				data,
+			});
+		}
+		Some(entry.data)
+	}
 }
 
 fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, config: &ReplayConfig) -> Result<Option<BookSnapshot>, CatalogError> {
@@ -251,7 +248,7 @@ fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, config
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use v_exchanges::Instrument;
+	use v_utils::trades::Instrument;
 
 	use super::*;
 	use crate::{

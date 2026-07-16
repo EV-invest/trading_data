@@ -1182,7 +1182,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2928,7 +2928,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3191,7 +3191,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3248,7 +3248,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3767,7 +3767,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4411,6 +4411,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "trading_data",
  "uuid",
  "v_exchanges_adapters",
  "v_exchanges_core",
@@ -4419,9 +4420,7 @@ dependencies = [
 
 [[package]]
 name = "v_utils"
-version = "2.15.54"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed6d1d8e1af7ad0627d0779c79983b7e22cb1d37ce21d19a9b3eaf281d446391"
+version = "2.15.56"
 dependencies = [
  "ahash",
  "bon",
@@ -4461,8 +4460,6 @@ dependencies = [
 [[package]]
 name = "v_utils_macros"
 version = "2.11.55"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "648ee541454fdda24f567feffaf37e4c887fa18fea5d1d04c7224fbc82e68f88"
 dependencies = [
  "eyre",
  "heck",
@@ -4623,7 +4620,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

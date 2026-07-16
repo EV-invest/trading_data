@@ -41,3 +41,6 @@ tracing = "^0.1"
 trading_data_macros = { path = "trading_data_macros", version = "0.1.0" }
 v_exchanges = { path = "../../v_exchanges/v_exchanges" }
 v_utils = { version = "^2.15.0", features = ["io", "macros", "cli"] }
+
+[patch.crates-io]
+v_utils = { path = "../../v_utils/v_utils" }

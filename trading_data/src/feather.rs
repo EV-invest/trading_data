@@ -452,7 +452,7 @@ impl Default for CustomBuilders {
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use v_exchanges::{ExchangeName, Instrument, Symbol};
+	use v_utils::trades::{ExchangeName, Instrument, Symbol};
 
 	use super::*;
 

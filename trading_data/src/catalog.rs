@@ -10,7 +10,7 @@ use parquet::{
 	file::properties::WriterProperties,
 };
 use thiserror::Error;
-use v_exchanges::{ExchangeName, Symbol};
+use v_utils::trades::{ExchangeName, Symbol};
 
 use crate::schema::UnixNanos;
 
@@ -180,7 +180,7 @@ mod tests {
 
 	use arrow::array::{BooleanArray, Int32Array, Int64Array, RecordBatch, UInt8Array, UInt32Array, UInt64Array};
 	use tempfile::tempdir;
-	use v_exchanges::Instrument;
+	use v_utils::trades::Instrument;
 
 	use super::*;
 	use crate::schema::{FileMetadata, lane_schema, with_metadata};

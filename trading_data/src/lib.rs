@@ -1,5 +1,6 @@
 #![feature(default_field_values)]
 
+pub mod book;
 pub mod catalog;
 pub mod clock;
 pub mod feather;
@@ -7,6 +8,7 @@ pub mod live;
 pub mod read;
 pub mod schema;
 
+pub use book::{BookShape, BookUpdate};
 pub use catalog::{Catalog, Lane, LaneKey};
 pub use clock::{Clock, LiveClock};
 pub use feather::{Feather, RotationPolicy};
