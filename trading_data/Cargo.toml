@@ -31,7 +31,6 @@ v_utils.workspace = true
 iai-callgrind.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
-v_exchanges.workspace = true
 
 [[bench]]
 name = "write_throughput"

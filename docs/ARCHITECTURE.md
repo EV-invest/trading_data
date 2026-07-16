@@ -70,4 +70,4 @@ identical. Roughly half the nodes branch on predicates over their own history an
 expressible as `advance`; the pure, bounded-window ones may *additionally* carry a polars
 expression as a backtest-only vectorized fast path, guarded by an equivalence test.
 
-See `tmp/lib.rs` for a full worked sketch.
+See `tmp/arch_exploration/lib.rs` for a full worked sketch.

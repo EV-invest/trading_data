@@ -1,14 +1,28 @@
-use std::{str::FromStr as _, sync::Arc, time::Duration};
+//! Record synthetic book updates through `LiveBook`, flush, replay, and assert the
+//! persistence/replay invariants. No exchange: `trading_data` is a leaf and must never
+//! depend on a data source. The invariants under test are purely this crate's own.
+
+use std::{str::FromStr as _, sync::Arc};
 
 use tempfile::tempdir;
-use trading_data::{BookDelta, Catalog, Data, LiveBook, LiveClock, ReplayConfig, read_deltas, replay};
-use v_exchanges::{adapters::binance::BinanceOption, prelude::*};
+use trading_data::{BookDelta, BookShape, Catalog, Data, LiveBook, LiveClock, ReplayConfig, read_deltas, replay};
+use v_utils::trades::{ExchangeName, Instrument, Pair, PrecisionPriceQty, Symbol};
 
-const RECORD_DURATION: Duration = Duration::from_secs(60);
-const SNAPSHOT_FREQ: Duration = Duration::from_secs(30);
+const STEP_NS: i64 = 1_000_000_000; // 1s between events
 
-#[tokio::main]
-async fn main() {
+fn shape(ts_ns: i64, bids: &[(i32, u32)], asks: &[(i32, u32)]) -> BookShape {
+	let ts = jiff::Timestamp::from_nanosecond(ts_ns as i128).expect("valid timestamp");
+	BookShape {
+		ts_event: ts,
+		ts_init: ts,
+		ts_last: ts,
+		prec: PrecisionPriceQty { price: 2, qty: 5 },
+		bids: bids.iter().copied().collect(),
+		asks: asks.iter().copied().collect(),
+	}
+}
+
+fn main() {
 	v_utils::clientside!();
 
 	let dir = tempdir().expect("tempdir");
@@ -16,40 +30,28 @@ async fn main() {
 
 	let pair = Pair::from_str("BTCUSDT").unwrap();
 	let instrument = Instrument::Perp;
-
-	let mut binance = Binance::default();
-	binance.update_default_option(BinanceOption::BookSnapshotFreq(Some(SNAPSHOT_FREQ)));
-
-	let mut conn = binance.book_connection(&[pair], instrument).await.expect("book_connection");
-	let prec = conn.pair_precisions()[&pair];
+	let prec = PrecisionPriceQty { price: 2, qty: 5 };
 
 	let mut live = LiveBook::persisting(catalog.clone(), ExchangeName::Binance, pair, instrument, prec, Arc::new(LiveClock));
 
-	let start_ns = jiff::Timestamp::now().as_nanosecond() as i64;
-	tracing::info!(start_ns, "recording {RECORD_DURATION:?} of Binance BTCUSDT perp book");
+	// Event time must track ingest time: the catalog indexes files by ingest wall-clock,
+	// so synthetic events anchored far from `now` would never be selected on replay.
+	let base = jiff::Timestamp::now().as_nanosecond() as i64;
+	let start_ns = base - 1;
 
-	let deadline = tokio::time::Instant::now() + RECORD_DURATION;
-	let mut snapshots = 0_u32;
-	let mut deltas = 0_u32;
-	loop {
-		tokio::select! {
-			biased;
-			_ = tokio::time::sleep_until(deadline) => break,
-			res = conn.next() => { for update in res.expect("ws stream errored") {
-				match update {
-					BookUpdate::Snapshot(s) => { snapshots += 1; live.snapshot(&s); }
-					BookUpdate::BatchDelta { shape, gapped } => { deltas += 1; live.delta(&shape, gapped); }
-				}
-			} }
-		}
+	// One snapshot, then a handful of deltas at strictly increasing event times.
+	live.snapshot(&shape(base, &[(10_000, 5), (9_999, 3)], &[(10_001, 4), (10_002, 6)]));
+	let deltas = [
+		shape(base + STEP_NS, &[(10_000, 7)], &[(10_002, 0)]), // requote bid, remove an ask
+		shape(base + 2 * STEP_NS, &[(9_998, 2)], &[(10_003, 1)]),
+		shape(base + 3 * STEP_NS, &[(9_999, 0)], &[(10_001, 9)]), // remove a bid
+	];
+	for d in &deltas {
+		live.delta(d, false);
 	}
-	let end_ns = jiff::Timestamp::now().as_nanosecond() as i64;
-	tracing::info!(snapshots, deltas, "stream closed; flushing + replaying");
+	let end_ns = base + 4 * STEP_NS;
 
 	live.flush().expect("flush");
-
-	assert!(snapshots >= 1, "expected at least one snapshot in 60s");
-	assert!(deltas >= 1, "expected at least one delta in 60s");
 	assert!(!live.bids().is_empty() && !live.asks().is_empty(), "live book state empty after recording");
 
 	let symbol = Symbol::new(pair, instrument);
@@ -85,5 +87,5 @@ async fn main() {
 	let merged_deltas: Vec<BookDelta> = out.iter().filter_map(|d| if let Data::Delta(r) = d { Some(*r) } else { None }).collect();
 	assert_eq!(typed_deltas, merged_deltas, "typed read_deltas diverged from merged replay");
 
-	tracing::info!("record_replay: ok ({snapshots} snapshots, {deltas} deltas, {} replayed rows)", out.len());
+	tracing::info!("record_replay: ok ({} replayed rows)", out.len());
 }

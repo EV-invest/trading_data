@@ -9,14 +9,13 @@
   };
   outputs = { self, v_flakes }:
     let
-      inherit (v_flakes) flake-utils pre-commit-hooks;
+      inherit (v_flakes.inputs) flake-utils;
     in
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import v_flakes.default_nixpkgs { inherit system; config.allowUnfree = true; };
         rust = v_flakes.rs.default_nightly system;
-        pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
         manifest = (pkgs.lib.importTOML ./trading_data/Cargo.toml).package;
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
@@ -71,8 +70,7 @@
           mkShell {
             inherit stdenv;
             shellHook =
-              pre-commit-check.shellHook
-              + combined.shellHook
+              combined.shellHook
               + ''
                 cp -f ${(v_flakes.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
               '';
@@ -82,7 +80,7 @@
               openssl
               pkg-config
               rust
-            ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
+            ] ++ combined.enabledPackages;
 
             env.RUST_BACKTRACE = 1;
             env.RUST_LIB_BACKTRACE = 0;
