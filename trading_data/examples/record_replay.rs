@@ -10,18 +10,6 @@ use v_utils::trades::{ExchangeName, Instrument, Pair, PrecisionPriceQty, Symbol}
 
 const STEP_NS: i64 = 1_000_000_000; // 1s between events
 
-fn shape(ts_ns: i64, bids: &[(i32, u32)], asks: &[(i32, u32)]) -> BookShape {
-	let ts = jiff::Timestamp::from_nanosecond(ts_ns as i128).expect("valid timestamp");
-	BookShape {
-		ts_event: ts,
-		ts_init: ts,
-		ts_last: ts,
-		prec: PrecisionPriceQty { price: 2, qty: 5 },
-		bids: bids.iter().copied().collect(),
-		asks: asks.iter().copied().collect(),
-	}
-}
-
 fn main() {
 	v_utils::clientside!();
 
@@ -88,4 +76,15 @@ fn main() {
 	assert_eq!(typed_deltas, merged_deltas, "typed read_deltas diverged from merged replay");
 
 	tracing::info!("record_replay: ok ({} replayed rows)", out.len());
+}
+fn shape(ts_ns: i64, bids: &[(i32, u32)], asks: &[(i32, u32)]) -> BookShape {
+	let ts = jiff::Timestamp::from_nanosecond(ts_ns as i128).expect("valid timestamp");
+	BookShape {
+		ts_event: ts,
+		ts_init: ts,
+		ts_last: ts,
+		prec: PrecisionPriceQty { price: 2, qty: 5 },
+		bids: bids.iter().copied().collect(),
+		asks: asks.iter().copied().collect(),
+	}
 }
