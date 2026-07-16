@@ -57,8 +57,14 @@ impl Catalog {
 
 	pub fn lane_dir(&self, key: &LaneKey) -> PathBuf {
 		match key {
-			LaneKey::Book { lane, exchange, symbol } => self.root.join("data").join(exchange.to_string()).join(symbol.to_string()).join(lane.dir_name()),
-			LaneKey::Custom { type_name } => self.root.join("data").join("_custom").join(type_name),
+			LaneKey::Book { lane, exchange, symbol } => self
+				.root
+				.join("data")
+				.join(lane.dir_name())
+				.join(symbol.pair.base().to_string())
+				.join(symbol.pair.quote().to_string())
+				.join(format!("{exchange}{}", symbol.instrument)),
+			LaneKey::Custom { type_name } => self.root.join("data").join("custom").join(type_name),
 		}
 	}
 
