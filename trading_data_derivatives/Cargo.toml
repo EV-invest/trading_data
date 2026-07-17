@@ -1,0 +1,16 @@
+[package]
+name = "trading_data_derivatives"
+description = "Indicator state machines (Wilder RSI/ATR) for embedding inside derivation nodes"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

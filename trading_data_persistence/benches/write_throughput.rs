@@ -2,7 +2,7 @@ use std::hint::black_box;
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use tempfile::TempDir;
-use trading_data::{
+use trading_data_persistence::{
 	Catalog, Feather, RotationPolicy,
 	catalog::{Lane, LaneKey},
 	schema::{BookDelta, FileMetadata},
