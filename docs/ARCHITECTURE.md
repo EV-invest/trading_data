@@ -21,7 +21,7 @@ trading_data_persistence    arrow/parquet — catalog, lanes, feather writer, ty
         └──────────┴──────────┘
              trading_data            facade/prelude + the collector binary
                    ▲
-           trading_data_demo         end-to-end demo; depends ONLY on the facade (facade-sufficiency test)
+    trading_data_demo (examples/demo)   end-to-end demo; depends ONLY on the facade (facade-sufficiency test)
 
 trading_data_macros                  future `graph!` (pure ergonomics — `Pull` already rejects bad orders)
 ```

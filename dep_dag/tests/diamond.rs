@@ -1,7 +1,7 @@
 //! Diamond over two multi-rate roots: `None` propagation through the DAG, plus an
 //! inference-stress graph (chain depth 10 + one arity-8 node, zero call-site annotations).
 
-use dep_dag::{Cell, Cons, DepOuts, Nil, Node, step};
+use dep_dag::{Cell, Cons, DepOuts, Nil, Node, Observer, step, step_obs};
 
 struct Trades;
 impl Cell for Trades {
@@ -89,6 +89,55 @@ fn diamond_option_propagation() {
 	assert_eq!(tick(Some(3.0), None), (Some(25.0), None));
 	assert_eq!(tick(None, Some(5.0)), (None, None));
 	assert_eq!(tick(None, None), (None, None));
+}
+
+#[derive(Default)]
+struct Rec(Vec<(&'static str, &'static [&'static str], String)>);
+impl Observer for Rec {
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], out: &dyn std::fmt::Debug) {
+		self.0.push((node, deps, format!("{out:?}")));
+	}
+}
+
+// type_name output is compiler-unstable; compare on the trimmed last segment only.
+fn trim(name: &str) -> &str {
+	name.rsplit("::").next().expect("rsplit yields at least one segment")
+}
+
+#[test]
+fn observer_sees_topo_order_deps_and_values() {
+	let mut rec = Rec::default();
+	let (mut a, mut b, mut c, mut d, mut cross) = (A, B, C, D, Cross);
+	let mut tick = |trades: Option<f64>, quotes: Option<f64>, rec: &mut Rec| {
+		let f = Cons::<Trades, Nil> { out: trades, tail: Nil };
+		let f = Cons::<Quotes, _> { out: quotes, tail: f };
+		let f = step_obs(f, &mut a, rec);
+		let f = step_obs(f, &mut b, rec);
+		let f = step_obs(f, &mut c, rec);
+		let f = step_obs(f, &mut d, rec);
+		let f = step_obs(f, &mut cross, rec);
+		(f.tail.head(), f.head())
+	};
+
+	assert_eq!(tick(Some(2.0), Some(1.0), &mut rec), (Some(17.0), Some(1.0)));
+	assert_eq!(tick(None, Some(5.0), &mut rec), (None, None));
+
+	let seen: Vec<(&str, Vec<&str>, &str)> = rec.0.iter().map(|(n, d, o)| (trim(n), d.iter().map(|d| trim(d)).collect(), o.as_str())).collect();
+	assert_eq!(
+		seen,
+		vec![
+			("A", vec!["Trades"], "Some(4.0)"),
+			("B", vec!["A"], "Some(5.0)"),
+			("C", vec!["A"], "Some(12.0)"),
+			("D", vec!["B", "C"], "Some(17.0)"),
+			("Cross", vec!["Trades", "Quotes"], "Some(1.0)"),
+			("A", vec!["Trades"], "None"),
+			("B", vec!["A"], "None"),
+			("C", vec!["A"], "None"),
+			("D", vec!["B", "C"], "None"),
+			("Cross", vec!["Trades", "Quotes"], "None"),
+		]
+	);
 }
 
 struct R;

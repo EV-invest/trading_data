@@ -3,8 +3,8 @@ cargo-features = ["codegen-backend"]
 [workspace]
 members = [
     "dep_dag",
+    "examples/demo",
     "trading_data",
-    "trading_data_demo",
     "trading_data_derivatives",
     "trading_data_macros",
     "trading_data_persistence",

@@ -66,6 +66,7 @@
 //! assert_eq!(f.head(), 43.0);
 //! ```
 #![no_std]
+#![feature(const_type_name)]
 
 /// A value slot in the frame. `Out<'t>: Copy` — references are `Copy`, so heavy root state
 /// enters the frame as `&'t State`, a first-class dependency.
@@ -75,6 +76,7 @@ pub trait Cell {
 
 pub trait DepSet {
 	type Outs<'t>;
+	const NAMES: &'static [&'static str];
 }
 
 /// Extracts a [`DepSet`]'s outputs from frame `F`. `I` is the inferred index path — never
@@ -130,6 +132,8 @@ where
 
 impl DepSet for () {
 	type Outs<'t> = ();
+
+	const NAMES: &'static [&'static str] = &[];
 }
 impl<'t, F> Pull<'t, F, ()> for () {
 	fn pull(_: &F) {}
@@ -139,6 +143,8 @@ macro_rules! impl_arity {
 	($($T:ident $I:ident),+) => {
 		impl<$($T: Cell),+> DepSet for ($($T,)+) {
 			type Outs<'t> = ($($T::Out<'t>,)+);
+
+			const NAMES: &'static [&'static str] = &[$(core::any::type_name::<$T>()),+];
 		}
 		impl<'t, F, $($T: Cell, $I),+> Pull<'t, F, ($($I,)+)> for ($($T,)+)
 		where F: $(Has<'t, $T, $I> +)+ {
@@ -195,5 +201,32 @@ where
 	N::Deps: Pull<'t, F, I>,
 	F: 't, {
 	let out = node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame));
+	Cons { out, tail: frame }
+}
+
+/// Sees every [`step_obs`] as it happens: one interpretation choke point, many interpretations
+/// (eval is `step`; debug-tree/replay is an impl of this). Step order IS topo order, so the
+/// observed sequence doubles as the graph's static topology; dep names never seen as stepped
+/// nodes are roots — apps seed root activations themselves via `obs.on(type_name::<Root>(), &[], &seed)`.
+///
+/// `node`/`deps` strings come from [`core::any::type_name`]: build-local, display-only — never
+/// persist them.
+pub trait Observer {
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], out: &dyn core::fmt::Debug);
+}
+
+impl Observer for () {
+	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &dyn core::fmt::Debug) {}
+}
+
+/// [`step`] + [`Observer::on`] before the push. The `()` observer erases to exactly `step`.
+pub fn step_obs<'t, N, F, I, O: Observer>(frame: F, node: &mut N, obs: &mut O) -> Cons<'t, N, F>
+where
+	N: Node,
+	N::Deps: Pull<'t, F, I>,
+	N::Out<'t>: core::fmt::Debug,
+	F: 't, {
+	let out = node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame));
+	obs.on(core::any::type_name::<N>(), <N::Deps as DepSet>::NAMES, &out);
 	Cons { out, tail: frame }
 }

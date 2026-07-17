@@ -1,17 +1,17 @@
-//! Idempotent SPL demo over one day of real Bybit TAO-USDT trades:
-//! download → parquet catalog → typed replay → GAT sweep → classifications.
-//! Each step is skipped if its artifact exists; any failure is a loud panic — no fallbacks.
+//! Idempotent SPL demo data layer over one day of real Bybit TAO-USDT trades:
+//! download → parquet catalog → typed prints. Each step is skipped if its artifact exists;
+//! any failure is a loud panic — no fallbacks.
 
-mod nodes;
+pub mod nodes;
 
 use std::{
 	fs,
 	io::{BufRead as _, BufReader, Read as _},
-	path::{Path, PathBuf},
+	path::Path,
 	str::FromStr as _,
 };
 
-use nodes::{Graph, Print};
+use nodes::Print;
 use trading_data::{Catalog, Feather, FileMetadata, Lane, LaneKey, RotationPolicy, Trade, read_trades};
 use v_utils::trades::{ExchangeName, Instrument, Pair, Symbol};
 
@@ -20,9 +20,10 @@ const BYBIT_SYMBOL: &str = "TAOUSDT";
 const PRICE_PREC: u8 = 4;
 const QTY_PREC: u8 = 3;
 
-fn main() {
-	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../tmp/demo_cache"));
-	fs::create_dir_all(&cache).expect("create demo cache dir");
+/// Idempotent: downloads the day's archive and ingests it into a parquet catalog under
+/// `cache`, skipping any step whose artifact already exists.
+pub fn ensure_catalog(cache: &Path) -> Catalog {
+	fs::create_dir_all(cache).expect("create demo cache dir");
 
 	let gz = cache.join(format!("{BYBIT_SYMBOL}{DAY}.csv.gz"));
 	if !gz.exists() {
@@ -30,56 +31,30 @@ fn main() {
 	}
 
 	let catalog = Catalog::new(cache.join("catalog"));
-	let pair = Pair::from_str("TAO-USDT").expect("static pair");
-	let symbol = Symbol::new(pair, Instrument::Perp);
-	let key = LaneKey::book(Lane::Trades, ExchangeName::Bybit, symbol);
-	if catalog.list(&key).expect("list trades lane").is_empty() {
-		ingest(&gz, &catalog, key.clone());
+	if catalog.list(&lane_key()).expect("list trades lane").is_empty() {
+		ingest(&gz, &catalog, lane_key());
 	} else {
 		println!("catalog already populated, skipping ingest");
 	}
+	catalog
+}
 
-	let day_start = day_bounds().0;
-	let day_end = day_bounds().1;
-	let mut graph = Graph::default();
-	let (mut prints, mut bars, mut hits, mut classifications) = (0u64, 0u64, 0u64, 0u64);
-	let mut last = None;
-	for t in read_trades(&catalog, ExchangeName::Bybit, symbol, day_start, day_end).expect("open trades lane") {
-		prints += 1;
-		let print = Print {
+pub fn load_prints(catalog: &Catalog) -> Vec<Print> {
+	let (day_start, day_end) = day_bounds();
+	let symbol = Symbol::new(Pair::from_str("TAO-USDT").expect("static pair"), Instrument::Perp);
+	read_trades(catalog, ExchangeName::Bybit, symbol, day_start, day_end)
+		.expect("open trades lane")
+		.map(|t| Print {
 			ts: t.ts_event,
 			price: t.price_raw as f64 / 10f64.powi(PRICE_PREC as i32),
 			qty: t.qty_raw as f64 / 10f64.powi(QTY_PREC as i32),
-		};
-		let out = graph.tick(Some(print));
-		bars += out.bar.is_some() as u64;
-		hits += (out.screener == Some(true)) as u64;
-		if let Some(c) = out.classified {
-			classifications += 1;
-			let bar = out.bar.expect("Classify only fires on bar close");
-			let ts = jiff::Timestamp::from_nanosecond(bar.ts_open as i128).expect("ts in range");
-			println!(
-				"{ts} {:?} dist={:?} o={:.3} c={:.3} mom={:.2} rsi={:.1} atr={:.4} vol1h={:.0}",
-				c.category,
-				c.dist,
-				bar.open,
-				bar.close,
-				out.momentum.expect("warm"),
-				out.rsi.expect("warm"),
-				out.atr.expect("warm"),
-				out.vol_usd_1h
-			);
-		}
-		last = Some(out);
-	}
-	let last = last.expect("day produced no trades");
-	println!("prints={prints} bars={bars} screener_hits={hits} classifications={classifications}");
-	println!("leaf levels at day end: atr={:?} vol1h={:.0}", last.atr, last.vol_usd_1h);
+		})
+		.collect()
+}
 
-	assert!(prints > 0);
-	assert!((1400..=1440).contains(&bars), "bars={bars} outside expected range for one full day");
-	assert!(hits >= 1, "screener never fired — thresholds need lowering for {DAY}");
-	println!("demo: ok");
+fn lane_key() -> LaneKey {
+	let symbol = Symbol::new(Pair::from_str("TAO-USDT").expect("static pair"), Instrument::Perp);
+	LaneKey::book(Lane::Trades, ExchangeName::Bybit, symbol)
 }
 
 fn day_bounds() -> (i64, i64) {

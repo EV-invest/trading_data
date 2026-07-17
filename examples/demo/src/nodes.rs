@@ -1,7 +1,7 @@
 //! SPL replica graph: Prints → Bar1m → (Rsi14, Atr14, Momentum, VolUsd1h) → Screener → Classify.
-//! All outs are value types; the hand-wired `step` chain in [`Graph::tick`] is the topo order.
+//! All outs are value types; the hand-wired chain in [`Graph::tick_obs`] is the topo order.
 
-use trading_data::{Cell, Cons, DepOuts, Nil, Node, WilderAtr, WilderRsi, step};
+use trading_data::{Cell, Cons, DepOuts, Nil, Node, Observer, WilderAtr, WilderRsi, step_obs};
 
 pub const MOM_WINDOW: usize = 60;
 // Tuned to TAO-USDT 2025-01-03: the goal is the mechanism firing, not signal quality.
@@ -257,14 +257,19 @@ impl Default for Graph {
 
 impl Graph {
 	pub fn tick(&mut self, print: Option<Print>) -> TickOut {
+		self.tick_obs(print, &mut ())
+	}
+
+	pub fn tick_obs<O: Observer>(&mut self, print: Option<Print>, obs: &mut O) -> TickOut {
+		obs.on(core::any::type_name::<Prints>(), &[], &print);
 		let f = Cons::<Prints, Nil> { out: print, tail: Nil };
-		let f = step(f, &mut self.bar);
-		let f = step(f, &mut self.rsi);
-		let f = step(f, &mut self.atr);
-		let f = step(f, &mut self.momentum);
-		let f = step(f, &mut self.vol);
-		let f = step(f, &mut self.screener);
-		let f = step(f, &mut self.classify);
+		let f = step_obs(f, &mut self.bar, obs);
+		let f = step_obs(f, &mut self.rsi, obs);
+		let f = step_obs(f, &mut self.atr, obs);
+		let f = step_obs(f, &mut self.momentum, obs);
+		let f = step_obs(f, &mut self.vol, obs);
+		let f = step_obs(f, &mut self.screener, obs);
+		let f = step_obs(f, &mut self.classify, obs);
 		TickOut {
 			classified: f.head(),
 			screener: f.tail.head(),
