@@ -1,3 +1,4 @@
+#![feature(default_field_values)]
 //! Idempotent SPL demo data layer over one day of real Bybit TAO-USDT trades:
 //! download → parquet catalog → typed prints. Each step is skipped if its artifact exists;
 //! any failure is a loud panic — no fallbacks.

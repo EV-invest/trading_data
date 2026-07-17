@@ -111,21 +111,12 @@ impl Node for Atr14 {
 	}
 }
 
+#[derive(Default)]
 pub struct Momentum {
-	prev_close: Option<f64>,
-	returns: [f64; MOM_WINDOW],
-	idx: usize,
-	filled: usize,
-}
-impl Default for Momentum {
-	fn default() -> Self {
-		Self {
-			prev_close: None,
-			returns: [0.0; MOM_WINDOW],
-			idx: 0,
-			filled: 0,
-		}
-	}
+	prev_close: Option<f64> = None,
+	returns: [f64; MOM_WINDOW] = [0.0; MOM_WINDOW],
+	idx: usize = 0,
+	filled: usize = 0,
 }
 impl Cell for Momentum {
 	type Out<'t> = Option<f64>;
@@ -240,21 +231,6 @@ pub struct Graph {
 	screener: Screener,
 	classify: Classify,
 }
-
-impl Default for Graph {
-	fn default() -> Self {
-		Self {
-			bar: Bar1m::default(),
-			rsi: Rsi14(WilderRsi::new(14)),
-			atr: Atr14(WilderAtr::new(14)),
-			momentum: Momentum::default(),
-			vol: VolUsd1h::default(),
-			screener: Screener::default(),
-			classify: Classify,
-		}
-	}
-}
-
 impl Graph {
 	pub fn tick(&mut self, print: Option<Print>) -> TickOut {
 		self.tick_obs(print, &mut ())
@@ -278,6 +254,20 @@ impl Graph {
 			atr: f.tail.tail.tail.tail.head(),
 			rsi: f.tail.tail.tail.tail.tail.head(),
 			bar: f.tail.tail.tail.tail.tail.tail.head(),
+		}
+	}
+}
+
+impl Default for Graph {
+	fn default() -> Self {
+		Self {
+			bar: Bar1m::default(),
+			rsi: Rsi14(WilderRsi::new(14)),
+			atr: Atr14(WilderAtr::new(14)),
+			momentum: Momentum::default(),
+			vol: VolUsd1h::default(),
+			screener: Screener::default(),
+			classify: Classify,
 		}
 	}
 }
