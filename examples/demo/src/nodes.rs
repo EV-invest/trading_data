@@ -3,7 +3,7 @@
 
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Flat, Glance, Node, Trade, WilderAtr, WilderRsi};
+use trading_data::{Cell, DepOuts, Flat, Gate, Glance, Guide, Ink, Node, Sketch, Trade, WilderAtr, WilderRsi};
 use v_utils::trades::Side;
 
 pub const MOM_WINDOW: usize = 60;
@@ -182,6 +182,23 @@ impl Cell for Rsi14 {
 impl Node for Rsi14 {
 	type Deps = (Bar1m,);
 
+	const SKETCH: Sketch = Sketch {
+		range: Some((0.0, 100.0)),
+		guides: &[
+			Guide {
+				label: "30",
+				value: 30.0,
+				ink: Ink::FAINT,
+			},
+			Guide {
+				label: "70",
+				value: 70.0,
+				ink: Ink::FAINT,
+			},
+		],
+		..Sketch::DEFAULT
+	};
+
 	fn advance<'t>(&mut self, (bar,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.0.update(bar?.close)
 	}
@@ -302,18 +319,20 @@ pub struct Screener {
 	streak: u32,
 }
 impl Cell for Screener {
-	type Out<'t> = Option<bool>;
+	type Out<'t> = bool;
 }
 impl Node for Screener {
 	type Deps = (Momentum, Rsi14, VolUsd1h);
 
 	fn advance<'t>(&mut self, (mom, rsi, vol): DepOuts<'t, Self>) -> Self::Out<'t> {
-		let (mom, rsi) = mom.zip(rsi)?;
+		// not-warm = closed
+		let Some((mom, rsi)) = mom.zip(rsi) else { return false };
 		let hit = mom.abs() > MOM_TH && !(RSI_LO..=RSI_HI).contains(&rsi) && vol > VOL_TH;
 		self.streak = if hit { self.streak + 1 } else { 0 };
-		Some(self.streak >= STREAK_N)
+		self.streak >= STREAK_N
 	}
 }
+impl Gate for Screener {}
 
 #[derive(Clone, Default)]
 pub struct Classify;
@@ -321,13 +340,17 @@ impl Cell for Classify {
 	type Out<'t> = Option<Dist>;
 }
 impl Node for Classify {
-	type Deps = (Screener, Momentum);
+	type Deps = (Momentum,);
+	type When = (Screener,);
 
-	fn advance<'t>(&mut self, (hit, mom): DepOuts<'t, Self>) -> Self::Out<'t> {
-		if !hit? {
-			return None;
-		}
-		let mom = mom.expect("Screener only emits once Momentum is warm");
+	// Element order is the [`Dist`] wire order.
+	const SKETCH: Sketch = Sketch {
+		labels: &["None", "Liquidations", "MmClosing", "Manipulation"],
+		..Sketch::DEFAULT
+	};
+
+	fn advance<'t>(&mut self, (mom,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		let mom = mom.expect("Screener only opens once Momentum is warm");
 		let category = if mom.abs() > MOM_HIGH_BAND {
 			Category::Manipulation
 		} else if mom.abs() > MOM_MID_BAND {
