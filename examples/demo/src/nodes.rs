@@ -3,7 +3,7 @@
 
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Flat, Glance, Node, Trade, WilderAtr, WilderRsi};
+use trading_data::{Cell, DepOuts, Flat, Glance, Guide, Ink, Node, Sketch, Trade, WilderAtr, WilderRsi};
 use v_utils::trades::Side;
 
 pub const MOM_WINDOW: usize = 60;
@@ -182,6 +182,23 @@ impl Cell for Rsi14 {
 impl Node for Rsi14 {
 	type Deps = (Bar1m,);
 
+	const SKETCH: Sketch = Sketch {
+		range: Some((0.0, 100.0)),
+		guides: &[
+			Guide {
+				label: "30",
+				value: 30.0,
+				ink: Ink::FAINT,
+			},
+			Guide {
+				label: "70",
+				value: 70.0,
+				ink: Ink::FAINT,
+			},
+		],
+		..Sketch::DEFAULT
+	};
+
 	fn advance<'t>(&mut self, (bar,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.0.update(bar?.close)
 	}
@@ -322,6 +339,12 @@ impl Cell for Classify {
 }
 impl Node for Classify {
 	type Deps = (Screener, Momentum);
+
+	// Element order is the [`Dist`] wire order.
+	const SKETCH: Sketch = Sketch {
+		labels: &["None", "Liquidations", "MmClosing", "Manipulation"],
+		..Sketch::DEFAULT
+	};
 
 	fn advance<'t>(&mut self, (hit, mom): DepOuts<'t, Self>) -> Self::Out<'t> {
 		if !hit? {

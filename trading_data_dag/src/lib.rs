@@ -193,6 +193,49 @@ impl core::fmt::Display for dyn Glance + '_ {
 	}
 }
 
+/// l/c/a only — hue is the renderer's; a node can never claim one.
+#[derive(Clone, Copy, Debug)]
+pub struct Ink {
+	pub l: f64,
+	pub c: f64,
+	pub a: f64,
+}
+
+impl Ink {
+	pub const FAINT: Ink = Ink { l: 0.55, c: 0.03, a: 0.35 };
+	pub const MAIN: Ink = Ink { l: 0.72, c: 0.13, a: 1.0 };
+}
+
+/// Constant horizontal guide line in the node's pane (e.g. RSI 30/70).
+#[derive(Clone, Copy, Debug)]
+pub struct Guide {
+	pub label: &'static str,
+	pub value: f64,
+	pub ink: Ink,
+}
+
+/// Optional drawing hints a node declares about its own output — the renderer owns everything
+/// else (hue above all). Defaults always suffice.
+#[derive(Clone, Copy, Debug)]
+pub struct Sketch {
+	/// Fixed y-scale, e.g. RSI (0, 100).
+	pub range: Option<(f64, f64)>,
+	pub guides: &'static [Guide],
+	/// Element names for vector outs; `[]` = indices.
+	pub labels: &'static [&'static str],
+	/// Per-element; `[]` = [`Ink::MAIN`] for all.
+	pub inks: &'static [Ink],
+}
+
+impl Sketch {
+	pub const DEFAULT: Sketch = Sketch {
+		range: None,
+		guides: &[],
+		labels: &[],
+		inks: &[],
+	};
+}
+
 pub trait DepSet {
 	type Outs<'t>;
 	const NAMES: &'static [&'static str];
@@ -219,6 +262,7 @@ pub trait Pull<'t, F, I>: DepSet {
 
 pub trait Node: Cell {
 	type Deps: DepSet;
+	const SKETCH: Sketch = Sketch::DEFAULT;
 	fn advance<'t>(&mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
 }
 
@@ -382,6 +426,7 @@ pub struct Fire<'a> {
 	/// Compact one-liner for viz cards; `debug` stays the full-detail view (hover/tooltip).
 	pub glance: &'a dyn Glance,
 	pub dims: &'static [usize],
+	pub sketch: &'static Sketch,
 	/// `None` = didn't fire.
 	pub vals: Option<&'a [f64]>,
 	pub dep_dims: &'a [&'static [usize]],
@@ -468,6 +513,7 @@ where
 			debug: &out,
 			glance: &out,
 			dims: <N::Out<'t> as Flat>::DIMS,
+			sketch: &N::SKETCH,
 			vals: fired.then_some(out_buf.as_slice()),
 			dep_dims: <N::Deps as DepFlat>::DIMS,
 			jac: jac.as_deref(),
@@ -555,6 +601,7 @@ where
 			debug: &out,
 			glance: &out,
 			dims: <C::Out<'t> as Flat>::DIMS,
+			sketch: &Sketch::DEFAULT,
 			vals: fired.then_some(buf.as_slice()),
 			dep_dims: &[],
 			jac: None,
