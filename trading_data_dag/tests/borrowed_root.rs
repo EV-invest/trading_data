@@ -1,7 +1,7 @@
 //! The GAT headline: a heavy root enters the frame as `&'t Book`, and a node hands
 //! root-borrowed data (`Option<&'t _>`) downstream.
 
-use dep_dag::{Cell, Cons, DepOuts, Nil, Node, step};
+use trading_data_dag::{Cell, Cons, DepOuts, Nil, Node, step};
 
 struct Book {
 	bids: Vec<(i64, u64)>,

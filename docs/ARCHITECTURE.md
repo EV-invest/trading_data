@@ -14,7 +14,7 @@ recalculated, so recomputing them can't muddy persistence.
 ## Crates
 
 ```
-dep_dag                     #![no_std], zero deps — domain-free derivation engine
+trading_data_dag                     #![no_std], zero deps — domain-free derivation engine
 trading_data_derivatives    zero deps — indicator state machines, embedded inside user Nodes; never learn Cell/Node
 trading_data_persistence    arrow/parquet — catalog, lanes, feather writer, typed replay
         ▲          ▲          ▲
@@ -26,7 +26,7 @@ trading_data_persistence    arrow/parquet — catalog, lanes, feather writer, ty
 trading_data_macros                  future `graph!` (pure ergonomics — `Pull` already rejects bad orders)
 ```
 
-`dep_dag`'s `no_std` IS the enforced boundary: the engine can never grow domain or I/O
+`trading_data_dag`'s `no_std` IS the enforced boundary: the engine can never grow domain or I/O
 knowledge. Persistence knows nothing of derivations.
 
 <a id="dep_tree"></a>
@@ -60,7 +60,7 @@ where N: Node, N::Deps: Pull<'t, F, I>, F: 't {   // frame MUST already hold all
 
 Wrong order = compile error (the missing `Has<Dep>` is named); cycles are unrepresentable;
 adding an edge touches one line; the whole sweep monomorphizes to one straight-line function.
-See `dep_dag`'s crate docs and tests for the worked form.
+See `trading_data_dag`'s crate docs and tests for the worked form.
 
 Structural rules (enforced by the signatures, not convention):
 

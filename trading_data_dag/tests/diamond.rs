@@ -1,7 +1,7 @@
 //! Diamond over two multi-rate roots: `None` propagation through the DAG, plus an
 //! inference-stress graph (chain depth 10 + one arity-8 node, zero call-site annotations).
 
-use dep_dag::{Cell, Cons, DepOuts, Nil, Node, Observer, step, step_obs};
+use trading_data_dag::{Cell, Cons, DepOuts, Nil, Node, Observer, step, step_obs};
 
 struct Trades;
 impl Cell for Trades {

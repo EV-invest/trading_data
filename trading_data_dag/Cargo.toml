@@ -1,5 +1,5 @@
 [package]
-name = "dep_dag"
+name = "trading_data_dag"
 description = "Compile-time dependency-DAG derivation engine: GAT cells, type-indexed frames, monomorphized sweeps"
 version.workspace = true
 edition.workspace = true

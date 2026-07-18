@@ -792,10 +792,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dep_dag"
-version = "0.3.0"
-
-[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2808,12 +2804,16 @@ version = "0.3.0"
 dependencies = [
  "clap",
  "color-eyre",
- "dep_dag",
  "miette",
+ "trading_data_dag",
  "trading_data_derivatives",
  "trading_data_persistence",
  "v_utils",
 ]
+
+[[package]]
+name = "trading_data_dag"
+version = "0.3.0"
 
 [[package]]
 name = "trading_data_demo"

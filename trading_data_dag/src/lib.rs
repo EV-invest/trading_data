@@ -31,7 +31,7 @@
 //! (a `graph!` macro is the fix, not more arities).
 //!
 //! ```
-//! use dep_dag::{Cell, Cons, DepOuts, Nil, Node, step};
+//! use trading_data_dag::{Cell, Cons, DepOuts, Nil, Node, step};
 //!
 //! struct Price;
 //! impl Cell for Price {
@@ -167,7 +167,7 @@ impl_arity!(A Ia, B Ib, C Ic, D Id, E Ie, G Ig, H Ih, J Ij);
 /// reason to exist: a node stepped before its deps are in the frame does not compile.
 ///
 /// ```compile_fail,E0277
-/// use dep_dag::{Cell, DepOuts, Nil, Node, step};
+/// use trading_data_dag::{Cell, DepOuts, Nil, Node, step};
 ///
 /// struct A;
 /// impl Cell for A {

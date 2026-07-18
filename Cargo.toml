@@ -2,9 +2,9 @@ cargo-features = ["codegen-backend"]
 
 [workspace]
 members = [
-    "dep_dag",
     "examples/demo",
     "trading_data",
+    "trading_data_dag",
     "trading_data_derivatives",
     "trading_data_macros",
     "trading_data_persistence",
@@ -43,7 +43,6 @@ unused_features = "allow"
 arrow = "59"
 clap = { version = "^4.6.2", features = ["derive"] }
 color-eyre = "^0.6.5"
-dep_dag = { path = "dep_dag", version = "0.3.0" }
 derive-new = "^0"
 flate2 = "^1"
 iai-callgrind = "0.16"
@@ -58,6 +57,7 @@ thiserror = "^2.0"
 tokio = { version = "^1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 tracing = "^0.1"
 trading_data = { path = "trading_data", version = "0.3.0" }
+trading_data_dag = { path = "trading_data_dag", version = "0.3.0" }
 trading_data_derivatives = { path = "trading_data_derivatives", version = "0.3.0" }
 trading_data_macros = { path = "trading_data_macros", version = "0.1.0" }
 trading_data_persistence = { path = "trading_data_persistence", version = "0.3.0" }
