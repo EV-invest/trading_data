@@ -5,7 +5,7 @@
 use std::{str::FromStr as _, sync::Arc};
 
 use tempfile::tempdir;
-use trading_data::{BookDelta, BookShape, Catalog, Data, LiveBook, LiveClock, ReplayConfig, read_deltas, replay};
+use trading_data_persistence::{BookDelta, BookShape, Catalog, Data, LiveBook, LiveClock, ReplayConfig, read_deltas, replay};
 use v_utils::trades::{ExchangeName, Instrument, Pair, PrecisionPriceQty, Symbol};
 
 const STEP_NS: i64 = 1_000_000_000; // 1s between events
