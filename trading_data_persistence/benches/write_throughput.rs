@@ -1,58 +1,36 @@
-use std::hint::black_box;
+use std::{hint::black_box, sync::Arc};
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use tempfile::TempDir;
-use trading_data_persistence::{
-	Catalog, Feather, RotationPolicy,
-	catalog::{Lane, LaneKey},
-	schema::{BookDelta, FileMetadata},
-};
-use v_utils::trades::{ExchangeName, Instrument, Symbol};
+use trading_data_persistence::{BookShape, Catalog, Feather, LiveBook, LiveClock, RotationPolicy, Trade};
+use v_utils::trades::{ExchangeName, Instrument, PrecisionPriceQty, Side, Symbol};
 
-const N_DELTAS: u64 = 100_000;
+const N_TRADES: u64 = 100_000;
 const N_SNAPSHOTS: u64 = 200;
-const LEVELS: usize = 200;
-fn meta() -> FileMetadata {
-	FileMetadata {
-		exchange: "binance".into(),
-		pair: "BTC-USDT".into(),
-		price_precision: 2,
-		qty_precision: 5,
-	}
-}
+const LEVELS: i32 = 200;
 
 fn test_symbol() -> Symbol {
 	Symbol::new("BTC-USDT".try_into().unwrap(), Instrument::Spot)
 }
 
-fn fresh_deltas() -> (TempDir, Catalog, Feather) {
-	let dir = tempfile::tempdir().unwrap();
-	let cat = Catalog::new(dir.path());
-	let key = LaneKey::book(Lane::Deltas, ExchangeName::Binance, test_symbol());
-	let f = Feather::new_deltas(key, meta(), RotationPolicy { max_bytes: None, max_age: None });
-	(dir, cat, f)
-}
-
-fn fresh_snapshots() -> (TempDir, Catalog, Feather) {
-	let dir = tempfile::tempdir().unwrap();
-	let cat = Catalog::new(dir.path());
-	let key = LaneKey::book(Lane::Snapshots, ExchangeName::Binance, test_symbol());
-	let f = Feather::new_snapshots(key, meta(), RotationPolicy { max_bytes: None, max_age: None });
-	(dir, cat, f)
+fn prec() -> PrecisionPriceQty {
+	PrecisionPriceQty { price: 2, qty: 5 }
 }
 
 #[library_benchmark]
-fn push_100k_deltas() {
-	let (_dir, cat, mut f) = fresh_deltas();
-	for i in 0..N_DELTAS {
-		f.push_delta(BookDelta {
+fn push_100k_trades() {
+	let dir = TempDir::new().unwrap();
+	let cat = Catalog::new(dir.path());
+	let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), prec(), RotationPolicy { max_bytes: None, max_age: None });
+	for i in 0..N_TRADES {
+		f.push(Trade {
 			ts_event: i as i64,
 			ts_init: i as i64,
 			monotonic_seq: i,
-			gapped: false,
-			side: (i & 1) as u8,
-			price_raw: i as i32,
-			qty_raw: i as u32,
+			trade_id: i,
+			side: if i & 1 == 0 { Side::Buy } else { Side::Sell },
+			price: (i as i32) as f64 / 100.0,
+			qty: (i as u32) as f64 / 100_000.0,
 		});
 		f.maybe_flush(&cat).unwrap();
 	}
@@ -61,26 +39,24 @@ fn push_100k_deltas() {
 
 #[library_benchmark]
 fn push_200_snapshots() {
-	let bid_prices: Vec<i32> = (0..LEVELS as i32).collect();
-	let bid_qtys: Vec<u32> = (0..LEVELS as u32).collect();
-	let ask_prices: Vec<i32> = (LEVELS as i32..(LEVELS as i32 * 2)).collect();
-	let ask_qtys: Vec<u32> = (LEVELS as u32..(LEVELS as u32 * 2)).collect();
-
-	let (_dir, cat, mut f) = fresh_snapshots();
+	let dir = TempDir::new().unwrap();
+	let cat = Catalog::new(dir.path());
+	let symbol = test_symbol();
+	let mut live = LiveBook::persisting(cat, ExchangeName::Binance, symbol.pair, symbol.instrument, prec(), Arc::new(LiveClock));
 	for i in 0..N_SNAPSHOTS {
-		f.push_snapshot(
-			i as i64,
-			i as i64,
-			i,
-			bid_prices.iter().copied(),
-			bid_qtys.iter().copied(),
-			ask_prices.iter().copied(),
-			ask_qtys.iter().copied(),
-		);
-		f.maybe_flush(&cat).unwrap();
+		let ts = jiff::Timestamp::from_nanosecond((i as i128) * 1_000_000_000).unwrap();
+		let shape = BookShape {
+			ts_event: ts,
+			ts_init: ts,
+			ts_last: ts,
+			prec: prec(),
+			bids: (0..LEVELS).map(|p| (p, p as u32 + 1)).collect(),
+			asks: (LEVELS..2 * LEVELS).map(|p| (p, p as u32 + 1)).collect(),
+		};
+		live.snapshot(&shape);
 	}
-	black_box(&f);
+	black_box(&live);
 }
 
-library_benchmark_group!(name = feather_push; benchmarks = push_100k_deltas, push_200_snapshots);
+library_benchmark_group!(name = feather_push; benchmarks = push_100k_trades, push_200_snapshots);
 main!(library_benchmark_groups = feather_push);

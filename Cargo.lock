@@ -2821,6 +2821,7 @@ version = "0.3.0"
 dependencies = [
  "flate2",
  "jiff",
+ "serde_json",
  "trading_data",
  "ureq",
  "v_utils",
@@ -2852,6 +2853,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+ "trading_data_dag",
  "v_utils",
 ]
 

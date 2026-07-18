@@ -1,15 +1,15 @@
-pub mod book;
-pub mod catalog;
-pub mod clock;
-pub mod feather;
-pub mod live;
-pub mod read;
-pub mod schema;
+mod book;
+mod catalog;
+mod clock;
+mod feather;
+mod live;
+mod read;
+mod row;
 
 pub use book::{BookShape, BookUpdate};
-pub use catalog::{Catalog, CatalogError, FileEntry, Lane, LaneKey};
+pub use catalog::{Catalog, CatalogError};
 pub use clock::{Clock, LiveClock};
 pub use feather::{Feather, RotationPolicy};
 pub use live::LiveBook;
-pub use read::{LaneReader, Replay, ReplayConfig, Row, read_closes, read_deltas, read_snapshots, read_trades, replay};
-pub use schema::{BookDelta, BookSnapshot, Close, Custom, Data, FileMetadata, Trade, UnixNanos};
+pub use read::{LaneReader, read_book, read_mc, read_oi, read_trades};
+pub use row::{BookDelta, Mc, Oi, Row, Trade, UnixNanos};

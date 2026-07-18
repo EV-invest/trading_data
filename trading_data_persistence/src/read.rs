@@ -1,62 +1,28 @@
-use std::{cmp::Ordering, collections::BinaryHeap, time::Duration};
+use std::time::Duration;
 
-use arrow::array::RecordBatch;
-use v_utils::trades::{ExchangeName, Symbol};
+use arrow::{array::RecordBatch, datatypes::SchemaRef};
+use v_utils::trades::{Asset, ExchangeName, Symbol};
 
 use crate::{
-	catalog::{Catalog, CatalogError, FileEntry, Lane, LaneKey},
-	schema::{BookDelta, BookSnapshot, Close, Data, Trade, UnixNanos, decode_closes, decode_deltas, decode_snapshots, decode_trades},
+	book::BookShape,
+	catalog::{Catalog, CatalogError, FileEntry, LaneKey},
+	row::{BookDelta, BookSnapshot, Mc, Oi, Row, Trade, UnixNanos, prec_from_schema, sealed::Sealed},
 };
 
-pub trait Row {
-	fn ts_event(&self) -> UnixNanos;
-	fn into_data(self) -> Data;
-}
-impl Row for BookSnapshot {
-	fn ts_event(&self) -> UnixNanos {
-		self.ts_event
-	}
-
-	fn into_data(self) -> Data {
-		Data::Snapshot(self)
-	}
-}
-impl Row for BookDelta {
-	fn ts_event(&self) -> UnixNanos {
-		self.ts_event
-	}
-
-	fn into_data(self) -> Data {
-		Data::Delta(self)
-	}
-}
-impl Row for Trade {
-	fn ts_event(&self) -> UnixNanos {
-		self.ts_event
-	}
-
-	fn into_data(self) -> Data {
-		Data::Trade(self)
-	}
-}
-impl Row for Close {
-	fn ts_event(&self) -> UnixNanos {
-		self.ts_event
-	}
-
-	fn into_data(self) -> Data {
-		Data::Close(self)
-	}
-}
+/// Snapshots older than this cannot seed a book: too much drift between anchor and range start.
+const MAX_ANCHOR_AGE: Duration = Duration::from_secs(15 * 60);
 
 /// Streams one lane's rows in `[start, end]`, one parquet file at a time. No whole-lane
 /// materialization; a mid-stream read failure of a catalog-owned file is unrecoverable and panics.
-pub struct LaneReader<T> {
+pub struct LaneReader<T: Row> {
 	catalog: Catalog,
 	files: std::vec::IntoIter<FileEntry>,
 	batches: std::vec::IntoIter<RecordBatch>,
 	rows: std::vec::IntoIter<T>,
-	decode: fn(&RecordBatch) -> Vec<T>,
+	// current file's schema: per-batch schemas drop the key-value metadata decode needs
+	file_schema: Option<SchemaRef>,
+	// file-metadata consistency across the read range (e.g. precisions)
+	sig: Option<String>,
 	start: UnixNanos,
 	end: UnixNanos,
 }
@@ -72,175 +38,110 @@ impl<T: Row> Iterator for LaneReader<T> {
 				}
 			}
 			if let Some(batch) = self.batches.next() {
-				self.rows = (self.decode)(&batch).into_iter();
+				let schema = self.file_schema.as_ref().expect("set when file opened");
+				self.rows = T::decode(&batch, schema).into_iter();
 				continue;
 			}
 			let file = self.files.next()?;
-			let batches = self.catalog.read(&file.path).expect("catalog file unreadable during replay");
+			let (schema, batches) = self.catalog.read(&file.path).expect("catalog file unreadable during read");
+			if let Some(sig) = T::file_sig(schema.as_ref()) {
+				match &self.sig {
+					Some(prev) => assert_eq!(prev, &sig, "inconsistent file metadata across read range"),
+					None => self.sig = Some(sig),
+				}
+			}
+			self.file_schema = Some(schema);
 			self.batches = batches.into_iter();
 		}
 	}
 }
 
-pub fn read_snapshots(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<BookSnapshot>, CatalogError> {
-	lane_reader(catalog, LaneKey::book(Lane::Snapshots, exchange, symbol), start, end, decode_snapshots)
-}
-pub fn read_deltas(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<BookDelta>, CatalogError> {
-	lane_reader(catalog, LaneKey::book(Lane::Deltas, exchange, symbol), start, end, decode_deltas)
-}
-pub fn read_trades(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<Trade>, CatalogError> {
-	lane_reader(catalog, LaneKey::book(Lane::Trades, exchange, symbol), start, end, decode_trades)
-}
-pub fn read_closes(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<Close>, CatalogError> {
-	lane_reader(catalog, LaneKey::book(Lane::Closes, exchange, symbol), start, end, decode_closes)
-}
-#[derive(Clone, Debug)]
-pub struct ReplayConfig {
-	pub start: UnixNanos,
-	pub end: UnixNanos,
-	pub max_anchor_age: Duration,
-}
-impl ReplayConfig {
-	pub fn new(start: UnixNanos, end: UnixNanos) -> Self {
-		Self {
-			start,
-			end,
-			max_anchor_age: Duration::from_secs(15 * 60),
-		}
-	}
-}
-
-/// Lazy k-way merge of the typed lane readers into one time-ordered `Data` stream. The anchor
-/// snapshot, when present, is emitted first to seed the book.
-pub struct Replay {
-	anchor: Option<Data>,
-	sources: Vec<Box<dyn Iterator<Item = Data>>>,
-	heap: BinaryHeap<HeapEntry>,
-}
-/// One symbol only. Cross-symbol ordering is the backtester's job.
-pub fn replay(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, config: &ReplayConfig) -> Result<Replay, CatalogError> {
-	let anchor = pick_anchor(catalog, exchange, symbol, config)?;
-	let snap_start = anchor.as_ref().map(|a| (a.ts_event + 1).max(config.start)).unwrap_or(config.start);
-
-	let mut sources: Vec<Box<dyn Iterator<Item = Data>>> = vec![
-		Box::new(read_snapshots(catalog, exchange, symbol, snap_start, config.end)?.map(Row::into_data)),
-		Box::new(read_deltas(catalog, exchange, symbol, config.start, config.end)?.map(Row::into_data)),
-		Box::new(read_trades(catalog, exchange, symbol, config.start, config.end)?.map(Row::into_data)),
-		Box::new(read_closes(catalog, exchange, symbol, config.start, config.end)?.map(Row::into_data)),
-	];
-
-	let mut heap = BinaryHeap::new();
-	for (src, it) in sources.iter_mut().enumerate() {
-		if let Some(data) = it.next() {
-			heap.push(HeapEntry {
-				key: (data.ts_event(), data.monotonic_seq()),
-				src,
-				data,
-			});
-		}
-	}
-
-	Ok(Replay {
-		anchor: anchor.map(Data::Snapshot),
-		sources,
-		heap,
-	})
-}
-fn lane_reader<T>(catalog: &Catalog, key: LaneKey, start: UnixNanos, end: UnixNanos, decode: fn(&RecordBatch) -> Vec<T>) -> Result<LaneReader<T>, CatalogError> {
+fn lane_reader<T: Row>(catalog: &Catalog, key: LaneKey, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<T>, CatalogError> {
 	let files = catalog.list_range(&key, start, end)?;
 	Ok(LaneReader {
 		catalog: catalog.clone(),
 		files: files.into_iter(),
 		batches: Vec::new().into_iter(),
 		rows: Vec::new().into_iter(),
-		decode,
+		file_schema: None,
+		sig: None,
 		start,
 		end,
 	})
 }
 
-struct HeapEntry {
-	key: (UnixNanos, u64),
-	src: usize,
-	data: Data,
-}
-impl PartialEq for HeapEntry {
-	fn eq(&self, other: &Self) -> bool {
-		(self.key, self.src) == (other.key, other.src)
-	}
-}
-impl Eq for HeapEntry {}
-impl Ord for HeapEntry {
-	fn cmp(&self, other: &Self) -> Ordering {
-		// Reversed: BinaryHeap is a max-heap, we want the smallest (ts_event, monotonic_seq) first.
-		(other.key, other.src).cmp(&(self.key, self.src))
-	}
-}
-impl PartialOrd for HeapEntry {
-	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-		Some(self.cmp(other))
-	}
+pub fn read_trades(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<Trade>, CatalogError> {
+	lane_reader(catalog, LaneKey::Trades { exchange, symbol }, start, end)
 }
 
-impl Iterator for Replay {
-	type Item = Data;
-
-	fn next(&mut self) -> Option<Data> {
-		if let Some(a) = self.anchor.take() {
-			return Some(a);
-		}
-		let entry = self.heap.pop()?;
-		if let Some(data) = self.sources[entry.src].next() {
-			self.heap.push(HeapEntry {
-				key: (data.ts_event(), data.monotonic_seq()),
-				src: entry.src,
-				data,
-			});
-		}
-		Some(entry.data)
-	}
+pub fn read_oi(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<Oi>, CatalogError> {
+	lane_reader(catalog, LaneKey::Oi { exchange, symbol }, start, end)
 }
 
-fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, config: &ReplayConfig) -> Result<Option<BookSnapshot>, CatalogError> {
-	let key = LaneKey::book(Lane::Snapshots, exchange, symbol);
+pub fn read_mc(catalog: &Catalog, asset: Asset, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<Mc>, CatalogError> {
+	lane_reader(catalog, LaneKey::Mc { asset }, start, end)
+}
+
+/// One symbol only. Seeds the book from the freshest snapshot at or before `start` (within
+/// [`MAX_ANCHOR_AGE`]), then streams the post-`start` deltas. Mid-range snapshots stay internal.
+pub fn read_book(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<(Option<BookShape>, LaneReader<BookDelta>), CatalogError> {
+	let anchor = pick_anchor(catalog, exchange, symbol, start)?;
+	let deltas = lane_reader(catalog, LaneKey::BookDeltas { exchange, symbol }, start, end)?;
+	Ok((anchor, deltas))
+}
+
+fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos) -> Result<Option<BookShape>, CatalogError> {
+	let key = LaneKey::BookSnapshots { exchange, symbol };
 	let files = catalog.list(&key)?;
-	let max_age_ns = config.max_anchor_age.as_nanos() as i64;
+	let max_age_ns = MAX_ANCHOR_AGE.as_nanos() as i64;
 
-	let candidate = files.iter().rev().find(|f| f.ts_min <= config.start);
+	let candidate = files.iter().rev().find(|f| f.ts_min <= start);
 
 	if let Some(file) = candidate {
-		let mut newest: Option<BookSnapshot> = None;
-		for batch in catalog.read(&file.path)? {
-			for row in decode_snapshots(&batch) {
-				if row.ts_event > config.start {
+		let mut newest: Option<(BookSnapshot, BookShape)> = None;
+		let (schema, batches) = catalog.read(&file.path)?;
+		let prec = prec_from_schema(schema.as_ref());
+		for batch in batches {
+			for row in BookSnapshot::decode(&batch, schema.as_ref()) {
+				if row.ts_event > start {
 					continue;
 				}
 				let take = match &newest {
 					None => true,
-					Some(cur) => row.ts_event > cur.ts_event,
+					Some((cur, _)) => row.ts_event > cur.ts_event,
 				};
 				if take {
-					newest = Some(row);
+					let ts_event = jiff::Timestamp::from_nanosecond(row.ts_event as i128).expect("stored ts in range");
+					let ts_init = jiff::Timestamp::from_nanosecond(row.ts_init as i128).expect("stored ts in range");
+					let shape = BookShape {
+						ts_event,
+						ts_init,
+						ts_last: ts_init,
+						prec,
+						bids: row.bid_prices.iter().copied().zip(row.bid_qtys.iter().copied()).collect(),
+						asks: row.ask_prices.iter().copied().zip(row.ask_qtys.iter().copied()).collect(),
+					};
+					newest = Some((row, shape));
 				}
 			}
 		}
-		if let Some(row) = newest
-			&& config.start - row.ts_event <= max_age_ns
+		if let Some((row, shape)) = newest
+			&& start - row.ts_event <= max_age_ns
 		{
-			return Ok(Some(row));
+			return Ok(Some(shape));
 		}
 	}
 
-	let first_in_range = files.iter().find(|f| f.ts_max >= config.start);
+	let first_in_range = files.iter().find(|f| f.ts_max >= start);
 	if let Some(f) = first_in_range {
 		tracing::warn!(
 			file = %f.path.display(),
-			start = config.start,
-			max_anchor_age_secs = config.max_anchor_age.as_secs(),
-			"no recent anchor; replay will start from first snapshot >= start without book seed",
+			start,
+			max_anchor_age_secs = MAX_ANCHOR_AGE.as_secs(),
+			"no recent anchor; book starts unseeded",
 		);
 	} else {
-		tracing::warn!(start = config.start, "no snapshot files at or after start; replay will produce no anchor");
+		tracing::warn!(start, "no snapshot files at or after start; book starts unseeded");
 	}
 	Ok(None)
 }
@@ -248,87 +149,80 @@ fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, config
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use v_utils::trades::Instrument;
+	use v_utils::trades::{Instrument, PrecisionPriceQty, Side};
 
 	use super::*;
-	use crate::{
-		feather::{Feather, RotationPolicy},
-		schema::FileMetadata,
-	};
+	use crate::feather::{Feather, RotationPolicy};
 
 	fn test_symbol() -> Symbol {
 		Symbol::new("BTC-USDT".try_into().unwrap(), Instrument::Spot)
 	}
 
-	fn meta() -> FileMetadata {
-		FileMetadata {
-			exchange: "binance".into(),
-			pair: "BTC-USDT".into(),
-			price_precision: 2,
-			qty_precision: 5,
-		}
+	fn prec() -> PrecisionPriceQty {
+		PrecisionPriceQty { price: 2, qty: 5 }
 	}
 
-	fn forever() -> RotationPolicy {
-		RotationPolicy { max_bytes: None, max_age: None }
-	}
+	const FOREVER: RotationPolicy = RotationPolicy { max_bytes: None, max_age: None };
 
-	fn write_snapshot(cat: &Catalog, key: LaneKey, ts: i64) {
-		let mut f = Feather::new_snapshots(key, meta(), forever());
-		f.push_snapshot(ts, ts, ts as u64, [100].into_iter(), [10].into_iter(), [101].into_iter(), [10].into_iter());
+	fn write_snapshot(cat: &Catalog, ts: i64) {
+		let mut f = Feather::<BookSnapshot>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
+		f.push(BookSnapshot {
+			ts_event: ts,
+			ts_init: ts,
+			monotonic_seq: ts as u64,
+			bid_prices: vec![100],
+			bid_qtys: vec![10],
+			ask_prices: vec![101],
+			ask_qtys: vec![10],
+		});
 		f.flush(cat).unwrap();
 	}
 
-	fn write_delta(cat: &Catalog, key: LaneKey, row: BookDelta) {
-		let mut f = Feather::new_deltas(key, meta(), forever());
-		f.push_delta(row);
-		f.flush(cat).unwrap();
-	}
-
-	fn delta(ts: i64, mseq: u64) -> BookDelta {
-		BookDelta {
+	fn write_delta(cat: &Catalog, ts: i64, mseq: u64) {
+		let mut f = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
+		f.push(BookDelta {
 			ts_event: ts,
 			ts_init: ts,
 			monotonic_seq: mseq,
 			gapped: false,
-			side: 0,
-			price_raw: 0,
-			qty_raw: 0,
-		}
+			side: Side::Buy,
+			price: 1.0,
+			qty: 0.0,
+		});
+		f.flush(cat).unwrap();
 	}
 
 	#[test]
 	fn anchor_within_window_seeds_book() {
 		let dir = tempdir().unwrap();
 		let cat = Catalog::new(dir.path());
-		let snaps_key = || LaneKey::book(Lane::Snapshots, ExchangeName::Binance, test_symbol());
-		let deltas_key = || LaneKey::book(Lane::Deltas, ExchangeName::Binance, test_symbol());
 
 		let s = 1_000_000_000_i64;
-		write_snapshot(&cat, snaps_key(), 0);
-		write_snapshot(&cat, snaps_key(), 50 * s);
-		write_snapshot(&cat, snaps_key(), 120 * s);
+		write_snapshot(&cat, 0);
+		write_snapshot(&cat, 50 * s);
+		write_snapshot(&cat, 120 * s);
 
-		write_delta(&cat, deltas_key(), delta(110 * s, 1));
+		write_delta(&cat, 110 * s, 1);
 
-		let cfg = ReplayConfig::new(100 * s, 200 * s);
-		let out: Vec<Data> = replay(&cat, ExchangeName::Binance, test_symbol(), &cfg).unwrap().collect();
-		assert!(matches!(&out[0], Data::Snapshot(s) if s.ts_event == 50 * 1_000_000_000));
-		assert!(matches!(&out[1], Data::Delta(d) if d.ts_event == 110 * 1_000_000_000));
-		assert!(matches!(&out[2], Data::Snapshot(s) if s.ts_event == 120 * 1_000_000_000));
+		let (shape, deltas) = read_book(&cat, ExchangeName::Binance, test_symbol(), 100 * s, 200 * s).unwrap();
+		let shape = shape.expect("anchor within window");
+		assert_eq!(shape.ts_event.as_nanosecond() as i64, 50 * s);
+		assert_eq!(shape.bids.get(&100), Some(&10));
+		let deltas: Vec<BookDelta> = deltas.collect();
+		assert_eq!(deltas.len(), 1);
+		assert_eq!(deltas[0].ts_event, 110 * s);
 	}
 
 	#[test]
 	fn anchor_out_of_window_skipped() {
 		let dir = tempdir().unwrap();
 		let cat = Catalog::new(dir.path());
-		let snaps_key = || LaneKey::book(Lane::Snapshots, ExchangeName::Binance, test_symbol());
 		let s = 1_000_000_000_i64;
-		write_snapshot(&cat, snaps_key(), 0);
-		write_snapshot(&cat, snaps_key(), 120 * s);
+		write_snapshot(&cat, 0);
+		write_snapshot(&cat, 120 * s);
 
-		let cfg = ReplayConfig::new(60 * 60 * s, 2 * 60 * 60 * s);
-		let out: Vec<Data> = replay(&cat, ExchangeName::Binance, test_symbol(), &cfg).unwrap().collect();
-		assert!(out.is_empty(), "got {} rows", out.len());
+		let (shape, deltas) = read_book(&cat, ExchangeName::Binance, test_symbol(), 60 * 60 * s, 2 * 60 * 60 * s).unwrap();
+		assert!(shape.is_none());
+		assert_eq!(deltas.count(), 0);
 	}
 }

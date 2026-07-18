@@ -1,11 +1,14 @@
-//! SPL replica graph: Prints → Bar1m → (Rsi14, Atr14, Momentum, VolUsd1h) → Screener → Classify.
+//! SPL replica graph: Trades → Bar1m → (Cvd, Rsi14, Atr14, Momentum, VolUsd1h, Lambda1m) → Screener → Classify.
 //! All outs are value types; the `graph!` field order is the topo order.
 
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Flat, Glance, Node, Stamped, WilderAtr, WilderRsi};
+use trading_data::{Cell, DepOuts, Flat, Glance, Node, Trade, WilderAtr, WilderRsi};
+use v_utils::trades::Side;
 
 pub const MOM_WINDOW: usize = 60;
+/// Same value as [`MOM_WINDOW`], different identity: λ's window is its own tunable.
+pub const LAMBDA_WINDOW: usize = 60;
 // Tuned to TAO-USDT 2025-01-03: the goal is the mechanism firing, not signal quality.
 const MOM_TH: f64 = 1.0;
 const RSI_HI: f64 = 65.0;
@@ -15,42 +18,11 @@ const STREAK_N: u32 = 2;
 const MOM_HIGH_BAND: f64 = 3.0;
 const MOM_MID_BAND: f64 = 2.0;
 
-#[derive(Clone, Copy, Debug)]
-pub struct Print {
-	pub ts: i64,
-	pub price: f64,
-	pub qty: f64,
-}
-
-// ts excluded from both impls: timestamps are metadata, not signal slots; nudge preserves them.
-impl Flat for Print {
-	const DIMS: &'static [usize] = &[2];
-
-	fn flat(&self, out: &mut [f64]) -> bool {
-		out.copy_from_slice(&[self.price, self.qty]);
-		true
-	}
-
-	fn nudge(&self, slot: usize, h: f64) -> Self {
-		let mut r = *self;
-		*match slot {
-			0 => &mut r.price,
-			1 => &mut r.qty,
-			_ => unreachable!("LEN = 2"),
-		} += h;
-		r
-	}
-}
-
-impl Glance for Print {
-	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "qty {}", self.qty)
-	}
-}
-
-impl Stamped for Print {
-	fn ts_ns(&self) -> i64 {
-		self.ts
+fn signed_notional(t: &Trade) -> f64 {
+	let notional = t.price * t.qty;
+	match t.side {
+		Side::Buy => notional,
+		Side::Sell => -notional,
 	}
 }
 
@@ -62,13 +34,15 @@ pub struct Bar {
 	pub low: f64,
 	pub close: f64,
 	pub vol_quote: f64,
+	/// Σ signed `price*qty` (Buy = +, Sell = −) over the bar.
+	pub flow_quote: f64,
 }
 
 impl Flat for Bar {
-	const DIMS: &'static [usize] = &[5];
+	const DIMS: &'static [usize] = &[6];
 
 	fn flat(&self, out: &mut [f64]) -> bool {
-		out.copy_from_slice(&[self.open, self.high, self.low, self.close, self.vol_quote]);
+		out.copy_from_slice(&[self.open, self.high, self.low, self.close, self.vol_quote, self.flow_quote]);
 		true
 	}
 
@@ -80,7 +54,8 @@ impl Flat for Bar {
 			2 => &mut r.low,
 			3 => &mut r.close,
 			4 => &mut r.vol_quote,
-			_ => unreachable!("LEN = 5"),
+			5 => &mut r.flow_quote,
+			_ => unreachable!("LEN = 6"),
 		} += h;
 		r
 	}
@@ -132,9 +107,9 @@ impl Glance for Dist {
 	}
 }
 
-pub struct Prints;
-impl Cell for Prints {
-	type Out<'t> = Option<Print>;
+pub struct Trades;
+impl Cell for Trades {
+	type Out<'t> = Option<Trade>;
 }
 
 #[derive(Clone, Default)]
@@ -145,32 +120,51 @@ impl Cell for Bar1m {
 	type Out<'t> = Option<Bar>;
 }
 impl Node for Bar1m {
-	type Deps = (Prints,);
+	type Deps = (Trades,);
 
-	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		let p = p?;
-		let ts_open = p.ts - p.ts.rem_euclid(60_000_000_000);
+	fn advance<'t>(&mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		let t = t?;
+		let ts_open = t.ts_event - t.ts_event.rem_euclid(60_000_000_000);
 		match &mut self.acc {
 			Some(b) if b.ts_open == ts_open => {
-				b.high = b.high.max(p.price);
-				b.low = b.low.min(p.price);
-				b.close = p.price;
-				b.vol_quote += p.price * p.qty;
+				b.high = b.high.max(t.price);
+				b.low = b.low.min(t.price);
+				b.close = t.price;
+				b.vol_quote += t.price * t.qty;
+				b.flow_quote += signed_notional(&t);
 				None
 			}
 			acc => {
 				let done = *acc;
 				*acc = Some(Bar {
 					ts_open,
-					open: p.price,
-					high: p.price,
-					low: p.price,
-					close: p.price,
-					vol_quote: p.price * p.qty,
+					open: t.price,
+					high: t.price,
+					low: t.price,
+					close: t.price,
+					vol_quote: t.price * t.qty,
+					flow_quote: signed_notional(&t),
 				});
 				done
 			}
 		}
+	}
+}
+
+/// Cumulative volume delta: running Σ signed notional over every trade.
+#[derive(Clone, Default)]
+pub struct Cvd {
+	sum: f64,
+}
+impl Cell for Cvd {
+	type Out<'t> = Option<f64>;
+}
+impl Node for Cvd {
+	type Deps = (Trades,);
+
+	fn advance<'t>(&mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		self.sum += signed_notional(&t?);
+		Some(self.sum)
 	}
 }
 
@@ -269,6 +263,39 @@ impl Node for VolUsd1h {
 	}
 }
 
+/// Kyle's λ: through-origin OLS of per-bar Δclose on signed flow, `λ = Σ(Δp·f) / Σ(f²)`.
+#[derive(Clone, Default)]
+pub struct Lambda1m {
+	prev_close: Option<f64> = None,
+	d_close: [f64; LAMBDA_WINDOW] = [0.0; LAMBDA_WINDOW],
+	flow: [f64; LAMBDA_WINDOW] = [0.0; LAMBDA_WINDOW],
+	idx: usize = 0,
+	filled: usize = 0,
+}
+impl Cell for Lambda1m {
+	type Out<'t> = Option<f64>;
+}
+impl Node for Lambda1m {
+	type Deps = (Bar1m,);
+
+	fn advance<'t>(&mut self, (bar,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		let b = bar?;
+		let prev = self.prev_close.replace(b.close)?;
+		self.d_close[self.idx] = b.close - prev;
+		self.flow[self.idx] = b.flow_quote;
+		self.idx = (self.idx + 1) % LAMBDA_WINDOW;
+		self.filled = (self.filled + 1).min(LAMBDA_WINDOW);
+		if self.filled < LAMBDA_WINDOW {
+			return None;
+		}
+		let denom = self.flow.iter().map(|f| f * f).sum::<f64>();
+		if denom == 0.0 {
+			return Some(0.0);
+		}
+		Some(self.d_close.iter().zip(&self.flow).map(|(dp, f)| dp * f).sum::<f64>() / denom)
+	}
+}
+
 /// Stateful hysteresis streak — deliberately non-vectorizable, like the SPL RsiScreener.
 #[derive(Clone, Default)]
 pub struct Screener {
@@ -317,13 +344,15 @@ impl Node for Classify {
 
 trading_data::graph! {
 	pub struct Graph;
-	root Prints, event Print;
+	root Trades, event Trade;
 	out TickOut;
 	bar: Bar1m,
+	cvd: Cvd,
 	rsi: Rsi14,
 	atr: Atr14,
 	momentum: Momentum,
 	vol_usd_1h: VolUsd1h,
+	lambda: Lambda1m,
 	screener: Screener,
 	classified: Classify,
 }

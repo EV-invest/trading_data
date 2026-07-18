@@ -16,6 +16,7 @@ jiff.workspace = true
 parquet.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+trading_data_dag.workspace = true
 v_utils.workspace = true
 
 [dev-dependencies]
