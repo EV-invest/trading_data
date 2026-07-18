@@ -4,6 +4,7 @@
 //! Wilder semantics throughout: warmup = SMA over the first `period` samples, then
 //! `(prev*(n-1)+x)/n`; `None` until warm.
 
+#[derive(Clone)]
 pub struct WilderRsi {
 	period: usize,
 	prev_close: Option<f64>,
@@ -53,6 +54,7 @@ impl WilderRsi {
 	}
 }
 
+#[derive(Clone)]
 pub struct WilderAtr {
 	period: usize,
 	prev_close: Option<f64>,

@@ -1,7 +1,9 @@
 //! SPL replica graph: Prints → Bar1m → (Rsi14, Atr14, Momentum, VolUsd1h) → Screener → Classify.
 //! All outs are value types; the hand-wired chain in [`Graph::tick_obs`] is the topo order.
 
-use trading_data::{Cell, Cons, DepOuts, Nil, Node, Observer, WilderAtr, WilderRsi, step_obs};
+use core::fmt;
+
+use trading_data::{Cell, Cons, DepOuts, Flat, Glance, Nil, Node, Observer, WilderAtr, WilderRsi, observe_root, step_obs};
 
 pub const MOM_WINDOW: usize = 60;
 // Tuned to TAO-USDT 2025-01-03: the goal is the mechanism firing, not signal quality.
@@ -20,6 +22,32 @@ pub struct Print {
 	pub qty: f64,
 }
 
+// ts excluded from both impls: timestamps are metadata, not signal slots; nudge preserves them.
+impl Flat for Print {
+	const DIMS: &'static [usize] = &[2];
+
+	fn flat(&self, out: &mut [f64]) -> bool {
+		out.copy_from_slice(&[self.price, self.qty]);
+		true
+	}
+
+	fn nudge(&self, slot: usize, h: f64) -> Self {
+		let mut r = *self;
+		*match slot {
+			0 => &mut r.price,
+			1 => &mut r.qty,
+			_ => unreachable!("LEN = 2"),
+		} += h;
+		r
+	}
+}
+
+impl Glance for Print {
+	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "qty {}", self.qty)
+	}
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Bar {
 	pub ts_open: i64,
@@ -30,6 +58,36 @@ pub struct Bar {
 	pub vol_quote: f64,
 }
 
+impl Flat for Bar {
+	const DIMS: &'static [usize] = &[5];
+
+	fn flat(&self, out: &mut [f64]) -> bool {
+		out.copy_from_slice(&[self.open, self.high, self.low, self.close, self.vol_quote]);
+		true
+	}
+
+	fn nudge(&self, slot: usize, h: f64) -> Self {
+		let mut r = *self;
+		*match slot {
+			0 => &mut r.open,
+			1 => &mut r.high,
+			2 => &mut r.low,
+			3 => &mut r.close,
+			4 => &mut r.vol_quote,
+			_ => unreachable!("LEN = 5"),
+		} += h;
+		r
+	}
+}
+
+impl Glance for Bar {
+	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "close {}", self.close)
+	}
+}
+
+/// Interpretation of a [`Classify`] dist — the wire is the `[f64; 4]` itself, ordered
+/// `[None, Liquidations, MmClosing, Manipulation]`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Category {
 	None,
@@ -38,10 +96,34 @@ pub enum Category {
 	Manipulation,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Classified {
-	pub category: Category,
-	pub dist: [(Category, f64); 4],
+impl Category {
+	pub fn argmax(dist: [f64; 4]) -> Self {
+		let (i, _) = dist.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).expect("4 elements");
+		[Category::None, Category::Liquidations, Category::MmClosing, Category::Manipulation][i]
+	}
+}
+
+/// The 4-way category distribution — the wire is its `[f64; 4]`, ordered as [`Category`] above.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dist(pub [f64; 4]);
+
+impl Flat for Dist {
+	const DIMS: &'static [usize] = &[4];
+
+	fn flat(&self, out: &mut [f64]) -> bool {
+		self.0.flat(out)
+	}
+
+	fn nudge(&self, slot: usize, h: f64) -> Self {
+		Dist(self.0.nudge(slot, h))
+	}
+}
+
+impl Glance for Dist {
+	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		let p = self.0.iter().copied().fold(f64::MIN, f64::max);
+		write!(f, "{:?}: {:.0}%", Category::argmax(self.0), p * 100.0)
+	}
 }
 
 pub struct Prints;
@@ -49,7 +131,7 @@ impl Cell for Prints {
 	type Out<'t> = Option<Print>;
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Bar1m {
 	acc: Option<Bar>,
 }
@@ -86,6 +168,7 @@ impl Node for Bar1m {
 	}
 }
 
+#[derive(Clone)]
 pub struct Rsi14(pub WilderRsi);
 impl Cell for Rsi14 {
 	type Out<'t> = Option<f64>;
@@ -98,6 +181,7 @@ impl Node for Rsi14 {
 	}
 }
 
+#[derive(Clone)]
 pub struct Atr14(pub WilderAtr);
 impl Cell for Atr14 {
 	type Out<'t> = Option<f64>;
@@ -111,7 +195,7 @@ impl Node for Atr14 {
 	}
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Momentum {
 	prev_close: Option<f64> = None,
 	returns: [f64; MOM_WINDOW] = [0.0; MOM_WINDOW],
@@ -143,6 +227,7 @@ impl Node for Momentum {
 	}
 }
 
+#[derive(Clone)]
 pub struct VolUsd1h {
 	ring: [f64; 60],
 	idx: usize,
@@ -168,7 +253,7 @@ impl Node for VolUsd1h {
 }
 
 /// Stateful hysteresis streak — deliberately non-vectorizable, like the SPL RsiScreener.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Screener {
 	streak: u32,
 }
@@ -186,9 +271,10 @@ impl Node for Screener {
 	}
 }
 
+#[derive(Clone)]
 pub struct Classify;
 impl Cell for Classify {
-	type Out<'t> = Option<Classified>;
+	type Out<'t> = Option<Dist>;
 }
 impl Node for Classify {
 	type Deps = (Screener, Momentum);
@@ -206,8 +292,9 @@ impl Node for Classify {
 			Category::MmClosing
 		};
 		let rest = (1.0 - 0.6) / 3.0;
-		let dist = [Category::None, Category::Liquidations, Category::MmClosing, Category::Manipulation].map(|c| (c, if c == category { 0.6 } else { rest }));
-		Some(Classified { category, dist })
+		Some(Dist(
+			[Category::None, Category::Liquidations, Category::MmClosing, Category::Manipulation].map(|c| if c == category { 0.6 } else { rest }),
+		))
 	}
 }
 
@@ -219,7 +306,7 @@ pub struct TickOut {
 	pub momentum: Option<f64>,
 	pub vol_usd_1h: f64,
 	pub screener: Option<bool>,
-	pub classified: Option<Classified>,
+	pub classified: Option<Dist>,
 }
 
 pub struct Graph {
@@ -237,7 +324,7 @@ impl Graph {
 	}
 
 	pub fn tick_obs<O: Observer>(&mut self, print: Option<Print>, obs: &mut O) -> TickOut {
-		obs.on(core::any::type_name::<Prints>(), &[], &print);
+		observe_root::<Prints, _>(print, obs);
 		let f = Cons::<Prints, Nil> { out: print, tail: Nil };
 		let f = step_obs(f, &mut self.bar, obs);
 		let f = step_obs(f, &mut self.rsi, obs);

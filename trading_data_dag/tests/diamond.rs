@@ -1,7 +1,7 @@
 //! Diamond over two multi-rate roots: `None` propagation through the DAG, plus an
 //! inference-stress graph (chain depth 10 + one arity-8 node, zero call-site annotations).
 
-use trading_data_dag::{Cell, Cons, DepOuts, Nil, Node, Observer, step, step_obs};
+use trading_data_dag::{Cell, Cons, DepOuts, Fire, Nil, Node, Observer, step, step_obs};
 
 struct Trades;
 impl Cell for Trades {
@@ -12,6 +12,7 @@ impl Cell for Quotes {
 	type Out<'t> = Option<f64>;
 }
 
+#[derive(Clone)]
 struct A;
 impl Cell for A {
 	type Out<'t> = Option<f64>;
@@ -24,6 +25,7 @@ impl Node for A {
 	}
 }
 
+#[derive(Clone)]
 struct B;
 impl Cell for B {
 	type Out<'t> = Option<f64>;
@@ -36,6 +38,7 @@ impl Node for B {
 	}
 }
 
+#[derive(Clone)]
 struct C;
 impl Cell for C {
 	type Out<'t> = Option<f64>;
@@ -48,6 +51,7 @@ impl Node for C {
 	}
 }
 
+#[derive(Clone)]
 struct D;
 impl Cell for D {
 	type Out<'t> = Option<f64>;
@@ -60,6 +64,7 @@ impl Node for D {
 	}
 }
 
+#[derive(Clone)]
 struct Cross;
 impl Cell for Cross {
 	type Out<'t> = Option<f64>;
@@ -94,8 +99,8 @@ fn diamond_option_propagation() {
 #[derive(Default)]
 struct Rec(Vec<(&'static str, &'static [&'static str], String)>);
 impl Observer for Rec {
-	fn on(&mut self, node: &'static str, deps: &'static [&'static str], out: &dyn std::fmt::Debug) {
-		self.0.push((node, deps, format!("{out:?}")));
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], fire: Fire<'_>) {
+		self.0.push((node, deps, format!("{:?}", fire.debug)));
 	}
 }
 
@@ -197,4 +202,97 @@ fn inference_stress_depth_10_arity_8() {
 	let f = step(f, &mut S10);
 	let f = step(f, &mut Wide);
 	assert_eq!(f.head(), (3..=10).sum::<i32>() as f64);
+}
+
+#[derive(Default)]
+struct JacRec(Vec<Option<Vec<f64>>>);
+impl Observer for JacRec {
+	fn on(&mut self, _: &'static str, _: &'static [&'static str], fire: Fire<'_>) {
+		self.0.push(fire.jac.map(<[f64]>::to_vec));
+	}
+}
+
+#[test]
+fn fd_linear_dep() {
+	let mut rec = JacRec::default();
+	let f = Cons::<Trades, Nil> { out: Some(2.0), tail: Nil };
+	step_obs(f, &mut A, &mut rec);
+	let jac = rec.0[0].as_ref().expect("A fired");
+	assert!((jac[0] - 2.0).abs() < 1e-3, "{jac:?}");
+}
+
+struct Level;
+impl Cell for Level {
+	type Out<'t> = f64;
+}
+impl Clone for Level {
+	fn clone(&self) -> Self {
+		Level
+	}
+}
+impl Node for Level {
+	type Deps = (Trades, Quotes);
+
+	fn advance<'t>(&mut self, (t, q): DepOuts<'t, Self>) -> Self::Out<'t> {
+		// multi-rate leaf: an unfired dep contributes nothing this tick
+		t.unwrap_or(0.0) + 3.0 * q.unwrap_or(0.0)
+	}
+}
+
+#[test]
+fn fd_unfired_dep_nan_column() {
+	let mut rec = JacRec::default();
+	let f = Cons::<Trades, Nil> { out: None, tail: Nil };
+	let f = Cons::<Quotes, _> { out: Some(5.0), tail: f };
+	step_obs(f, &mut Level, &mut rec);
+	let jac = rec.0[0].as_ref().expect("Level always fires");
+	assert!(jac[0].is_nan(), "{jac:?}");
+	assert!((jac[1] - 3.0).abs() < 1e-3, "{jac:?}");
+}
+
+struct Gate;
+impl Cell for Gate {
+	type Out<'t> = bool;
+}
+#[derive(Clone)]
+struct OnOff;
+impl Cell for OnOff {
+	type Out<'t> = f64;
+}
+impl Node for OnOff {
+	type Deps = (Gate,);
+
+	fn advance<'t>(&mut self, (g,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		if g { 5.0 } else { 0.0 }
+	}
+}
+
+#[test]
+fn fd_bool_dep_zero_column() {
+	let mut rec = JacRec::default();
+	let f = Cons::<Gate, Nil> { out: true, tail: Nil };
+	step_obs(f, &mut OnOff, &mut rec);
+	assert_eq!(rec.0[0].as_deref(), Some(&[0.0][..]));
+}
+
+#[derive(Clone)]
+struct Under;
+impl Cell for Under {
+	type Out<'t> = Option<f64>;
+}
+impl Node for Under {
+	type Deps = (Trades,);
+
+	fn advance<'t>(&mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		t.filter(|x| *x <= 1.0)
+	}
+}
+
+#[test]
+fn fd_bump_unfired_nan_column() {
+	let mut rec = JacRec::default();
+	let f = Cons::<Trades, Nil> { out: Some(1.0), tail: Nil };
+	step_obs(f, &mut Under, &mut rec);
+	let jac = rec.0[0].as_ref().expect("fires at the boundary");
+	assert!(jac[0].is_nan(), "{jac:?}");
 }

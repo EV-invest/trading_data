@@ -2,7 +2,10 @@
 
 use std::path::PathBuf;
 
-use trading_data_demo::{ensure_catalog, load_prints, nodes::Graph};
+use trading_data_demo::{
+	ensure_catalog, load_prints,
+	nodes::{Category, Graph},
+};
 
 fn main() {
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/demo_cache"));
@@ -16,14 +19,14 @@ fn main() {
 		let out = graph.tick(Some(print));
 		bars += out.bar.is_some() as u64;
 		hits += (out.screener == Some(true)) as u64;
-		if let Some(c) = out.classified {
+		if let Some(dist) = out.classified {
 			classifications += 1;
 			let bar = out.bar.expect("Classify only fires on bar close");
 			let ts = jiff::Timestamp::from_nanosecond(bar.ts_open as i128).expect("ts in range");
 			println!(
 				"{ts} {:?} dist={:?} o={:.3} c={:.3} mom={:.2} rsi={:.1} atr={:.4} vol1h={:.0}",
-				c.category,
-				c.dist,
+				Category::argmax(dist.0),
+				dist.0,
 				bar.open,
 				bar.close,
 				out.momentum.expect("warm"),
