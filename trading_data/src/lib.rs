@@ -1,7 +1,7 @@
 //! Facade/prelude: the derivation engine, indicator state machines, and the storage tier.
 //! Depend on this crate only — sub-crates are wiring detail.
 
-pub use trading_data_dag::{Cell, Cons, DepOuts, Fire, Flat, Glance, Nil, Node, Observer, observe_root, step, step_obs};
+pub use trading_data_dag::{Cell, Cons, Dag, DepOuts, Fire, Flat, Glance, Nil, Node, Observer, Stamped, graph, observe_root, step, step_obs};
 pub use trading_data_derivatives::{WilderAtr, WilderRsi};
 pub use trading_data_persistence::{
 	BookDelta, BookShape, BookSnapshot, BookUpdate, Catalog, CatalogError, Clock, Close, Custom, Data, Feather, FileEntry, FileMetadata, Lane, LaneKey, LaneReader, LiveBook, LiveClock,

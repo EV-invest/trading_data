@@ -29,6 +29,7 @@
 //!
 //! Trait-solver ceiling: frame-depth cost is fine for dozens of nodes; revisit around ~50+
 //! (a `graph!` macro is the fix, not more arities).
+//REVIEW: `graph!` exists now (still fixed frame-depth per node; the ceiling note stands).
 //!
 //! ```
 //! use trading_data_dag::{Cell, Cons, DepOuts, Nil, Node, step};
@@ -473,6 +474,66 @@ where
 		},
 	);
 	Cons { out, tail: frame }
+}
+
+/// Replay events carry their own clock.
+pub trait Stamped {
+	fn ts_ns(&self) -> i64;
+}
+
+/// A steppable event-graph: the whole surface a replayer/visualizer needs. [`graph!`] generates
+/// impls; the richer typed out-struct stays on the inherent methods.
+pub trait Dag: Default {
+	type Event: Copy + Stamped;
+	fn tick_obs(&mut self, ev: Option<Self::Event>, obs: &mut impl Observer);
+}
+
+/// Wires a declared node list into a graph struct + typed out-struct + [`Dag`] impl. Fields in
+/// topo order — a wrong order fails the existing `Pull`/`Has` bounds at compile time. The root
+/// cell's `Out` must be `Option<Event>`. Out-struct fields keep each node's `Cell::Out`
+/// verbatim: Option-ness IS the multi-rate non-firing channel.
+#[macro_export]
+macro_rules! graph {
+	(
+		$vis:vis struct $Graph:ident;
+		root $Root:ty, event $Event:ty;
+		out $Out:ident;
+		$($field:ident: $Node:ty),+ $(,)?
+	) => {
+		#[derive(Default)]
+		$vis struct $Graph {
+			$($field: $Node,)+
+		}
+
+		#[derive(Clone, Copy, Debug)]
+		$vis struct $Out {
+			$(pub $field: <$Node as $crate::Cell>::Out<'static>,)+
+		}
+
+		impl $Graph {
+			$vis fn tick(&mut self, ev: Option<$Event>) -> $Out {
+				self.tick_obs(ev, &mut ())
+			}
+
+			$vis fn tick_obs(&mut self, ev: Option<$Event>, obs: &mut impl $crate::Observer) -> $Out {
+				$crate::observe_root::<$Root, _>(ev, obs);
+				let f = $crate::Cons::<$Root, $crate::Nil> { out: ev, tail: $crate::Nil };
+				$(let f = $crate::step_obs(f, &mut self.$field, obs);)+
+				$Out {
+					$($field: $crate::Has::<$Node, _>::get(&f),)+
+				}
+			}
+		}
+
+		impl $crate::Dag for $Graph {
+			type Event = $Event;
+
+			fn tick_obs(&mut self, ev: Option<Self::Event>, obs: &mut impl $crate::Observer) {
+				// inherent method shadows the trait one; typed out dropped.
+				Self::tick_obs(self, ev, obs);
+			}
+		}
+	};
 }
 
 /// The root half of the observation choke point: flatten a seeded root value and emit its

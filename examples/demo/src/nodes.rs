@@ -1,9 +1,9 @@
 //! SPL replica graph: Prints → Bar1m → (Rsi14, Atr14, Momentum, VolUsd1h) → Screener → Classify.
-//! All outs are value types; the hand-wired chain in [`Graph::tick_obs`] is the topo order.
+//! All outs are value types; the `graph!` field order is the topo order.
 
 use core::fmt;
 
-use trading_data::{Cell, Cons, DepOuts, Flat, Glance, Nil, Node, Observer, WilderAtr, WilderRsi, observe_root, step_obs};
+use trading_data::{Cell, DepOuts, Flat, Glance, Node, Stamped, WilderAtr, WilderRsi};
 
 pub const MOM_WINDOW: usize = 60;
 // Tuned to TAO-USDT 2025-01-03: the goal is the mechanism firing, not signal quality.
@@ -45,6 +45,12 @@ impl Flat for Print {
 impl Glance for Print {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "qty {}", self.qty)
+	}
+}
+
+impl Stamped for Print {
+	fn ts_ns(&self) -> i64 {
+		self.ts
 	}
 }
 
@@ -168,8 +174,14 @@ impl Node for Bar1m {
 	}
 }
 
+// The 14-period constants are part of these nodes' identity, so Default is honest.
 #[derive(Clone)]
 pub struct Rsi14(pub WilderRsi);
+impl Default for Rsi14 {
+	fn default() -> Self {
+		Rsi14(WilderRsi::new(14))
+	}
+}
 impl Cell for Rsi14 {
 	type Out<'t> = Option<f64>;
 }
@@ -183,6 +195,11 @@ impl Node for Rsi14 {
 
 #[derive(Clone)]
 pub struct Atr14(pub WilderAtr);
+impl Default for Atr14 {
+	fn default() -> Self {
+		Atr14(WilderAtr::new(14))
+	}
+}
 impl Cell for Atr14 {
 	type Out<'t> = Option<f64>;
 }
@@ -271,7 +288,7 @@ impl Node for Screener {
 	}
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Classify;
 impl Cell for Classify {
 	type Out<'t> = Option<Dist>;
@@ -298,63 +315,15 @@ impl Node for Classify {
 	}
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct TickOut {
-	pub bar: Option<Bar>,
-	pub rsi: Option<f64>,
-	pub atr: Option<f64>,
-	pub momentum: Option<f64>,
-	pub vol_usd_1h: f64,
-	pub screener: Option<bool>,
-	pub classified: Option<Dist>,
-}
-
-pub struct Graph {
+trading_data::graph! {
+	pub struct Graph;
+	root Prints, event Print;
+	out TickOut;
 	bar: Bar1m,
 	rsi: Rsi14,
 	atr: Atr14,
 	momentum: Momentum,
-	vol: VolUsd1h,
+	vol_usd_1h: VolUsd1h,
 	screener: Screener,
-	classify: Classify,
-}
-impl Graph {
-	pub fn tick(&mut self, print: Option<Print>) -> TickOut {
-		self.tick_obs(print, &mut ())
-	}
-
-	pub fn tick_obs<O: Observer>(&mut self, print: Option<Print>, obs: &mut O) -> TickOut {
-		observe_root::<Prints, _>(print, obs);
-		let f = Cons::<Prints, Nil> { out: print, tail: Nil };
-		let f = step_obs(f, &mut self.bar, obs);
-		let f = step_obs(f, &mut self.rsi, obs);
-		let f = step_obs(f, &mut self.atr, obs);
-		let f = step_obs(f, &mut self.momentum, obs);
-		let f = step_obs(f, &mut self.vol, obs);
-		let f = step_obs(f, &mut self.screener, obs);
-		let f = step_obs(f, &mut self.classify, obs);
-		TickOut {
-			classified: f.head(),
-			screener: f.tail.head(),
-			vol_usd_1h: f.tail.tail.head(),
-			momentum: f.tail.tail.tail.head(),
-			atr: f.tail.tail.tail.tail.head(),
-			rsi: f.tail.tail.tail.tail.tail.head(),
-			bar: f.tail.tail.tail.tail.tail.tail.head(),
-		}
-	}
-}
-
-impl Default for Graph {
-	fn default() -> Self {
-		Self {
-			bar: Bar1m::default(),
-			rsi: Rsi14(WilderRsi::new(14)),
-			atr: Atr14(WilderAtr::new(14)),
-			momentum: Momentum::default(),
-			vol: VolUsd1h::default(),
-			screener: Screener::default(),
-			classify: Classify,
-		}
-	}
+	classified: Classify,
 }
