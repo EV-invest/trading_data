@@ -23,7 +23,7 @@ fn main() {
 		n_trades += 1;
 		let out = graph.tick(Some(trade));
 		bars += out.bar.is_some() as u64;
-		hits += (out.screener == Some(true)) as u64;
+		hits += out.screener as u64;
 		if let Some(l) = out.lambda {
 			lambda_fires += 1;
 			assert!(l.is_finite(), "lambda went non-finite: {l}");
