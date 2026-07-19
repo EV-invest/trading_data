@@ -1,16 +1,38 @@
 //! Diamond over two multi-rate roots: `None` propagation through the DAG, plus an
 //! inference-stress graph (chain depth 10 + one arity-8 node, zero call-site annotations).
 
-use trading_data_dag::{Cell, Cons, DepOuts, Fire, Nil, Node, Observer, step, step_obs};
+use trading_data_dag::{Cell, Cons, DepOuts, Fire, Flat, Nil, Node, Nudge, Observer, step, step_obs};
+
+/// A scalar (value-out) cell's finite-difference witness: the scratch is just the value itself.
+macro_rules! value_nudge {
+	($C:ty) => {
+		impl Nudge for $C {
+			type Scratch = <$C as Cell>::Out<'static>;
+
+			fn stage<'t>(out: <$C as Cell>::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) {
+				*s = match bump {
+					Some(slot) => Flat::nudge(&out, slot, h),
+					None => out,
+				};
+			}
+
+			fn view<'l>(s: &'l Self::Scratch) -> <$C as Cell>::Out<'l> {
+				*s
+			}
+		}
+	};
+}
 
 struct Trades;
 impl Cell for Trades {
 	type Out<'t> = Option<f64>;
 }
+value_nudge!(Trades);
 struct Quotes;
 impl Cell for Quotes {
 	type Out<'t> = Option<f64>;
 }
+value_nudge!(Quotes);
 
 #[derive(Clone)]
 struct A;
@@ -20,10 +42,11 @@ impl Cell for A {
 impl Node for A {
 	type Deps = (Trades,);
 
-	fn advance<'t>(&mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		t.map(|x| x * 2.0)
 	}
 }
+value_nudge!(A);
 
 #[derive(Clone)]
 struct B;
@@ -33,10 +56,11 @@ impl Cell for B {
 impl Node for B {
 	type Deps = (A,);
 
-	fn advance<'t>(&mut self, (a,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (a,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		a.map(|x| x + 1.0)
 	}
 }
+value_nudge!(B);
 
 #[derive(Clone)]
 struct C;
@@ -46,10 +70,11 @@ impl Cell for C {
 impl Node for C {
 	type Deps = (A,);
 
-	fn advance<'t>(&mut self, (a,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (a,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		a.map(|x| x * 3.0)
 	}
 }
+value_nudge!(C);
 
 #[derive(Clone)]
 struct D;
@@ -59,7 +84,7 @@ impl Cell for D {
 impl Node for D {
 	type Deps = (B, C);
 
-	fn advance<'t>(&mut self, (b, c): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (b, c): DepOuts<'t, Self>) -> Self::Out<'t> {
 		b.zip(c).map(|(b, c)| b + c)
 	}
 }
@@ -72,19 +97,20 @@ impl Cell for Cross {
 impl Node for Cross {
 	type Deps = (Trades, Quotes);
 
-	fn advance<'t>(&mut self, (t, q): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (t, q): DepOuts<'t, Self>) -> Self::Out<'t> {
 		t.zip(q).map(|(t, q)| t - q)
 	}
 }
 
 fn tick(trades: Option<f64>, quotes: Option<f64>) -> (Option<f64>, Option<f64>) {
+	let (mut a, mut b, mut c, mut d, mut cross) = (A, B, C, D, Cross);
 	let f = Cons::<Trades, Nil> { out: trades, tail: Nil };
 	let f = Cons::<Quotes, _> { out: quotes, tail: f };
-	let f = step(f, &mut A);
-	let f = step(f, &mut B);
-	let f = step(f, &mut C);
-	let f = step(f, &mut D);
-	let f = step(f, &mut Cross);
+	let f = step(f, &mut a);
+	let f = step(f, &mut b);
+	let f = step(f, &mut c);
+	let f = step(f, &mut d);
+	let f = step(f, &mut cross);
 	(f.tail.head(), f.head())
 }
 
@@ -158,7 +184,7 @@ macro_rules! chain {
 		impl Node for $name {
 			type Deps = ($dep,);
 
-			fn advance<'t>(&mut self, (x,): DepOuts<'t, Self>) -> Self::Out<'t> {
+			fn advance<'t>(&'t mut self, (x,): DepOuts<'t, Self>) -> Self::Out<'t> {
 				x + 1.0
 			}
 		}
@@ -182,25 +208,27 @@ impl Cell for Wide {
 impl Node for Wide {
 	type Deps = (S3, S4, S5, S6, S7, S8, S9, S10);
 
-	fn advance<'t>(&mut self, (a, b, c, d, e, g, h, j): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (a, b, c, d, e, g, h, j): DepOuts<'t, Self>) -> Self::Out<'t> {
 		a + b + c + d + e + g + h + j
 	}
 }
 
 #[test]
 fn inference_stress_depth_10_arity_8() {
+	let (mut s1, mut s2, mut s3, mut s4, mut s5) = (S1, S2, S3, S4, S5);
+	let (mut s6, mut s7, mut s8, mut s9, mut s10, mut wide) = (S6, S7, S8, S9, S10, Wide);
 	let f = Cons::<R, Nil> { out: 0.0, tail: Nil };
-	let f = step(f, &mut S1);
-	let f = step(f, &mut S2);
-	let f = step(f, &mut S3);
-	let f = step(f, &mut S4);
-	let f = step(f, &mut S5);
-	let f = step(f, &mut S6);
-	let f = step(f, &mut S7);
-	let f = step(f, &mut S8);
-	let f = step(f, &mut S9);
-	let f = step(f, &mut S10);
-	let f = step(f, &mut Wide);
+	let f = step(f, &mut s1);
+	let f = step(f, &mut s2);
+	let f = step(f, &mut s3);
+	let f = step(f, &mut s4);
+	let f = step(f, &mut s5);
+	let f = step(f, &mut s6);
+	let f = step(f, &mut s7);
+	let f = step(f, &mut s8);
+	let f = step(f, &mut s9);
+	let f = step(f, &mut s10);
+	let f = step(f, &mut wide);
 	assert_eq!(f.head(), (3..=10).sum::<i32>() as f64);
 }
 
@@ -233,7 +261,7 @@ impl Clone for Level {
 impl Node for Level {
 	type Deps = (Trades, Quotes);
 
-	fn advance<'t>(&mut self, (t, q): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (t, q): DepOuts<'t, Self>) -> Self::Out<'t> {
 		// multi-rate leaf: an unfired dep contributes nothing this tick
 		t.unwrap_or(0.0) + 3.0 * q.unwrap_or(0.0)
 	}
@@ -254,6 +282,7 @@ struct Gate;
 impl Cell for Gate {
 	type Out<'t> = bool;
 }
+value_nudge!(Gate);
 #[derive(Clone)]
 struct OnOff;
 impl Cell for OnOff {
@@ -262,7 +291,7 @@ impl Cell for OnOff {
 impl Node for OnOff {
 	type Deps = (Gate,);
 
-	fn advance<'t>(&mut self, (g,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (g,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		if g { 5.0 } else { 0.0 }
 	}
 }
@@ -283,7 +312,7 @@ impl Cell for Under {
 impl Node for Under {
 	type Deps = (Trades,);
 
-	fn advance<'t>(&mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		t.filter(|x| *x <= 1.0)
 	}
 }

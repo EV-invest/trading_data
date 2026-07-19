@@ -1,0 +1,15 @@
+error[E0080]: evaluation panicked: Cur is only consumed under a gate: gate it too, or mark it historic
+   --> $DIR/trading_data_macros/tests/compile_fail_cascade/shadowed.rs:104:1
+    |
+104 | / graph! {
+105 | |     struct G;
+106 | |     batches Batches;
+107 | |     roots { src: Src[Ev] };
+...   |
+111 | |     sink: Sink,
+112 | | }
+    | |_^ evaluation of `_` failed here
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0080`.

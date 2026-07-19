@@ -1,0 +1,38 @@
+error[E0277]: the trait bound `Nil: Has<'_, A, _>` is not satisfied
+   --> $DIR/trading_data_macros/tests/compile_fail_cascade/wrong_order.rs:89:2
+    |
+ 84 | / graph! {
+ 85 | |     struct G;
+ 86 | |     batches Batches;
+ 87 | |     roots { src: Src[Ev] };
+ 88 | |     out GOut;
+ 89 | |     b: B,
+    | |     ^ the trait `Has<'_, A, _>` is not implemented for `Nil`
+ 90 | |     a: A,
+ 91 | | }
+    | |_- required by a bound introduced by this call
+    |
+help: the following other types implement trait `Has<'t, N, I>`
+   --> $DIR/trading_data_dag/src/lib.rs:423:1
+    |
+423 |   impl<'t, N: Cell, T> Has<'t, N, Here> for Cons<'t, N, T> {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Cons<'t, N, T>` implements `Has<'t, N, Here>`
+...
+428 | / impl<'t, N: Cell, M: Cell, T, I> Has<'t, N, There<I>> for Cons<'t, M, T>
+429 | | where
+430 | |     T: Has<'t, N, I>,
+    | |_____________________^ `Cons<'t, M, T>` implements `Has<'t, N, There<I>>`
+    = note: required for `Cons<'_, Src, Nil>` to implement `Has<'_, A, There<_>>`
+    = note: required for `(A,)` to implement `Pull<'_, Cons<'_, Src, Nil>, (There<_>,)>`
+note: required by a bound in `step_obs`
+   --> $DIR/trading_data_dag/src/lib.rs:673:11
+    |
+669 | pub fn step_obs<'t, N, F, I, J, O: Observer>(frame: F, node: &'t mut N, obs: &mut O) -> Cons<'t, N, F>
+    |        -------- required by a bound in this function
+...
+673 |     N::Deps: Pull<'t, F, I> + DepFlat,
+    |              ^^^^^^^^^^^^^^ required by this bound in `step_obs`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0277`.

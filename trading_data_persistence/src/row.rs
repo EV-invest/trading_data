@@ -4,12 +4,12 @@ use arrow::{
 	array::{Array, ArrayRef, BooleanArray, BooleanBuilder, Float64Array, Float64Builder, Int32Array, Int64Array, ListArray, RecordBatch, UInt8Array, UInt32Array, UInt64Array},
 	datatypes::{DataType, Field, Schema, SchemaRef},
 };
-use trading_data_dag::{Flat, Glance, Stamped};
+use trading_data_dag::{Flat, Glance};
 use v_utils::trades::{PrecisionPriceQty, Side};
 
 use crate::feather::RotationPolicy;
 
-pub const SCHEMA_VERSION: &str = "3";
+pub const SCHEMA_VERSION: &str = "4";
 pub type UnixNanos = i64;
 
 /// A lane's row type. Sealed: the set of lanes is this crate's contract with the disk.
@@ -22,7 +22,8 @@ pub trait Row: sealed::Sealed {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Trade {
 	pub ts_event: UnixNanos,
-	pub ts_init: UnixNanos,
+	/// `Some` ⇔ real arrival time (live-recorded); historic ingest writes `None`.
+	pub ts_init: Option<UnixNanos>,
 	pub monotonic_seq: u64,
 	pub trade_id: u64,
 	pub side: Side,
@@ -33,7 +34,8 @@ pub struct Trade {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BookDelta {
 	pub ts_event: UnixNanos,
-	pub ts_init: UnixNanos,
+	/// `Some` ⇔ real arrival time (live-recorded); historic ingest writes `None`.
+	pub ts_init: Option<UnixNanos>,
 	pub monotonic_seq: u64,
 	pub gapped: bool,
 	/// Buy = bid, Sell = ask.
@@ -47,14 +49,16 @@ pub struct BookDelta {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Oi {
 	pub ts_event: UnixNanos,
-	pub ts_init: UnixNanos,
+	/// `Some` ⇔ real arrival time (live-recorded); historic ingest writes `None`.
+	pub ts_init: Option<UnixNanos>,
 	pub oi: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mc {
 	pub ts_event: UnixNanos,
-	pub ts_init: UnixNanos,
+	/// `Some` ⇔ real arrival time (live-recorded); historic ingest writes `None`.
+	pub ts_init: Option<UnixNanos>,
 	pub market_cap: f64,
 	/// Honest-None when the source lacks it.
 	pub rank: Option<u32>,
@@ -64,7 +68,8 @@ pub struct Mc {
 #[derive(Clone, Debug)]
 pub(crate) struct BookSnapshot {
 	pub ts_event: UnixNanos,
-	pub ts_init: UnixNanos,
+	/// `Some` ⇔ real arrival time (live-recorded); historic ingest writes `None`.
+	pub ts_init: Option<UnixNanos>,
 	pub monotonic_seq: u64,
 	pub bid_prices: Vec<i32>,
 	pub bid_qtys: Vec<u32>,
@@ -118,7 +123,7 @@ pub(crate) mod sealed {
 		/// Metadata that must agree across every file of a read range; `None` when the lane has none.
 		fn file_sig(schema: &Schema) -> Option<String>;
 		fn ts_event(&self) -> UnixNanos;
-		fn ts_init(&self) -> UnixNanos;
+		fn ts_init(&self) -> Option<UnixNanos>;
 		fn approx_bytes(&self) -> usize;
 	}
 }
@@ -218,7 +223,7 @@ impl Sealed for Trade {
 		schema_with(
 			vec![
 				Field::new("ts_event", DataType::Int64, false),
-				Field::new("ts_init", DataType::Int64, false),
+				Field::new("ts_init", DataType::Int64, true),
 				Field::new("monotonic_seq", DataType::UInt64, false),
 				Field::new("trade_id", DataType::UInt64, false),
 				Field::new("side", DataType::UInt8, false),
@@ -231,7 +236,7 @@ impl Sealed for Trade {
 
 	fn append(&self, b: &mut TradeBuilders, meta: PrecisionPriceQty) {
 		b.ts_event.append_value(self.ts_event);
-		b.ts_init.append_value(self.ts_init);
+		b.ts_init.append_option(self.ts_init);
 		b.monotonic_seq.append_value(self.monotonic_seq);
 		b.trade_id.append_value(self.trade_id);
 		b.side.append_value(side_u8(self.side));
@@ -264,7 +269,7 @@ impl Sealed for Trade {
 		(0..batch.num_rows())
 			.map(|i| Trade {
 				ts_event: ts_event.value(i),
-				ts_init: ts_init.value(i),
+				ts_init: (!ts_init.is_null(i)).then(|| ts_init.value(i)),
 				monotonic_seq: monotonic.value(i),
 				trade_id: trade_id.value(i),
 				side: side_from(side.value(i)),
@@ -282,7 +287,7 @@ impl Sealed for Trade {
 		self.ts_event
 	}
 
-	fn ts_init(&self) -> UnixNanos {
+	fn ts_init(&self) -> Option<UnixNanos> {
 		self.ts_init
 	}
 
@@ -312,7 +317,7 @@ impl Sealed for BookDelta {
 		schema_with(
 			vec![
 				Field::new("ts_event", DataType::Int64, false),
-				Field::new("ts_init", DataType::Int64, false),
+				Field::new("ts_init", DataType::Int64, true),
 				Field::new("monotonic_seq", DataType::UInt64, false),
 				Field::new("gapped", DataType::Boolean, false),
 				Field::new("side", DataType::UInt8, false),
@@ -325,7 +330,7 @@ impl Sealed for BookDelta {
 
 	fn append(&self, b: &mut BookDeltaBuilders, meta: PrecisionPriceQty) {
 		b.ts_event.append_value(self.ts_event);
-		b.ts_init.append_value(self.ts_init);
+		b.ts_init.append_option(self.ts_init);
 		b.monotonic_seq.append_value(self.monotonic_seq);
 		b.gapped.append_value(self.gapped);
 		b.side.append_value(side_u8(self.side));
@@ -358,7 +363,7 @@ impl Sealed for BookDelta {
 		(0..batch.num_rows())
 			.map(|i| BookDelta {
 				ts_event: ts_event.value(i),
-				ts_init: ts_init.value(i),
+				ts_init: (!ts_init.is_null(i)).then(|| ts_init.value(i)),
 				monotonic_seq: monotonic.value(i),
 				gapped: gapped.value(i),
 				side: side_from(side.value(i)),
@@ -376,7 +381,7 @@ impl Sealed for BookDelta {
 		self.ts_event
 	}
 
-	fn ts_init(&self) -> UnixNanos {
+	fn ts_init(&self) -> Option<UnixNanos> {
 		self.ts_init
 	}
 
@@ -408,7 +413,7 @@ impl Sealed for BookSnapshot {
 		schema_with(
 			vec![
 				Field::new("ts_event", DataType::Int64, false),
-				Field::new("ts_init", DataType::Int64, false),
+				Field::new("ts_init", DataType::Int64, true),
 				Field::new("monotonic_seq", DataType::UInt64, false),
 				Field::new("bid_prices", i32_list(), false),
 				Field::new("bid_qtys", u32_list(), false),
@@ -421,7 +426,7 @@ impl Sealed for BookSnapshot {
 
 	fn append(&self, b: &mut BookSnapshotBuilders, _meta: PrecisionPriceQty) {
 		b.ts_event.append_value(self.ts_event);
-		b.ts_init.append_value(self.ts_init);
+		b.ts_init.append_option(self.ts_init);
 		b.monotonic_seq.append_value(self.monotonic_seq);
 		for &p in &self.bid_prices {
 			b.bid_prices.values().append_value(p);
@@ -464,7 +469,7 @@ impl Sealed for BookSnapshot {
 		(0..batch.num_rows())
 			.map(|i| BookSnapshot {
 				ts_event: ts_event.value(i),
-				ts_init: ts_init.value(i),
+				ts_init: (!ts_init.is_null(i)).then(|| ts_init.value(i)),
 				monotonic_seq: monotonic.value(i),
 				bid_prices: bid_prices[i].clone(),
 				bid_qtys: bid_qtys[i].clone(),
@@ -482,7 +487,7 @@ impl Sealed for BookSnapshot {
 		self.ts_event
 	}
 
-	fn ts_init(&self) -> UnixNanos {
+	fn ts_init(&self) -> Option<UnixNanos> {
 		self.ts_init
 	}
 
@@ -508,7 +513,7 @@ impl Sealed for Oi {
 		schema_with(
 			vec![
 				Field::new("ts_event", DataType::Int64, false),
-				Field::new("ts_init", DataType::Int64, false),
+				Field::new("ts_init", DataType::Int64, true),
 				Field::new("oi", DataType::Float64, false),
 			],
 			&[],
@@ -517,7 +522,7 @@ impl Sealed for Oi {
 
 	fn append(&self, b: &mut OiBuilders, _meta: ()) {
 		b.ts_event.append_value(self.ts_event);
-		b.ts_init.append_value(self.ts_init);
+		b.ts_init.append_option(self.ts_init);
 		b.oi.append_value(self.oi);
 	}
 
@@ -532,7 +537,7 @@ impl Sealed for Oi {
 		(0..batch.num_rows())
 			.map(|i| Oi {
 				ts_event: ts_event.value(i),
-				ts_init: ts_init.value(i),
+				ts_init: (!ts_init.is_null(i)).then(|| ts_init.value(i)),
 				oi: oi.value(i),
 			})
 			.collect()
@@ -546,7 +551,7 @@ impl Sealed for Oi {
 		self.ts_event
 	}
 
-	fn ts_init(&self) -> UnixNanos {
+	fn ts_init(&self) -> Option<UnixNanos> {
 		self.ts_init
 	}
 
@@ -573,7 +578,7 @@ impl Sealed for Mc {
 		schema_with(
 			vec![
 				Field::new("ts_event", DataType::Int64, false),
-				Field::new("ts_init", DataType::Int64, false),
+				Field::new("ts_init", DataType::Int64, true),
 				Field::new("market_cap", DataType::Float64, false),
 				Field::new("rank", DataType::UInt32, true),
 			],
@@ -583,13 +588,18 @@ impl Sealed for Mc {
 
 	fn append(&self, b: &mut McBuilders, _meta: ()) {
 		b.ts_event.append_value(self.ts_event);
-		b.ts_init.append_value(self.ts_init);
+		b.ts_init.append_option(self.ts_init);
 		b.market_cap.append_value(self.market_cap);
 		b.rank.append_option(self.rank);
 	}
 
 	fn finish(b: &mut McBuilders) -> Vec<ArrayRef> {
-		vec![Arc::new(b.ts_event.finish()), Arc::new(b.ts_init.finish()), Arc::new(b.market_cap.finish()), Arc::new(b.rank.finish())]
+		vec![
+			Arc::new(b.ts_event.finish()),
+			Arc::new(b.ts_init.finish()),
+			Arc::new(b.market_cap.finish()),
+			Arc::new(b.rank.finish()),
+		]
 	}
 
 	fn decode(batch: &RecordBatch, _file_schema: &Schema) -> Vec<Self> {
@@ -600,7 +610,7 @@ impl Sealed for Mc {
 		(0..batch.num_rows())
 			.map(|i| Mc {
 				ts_event: ts_event.value(i),
-				ts_init: ts_init.value(i),
+				ts_init: (!ts_init.is_null(i)).then(|| ts_init.value(i)),
 				market_cap: market_cap.value(i),
 				rank: (!rank.is_null(i)).then(|| rank.value(i)),
 			})
@@ -615,7 +625,7 @@ impl Sealed for Mc {
 		self.ts_event
 	}
 
-	fn ts_init(&self) -> UnixNanos {
+	fn ts_init(&self) -> Option<UnixNanos> {
 		self.ts_init
 	}
 
@@ -653,12 +663,6 @@ fn col_u32_list(b: &RecordBatch, idx: usize) -> Vec<Vec<u32>> {
 // DAG impls live here: `trading_data_dag` is dep-free, orphan rules force them into this crate.
 // Nodes receive the full struct as deps; `Flat` is observation-only, so side/ts stay metadata.
 
-impl Stamped for Trade {
-	fn ts_ns(&self) -> i64 {
-		self.ts_event
-	}
-}
-
 impl Flat for Trade {
 	const DIMS: &'static [usize] = &[2];
 
@@ -681,12 +685,6 @@ impl Flat for Trade {
 impl Glance for Trade {
 	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		write!(f, "{} {}@{}", self.side, self.qty, self.price)
-	}
-}
-
-impl Stamped for BookDelta {
-	fn ts_ns(&self) -> i64 {
-		self.ts_event
 	}
 }
 
@@ -715,12 +713,6 @@ impl Glance for BookDelta {
 	}
 }
 
-impl Stamped for Oi {
-	fn ts_ns(&self) -> i64 {
-		self.ts_event
-	}
-}
-
 impl Flat for Oi {
 	const DIMS: &'static [usize] = &[1];
 
@@ -737,12 +729,6 @@ impl Flat for Oi {
 impl Glance for Oi {
 	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		write!(f, "oi {}", self.oi)
-	}
-}
-
-impl Stamped for Mc {
-	fn ts_ns(&self) -> i64 {
-		self.ts_event
 	}
 }
 

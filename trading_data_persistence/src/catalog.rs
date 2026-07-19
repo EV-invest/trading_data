@@ -170,7 +170,7 @@ mod tests {
 		let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), PrecisionPriceQty { price: 2, qty: 5 }, Trade::POLICY);
 		f.push(Trade {
 			ts_event: ts,
-			ts_init: ts,
+			ts_init: Some(ts),
 			monotonic_seq: 1,
 			trade_id: 1,
 			side: Side::Buy,
@@ -205,7 +205,7 @@ mod tests {
 		let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), PrecisionPriceQty { price: 2, qty: 5 }, Trade::POLICY);
 		f.push(Trade {
 			ts_event: 100,
-			ts_init: 100,
+			ts_init: Some(100),
 			monotonic_seq: 2,
 			trade_id: 2,
 			side: Side::Sell,

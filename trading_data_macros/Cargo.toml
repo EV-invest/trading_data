@@ -16,5 +16,14 @@ proc-macro2.workspace = true
 quote.workspace = true
 syn.workspace = true
 
+[dev-dependencies]
+trading_data_dag.workspace = true
+ui_test = { workspace = true }
+
+[[test]]
+name = "compile_fail"
+path = "tests/compile_fail.rs"
+harness = false
+
 [lints]
 workspace = true

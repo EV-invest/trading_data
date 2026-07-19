@@ -2,7 +2,7 @@ use std::{hint::black_box, sync::Arc};
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use tempfile::TempDir;
-use trading_data_persistence::{BookShape, Catalog, Feather, LiveBook, LiveClock, RotationPolicy, Trade};
+use trading_data_persistence::{BookShape, BookUpdate, Catalog, Feather, Feed, Live, LiveClock, RotationPolicy, Trade};
 use v_utils::trades::{ExchangeName, Instrument, PrecisionPriceQty, Side, Symbol};
 
 const N_TRADES: u64 = 100_000;
@@ -25,7 +25,7 @@ fn push_100k_trades() {
 	for i in 0..N_TRADES {
 		f.push(Trade {
 			ts_event: i as i64,
-			ts_init: i as i64,
+			ts_init: Some(i as i64),
 			monotonic_seq: i,
 			trade_id: i,
 			side: if i & 1 == 0 { Side::Buy } else { Side::Sell },

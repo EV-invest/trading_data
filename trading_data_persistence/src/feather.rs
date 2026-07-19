@@ -84,7 +84,8 @@ impl<T: Row> Feather<T> {
 		row.append(&mut self.builders, self.meta);
 		self.rows += 1;
 		self.approx_bytes += row.approx_bytes();
-		let ts = row.ts_init();
+		// interval bounds track arrival time when real, else fall back to event time.
+		let ts = row.ts_init().unwrap_or_else(|| row.ts_event());
 		let was_empty = self.oldest_ts.is_none();
 		self.oldest_ts = Some(self.oldest_ts.map_or(ts, |o| o.min(ts)));
 		self.newest_ts = Some(self.newest_ts.map_or(ts, |n| n.max(ts)));
@@ -173,7 +174,7 @@ mod tests {
 		let mut feather = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), RotationPolicy { max_bytes: Some(1), max_age: None });
 		feather.push(BookDelta {
 			ts_event: 1,
-			ts_init: 1,
+			ts_init: Some(1),
 			monotonic_seq: 1,
 			gapped: false,
 			side: Side::Buy,
@@ -193,7 +194,7 @@ mod tests {
 		let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		let row = Trade {
 			ts_event: 1,
-			ts_init: 2,
+			ts_init: Some(2),
 			monotonic_seq: 3,
 			trade_id: 4,
 			side: Side::Sell,
@@ -212,7 +213,7 @@ mod tests {
 		let mut f = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		let row = BookDelta {
 			ts_event: 1,
-			ts_init: 2,
+			ts_init: Some(2),
 			monotonic_seq: 9,
 			gapped: true,
 			side: Side::Buy,
@@ -231,7 +232,7 @@ mod tests {
 		let mut f = Feather::<BookSnapshot>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		f.push(BookSnapshot {
 			ts_event: 100,
-			ts_init: 110,
+			ts_init: Some(110),
 			monotonic_seq: 1,
 			bid_prices: vec![100, 99],
 			bid_qtys: vec![10, 20],
@@ -240,7 +241,7 @@ mod tests {
 		});
 		f.push(BookSnapshot {
 			ts_event: 200,
-			ts_init: 210,
+			ts_init: Some(210),
 			monotonic_seq: 2,
 			bid_prices: vec![],
 			bid_qtys: vec![],
@@ -259,7 +260,11 @@ mod tests {
 		let dir = tempdir().unwrap();
 		let cat = Catalog::new(dir.path());
 		let mut f = Feather::<Oi>::new(ExchangeName::Bybit, test_symbol(), FOREVER);
-		let row = Oi { ts_event: 1, ts_init: 2, oi: 123_456.75 };
+		let row = Oi {
+			ts_event: 1,
+			ts_init: Some(2),
+			oi: 123_456.75,
+		};
 		f.push(row);
 		let decoded = round_trip_batch(&mut f, &cat);
 		assert_eq!(decoded, vec![row]);
@@ -272,13 +277,13 @@ mod tests {
 		let mut f = Feather::<Mc>::new(Asset::new("TAO"), FOREVER);
 		let with_rank = Mc {
 			ts_event: 1,
-			ts_init: 2,
+			ts_init: Some(2),
 			market_cap: 2.5e9,
 			rank: Some(42),
 		};
 		let without_rank = Mc {
 			ts_event: 3,
-			ts_init: 4,
+			ts_init: Some(4),
 			market_cap: 2.6e9,
 			rank: None,
 		};
@@ -294,7 +299,7 @@ mod tests {
 		let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		f.push(Trade {
 			ts_event: 1,
-			ts_init: 1,
+			ts_init: Some(1),
 			monotonic_seq: 1,
 			trade_id: 1,
 			side: Side::Buy,

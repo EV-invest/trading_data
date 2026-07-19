@@ -1,0 +1,8 @@
+error: expected `batches`
+  --> $DIR/trading_data_macros/tests/compile_fail/missing_batches.rs:17:2
+   |
+17 |     roots { r: Root[u8] };
+   |     ^^^^^
+
+error: aborting due to 1 previous error
+

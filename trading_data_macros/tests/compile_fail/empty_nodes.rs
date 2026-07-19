@@ -1,0 +1,17 @@
+use trading_data_dag::Cell;
+use trading_data_macros::graph;
+
+struct Root;
+impl Cell for Root {
+	type Out<'t> = &'t [u8];
+}
+
+// no node fields after `out`
+graph! { //~ ERROR: graph! needs at least one node
+	struct G;
+	batches Batches;
+	roots { r: Root[u8] };
+	out GOut;
+}
+
+fn main() {}

@@ -1,12 +1,12 @@
-//! Latch semantics through `graph!`: external trigger arms, the gated episode runs to its
-//! terminal out (published that tick), the deferred commutation drops the latch and resets the
-//! gated node to `Default` at the next tick's start, next trigger starts a fresh episode. A
-//! trigger during a live episode — including its terminal tick — is absorbed and lost.
-//!
-//! The root is batch (`&[Pulse]`); the gate/latch/episode nodes stay scalar-out. `None` becomes
-//! an empty root slice, `Some(Pulse)` a one-element slice.
+//! End-to-end: the proc-macro `graph!` wires a real latch graph and drives it. Mirrors
+//! `trading_data_dag/tests/latch.rs` (external trigger arms, episode runs to its terminal out,
+//! deferred commutation drops the latch and resets the gated node next tick), plus a
+//! `required_events` check over the generated impl.
 
-use trading_data_dag::{Cell, DepOuts, Episode, Flat, Gate, Glance, Latch, Node, Nudge, graph};
+use core::any::TypeId;
+
+use trading_data_dag::{Cell, DepOuts, Episode, Flat, Gate, Glance, Latch, Node, Nudge};
+use trading_data_macros::graph;
 
 #[derive(Clone, Copy, Debug)]
 struct Pulse;
@@ -190,4 +190,10 @@ fn arm_terminal_commutate_rearm() {
 
 	// bystander never reset: counted every tick.
 	assert_eq!(o.ticks, 6.0);
+}
+
+#[test]
+fn required_events_is_the_consumed_root_set() {
+	// every node deps on Trig, so its event is required.
+	assert_eq!(G::required_events(), vec![TypeId::of::<Pulse>()]);
 }

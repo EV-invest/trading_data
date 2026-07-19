@@ -1,13 +1,26 @@
 use std::time::Duration;
 
-use arrow::{array::RecordBatch, datatypes::SchemaRef};
+use arrow::{
+	array::RecordBatch,
+	datatypes::{Schema, SchemaRef},
+};
 use v_utils::trades::{Asset, ExchangeName, Symbol};
 
 use crate::{
 	book::BookShape,
 	catalog::{Catalog, CatalogError, FileEntry, LaneKey},
-	row::{BookDelta, BookSnapshot, Mc, Oi, Row, Trade, UnixNanos, prec_from_schema, sealed::Sealed},
+	row::{BookDelta, BookSnapshot, Mc, Oi, Row, SCHEMA_VERSION, Trade, UnixNanos, prec_from_schema, sealed::Sealed},
 };
+
+/// A stored file's `schema_version` must match ours exactly — no silent cross-version reads.
+fn assert_schema_version(schema: &Schema) {
+	let v = schema.metadata().get("schema_version").map(String::as_str);
+	assert_eq!(
+		v,
+		Some(SCHEMA_VERSION),
+		"catalog schema_version {v:?} != current {SCHEMA_VERSION:?}: nuke the cache and re-ingest"
+	);
+}
 
 /// Snapshots older than this cannot seed a book: too much drift between anchor and range start.
 const MAX_ANCHOR_AGE: Duration = Duration::from_secs(15 * 60);
@@ -44,6 +57,7 @@ impl<T: Row> Iterator for LaneReader<T> {
 			}
 			let file = self.files.next()?;
 			let (schema, batches) = self.catalog.read(&file.path).expect("catalog file unreadable during read");
+			assert_schema_version(schema.as_ref());
 			if let Some(sig) = T::file_sig(schema.as_ref()) {
 				match &self.sig {
 					Some(prev) => assert_eq!(prev, &sig, "inconsistent file metadata across read range"),
@@ -84,13 +98,36 @@ pub fn read_mc(catalog: &Catalog, asset: Asset, start: UnixNanos, end: UnixNanos
 
 /// One symbol only. Seeds the book from the freshest snapshot at or before `start` (within
 /// [`MAX_ANCHOR_AGE`]), then streams the post-`start` deltas. Mid-range snapshots stay internal.
-pub fn read_book(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<(Option<BookShape>, LaneReader<BookDelta>), CatalogError> {
+/// Crate-private: the `sync` weaver is the public path; it additionally weaves in-range snapshots.
+#[cfg(test)]
+pub(crate) fn read_book(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<(Option<BookShape>, LaneReader<BookDelta>), CatalogError> {
 	let anchor = pick_anchor(catalog, exchange, symbol, start)?;
 	let deltas = lane_reader(catalog, LaneKey::BookDeltas { exchange, symbol }, start, end)?;
 	Ok((anchor, deltas))
 }
 
-fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos) -> Result<Option<BookShape>, CatalogError> {
+pub(crate) fn read_book_deltas(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<BookDelta>, CatalogError> {
+	lane_reader(catalog, LaneKey::BookDeltas { exchange, symbol }, start, end)
+}
+
+pub(crate) fn read_book_snapshots(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos) -> Result<LaneReader<BookSnapshot>, CatalogError> {
+	lane_reader(catalog, LaneKey::BookSnapshots { exchange, symbol }, start, end)
+}
+
+/// Price/qty precision stored in a book lane's files (deltas preferred, else snapshots). `None`
+/// when neither lane has any file yet.
+pub(crate) fn book_prec(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol) -> Result<Option<v_utils::trades::PrecisionPriceQty>, CatalogError> {
+	for key in [LaneKey::BookDeltas { exchange, symbol }, LaneKey::BookSnapshots { exchange, symbol }] {
+		if let Some(file) = catalog.list(&key)?.first() {
+			let (schema, _) = catalog.read(&file.path)?;
+			assert_schema_version(schema.as_ref());
+			return Ok(Some(prec_from_schema(schema.as_ref())));
+		}
+	}
+	Ok(None)
+}
+
+pub(crate) fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos) -> Result<Option<BookShape>, CatalogError> {
 	let key = LaneKey::BookSnapshots { exchange, symbol };
 	let files = catalog.list(&key)?;
 	let max_age_ns = MAX_ANCHOR_AGE.as_nanos() as i64;
@@ -100,6 +137,7 @@ fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start:
 	if let Some(file) = candidate {
 		let mut newest: Option<(BookSnapshot, BookShape)> = None;
 		let (schema, batches) = catalog.read(&file.path)?;
+		assert_schema_version(schema.as_ref());
 		let prec = prec_from_schema(schema.as_ref());
 		for batch in batches {
 			for row in BookSnapshot::decode(&batch, schema.as_ref()) {
@@ -112,7 +150,7 @@ fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start:
 				};
 				if take {
 					let ts_event = jiff::Timestamp::from_nanosecond(row.ts_event as i128).expect("stored ts in range");
-					let ts_init = jiff::Timestamp::from_nanosecond(row.ts_init as i128).expect("stored ts in range");
+					let ts_init = jiff::Timestamp::from_nanosecond(row.ts_init.unwrap_or(row.ts_event) as i128).expect("stored ts in range");
 					let shape = BookShape {
 						ts_event,
 						ts_init,
@@ -168,7 +206,7 @@ mod tests {
 		let mut f = Feather::<BookSnapshot>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		f.push(BookSnapshot {
 			ts_event: ts,
-			ts_init: ts,
+			ts_init: Some(ts),
 			monotonic_seq: ts as u64,
 			bid_prices: vec![100],
 			bid_qtys: vec![10],
@@ -182,7 +220,7 @@ mod tests {
 		let mut f = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		f.push(BookDelta {
 			ts_event: ts,
-			ts_init: ts,
+			ts_init: Some(ts),
 			monotonic_seq: mseq,
 			gapped: false,
 			side: Side::Buy,

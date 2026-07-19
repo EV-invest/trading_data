@@ -1,47 +1,45 @@
-//! Compile-time step-graph for derived values.
+//! Compile-time step-graph for derived values, batch-native.
 //!
 //! Each derived value is a [`Node`] whose `type Deps` names its upstream cells. [`step`]'s
 //! [`Pull`] bound makes a wrong topological order (or a cycle) a compile error, and a full
 //! graph sweep monomorphizes to one straight-line function — no dispatch, no runtime graph.
 //!
+//! # Batches, not events
+//!
+//! A router slices the merged timeline into runs of same-type events; the graph consumes and
+//! produces *batches* natively. An event-emitting node holds a `Vec<T>` buffer, clears it as
+//! [`Node::advance`]'s first act, appends its emissions, and returns `&self.buf` — its
+//! `Cell::Out<'t>` is `&'t [T]`. Because `advance<'t>(&'t mut self, ..)` lends the node for the
+//! whole tick, the frame transitively holds those borrows; the "nodes are Copy values" doctrine
+//! is dead. Level (state-view) nodes may still return plain `Copy` values.
+//!
+//! **Rate is slice length, firing is element `Option`-ness.** A rate-*preserving* node emits
+//! exactly one element per element of its driving dep, `Option`-valued where it can decline
+//! (warmup) — so same-rate deps zip by index with a `assert_eq!` on len, warmup included. A
+//! rate-*changing* node (trades→bars) emits one non-optional element per own event. Cross-rate
+//! reads take the level view with `.last()`.
+//!
 //! # Structural rules
 //!
-//! - **Roots vs nodes.** Heavy stateful reducers (e.g. an order book) are *roots*: updated
-//!   before the frame is seeded, entering it as `&'t State`. [`Node::advance`] cannot return
-//!   borrows of its own state — the signature forbids it, deliberately. Nodes compute `Copy`
-//!   values, including `Option<&'t T>` of *root*-borrowed data.
-//! - **Multi-rate = `Option` outs.** A root/node that didn't fire this tick yields `None`;
-//!   dependents short-circuit. This is the entire "advance layer if not empty" semantics, and
-//!   equality early-cutoff for free.
-//! - **`advance` fires only on events.** Time-windowed logic with no event flow (expiry,
-//!   decay) needs a `Time` root cell seeded each tick; it fits the framework unchanged.
-//! - **Node identity = its type.** Two instances of one node type in a frame make `Has`
-//!   resolution ambiguous — a compile error. Distinguish via newtypes or const generics
-//!   (`Rsi<14>` vs `Rsi<28>`).
-//! - **Universe/cross-sectional composition.** Per-symbol graphs are values; a universe-level
-//!   graph ticks at bar cadence, its roots seeded from per-symbol graphs' collected outputs.
-//!   No cross-symbol type-level machinery.
-//! - **Parallelism is across symbols (live) / episodes (backtest) only** — one graph per
-//!   unit, rayon across. Never intra-tick.
-//! - **Gates.** A [`Gate`] outputs plain `bool`; nodes naming it in [`Node::When`] are not
-//!   advanced at all while it is false — deps unpulled, out = [`Latent::latent`]. Laziness is
-//!   transitive only by declaration: give the same `When` to every node that exclusively
-//!   feeds gated nodes. A missed annotation is wasted work, never wrongness — except the
-//!   all-consumers-behind-one-gate case, which [`graph!`] rejects at compile time.
-//! - **Historic vs current.** Stateful derives (RSI, momentum) are *historic*: they must
-//!   advance every tick to stay warm, so gating one is a compile error. Only nodes declaring
-//!   [`Node::HISTORIC`]` = false` (*current*: skipping ticks is harmless) can be gated.
-//! - **Latches.** A [`Latch`] is a [`Gate`] armed by an external event and cut from within:
-//!   when its `Cut` node's out reads [`Episode::terminal`], [`graph!`] commutates it
-//!   post-sweep and resets every node gated on it to `Default` — a declared one-tick
-//!   back-edge (the synchronous-dataflow unit delay), never a `Deps` cycle.
+//! - **Roots vs nodes.** Roots are the router's slices, entering each frame as `&'t [Event]`
+//!   (see [`graph!`]'s `roots { .. }` group). A node's dep tree — computed first, in isolation —
+//!   decides which roots are *required* ([`graph!`] exposes `required_events()`).
+//! - **Node identity = its type.** Two instances of one node type in a frame make [`Has`]
+//!   resolution ambiguous — a compile error. Distinguish via newtypes or const generics.
+//! - **Gates operate on scalar cells only.** A [`Gate`] outputs plain `bool`; nodes naming it in
+//!   [`Node::When`] are not advanced while it is false. Batch-out nodes cannot be gates or gated
+//!   (tick-level gating on a batch is lossy, and a self-borrowing batch out can't be reset
+//!   post-sweep) — this is a load-bearing invariant, see [`graph!`].
+//! - **Historic vs current.** Stateful derives (RSI, momentum) are *historic*: they must advance
+//!   every tick to stay warm, so gating one is a compile error. Only [`Node::HISTORIC`]` = false`
+//!   nodes can be gated.
+//! - **Latches.** A [`Latch`] is a [`Gate`] armed externally and cut from within: when its `Cut`
+//!   node's out reads [`Episode::terminal`], [`graph!`] commutates it and resets every node gated
+//!   on it to `Default` — deferred to the *next* tick's start (the frame still borrows batch
+//!   fields at end-of-tick, so the reset can't run in place).
 //!
 //! Impls that write concrete dep types hit E0195 (lifetime binder mismatch); use [`DepOuts`]
-//! so every impl is uniformly `fn advance<'t>(&mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>`.
-//!
-//! Trait-solver ceiling: frame-depth cost is fine for dozens of nodes; revisit around ~50+
-//! (a `graph!` macro is the fix, not more arities).
-//REVIEW: `graph!` exists now (still fixed frame-depth per node; the ceiling note stands).
+//! so every impl is uniformly `fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>`.
 //!
 //! ```
 //! use trading_data_dag::{Cell, Cons, DepOuts, Nil, Node, step};
@@ -57,26 +55,15 @@
 //! }
 //! impl Node for Double {
 //! 	type Deps = (Price,);
-//! 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
+//! 	fn advance<'t>(&'t mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
 //! 		p * 2.0
 //! 	}
 //! }
 //!
-//! struct PlusOne;
-//! impl Cell for PlusOne {
-//! 	type Out<'t> = f64;
-//! }
-//! impl Node for PlusOne {
-//! 	type Deps = (Double,);
-//! 	fn advance<'t>(&mut self, (d,): DepOuts<'t, Self>) -> Self::Out<'t> {
-//! 		d + 1.0
-//! 	}
-//! }
-//!
+//! let mut double = Double;
 //! let f = Cons::<Price, Nil> { out: 21.0, tail: Nil };
-//! let f = step(f, &mut Double);
-//! let f = step(f, &mut PlusOne);
-//! assert_eq!(f.head(), 43.0);
+//! let f = step(f, &mut double);
+//! assert_eq!(f.head(), 42.0);
 //! ```
 #![no_std]
 #![feature(associated_type_defaults)]
@@ -84,14 +71,17 @@
 
 extern crate alloc;
 
-/// A value slot in the frame. `Out<'t>: Copy` — references are `Copy`, so heavy root state
-/// enters the frame as `&'t State`, a first-class dependency.
+use core::any::TypeId;
+
+/// A value slot in the frame. `Out<'t>: Copy` — references are `Copy`, so a batch out enters the
+/// frame as `&'t [T]` and heavy root/node state is lent as `&'t State`.
 pub trait Cell {
 	type Out<'t>: Copy;
 }
 
 /// A cell output as a fixed-shape element array: the unit of observation and differentiation.
-/// `DIMS` is the shape (`[]` scalar, `[n]` vector, `[r, c]` row-major, any rank).
+/// `DIMS` is the shape (`[]` scalar, `[n]` vector, `[r, c]` row-major, any rank). A batch out
+/// (`&[T]`) flattens to its *last* element — the observer sees end-of-batch.
 pub trait Flat: Copy {
 	const DIMS: &'static [usize];
 	const LEN: usize = {
@@ -108,6 +98,10 @@ pub trait Flat: Copy {
 	/// Typed-space bump of one element. Discrete slots (bool, category) return `self` — an
 	/// honest zero derivative — which is why no `unflat` inverse is ever needed.
 	fn nudge(&self, slot: usize, h: f64) -> Self;
+	/// How many elements this out fired: scalars/arrays 1, `Option` 0/1, `&[T]` its len.
+	fn fires(&self) -> usize {
+		1
+	}
 }
 
 impl Flat for f64 {
@@ -169,12 +163,39 @@ impl<T: Flat> Flat for Option<T> {
 	fn nudge(&self, slot: usize, h: f64) -> Self {
 		self.map(|t| t.nudge(slot, h))
 	}
+
+	fn fires(&self) -> usize {
+		self.is_some() as usize
+	}
+}
+
+/// A batch out flattens to its *last* element (empty ⇒ NaN + unfired); its rate is its len. Deps
+/// nudge via [`Nudge`], so [`Flat::nudge`] here is unreachable.
+impl<T: Flat> Flat for &[T] {
+	const DIMS: &'static [usize] = T::DIMS;
+
+	fn flat(&self, out: &mut [f64]) -> bool {
+		match self.last() {
+			Some(t) => t.flat(out),
+			None => {
+				out.fill(f64::NAN);
+				false
+			}
+		}
+	}
+
+	fn nudge(&self, _: usize, _: f64) -> Self {
+		unreachable!("slice deps nudge via Nudge")
+	}
+
+	fn fires(&self) -> usize {
+		self.len()
+	}
 }
 
 /// The headline a human reads off a node at a glance — one compact line for the graph viz, the
-/// display-dual of [`Flat`]'s numeric flattening. `Option::None` (off-cadence) renders `None`,
-/// matching the observer's `fired` gate; scalars render themselves, domain structs their one
-/// telling field (a bar's close, a print's qty).
+/// display-dual of [`Flat`]'s numeric flattening. A batch renders its *last* element (empty
+/// ⇒ `[]`), matching the observer's end-of-batch view.
 pub trait Glance {
 	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result;
 }
@@ -196,6 +217,15 @@ impl<T: Glance> Glance for Option<T> {
 		match self {
 			Some(t) => t.glance(f),
 			None => f.write_str("None"),
+		}
+	}
+}
+
+impl<T: Glance> Glance for &[T] {
+	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		match self.last() {
+			Some(t) => t.glance(f),
+			None => f.write_str("[]"),
 		}
 	}
 }
@@ -254,15 +284,36 @@ pub trait DepSet {
 	const NAMES: &'static [&'static str];
 }
 
-/// [`Flat`] over a whole dep tuple, elements concatenated in `Deps` order. Separate from
-/// [`DepSet`] so `Pull`/[`step`] stay bound-free; per-dep columns recover via prefix sums of
-/// `DIMS` products.
+/// [`Flat`] over a whole dep tuple, elements concatenated in `Deps` order (each batch dep as its
+/// last element). Separate from [`DepSet`] so `Pull`/[`step`] stay bound-free; per-dep columns
+/// recover via prefix sums of `DIMS` products.
 pub trait DepFlat: DepSet {
 	const DIMS: &'static [&'static [usize]];
 	const LEN: usize;
+	/// Per-dep scratch for the finite-difference re-advance (slice deps copy their batch here).
+	type Scratch: Default;
 	fn flat(outs: &Self::Outs<'_>, dst: &mut [f64]);
-	/// `slot` in concatenated element space; rebuilds the tuple replacing only the owning element.
-	fn nudge<'t>(outs: &Self::Outs<'t>, slot: usize, h: f64) -> Self::Outs<'t>;
+	/// Materializes the pulled outs into owned `scratch`, bumping the element owning `slot` by `h`.
+	/// Consumes the pulled outs at their lifetime; the scratch owns copies, so [`DepFlat::view`]
+	/// hands them back at a fresh, independent lifetime — that untying is what lets the
+	/// self-borrowing re-`advance` on a short-lived clone typecheck.
+	fn stage<'t>(outs: Self::Outs<'t>, scratch: &mut Self::Scratch, slot: usize, h: f64);
+	/// Views staged `scratch` as dep outs at the borrow's own lifetime `'l`.
+	fn view<'l>(scratch: &'l Self::Scratch) -> Self::Outs<'l>;
+}
+
+/// A cell's finite-difference witness: materialize a pulled out into owned scratch ([`Nudge::stage`],
+/// bumping one element when `bump` is `Some`), then hand it back at a fresh borrow lifetime
+/// ([`Nudge::view`]). The materialize step *owns* the data — a slice cell copies its batch into
+/// `Scratch = Vec<T>`, a value cell stores the value in `Scratch` — which unties the re-advance
+/// lifetime from the pulled `'t`, so re-`advance`ing a short-lived clone typechecks. No blanket
+/// impl — the value/slice cases overlap — so every observed cell writes its own short impl.
+pub trait Nudge: Cell {
+	type Scratch: Default;
+	/// Materialize `out` into `scratch`; if `bump` is `Some(slot)`, add `h` to that element.
+	fn stage<'t>(out: Self::Out<'t>, scratch: &mut Self::Scratch, bump: Option<usize>, h: f64);
+	/// View staged `scratch` as this cell's out at the borrow lifetime `'l`.
+	fn view<'l>(scratch: &'l Self::Scratch) -> Self::Out<'l>;
 }
 
 /// Extracts a [`DepSet`]'s outputs from frame `F`. `I` is the inferred index path — never
@@ -303,91 +354,14 @@ pub trait Node: Cell {
 	type Deps: DepSet;
 	type When: GateSet = ();
 	/// Historic nodes must advance every tick to stay warm; only current (`false`) nodes can
-	/// be gated — a gated historic node is a compile error:
-	///
-	/// ```compile_fail,E0080
-	/// use trading_data_dag::{Cell, Cons, DepOuts, Gate, Nil, Node, step};
-	///
-	/// struct Price;
-	/// impl Cell for Price {
-	/// 	type Out<'t> = f64;
-	/// }
-	///
-	/// struct Hot;
-	/// impl Cell for Hot {
-	/// 	type Out<'t> = bool;
-	/// }
-	/// impl Node for Hot {
-	/// 	type Deps = (Price,);
-	/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
-	/// 		p > 10.0
-	/// 	}
-	/// }
-	/// impl Gate for Hot {}
-	///
-	/// struct Expensive;
-	/// impl Cell for Expensive {
-	/// 	type Out<'t> = Option<f64>;
-	/// }
-	/// impl Node for Expensive {
-	/// 	type Deps = (Price,);
-	/// 	type When = (Hot,);
-	/// 	// HISTORIC left at its default `true`: does not compile.
-	/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
-	/// 		Some(p * 100.0)
-	/// 	}
-	/// }
-	///
-	/// let f = Cons::<Price, Nil> { out: 3.0, tail: Nil };
-	/// let f = step(f, &mut Hot);
-	/// let f = step(f, &mut Expensive);
-	/// ```
+	/// be gated — a gated historic node is a compile error.
 	const HISTORIC: bool = true;
 	const SKETCH: Sketch = Sketch::DEFAULT;
-	fn advance<'t>(&mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
+	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
 }
 
 /// A binary control signal. Nodes naming it in [`Node::When`] are not advanced while it is
-/// false: deps not pulled, no work done, out = [`Latent::latent`].
-///
-/// ```
-/// use trading_data_dag::{Cell, Cons, DepOuts, Gate, Nil, Node, step};
-///
-/// struct Price;
-/// impl Cell for Price {
-/// 	type Out<'t> = f64;
-/// }
-///
-/// struct Hot;
-/// impl Cell for Hot {
-/// 	type Out<'t> = bool;
-/// }
-/// impl Node for Hot {
-/// 	type Deps = (Price,);
-/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
-/// 		p > 10.0
-/// 	}
-/// }
-/// impl Gate for Hot {}
-///
-/// struct Expensive;
-/// impl Cell for Expensive {
-/// 	type Out<'t> = Option<f64>;
-/// }
-/// impl Node for Expensive {
-/// 	type Deps = (Price,);
-/// 	type When = (Hot,);
-/// 	const HISTORIC: bool = false;
-/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
-/// 		Some(p * 100.0)
-/// 	}
-/// }
-///
-/// let f = Cons::<Price, Nil> { out: 3.0, tail: Nil };
-/// let f = step(f, &mut Hot);
-/// let f = step(f, &mut Expensive);
-/// assert_eq!(f.head(), None); // gate closed: advance never ran
-/// ```
+/// false: deps not pulled, no work done, out = [`Latent::latent`]. Gates are scalar-out.
 pub trait Gate: Node
 where
 	for<'t> Self: Cell<Out<'t> = bool>, {
@@ -410,20 +384,14 @@ impl<T: Episode> Episode for Option<T> {
 
 /// A [`Gate`] armed from outside and cut from within — the SCR/thyristor: an external event
 /// (its `Deps`) sets it, conduction latches in its own state, and it turns off by natural
-/// commutation when the episode it gates reaches a [`Episode::terminal`] out. No second
-/// external signal ever closes it.
-///
-/// `Cut` is read *post-sweep* by [`graph!`]: tick T the episode publishes its terminal out,
-/// the latch commutates after the sweep, tick T+1 the gated subtree is latent via the
-/// ordinary [`Drive`] skip and every node gated on the latch is reset to `Default` for a
-/// fresh episode. A trigger arriving during a live episode — including its terminal tick —
-/// is absorbed and lost to commutation: one episode at a time.
+/// commutation when the episode it gates reaches a [`Episode::terminal`] out. No second external
+/// signal ever closes it. `Cut` is read post-sweep; commutation + the gated-node resets are
+/// deferred to the next tick's start (the frame still borrows batch fields at end-of-tick).
 pub trait Latch: Gate
 where
 	for<'t> Self: Cell<Out<'t> = bool>,
 	for<'t> <Self::Cut as Cell>::Out<'t>: Episode, {
-	/// The gated node whose terminal out commutates this latch — a declared one-tick
-	/// back-edge, not a `Deps` cycle.
+	/// The gated node whose terminal out commutates this latch.
 	type Cut: Cell;
 	fn commutate(&mut self);
 }
@@ -475,6 +443,8 @@ impl<'t, F> Pull<'t, F, ()> for () {
 	fn pull(_: &F) {}
 }
 impl DepFlat for () {
+	type Scratch = ();
+
 	const DIMS: &'static [&'static [usize]] = &[];
 	const LEN: usize = 0;
 
@@ -482,11 +452,13 @@ impl DepFlat for () {
 		debug_assert!(dst.is_empty());
 	}
 
-	fn nudge<'t>(_: &Self::Outs<'t>, _: usize, _: f64) -> Self::Outs<'t> {}
+	fn stage<'t>(_: Self::Outs<'t>, _: &mut Self::Scratch, _: usize, _: f64) {}
+
+	fn view<'l>(_: &'l Self::Scratch) -> Self::Outs<'l> {}
 }
 
 macro_rules! impl_arity {
-	($($T:ident $I:ident $v:ident),+) => {
+	($($T:ident $I:ident $v:ident $s:ident),+) => {
 		impl<$($T: Cell),+> DepSet for ($($T,)+) {
 			type Outs<'t> = ($($T::Out<'t>,)+);
 
@@ -498,10 +470,12 @@ macro_rules! impl_arity {
 				($(Has::<'t, $T, $I>::get(f),)+)
 			}
 		}
-		impl<$($T: Cell),+> DepFlat for ($($T,)+)
+		impl<$($T: Nudge),+> DepFlat for ($($T,)+)
 		where $(for<'x> <$T as Cell>::Out<'x>: Flat),+ {
 			const DIMS: &'static [&'static [usize]] = &[$(<<$T as Cell>::Out<'static> as Flat>::DIMS),+];
 			const LEN: usize = 0 $(+ <<$T as Cell>::Out<'static> as Flat>::LEN)+;
+
+			type Scratch = ($($T::Scratch,)+);
 
 			fn flat(outs: &Self::Outs<'_>, dst: &mut [f64]) {
 				assert_eq!(dst.len(), Self::LEN);
@@ -514,81 +488,45 @@ macro_rules! impl_arity {
 				debug_assert_eq!(off, Self::LEN);
 			}
 
-			fn nudge<'t>(outs: &Self::Outs<'t>, slot: usize, h: f64) -> Self::Outs<'t> {
+			fn stage<'t>(outs: Self::Outs<'t>, scratch: &mut Self::Scratch, slot: usize, h: f64) {
 				let ($($v,)+) = outs;
+				let ($($s,)+) = scratch;
 				let mut off = 0;
-				let nudged = ($(
+				$(
 					{
 						let len = <<$T as Cell>::Out<'static> as Flat>::LEN;
-						let r = if (off..off + len).contains(&slot) { $v.nudge(slot - off, h) } else { *$v };
+						let bump = if (off..off + len).contains(&slot) { Some(slot - off) } else { None };
+						<$T as Nudge>::stage($v, $s, bump, h);
 						off += len;
-						r
-					},
-				)+);
+					}
+				)+
 				debug_assert_eq!(off, Self::LEN);
-				nudged
+			}
+
+			fn view<'l>(scratch: &'l Self::Scratch) -> Self::Outs<'l> {
+				let ($($s,)+) = scratch;
+				($(<$T as Nudge>::view($s),)+)
 			}
 		}
 	};
 }
-impl_arity!(A Ia a);
-impl_arity!(A Ia a, B Ib b);
-impl_arity!(A Ia a, B Ib b, C Ic c);
-impl_arity!(A Ia a, B Ib b, C Ic c, D Id d);
-impl_arity!(A Ia a, B Ib b, C Ic c, D Id d, E Ie e);
-impl_arity!(A Ia a, B Ib b, C Ic c, D Id d, E Ie e, G Ig g);
-impl_arity!(A Ia a, B Ib b, C Ic c, D Id d, E Ie e, G Ig g, H Ih h);
-impl_arity!(A Ia a, B Ib b, C Ic c, D Id d, E Ie e, G Ig g, H Ih h, J Ij j);
+impl_arity!(A Ia a sa);
+impl_arity!(A Ia a sa, B Ib b sb);
+impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc);
+impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd);
+impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se);
+impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg);
+impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg, H Ih h sh);
+impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg, H Ih h sh, J Ij j sj);
 
 /// [`step`]'s evaluation dispatch, keyed on the node's [`Node::When`]: ungated nodes advance
 /// unconditionally; gated nodes advance only while every gate reads true in the frame,
-/// yielding [`Latent::latent`] otherwise — deps not pulled. The `Has` bound on gate impls
-/// keeps the ordering guarantee: a node stepped before its gate does not compile, same story
-/// as [`Pull`]. `I`/`J` are inferred index paths — never named by callers.
-///
-/// ```compile_fail,E0277
-/// use trading_data_dag::{Cell, Cons, DepOuts, Gate, Nil, Node, step};
-///
-/// struct Price;
-/// impl Cell for Price {
-/// 	type Out<'t> = f64;
-/// }
-///
-/// struct Hot;
-/// impl Cell for Hot {
-/// 	type Out<'t> = bool;
-/// }
-/// impl Node for Hot {
-/// 	type Deps = (Price,);
-/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
-/// 		p > 10.0
-/// 	}
-/// }
-/// impl Gate for Hot {}
-///
-/// struct Expensive;
-/// impl Cell for Expensive {
-/// 	type Out<'t> = Option<f64>;
-/// }
-/// impl Node for Expensive {
-/// 	type Deps = (Price,);
-/// 	type When = (Hot,);
-/// 	const HISTORIC: bool = false;
-/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
-/// 		Some(p * 100.0)
-/// 	}
-/// }
-///
-/// // gated node stepped before its gate is in the frame: no `Has<Hot>` — does not compile.
-/// let f = Cons::<Price, Nil> { out: 3.0, tail: Nil };
-/// let f = step(f, &mut Expensive);
-/// let f = step(f, &mut Hot);
-/// ```
+/// yielding [`Latent::latent`] otherwise — deps not pulled. `I`/`J` are inferred index paths.
 pub trait Drive<'t, N: Node, F, I, J>: GateSet {
 	fn open(f: &F) -> bool
 	where
 		F: 't;
-	fn drive(node: &mut N, f: &F) -> N::Out<'t>
+	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't;
 }
@@ -604,7 +542,7 @@ where
 		true
 	}
 
-	fn drive(node: &mut N, f: &F) -> N::Out<'t>
+	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't, {
 		node.advance(<N::Deps as Pull<'t, F, I>>::pull(f))
@@ -625,7 +563,7 @@ where
 		Has::<'t, A, Ia>::get(f)
 	}
 
-	fn drive(node: &mut N, f: &F) -> N::Out<'t>
+	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't, {
 		const { assert!(!N::HISTORIC, "historic node cannot be gated; declare `const HISTORIC: bool = false` or drop `When`") }
@@ -651,7 +589,7 @@ where
 		Has::<'t, A, Ia>::get(f) && Has::<'t, B, Ib>::get(f)
 	}
 
-	fn drive(node: &mut N, f: &F) -> N::Out<'t>
+	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't, {
 		const { assert!(!N::HISTORIC, "historic node cannot be gated; declare `const HISTORIC: bool = false` or drop `When`") }
@@ -662,39 +600,9 @@ where
 	}
 }
 
-/// Advances `node` over `frame` and pushes its output. The `Pull` bound is the engine's
-/// reason to exist: a node stepped before its deps are in the frame does not compile.
-///
-/// ```compile_fail,E0277
-/// use trading_data_dag::{Cell, DepOuts, Nil, Node, step};
-///
-/// struct A;
-/// impl Cell for A {
-/// 	type Out<'t> = f64;
-/// }
-/// impl Node for A {
-/// 	type Deps = ();
-/// 	fn advance<'t>(&mut self, _: DepOuts<'t, Self>) -> Self::Out<'t> {
-/// 		1.0
-/// 	}
-/// }
-///
-/// struct B;
-/// impl Cell for B {
-/// 	type Out<'t> = f64;
-/// }
-/// impl Node for B {
-/// 	type Deps = (A,);
-/// 	fn advance<'t>(&mut self, (a,): DepOuts<'t, Self>) -> Self::Out<'t> {
-/// 		a
-/// 	}
-/// }
-///
-/// // B stepped before its dep A is in the frame: no `Has<A>` — does not compile.
-/// let f = step(Nil, &mut B);
-/// let f = step(f, &mut A);
-/// ```
-pub fn step<'t, N, F, I, J>(frame: F, node: &mut N) -> Cons<'t, N, F>
+/// Advances `node` over `frame` and pushes its output. The `Pull` bound is the engine's reason to
+/// exist: a node stepped before its deps are in the frame does not compile.
+pub fn step<'t, N, F, I, J>(frame: F, node: &'t mut N) -> Cons<'t, N, F>
 where
 	N: Node,
 	N::When: Drive<'t, N, F, I, J>,
@@ -711,21 +619,19 @@ pub struct Fire<'a> {
 	pub glance: &'a dyn Glance,
 	pub dims: &'static [usize],
 	pub sketch: &'static Sketch,
-	/// `None` = didn't fire.
+	/// Elements the node fired this tick: slice len, or 0/1 for scalar/`Option` outs.
+	pub fires: usize,
+	/// Flattened *last* element; `None` = didn't fire.
 	pub vals: Option<&'a [f64]>,
 	pub dep_dims: &'a [&'static [usize]],
-	/// Row-major `out_len × sum(dep lens)`, deps concatenated in `Deps` order. NaN = no signal
-	/// (dep unfired / bump crossed a firing branch). `None` when the node didn't fire.
+	/// Row-major `out_len × sum(dep lens)`, deps concatenated in `Deps` order (each batch dep as
+	/// its last element). NaN = no signal. `None` when the node didn't fire.
 	pub jac: Option<&'a [f64]>,
 }
 
-/// Sees every [`step_obs`] as it happens: one interpretation choke point, many interpretations
-/// (eval is `step`; debug-tree/replay is an impl of this). Step order IS topo order, so the
-/// observed sequence doubles as the graph's static topology; dep names never seen as stepped
-/// nodes are roots — apps seed root activations via [`observe_root`].
-///
-/// `node`/`deps` strings come from [`core::any::type_name`]: build-local, display-only — never
-/// persist them.
+/// Sees every [`step_obs`] as it happens: one interpretation choke point, many interpretations.
+/// Step order IS topo order, so the observed sequence doubles as the graph's static topology; dep
+/// names never seen as stepped nodes are roots — apps seed root activations via [`observe_root`].
 pub trait Observer {
 	/// Gates all flattening/FD work in [`step_obs`]; monomorphized away when `false`.
 	const ACTIVE: bool = true;
@@ -739,20 +645,35 @@ impl Observer for () {
 	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [&'static str], _: Fire<'_>) {}
 }
 
-/// [`step`] + [`Observer::on`] before the push. The `()` observer erases to exactly `step` —
-/// its `!ACTIVE` branch neither flattens nor calls `on` (a [`Fire`] without computed vals would
-/// conflate "not computed" with "not fired").
+/// One finite-difference column: re-advance a fresh clone on `deps` with element `slot` bumped by
+/// `h`, writing the bumped out into `bumped`; returns whether it fired. Isolated from [`step_obs`]
+/// so the re-advance lifetime is purely local — the clone and its nudged deps never escape, which
+/// keeps the self-borrowing `advance` from pinning them to the caller's tick lifetime.
+fn fd_col<'d, N>(pre: &N, deps: DepOuts<'d, N>, slot: usize, h: f64, bumped: &mut [f64]) -> bool
+where
+	N: Node + Clone,
+	N::Deps: DepFlat,
+	DepOuts<'d, N>: Copy,
+	for<'x> N::Out<'x>: Flat, {
+	let mut scratch = <N::Deps as DepFlat>::Scratch::default();
+	<N::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
+	let mut clone = pre.clone();
+	clone.advance(<N::Deps as DepFlat>::view(&scratch)).flat(bumped)
+}
+
+/// [`step`] + [`Observer::on`] before the push. The `()` observer erases to exactly `step`.
 ///
 /// Under an active observer, each fired node's Jacobian is finite-differenced: clone the
-/// pre-advance node, [`Flat::nudge`] one dep element, re-advance the clone, diff. This is why
-/// the bounds here require owned value outs — reference outs (`&'t Root`) can't nudge; graphs
-/// carrying those use [`step`].
-pub fn step_obs<'t, N, F, I, J, O: Observer>(frame: F, node: &mut N, obs: &mut O) -> Cons<'t, N, F>
+/// pre-advance node, [`Nudge`] the *last* element of one dep (batch deps copied into scratch),
+/// re-advance the clone at a shorter lifetime, diff the last out elements.
+pub fn step_obs<'t, N, F, I, J, O: Observer>(frame: F, node: &'t mut N, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node + Clone,
 	N::When: Drive<'t, N, F, I, J>,
 	N::Deps: Pull<'t, F, I> + DepFlat,
-	N::Out<'t>: Flat + core::fmt::Debug + Glance,
+	DepOuts<'t, N>: Copy,
+	for<'x> N::Out<'x>: Flat,
+	N::Out<'t>: core::fmt::Debug + Glance,
 	F: 't, {
 	if !O::ACTIVE {
 		let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
@@ -771,6 +692,7 @@ where
 				glance: &out,
 				dims: <N::Out<'t> as Flat>::DIMS,
 				sketch: &N::SKETCH,
+				fires: out.fires(),
 				vals: None,
 				dep_dims: <N::Deps as DepFlat>::DIMS,
 				jac: None,
@@ -780,13 +702,14 @@ where
 	}
 
 	let pre = node.clone();
-	let out = node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame));
+	let deps = <N::Deps as Pull<'t, F, I>>::pull(&frame);
+	let out = node.advance(deps);
 
 	let out_len = <N::Out<'t> as Flat>::LEN;
 	let mut out_buf = alloc::vec![f64::NAN; out_len];
 	let fired = out.flat(&mut out_buf);
+	let fires = out.fires();
 
-	let deps = <N::Deps as Pull<'t, F, I>>::pull(&frame);
 	let dep_len = <N::Deps as DepFlat>::LEN;
 	let mut dep_buf = alloc::vec![f64::NAN; dep_len];
 	<N::Deps as DepFlat>::flat(&deps, &mut dep_buf);
@@ -800,9 +723,7 @@ where
 				continue;
 			}
 			let h = (x.abs() * 1e-6).max(1e-9);
-			let mut clone = pre.clone();
-			let bout = clone.advance(<N::Deps as DepFlat>::nudge(&deps, slot, h));
-			if !bout.flat(&mut bumped) {
+			if !fd_col::<N>(&pre, deps, slot, h, &mut bumped) {
 				continue; // bump crossed a firing branch — column stays NaN
 			}
 			for i in 0..out_len {
@@ -821,6 +742,7 @@ where
 			glance: &out,
 			dims: <N::Out<'t> as Flat>::DIMS,
 			sketch: &N::SKETCH,
+			fires,
 			vals: fired.then_some(out_buf.as_slice()),
 			dep_dims: <N::Deps as DepFlat>::DIMS,
 			jac: jac.as_deref(),
@@ -829,24 +751,21 @@ where
 	Cons { out, tail: frame }
 }
 
-/// Replay events carry their own clock.
-pub trait Stamped {
-	fn ts_ns(&self) -> i64;
-}
-
-/// A steppable event-graph: the whole surface a replayer/visualizer needs. [`graph!`] generates
-/// impls; the richer typed out-struct stays on the inherent methods.
-pub trait Dag: Default {
-	type Event: Copy + Stamped;
-	fn tick_obs(&mut self, ev: Option<Self::Event>, obs: &mut impl Observer);
-}
-
 /// `const_type_name` is feature-gated at the call site; this wrapper keeps [`graph!`] users
 /// off nightly feature attrs.
 #[doc(hidden)]
 pub const fn node_name<T>() -> &'static str {
 	core::any::type_name::<T>()
 }
+
+/// The `TypeId` of a root's event type, for [`graph!`]'s `required_events`.
+#[doc(hidden)]
+pub fn event_id<T: 'static>() -> TypeId {
+	TypeId::of::<T>()
+}
+
+#[doc(hidden)]
+pub use alloc::vec::Vec as MacroVec;
 
 /// One node's compile-time shape, as [`graph!`] sees it. `name`/`deps`/`gates` are
 /// [`core::any::type_name`] strings: const-comparable, never persisted.
@@ -929,108 +848,29 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 	false
 }
 
-/// Wires a declared node list into a graph struct + typed out-struct + [`Dag`] impl. Fields in
-/// topo order — a wrong order fails the existing `Pull`/`Has` bounds at compile time. The root
-/// cell's `Out` must be `Option<Event>`. Out-struct fields keep each node's `Cell::Out`
-/// verbatim: Option-ness IS the multi-rate non-firing channel.
+/// Wires a declared node list into a graph struct + typed out-struct + batch-native `tick`. Fields
+/// in topo order — a wrong order fails the existing `Pull`/`Has` bounds at compile time.
 ///
-/// An optional `latch { field: Type, ... }` group names [`Latch`] fields (which also appear
-/// in the node list, at their topo position). Post-sweep, a latch whose `Cut` out reads
-/// [`Episode::terminal`] is commutated and every field gated on it reset to `Default` — the
-/// out-struct still carries the terminal tick's values.
-#[macro_export]
-macro_rules! graph {
-	// cross-product (each latch × every field) exceeds macro_rules' lockstep repetition rule;
-	// this tt-muncher peels one latch per step, re-passing the full field list.
-	(@commutate $self:ident, $f:ident, [] [$($field:ident: $Node:ty),*]) => {};
-	(@commutate $self:ident, $f:ident,
-		[$lfield:ident: $Latch:ty $(, $lrest:ident: $LRest:ty)*]
-		[$($field:ident: $Node:ty),*]
-	) => {
-		if $crate::Episode::terminal(&$crate::Has::<<$Latch as $crate::Latch>::Cut, _>::get(&$f)) {
-			<$Latch as $crate::Latch>::commutate(&mut $self.$lfield);
-			$(
-				if const {
-					$crate::contains(<<$Node as $crate::Node>::When as $crate::GateSet>::NAMES, $crate::node_name::<$Latch>())
-				} {
-					$self.$field = ::core::default::Default::default();
-				}
-			)*
-		}
-		$crate::graph!(@commutate $self, $f, [$($lrest: $LRest),*] [$($field: $Node),*]);
-	};
-	(
-		$vis:vis struct $Graph:ident;
-		root $Root:ty, event $Event:ty;
-		out $Out:ident;
-		$($field:ident: $Node:ty),+ $(,)?
-	) => {
-		$crate::graph! {
-			$vis struct $Graph;
-			root $Root, event $Event;
-			out $Out;
-			latch {}
-			$($field: $Node),+
-		}
-	};
-	(
-		$vis:vis struct $Graph:ident;
-		root $Root:ty, event $Event:ty;
-		out $Out:ident;
-		latch { $($lfield:ident: $Latch:ty),* $(,)? }
-		$($field:ident: $Node:ty),+ $(,)?
-	) => {
-		#[derive(Default)]
-		$vis struct $Graph {
-			$($field: $Node,)+
-		}
-
-		const _: () = {
-			const METAS: &[$crate::NodeMeta] = &[$(
-				$crate::NodeMeta {
-					name: $crate::node_name::<$Node>(),
-					deps: <<$Node as $crate::Node>::Deps as $crate::DepSet>::NAMES,
-					historic: <$Node as $crate::Node>::HISTORIC,
-					gates: <<$Node as $crate::Node>::When as $crate::GateSet>::NAMES,
-				},
-			)+];
-			$(assert!(
-				!$crate::shadowed($crate::node_name::<$Node>(), METAS),
-				concat!(stringify!($Node), " is only consumed under a gate: gate it too, or mark it historic")
-			);)+
-		};
-
-		#[derive(Clone, Copy, Debug)]
-		$vis struct $Out {
-			$(pub $field: <$Node as $crate::Cell>::Out<'static>,)+
-		}
-
-		impl $Graph {
-			$vis fn tick(&mut self, ev: Option<$Event>) -> $Out {
-				self.tick_obs(ev, &mut ())
-			}
-
-			$vis fn tick_obs(&mut self, ev: Option<$Event>, obs: &mut impl $crate::Observer) -> $Out {
-				$crate::observe_root::<$Root, _>(ev, obs);
-				let f = $crate::Cons::<$Root, $crate::Nil> { out: ev, tail: $crate::Nil };
-				$(let f = $crate::step_obs(f, &mut self.$field, obs);)+
-				$crate::graph!(@commutate self, f, [$($lfield: $Latch),*] [$($field: $Node),*]);
-				$Out {
-					$($field: $crate::Has::<$Node, _>::get(&f),)+
-				}
-			}
-		}
-
-		impl $crate::Dag for $Graph {
-			type Event = $Event;
-
-			fn tick_obs(&mut self, ev: Option<Self::Event>, obs: &mut impl $crate::Observer) {
-				// inherent method shadows the trait one; typed out dropped.
-				Self::tick_obs(self, ev, obs);
-			}
-		}
-	};
-}
+/// ```ignore
+/// graph! {
+///     pub struct Graph;
+///     batches Batches;                       // name of the generated root-slices struct
+///     roots { trades: Trades[Trade], oi: OiRoot[Oi] };
+///     out TickOut;
+///     bar: Bar1m, cvd: Cvd, ...
+/// }
+/// ```
+///
+/// Each root cell must have `Out<'t> = &'t [Event]`. `Batches<'t>` gets one `&'t [Event]` field
+/// per root (`Default` = all empty). `tick<'t>(&'t mut self, b: Batches<'t>) -> TickOut<'t>` seeds
+/// the frame with every root slice and sweeps. `required_events()` returns the `TypeId`s of the
+/// events whose root is consumed by some node — the dep tree, computed in isolation.
+///
+/// An optional `latch { field: Type, .. }` group names [`Latch`] fields (also in the node list).
+/// A latch whose `Cut` out reads [`Episode::terminal`] is commutated and its gated fields reset
+/// to `Default` at the *next* tick's start (deferred: the frame still borrows batch fields).
+/// **Every gate/latch/gated field must be scalar-out** — a batch-out gate is out of contract.
+pub use trading_data_macros::graph;
 
 /// The root half of the observation choke point: flatten a seeded root value and emit its
 /// [`Fire`] (no deps, no jac). No-op under an inactive observer.
@@ -1053,6 +893,7 @@ where
 			glance: &out,
 			dims: <C::Out<'t> as Flat>::DIMS,
 			sketch: &Sketch::DEFAULT,
+			fires: out.fires(),
 			vals: fired.then_some(buf.as_slice()),
 			dep_dims: &[],
 			jac: None,
