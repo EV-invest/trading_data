@@ -73,6 +73,9 @@ extern crate alloc;
 
 use core::any::TypeId;
 
+mod expr;
+pub use expr::{Abs, Add, Ast, Const, Div, Ex, Expr, Mul, Neg, Square, Sub, Sum, Trace, Var, Vars, abs, constant, square, sum};
+
 /// A value slot in the frame. `Out<'t>: Copy` — references are `Copy`, so a batch out enters the
 /// frame as `&'t [T]` and heavy root/node state is lent as `&'t State`.
 pub trait Cell {
@@ -364,6 +367,65 @@ pub trait Node: Cell {
 	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
 }
 
+/// A scalar-out node whose per-tick value is a pure [`Expr`] of its (scalar / last-element) deps —
+/// each dep read at its [`Flat`] scalar, a batch dep as its last element, matching the observer's
+/// end-of-batch view. [`Symbolic`] earns [`Node`] for free via the blanket below: its `advance` is
+/// `body().eval(env)`, so it *cannot* compute any other way — the algebra is load-bearing.
+pub trait Symbolic: Cell
+where
+	for<'t> Self: Cell<Out<'t> = f64>, {
+	type Deps: DepSet;
+	fn body(&self, vars: Vars) -> impl Expr;
+}
+
+/// scalar deps ⇒ one env slot each; the `impl_arity` tuple ceiling caps arity, so a fixed stack
+/// array holds the whole env — zero heap on the compute path.
+const MAX_VARS: usize = 8;
+
+impl<S> Node for S
+where
+	S: Symbolic,
+	for<'t> S: Cell<Out<'t> = f64>,
+	<S as Symbolic>::Deps: DepFlat,
+{
+	type Deps = <S as Symbolic>::Deps;
+
+	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t> {
+		let n = <<S as Symbolic>::Deps as DepFlat>::LEN;
+		assert!(n <= MAX_VARS, "Symbolic arity exceeds the dep-tuple ceiling");
+		let mut env = [0.0f64; MAX_VARS];
+		<<S as Symbolic>::Deps as DepFlat>::flat(&deps, &mut env[..n]);
+		self.body(Vars).eval(&env[..n])
+	}
+}
+
+/// The exactness hook [`step_exact`] consumes: exact partials (replacing the FD guess) plus the
+/// equation as an [`Ast`] for documentation. Blanket-impl'd for every [`Symbolic`] node from its
+/// [`Expr`] body; hand-impl'able for a black-box stateful node with analytic partials + a formula.
+pub trait Diff: Node {
+	/// Exact partials wrt deps, same row-major `out_len × dep_len` layout as [`Fire::jac`].
+	fn exact_jac(&self, deps: DepOuts<'_, Self>, out: &mut [f64]);
+	fn formula(&self) -> Ast;
+}
+
+impl<S> Diff for S
+where
+	S: Symbolic + Node<Deps = <S as Symbolic>::Deps>,
+	for<'t> S: Cell<Out<'t> = f64>,
+	<S as Symbolic>::Deps: DepFlat,
+{
+	fn exact_jac(&self, deps: DepOuts<'_, Self>, out: &mut [f64]) {
+		let n = <<S as Symbolic>::Deps as DepFlat>::LEN;
+		let mut env = [0.0f64; MAX_VARS];
+		<<S as Symbolic>::Deps as DepFlat>::flat(&deps, &mut env[..n]);
+		self.body(Vars).grad(&env[..n], 1.0, out);
+	}
+
+	fn formula(&self) -> Ast {
+		self.body(Vars).lower()
+	}
+}
+
 /// A binary control signal. Nodes naming it in [`Node::When`] are not advanced while it is
 /// false: deps not pulled, no work done, out = [`Latent::latent`]. Gates are scalar-out.
 pub trait Gate: Node
@@ -631,6 +693,16 @@ pub struct Fire<'a> {
 	/// Row-major `out_len × sum(dep lens)`, deps concatenated in `Deps` order (each batch dep as
 	/// its last element). NaN = no signal. `None` when the node didn't fire.
 	pub jac: Option<&'a [f64]>,
+	/// Exact partials, same layout as [`jac`](Self::jac) — [`Diff`] nodes only; agrees with `jac`
+	/// within FD tolerance where both are present. `None` for FD-only nodes.
+	pub exact_jac: Option<&'a [f64]>,
+	/// The node's equation rendered as a formula (LaTeX/infix), [`Diff`] nodes only.
+	pub formula: Option<&'a dyn core::fmt::Display>,
+	/// Simplified `∂out/∂dep` formulas, [`Diff`] nodes only.
+	pub deriv: Option<&'a dyn core::fmt::Display>,
+	/// Value-annotated intermediate-value tree ([`Ast::trace`]) over this tick's deps, [`Diff`]
+	/// nodes only — the "debug themselves" reading.
+	pub trace: Option<&'a dyn core::fmt::Display>,
 }
 
 /// Sees every [`step_obs`] as it happens: one interpretation choke point, many interpretations.
@@ -663,6 +735,33 @@ where
 	<N::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
 	let mut clone = pre.clone();
 	clone.advance(<N::Deps as DepFlat>::view(&scratch)).flat(bumped)
+}
+
+/// The full finite-difference Jacobian: one [`fd_col`] per dep element, NaN columns where a dep is
+/// unfired or the bump crossed a firing branch. `out_buf`/`dep_buf` are the un-bumped flattenings.
+fn fd_jac<'d, N>(pre: &N, deps: DepOuts<'d, N>, dep_buf: &[f64], out_buf: &[f64]) -> alloc::vec::Vec<f64>
+where
+	N: Node + Clone,
+	N::Deps: DepFlat,
+	DepOuts<'d, N>: Copy,
+	for<'x> N::Out<'x>: Flat, {
+	let (out_len, dep_len) = (out_buf.len(), dep_buf.len());
+	let mut jac = alloc::vec![f64::NAN; out_len * dep_len];
+	let mut bumped = alloc::vec![f64::NAN; out_len];
+	for slot in 0..dep_len {
+		let x = dep_buf[slot];
+		if x.is_nan() {
+			continue;
+		}
+		let h = (x.abs() * 1e-6).max(1e-9);
+		if !fd_col::<N>(pre, deps, slot, h, &mut bumped) {
+			continue; // bump crossed a firing branch — column stays NaN
+		}
+		for i in 0..out_len {
+			jac[i * dep_len + slot] = (bumped[i] - out_buf[i]) / h;
+		}
+	}
+	jac
 }
 
 /// [`step`] + [`Observer::on`] before the push. The `()` observer erases to exactly `step`.
@@ -700,6 +799,10 @@ where
 				vals: None,
 				dep_dims: <N::Deps as DepFlat>::DIMS,
 				jac: None,
+				exact_jac: None,
+				formula: None,
+				deriv: None,
+				trace: None,
 			},
 		);
 		return Cons { out, tail: frame };
@@ -718,24 +821,7 @@ where
 	let mut dep_buf = alloc::vec![f64::NAN; dep_len];
 	<N::Deps as DepFlat>::flat(&deps, &mut dep_buf);
 
-	let jac = fired.then(|| {
-		let mut jac = alloc::vec![f64::NAN; out_len * dep_len];
-		let mut bumped = alloc::vec![f64::NAN; out_len];
-		for slot in 0..dep_len {
-			let x = dep_buf[slot];
-			if x.is_nan() {
-				continue;
-			}
-			let h = (x.abs() * 1e-6).max(1e-9);
-			if !fd_col::<N>(&pre, deps, slot, h, &mut bumped) {
-				continue; // bump crossed a firing branch — column stays NaN
-			}
-			for i in 0..out_len {
-				jac[i * dep_len + slot] = (bumped[i] - out_buf[i]) / h;
-			}
-		}
-		jac
-	});
+	let jac = fired.then(|| fd_jac::<N>(&pre, deps, &dep_buf, &out_buf));
 
 	obs.on(
 		core::any::type_name::<N>(),
@@ -750,9 +836,97 @@ where
 			vals: fired.then_some(out_buf.as_slice()),
 			dep_dims: <N::Deps as DepFlat>::DIMS,
 			jac: jac.as_deref(),
+			exact_jac: None,
+			formula: None,
+			deriv: None,
+				trace: None,
 		},
 	);
 	Cons { out, tail: frame }
+}
+
+/// [`step_obs`]'s sibling for a [`Diff`] node: the same advance + FD momentary Jacobian, plus the
+/// *exact* partials, the equation formula, and its simplified per-dep derivatives — the graph's
+/// "differentiate + document themselves" reading. The `graph!` `diff { }` group routes fields here.
+pub fn step_exact<'t, N, F, I, J, O: Observer>(frame: F, node: &'t mut N, obs: &mut O) -> Cons<'t, N, F>
+where
+	N: Node + Diff + Clone,
+	N::When: Drive<'t, N, F, I, J>,
+	N::Deps: Pull<'t, F, I> + DepFlat,
+	DepOuts<'t, N>: Copy,
+	for<'x> N::Out<'x>: Flat,
+	N::Out<'t>: core::fmt::Debug + Glance,
+	F: 't, {
+	if !O::ACTIVE {
+		let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
+		return Cons { out, tail: frame };
+	}
+
+	let pre = node.clone();
+	let deps = <N::Deps as Pull<'t, F, I>>::pull(&frame);
+	let out = node.advance(deps);
+
+	let out_len = <N::Out<'t> as Flat>::LEN;
+	let mut out_buf = alloc::vec![f64::NAN; out_len];
+	let fired = out.flat(&mut out_buf);
+	let fires = out.fires();
+
+	let dep_len = <N::Deps as DepFlat>::LEN;
+	let mut dep_buf = alloc::vec![f64::NAN; dep_len];
+	<N::Deps as DepFlat>::flat(&deps, &mut dep_buf);
+
+	let jac = fired.then(|| fd_jac::<N>(&pre, deps, &dep_buf, &out_buf));
+
+	// zeroed, not NaN-filled: `grad` accumulates (`+=`) into it, and an absent var's partial is 0.
+	let mut exact = alloc::vec![0.0f64; out_len * dep_len];
+	pre.exact_jac(deps, &mut exact);
+	let formula = pre.formula();
+	let deriv = Derivs {
+		names: <N::Deps as DepSet>::NAMES,
+		parts: (0..dep_len).map(|i| formula.diff(i).simplify()).collect(),
+	};
+	let trace = formula.trace(&dep_buf);
+
+	obs.on(
+		core::any::type_name::<N>(),
+		<N::Deps as DepSet>::NAMES,
+		<N::When as GateSet>::NAMES,
+		Fire {
+			debug: &out,
+			glance: &out,
+			dims: <N::Out<'t> as Flat>::DIMS,
+			sketch: &N::SKETCH,
+			fires,
+			vals: fired.then_some(out_buf.as_slice()),
+			dep_dims: <N::Deps as DepFlat>::DIMS,
+			jac: jac.as_deref(),
+			exact_jac: Some(&exact),
+			formula: Some(&formula),
+			deriv: Some(&deriv),
+			trace: Some(&trace),
+		},
+	);
+	Cons { out, tail: frame }
+}
+
+/// The per-dep simplified derivatives of a [`Diff`] node, `∂out/∂dep` one per line — the `deriv`
+/// field's [`fmt::Display`](core::fmt::Display).
+struct Derivs {
+	names: &'static [&'static str],
+	parts: alloc::vec::Vec<Ast>,
+}
+
+impl core::fmt::Display for Derivs {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		for (i, part) in self.parts.iter().enumerate() {
+			if i > 0 {
+				f.write_str("\n")?;
+			}
+			let dep = self.names.get(i).and_then(|n| n.rsplit("::").next()).unwrap_or("?");
+			write!(f, "∂/∂{dep} = {part}")?;
+		}
+		Ok(())
+	}
 }
 
 /// `const_type_name` is feature-gated at the call site; this wrapper keeps [`graph!`] users
@@ -881,6 +1055,9 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 /// A latch whose `Cut` out reads [`Episode::terminal`] is commutated and its gated fields reset
 /// to `Default` at the *next* tick's start (deferred: the frame still borrows batch fields).
 /// **Every gate/latch/gated field must be scalar-out** — a batch-out gate is out of contract.
+///
+/// An optional `diff { field: Type, .. }` group names [`Diff`] fields (also in the node list):
+/// they sweep via [`step_exact`], emitting exact partials + formula + derivatives.
 pub use trading_data_macros::graph;
 
 /// The root half of the observation choke point: flatten a seeded root value and emit its
@@ -908,6 +1085,10 @@ where
 			vals: fired.then_some(buf.as_slice()),
 			dep_dims: &[],
 			jac: None,
+			exact_jac: None,
+			formula: None,
+			deriv: None,
+				trace: None,
 		},
 	);
 }

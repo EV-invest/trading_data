@@ -5,7 +5,7 @@
 
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Flat, Glance, Guide, Ink, Node, Nudge, Oi, Sketch, Trade, WilderAtr, WilderRsi};
+use trading_data::{Cell, DepOuts, Expr, Flat, Glance, Guide, Ink, Node, Nudge, Oi, Sketch, Symbolic, Trade, Vars, WilderAtr, WilderRsi, constant};
 use v_utils::trades::Side;
 
 pub const MOM_WINDOW: usize = 60;
@@ -531,11 +531,30 @@ impl Node for AtrStop {
 }
 slice_nudge!(AtrStop, Option<f64>);
 
+/// A pure blend of the current signal levels — the one genuinely differentiable node here (every
+/// other kernel is stateful/batch). Its value *is* an [`Expr`] of the scalar (`.last()`) views of
+/// Momentum/Lambda1m/Atr14, so it differentiates and documents itself exactly; the FD Jacobian and
+/// the exact one agree tick-for-tick (the demo asserts it).
+#[derive(Clone, Copy, Default)]
+pub struct Signal;
+impl Cell for Signal {
+	type Out<'t> = f64;
+}
+impl Symbolic for Signal {
+	type Deps = (Momentum, Lambda1m, Atr14);
+
+	fn body(&self, v: Vars) -> impl Expr {
+		let (mom, lambda, atr) = (v.get::<0>(), v.get::<1>(), v.get::<2>());
+		constant(0.5) * mom + constant(0.3) * lambda - atr
+	}
+}
+
 trading_data::graph! {
 	pub struct Graph;
 	batches Batches;
 	roots { trades: Trades[Trade], oi: OiRoot[Oi] };
 	out TickOut;
+	diff { signal: Signal }
 	bar: Bar1m,
 	cvd: Cvd,
 	rsi: Rsi14,
@@ -545,6 +564,7 @@ trading_data::graph! {
 	vol_usd_1h: VolUsd1h,
 	lambda: Lambda1m,
 	oi_change: OiChange,
+	signal: Signal,
 	screener: Screener,
 	classified: Classify,
 }

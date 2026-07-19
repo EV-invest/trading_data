@@ -3,7 +3,10 @@
 
 use std::any::TypeId;
 
-pub use trading_data_dag::{Cell, Cons, DepOuts, Episode, Fire, Flat, Gate, Glance, Guide, Ink, Latch, Nil, Node, Nudge, Observer, Roots, Sketch, graph, observe_root, step, step_obs};
+pub use trading_data_dag::{
+	Abs, Add, Ast, Cell, Cons, Const, DepOuts, Diff, Div, Episode, Ex, Expr, Fire, Flat, Gate, Glance, Guide, Ink, Latch, Mul, Neg, Nil, Node, Nudge, Observer, Roots, Sketch, Square, Sub, Sum, Symbolic,
+	Trace, Var, Vars, abs, constant, graph, observe_root, square, step, step_exact, step_obs, sum,
+};
 pub use trading_data_derivatives::{WilderAtr, WilderRsi};
 pub use trading_data_persistence::{
 	Batch, BatchTrades, BookDelta, BookShape, BookUpdate, Catalog, CatalogError, Clock, Feather, Feed, LaneKind, LaneReader, LatencyConfig, Live, LiveClock, Mc, Oi, Replay, RotationPolicy, Row,
