@@ -343,6 +343,8 @@ impl Node for Classify {
 	type Deps = (Momentum,);
 	type When = (Screener,);
 
+	const HISTORIC: bool = false;
+
 	// Element order is the [`Dist`] wire order.
 	const SKETCH: Sketch = Sketch {
 		labels: &["None", "Liquidations", "MmClosing", "Manipulation"],

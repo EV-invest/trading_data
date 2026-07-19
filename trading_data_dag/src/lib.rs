@@ -26,7 +26,11 @@
 //! - **Gates.** A [`Gate`] outputs plain `bool`; nodes naming it in [`Node::When`] are not
 //!   advanced at all while it is false — deps unpulled, out = [`Latent::latent`]. Laziness is
 //!   transitive only by declaration: give the same `When` to every node that exclusively
-//!   feeds gated nodes. A missed annotation is wasted work, never wrongness.
+//!   feeds gated nodes. A missed annotation is wasted work, never wrongness — except the
+//!   all-consumers-behind-one-gate case, which [`graph!`] rejects at compile time.
+//! - **Historic vs current.** Stateful derives (RSI, momentum) are *historic*: they must
+//!   advance every tick to stay warm, so gating one is a compile error. Only nodes declaring
+//!   [`Node::HISTORIC`]` = false` (*current*: skipping ticks is harmless) can be gated.
 //!
 //! Impls that write concrete dep types hit E0195 (lifetime binder mismatch); use [`DepOuts`]
 //! so every impl is uniformly `fn advance<'t>(&mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>`.
@@ -294,6 +298,47 @@ impl<A: Gate, B: Gate> GateSet for (A, B) {
 pub trait Node: Cell {
 	type Deps: DepSet;
 	type When: GateSet = ();
+	/// Historic nodes must advance every tick to stay warm; only current (`false`) nodes can
+	/// be gated — a gated historic node is a compile error:
+	///
+	/// ```compile_fail,E0080
+	/// use trading_data_dag::{Cell, Cons, DepOuts, Gate, Nil, Node, step};
+	///
+	/// struct Price;
+	/// impl Cell for Price {
+	/// 	type Out<'t> = f64;
+	/// }
+	///
+	/// struct Hot;
+	/// impl Cell for Hot {
+	/// 	type Out<'t> = bool;
+	/// }
+	/// impl Node for Hot {
+	/// 	type Deps = (Price,);
+	/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	/// 		p > 10.0
+	/// 	}
+	/// }
+	/// impl Gate for Hot {}
+	///
+	/// struct Expensive;
+	/// impl Cell for Expensive {
+	/// 	type Out<'t> = Option<f64>;
+	/// }
+	/// impl Node for Expensive {
+	/// 	type Deps = (Price,);
+	/// 	type When = (Hot,);
+	/// 	// HISTORIC left at its default `true`: does not compile.
+	/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	/// 		Some(p * 100.0)
+	/// 	}
+	/// }
+	///
+	/// let f = Cons::<Price, Nil> { out: 3.0, tail: Nil };
+	/// let f = step(f, &mut Hot);
+	/// let f = step(f, &mut Expensive);
+	/// ```
+	const HISTORIC: bool = true;
 	const SKETCH: Sketch = Sketch::DEFAULT;
 	fn advance<'t>(&mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
 }
@@ -328,6 +373,7 @@ pub trait Node: Cell {
 /// impl Node for Expensive {
 /// 	type Deps = (Price,);
 /// 	type When = (Hot,);
+/// 	const HISTORIC: bool = false;
 /// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
 /// 		Some(p * 100.0)
 /// 	}
@@ -488,6 +534,7 @@ impl_arity!(A Ia a, B Ib b, C Ic c, D Id d, E Ie e, G Ig g, H Ih h, J Ij j);
 /// impl Node for Expensive {
 /// 	type Deps = (Price,);
 /// 	type When = (Hot,);
+/// 	const HISTORIC: bool = false;
 /// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
 /// 		Some(p * 100.0)
 /// 	}
@@ -542,6 +589,7 @@ where
 	fn drive(node: &mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't, {
+		const { assert!(!N::HISTORIC, "historic node cannot be gated; declare `const HISTORIC: bool = false` or drop `When`") }
 		if !<Self as Drive<'t, N, F, I, (Ia,)>>::open(f) {
 			return Latent::latent();
 		}
@@ -567,6 +615,7 @@ where
 	fn drive(node: &mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't, {
+		const { assert!(!N::HISTORIC, "historic node cannot be gated; declare `const HISTORIC: bool = false` or drop `When`") }
 		if !<Self as Drive<'t, N, F, I, (Ia, Ib)>>::open(f) {
 			return Latent::latent();
 		}
@@ -753,6 +802,93 @@ pub trait Dag: Default {
 	fn tick_obs(&mut self, ev: Option<Self::Event>, obs: &mut impl Observer);
 }
 
+/// `const_type_name` is feature-gated at the call site; this wrapper keeps [`graph!`] users
+/// off nightly feature attrs.
+#[doc(hidden)]
+pub const fn node_name<T>() -> &'static str {
+	core::any::type_name::<T>()
+}
+
+/// One node's compile-time shape, as [`graph!`] sees it. `name`/`deps`/`gates` are
+/// [`core::any::type_name`] strings: const-comparable, never persisted.
+#[doc(hidden)]
+pub struct NodeMeta {
+	pub name: &'static str,
+	pub deps: &'static [&'static str],
+	pub historic: bool,
+	pub gates: &'static [&'static str],
+}
+
+const fn str_eq(a: &str, b: &str) -> bool {
+	let (a, b) = (a.as_bytes(), b.as_bytes());
+	if a.len() != b.len() {
+		return false;
+	}
+	let mut i = 0;
+	while i < a.len() {
+		if a[i] != b[i] {
+			return false;
+		}
+		i += 1;
+	}
+	true
+}
+
+const fn contains(set: &[&str], name: &str) -> bool {
+	let mut i = 0;
+	while i < set.len() {
+		if str_eq(set[i], name) {
+			return true;
+		}
+		i += 1;
+	}
+	false
+}
+
+/// [`graph!`]'s completeness check: true when `name` is current, ungated, has in-graph
+/// consumers, and all of them sit behind one common gate (other than `name` itself) — sampling
+/// it while that gate is closed is pure waste, so it must be gated too or marked historic.
+/// Leaves (no in-graph consumers) are graph outputs — exempt.
+#[doc(hidden)]
+pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
+	let mut me = 0;
+	while me < nodes.len() && !str_eq(nodes[me].name, name) {
+		me += 1;
+	}
+	assert!(me < nodes.len(), "shadowed: name must be one of nodes");
+	if nodes[me].historic || !nodes[me].gates.is_empty() {
+		return false;
+	}
+	let mut fc = 0;
+	while fc < nodes.len() && !contains(nodes[fc].deps, name) {
+		fc += 1;
+	}
+	if fc == nodes.len() {
+		return false;
+	}
+	// a common gate must appear on the first consumer; try each of its gates against the rest
+	let mut g = 0;
+	while g < nodes[fc].gates.len() {
+		let gate = nodes[fc].gates[g];
+		if !str_eq(gate, name) {
+			let mut all = true;
+			let mut j = fc + 1;
+			while j < nodes.len() {
+				if contains(nodes[j].deps, name) && !contains(nodes[j].gates, gate) {
+					all = false;
+					break;
+				}
+				j += 1;
+			}
+			if all {
+				return true;
+			}
+		}
+		g += 1;
+	}
+	false
+}
+
 /// Wires a declared node list into a graph struct + typed out-struct + [`Dag`] impl. Fields in
 /// topo order — a wrong order fails the existing `Pull`/`Has` bounds at compile time. The root
 /// cell's `Out` must be `Option<Event>`. Out-struct fields keep each node's `Cell::Out`
@@ -769,6 +905,21 @@ macro_rules! graph {
 		$vis struct $Graph {
 			$($field: $Node,)+
 		}
+
+		const _: () = {
+			const METAS: &[$crate::NodeMeta] = &[$(
+				$crate::NodeMeta {
+					name: $crate::node_name::<$Node>(),
+					deps: <<$Node as $crate::Node>::Deps as $crate::DepSet>::NAMES,
+					historic: <$Node as $crate::Node>::HISTORIC,
+					gates: <<$Node as $crate::Node>::When as $crate::GateSet>::NAMES,
+				},
+			)+];
+			$(assert!(
+				!$crate::shadowed($crate::node_name::<$Node>(), METAS),
+				concat!(stringify!($Node), " is only consumed under a gate: gate it too, or mark it historic")
+			);)+
+		};
 
 		#[derive(Clone, Copy, Debug)]
 		$vis struct $Out {
