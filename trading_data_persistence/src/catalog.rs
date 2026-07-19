@@ -3,44 +3,16 @@ use std::{
 	path::{Path, PathBuf},
 };
 
-use arrow::array::RecordBatch;
+use arrow::{array::RecordBatch, datatypes::SchemaRef};
 use parquet::{
 	arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
 	basic::Compression,
 	file::properties::WriterProperties,
 };
 use thiserror::Error;
-use v_utils::trades::{ExchangeName, Symbol};
+use v_utils::trades::{Asset, ExchangeName, Symbol};
 
-use crate::schema::UnixNanos;
-
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum Lane {
-	Snapshots,
-	Deltas,
-	Trades,
-	Closes,
-	Custom,
-}
-
-impl Lane {
-	pub fn dir_name(self) -> &'static str {
-		match self {
-			Lane::Snapshots => "snapshots",
-			Lane::Deltas => "deltas",
-			Lane::Trades => "trades",
-			Lane::Closes => "closes",
-			Lane::Custom => "custom",
-		}
-	}
-
-	pub fn compression(self) -> Compression {
-		match self {
-			Lane::Snapshots | Lane::Deltas | Lane::Trades => Compression::ZSTD(parquet::basic::ZstdLevel::default()),
-			Lane::Closes | Lane::Custom => Compression::SNAPPY,
-		}
-	}
-}
+use crate::row::UnixNanos;
 
 #[derive(Clone, Debug)]
 pub struct Catalog {
@@ -55,20 +27,23 @@ impl Catalog {
 		&self.root
 	}
 
-	pub fn lane_dir(&self, key: &LaneKey) -> PathBuf {
-		match key {
-			LaneKey::Book { lane, exchange, symbol } => self
-				.root
-				.join("data")
-				.join(lane.dir_name())
-				.join(symbol.pair.base().to_string())
+	pub(crate) fn lane_dir(&self, key: &LaneKey) -> PathBuf {
+		let data = self.root.join("data");
+		let sym = |exchange: &ExchangeName, symbol: &Symbol| {
+			PathBuf::from(symbol.pair.base().to_string())
 				.join(symbol.pair.quote().to_string())
-				.join(format!("{exchange}{}", symbol.instrument)),
-			LaneKey::Custom { type_name } => self.root.join("data").join("custom").join(type_name),
+				.join(format!("{exchange}{}", symbol.instrument))
+		};
+		match key {
+			LaneKey::Trades { exchange, symbol } => data.join("trades").join(sym(exchange, symbol)),
+			LaneKey::BookSnapshots { exchange, symbol } => data.join("book").join(sym(exchange, symbol)).join("snapshots"),
+			LaneKey::BookDeltas { exchange, symbol } => data.join("book").join(sym(exchange, symbol)).join("deltas"),
+			LaneKey::Oi { exchange, symbol } => data.join("oi").join(sym(exchange, symbol)),
+			LaneKey::Mc { asset } => data.join("mc").join(asset.to_string()),
 		}
 	}
 
-	pub fn write(&self, key: &LaneKey, batch: &RecordBatch, ts_min: UnixNanos, ts_max: UnixNanos) -> Result<PathBuf, CatalogError> {
+	pub(crate) fn write(&self, key: &LaneKey, batch: &RecordBatch, ts_min: UnixNanos, ts_max: UnixNanos) -> Result<PathBuf, CatalogError> {
 		assert!(ts_min <= ts_max, "ts_min must be <= ts_max");
 
 		let dir = self.lane_dir(key);
@@ -86,14 +61,14 @@ impl Catalog {
 
 		let path = dir.join(format!("{ts_min}_{ts_max}.parquet"));
 		let file = fs::File::create(&path)?;
-		let props = WriterProperties::builder().set_compression(key.lane().compression()).build();
+		let props = WriterProperties::builder().set_compression(Compression::ZSTD(parquet::basic::ZstdLevel::default())).build();
 		let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
 		writer.write(batch)?;
 		writer.close()?;
 		Ok(path)
 	}
 
-	pub fn list(&self, key: &LaneKey) -> Result<Vec<FileEntry>, CatalogError> {
+	pub(crate) fn list(&self, key: &LaneKey) -> Result<Vec<FileEntry>, CatalogError> {
 		let dir = self.lane_dir(key);
 		if !dir.exists() {
 			return Ok(Vec::new());
@@ -115,19 +90,22 @@ impl Catalog {
 		Ok(entries)
 	}
 
-	pub fn list_range(&self, key: &LaneKey, start: UnixNanos, end: UnixNanos) -> Result<Vec<FileEntry>, CatalogError> {
+	pub(crate) fn list_range(&self, key: &LaneKey, start: UnixNanos, end: UnixNanos) -> Result<Vec<FileEntry>, CatalogError> {
 		Ok(self.list(key)?.into_iter().filter(|e| e.ts_max >= start && e.ts_min <= end).collect())
 	}
 
-	pub fn read(&self, path: &Path) -> Result<Vec<RecordBatch>, CatalogError> {
+	/// Returns the file-level schema alongside the batches: per-batch schemas drop the
+	/// key-value metadata (precisions) that decode needs.
+	pub(crate) fn read(&self, path: &Path) -> Result<(SchemaRef, Vec<RecordBatch>), CatalogError> {
 		let file = fs::File::open(path)?;
 		let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+		let schema = builder.schema().clone();
 		let reader = builder.build()?;
 		let mut out = Vec::new();
 		for batch in reader {
 			out.push(batch?);
 		}
-		Ok(out)
+		Ok((schema, out))
 	}
 }
 
@@ -145,32 +123,18 @@ pub enum CatalogError {
 	BadFilename(String),
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum LaneKey {
-	Book { lane: Lane, exchange: ExchangeName, symbol: Symbol },
-	Custom { type_name: String },
-}
-
-impl LaneKey {
-	pub fn book(lane: Lane, exchange: ExchangeName, symbol: Symbol) -> Self {
-		debug_assert!(!matches!(lane, Lane::Custom), "Custom lane uses LaneKey::custom, not book");
-		Self::Book { lane, exchange, symbol }
-	}
-
-	pub fn custom(type_name: impl Into<String>) -> Self {
-		Self::Custom { type_name: type_name.into() }
-	}
-
-	pub fn lane(&self) -> Lane {
-		match self {
-			Self::Book { lane, .. } => *lane,
-			Self::Custom { .. } => Lane::Custom,
-		}
-	}
+/// Dir routing only; the row type carries everything else.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum LaneKey {
+	Trades { exchange: ExchangeName, symbol: Symbol },
+	BookSnapshots { exchange: ExchangeName, symbol: Symbol },
+	BookDeltas { exchange: ExchangeName, symbol: Symbol },
+	Oi { exchange: ExchangeName, symbol: Symbol },
+	Mc { asset: Asset },
 }
 
 #[derive(Clone, Debug)]
-pub struct FileEntry {
+pub(crate) struct FileEntry {
 	pub path: PathBuf,
 	pub ts_min: UnixNanos,
 	pub ts_max: UnixNanos,
@@ -182,61 +146,53 @@ fn intervals_overlap(a: (UnixNanos, UnixNanos), b: (UnixNanos, UnixNanos)) -> bo
 
 #[cfg(test)]
 mod tests {
-	use std::sync::Arc;
-
-	use arrow::array::{BooleanArray, Int32Array, Int64Array, RecordBatch, UInt8Array, UInt32Array, UInt64Array};
 	use tempfile::tempdir;
-	use v_utils::trades::Instrument;
+	use v_utils::trades::{Instrument, PrecisionPriceQty, Side};
 
 	use super::*;
-	use crate::schema::{FileMetadata, lane_schema, with_metadata};
+	use crate::{
+		feather::Feather,
+		row::{Row as _, Trade},
+	};
 
 	fn test_symbol() -> Symbol {
 		Symbol::new("BTC-USDT".try_into().unwrap(), Instrument::Spot)
 	}
 
-	fn meta() -> FileMetadata {
-		FileMetadata {
-			exchange: "binance".into(),
-			pair: "BTC-USDT".into(),
-			price_precision: 2,
-			qty_precision: 5,
+	fn key() -> LaneKey {
+		LaneKey::Trades {
+			exchange: ExchangeName::Binance,
+			symbol: test_symbol(),
 		}
 	}
 
-	fn one_delta_batch() -> RecordBatch {
-		let schema = with_metadata(lane_schema(Lane::Deltas), meta());
-		RecordBatch::try_new(
-			schema,
-			vec![
-				Arc::new(Int64Array::from(vec![1_i64])),
-				Arc::new(Int64Array::from(vec![1_i64])),
-				Arc::new(UInt64Array::from(vec![1_u64])),
-				Arc::new(BooleanArray::from(vec![false])),
-				Arc::new(UInt8Array::from(vec![0_u8])),
-				Arc::new(Int32Array::from(vec![1_i32])),
-				Arc::new(UInt32Array::from(vec![1_u32])),
-			],
-		)
-		.unwrap()
+	fn write_one(cat: &Catalog, ts: i64) {
+		let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), PrecisionPriceQty { price: 2, qty: 5 }, Trade::POLICY);
+		f.push(Trade {
+			ts_event: ts,
+			ts_init: ts,
+			monotonic_seq: 1,
+			trade_id: 1,
+			side: Side::Buy,
+			price: 1.0,
+			qty: 1.0,
+		});
+		f.flush(cat).unwrap();
 	}
 
 	#[test]
 	fn write_list_read_round_trip() {
 		let dir = tempdir().unwrap();
 		let cat = Catalog::new(dir.path());
-		let key = LaneKey::book(Lane::Deltas, ExchangeName::Binance, test_symbol());
+		write_one(&cat, 110);
 
-		let batch = one_delta_batch();
-		let path = cat.write(&key, &batch, 110, 210).unwrap();
-		assert!(path.exists());
-
-		let listed = cat.list(&key).unwrap();
+		let listed = cat.list(&key()).unwrap();
 		assert_eq!(listed.len(), 1);
 		assert_eq!(listed[0].ts_min, 110);
-		assert_eq!(listed[0].ts_max, 210);
+		assert_eq!(listed[0].ts_max, 110);
 
-		let read = cat.read(&listed[0].path).unwrap();
+		let (schema, read) = cat.read(&listed[0].path).unwrap();
+		assert!(schema.metadata().contains_key("price_precision"));
 		assert_eq!(read.len(), 1);
 		assert_eq!(read[0].num_rows(), 1);
 	}
@@ -245,10 +201,18 @@ mod tests {
 	fn refuses_overlapping_write() {
 		let dir = tempdir().unwrap();
 		let cat = Catalog::new(dir.path());
-		let key = LaneKey::book(Lane::Deltas, ExchangeName::Binance, test_symbol());
-		let batch = one_delta_batch();
-		cat.write(&key, &batch, 100, 200).unwrap();
-		let err = cat.write(&key, &batch, 150, 250).unwrap_err();
+		write_one(&cat, 100);
+		let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), PrecisionPriceQty { price: 2, qty: 5 }, Trade::POLICY);
+		f.push(Trade {
+			ts_event: 100,
+			ts_init: 100,
+			monotonic_seq: 2,
+			trade_id: 2,
+			side: Side::Sell,
+			price: 1.0,
+			qty: 1.0,
+		});
+		let err = f.flush(&cat).unwrap_err();
 		assert!(matches!(err, CatalogError::OverlappingInterval { .. }));
 	}
 
@@ -256,13 +220,11 @@ mod tests {
 	fn list_range_prunes() {
 		let dir = tempdir().unwrap();
 		let cat = Catalog::new(dir.path());
-		let key = LaneKey::book(Lane::Deltas, ExchangeName::Binance, test_symbol());
-		let batch = one_delta_batch();
-		cat.write(&key, &batch, 100, 200).unwrap();
-		cat.write(&key, &batch, 300, 400).unwrap();
-		cat.write(&key, &batch, 500, 600).unwrap();
+		write_one(&cat, 100);
+		write_one(&cat, 300);
+		write_one(&cat, 500);
 
-		let pruned = cat.list_range(&key, 250, 450).unwrap();
+		let pruned = cat.list_range(&key(), 250, 450).unwrap();
 		assert_eq!(pruned.len(), 1);
 		assert_eq!(pruned[0].ts_min, 300);
 	}

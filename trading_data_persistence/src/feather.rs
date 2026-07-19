@@ -1,17 +1,14 @@
 use std::{
 	path::PathBuf,
-	sync::Arc,
 	time::{Duration, Instant},
 };
 
-use arrow::{
-	array::{ArrayRef, BinaryBuilder, BooleanBuilder, Int32Builder, Int64Builder, ListBuilder, RecordBatch, StringBuilder, UInt8Builder, UInt32Builder, UInt64Builder},
-	datatypes::SchemaRef,
-};
+use arrow::{array::RecordBatch, datatypes::SchemaRef};
+use v_utils::trades::{Asset, ExchangeName, PrecisionPriceQty, Symbol};
 
 use crate::{
-	catalog::{Catalog, CatalogError, Lane, LaneKey},
-	schema::{BookDelta, Close, Custom, FileMetadata, Trade, UnixNanos, lane_schema, with_metadata},
+	catalog::{Catalog, CatalogError, LaneKey},
+	row::{BookDelta, BookSnapshot, Mc, Oi, Row, Trade, UnixNanos},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -20,45 +17,13 @@ pub struct RotationPolicy {
 	pub max_age: Option<Duration>,
 }
 
-impl RotationPolicy {
-	pub const fn snapshots() -> Self {
-		Self {
-			max_bytes: Some(64 * 1024 * 1024),
-			max_age: Some(Duration::from_secs(6 * 3600)),
-		}
-	}
-
-	pub const fn deltas() -> Self {
-		Self {
-			max_bytes: Some(256 * 1024 * 1024),
-			max_age: Some(Duration::from_secs(3600)),
-		}
-	}
-
-	pub const fn trades() -> Self {
-		Self {
-			max_bytes: Some(50 * 1024 * 1024),
-			max_age: Some(Duration::from_secs(24 * 3600)),
-		}
-	}
-
-	pub const fn closes() -> Self {
-		Self {
-			max_bytes: None,
-			max_age: Some(Duration::from_secs(7 * 24 * 3600)),
-		}
-	}
-
-	pub const fn custom() -> Self {
-		Self::closes()
-	}
-}
-
-pub struct Feather {
+/// Typed lane writer: a key/schema mismatch is unrepresentable, push is monomorphic.
+pub struct Feather<T: Row> {
 	key: LaneKey,
 	schema: SchemaRef,
+	meta: T::Meta,
 	policy: RotationPolicy,
-	buffer: Buffer,
+	builders: T::Builders,
 	rows: usize,
 	approx_bytes: usize,
 	oldest_ts: Option<UnixNanos>,
@@ -67,35 +32,45 @@ pub struct Feather {
 	next_check_at_rows: usize,
 }
 
-impl Feather {
-	pub fn new_snapshots(key: LaneKey, meta: FileMetadata, policy: RotationPolicy) -> Self {
-		Self::new(key, Lane::Snapshots, meta, policy, Buffer::Snapshots(Box::default()))
+impl Feather<Trade> {
+	pub fn new(exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, policy: RotationPolicy) -> Self {
+		Self::init(LaneKey::Trades { exchange, symbol }, prec, policy)
 	}
+}
 
-	pub fn new_deltas(key: LaneKey, meta: FileMetadata, policy: RotationPolicy) -> Self {
-		Self::new(key, Lane::Deltas, meta, policy, Buffer::Deltas(Box::default()))
+impl Feather<Oi> {
+	pub fn new(exchange: ExchangeName, symbol: Symbol, policy: RotationPolicy) -> Self {
+		Self::init(LaneKey::Oi { exchange, symbol }, (), policy)
 	}
+}
 
-	pub fn new_trades(key: LaneKey, meta: FileMetadata, policy: RotationPolicy) -> Self {
-		Self::new(key, Lane::Trades, meta, policy, Buffer::Trades(Box::default()))
+impl Feather<Mc> {
+	pub fn new(asset: Asset, policy: RotationPolicy) -> Self {
+		Self::init(LaneKey::Mc { asset }, (), policy)
 	}
+}
 
-	pub fn new_closes(key: LaneKey, meta: FileMetadata, policy: RotationPolicy) -> Self {
-		Self::new(key, Lane::Closes, meta, policy, Buffer::Closes(Box::default()))
+impl Feather<BookDelta> {
+	pub(crate) fn new(exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, policy: RotationPolicy) -> Self {
+		Self::init(LaneKey::BookDeltas { exchange, symbol }, prec, policy)
 	}
+}
 
-	pub fn new_custom(key: LaneKey, meta: FileMetadata, policy: RotationPolicy) -> Self {
-		Self::new(key, Lane::Custom, meta, policy, Buffer::Custom(Box::default()))
+impl Feather<BookSnapshot> {
+	pub(crate) fn new(exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, policy: RotationPolicy) -> Self {
+		Self::init(LaneKey::BookSnapshots { exchange, symbol }, prec, policy)
 	}
+}
 
-	fn new(key: LaneKey, lane: Lane, meta: FileMetadata, policy: RotationPolicy, buffer: Buffer) -> Self {
-		let schema = with_metadata(lane_schema(lane), meta);
-		let next_check_at_rows = policy.max_bytes.map(|m| (m / per_row_min(lane)).max(64)).unwrap_or(usize::MAX);
+impl<T: Row> Feather<T> {
+	fn init(key: LaneKey, meta: T::Meta, policy: RotationPolicy) -> Self {
+		let next_check_at_rows = policy.max_bytes.map(|m| (m / T::PER_ROW_MIN).max(64)).unwrap_or(usize::MAX);
 		Self {
 			key,
-			schema,
+			schema: T::schema(meta),
+			meta,
 			policy,
-			buffer,
+			builders: T::Builders::default(),
 			rows: 0,
 			approx_bytes: 0,
 			oldest_ts: None,
@@ -105,19 +80,11 @@ impl Feather {
 		}
 	}
 
-	pub fn key(&self) -> &LaneKey {
-		&self.key
-	}
-
-	pub fn len(&self) -> usize {
-		self.rows
-	}
-
-	pub fn is_empty(&self) -> bool {
-		self.rows == 0
-	}
-
-	fn touch_ts(&mut self, ts: UnixNanos) {
+	pub fn push(&mut self, row: T) {
+		row.append(&mut self.builders, self.meta);
+		self.rows += 1;
+		self.approx_bytes += row.approx_bytes();
+		let ts = row.ts_init();
 		let was_empty = self.oldest_ts.is_none();
 		self.oldest_ts = Some(self.oldest_ts.map_or(ts, |o| o.min(ts)));
 		self.newest_ts = Some(self.newest_ts.map_or(ts, |n| n.max(ts)));
@@ -126,97 +93,12 @@ impl Feather {
 		}
 	}
 
-	pub fn push_snapshot(
-		&mut self,
-		ts_event: i64,
-		ts_init: i64,
-		monotonic_seq: u64,
-		bid_prices: impl IntoIterator<Item = i32>,
-		bid_qtys: impl IntoIterator<Item = u32>,
-		ask_prices: impl IntoIterator<Item = i32>,
-		ask_qtys: impl IntoIterator<Item = u32>,
-	) {
-		let Buffer::Snapshots(b) = &mut self.buffer else {
-			panic!("wrong lane: expected snapshots");
-		};
-		b.ts_event.append_value(ts_event);
-		b.ts_init.append_value(ts_init);
-		b.monotonic_seq.append_value(monotonic_seq);
-		let mut n_levels = 0usize;
-		for (p, q) in bid_prices.into_iter().zip(bid_qtys) {
-			b.bid_prices.values().append_value(p);
-			b.bid_qtys.values().append_value(q);
-			n_levels += 1;
-		}
-		b.bid_prices.append(true);
-		b.bid_qtys.append(true);
-		for (p, q) in ask_prices.into_iter().zip(ask_qtys) {
-			b.ask_prices.values().append_value(p);
-			b.ask_qtys.values().append_value(q);
-			n_levels += 1;
-		}
-		b.ask_prices.append(true);
-		b.ask_qtys.append(true);
-		self.rows += 1;
-		self.approx_bytes += 32 + 8 * n_levels;
-		self.touch_ts(ts_init);
+	pub fn len(&self) -> usize {
+		self.rows
 	}
 
-	pub fn push_delta(&mut self, row: BookDelta) {
-		let Buffer::Deltas(b) = &mut self.buffer else {
-			panic!("wrong lane: expected deltas");
-		};
-		b.ts_event.append_value(row.ts_event);
-		b.ts_init.append_value(row.ts_init);
-		b.monotonic_seq.append_value(row.monotonic_seq);
-		b.gapped.append_value(row.gapped);
-		b.side.append_value(row.side);
-		b.price_raw.append_value(row.price_raw);
-		b.qty_raw.append_value(row.qty_raw);
-		self.rows += 1;
-		self.approx_bytes += 40;
-		self.touch_ts(row.ts_init);
-	}
-
-	pub fn push_trade(&mut self, row: Trade) {
-		let Buffer::Trades(b) = &mut self.buffer else {
-			panic!("wrong lane: expected trades");
-		};
-		b.ts_event.append_value(row.ts_event);
-		b.ts_init.append_value(row.ts_init);
-		b.monotonic_seq.append_value(row.monotonic_seq);
-		b.trade_id.append_value(row.trade_id);
-		b.side.append_value(row.side);
-		b.price_raw.append_value(row.price_raw);
-		b.qty_raw.append_value(row.qty_raw);
-		self.rows += 1;
-		self.approx_bytes += 40;
-		self.touch_ts(row.ts_init);
-	}
-
-	pub fn push_close(&mut self, row: Close) {
-		let Buffer::Closes(b) = &mut self.buffer else {
-			panic!("wrong lane: expected closes");
-		};
-		b.ts_event.append_value(row.ts_event);
-		b.ts_init.append_value(row.ts_init);
-		b.reason.append_value(&row.reason);
-		self.rows += 1;
-		self.approx_bytes += 16 + row.reason.len();
-		self.touch_ts(row.ts_init);
-	}
-
-	pub fn push_custom(&mut self, row: Custom) {
-		let Buffer::Custom(b) = &mut self.buffer else {
-			panic!("wrong lane: expected custom");
-		};
-		b.ts_event.append_value(row.ts_event);
-		b.ts_init.append_value(row.ts_init);
-		b.type_name.append_value(&row.type_name);
-		b.payload.append_value(&row.payload);
-		self.rows += 1;
-		self.approx_bytes += 16 + row.type_name.len() + row.payload.len();
-		self.touch_ts(row.ts_init);
+	pub fn is_empty(&self) -> bool {
+		self.rows == 0
 	}
 
 	pub fn should_flush(&self) -> bool {
@@ -236,9 +118,18 @@ impl Feather {
 	}
 
 	pub fn flush(&mut self, catalog: &Catalog) -> Result<Option<PathBuf>, CatalogError> {
-		let Some((batch, ts_min, ts_max)) = self.build_batch() else {
+		if self.rows == 0 {
 			return Ok(None);
-		};
+		}
+		let ts_min = self.oldest_ts.expect("set on first push");
+		let ts_max = self.newest_ts.expect("set on first push");
+		let arrays = T::finish(&mut self.builders);
+		let batch = RecordBatch::try_new(self.schema.clone(), arrays).expect("valid schema/array shape");
+		self.rows = 0;
+		self.approx_bytes = 0;
+		self.oldest_ts = None;
+		self.newest_ts = None;
+		self.age_deadline = None;
 		let path = catalog.write(&self.key, &batch, ts_min, ts_max)?;
 		Ok(Some(path))
 	}
@@ -249,241 +140,166 @@ impl Feather {
 		}
 		if self.should_flush() { self.flush(catalog) } else { Ok(None) }
 	}
-
-	fn build_batch(&mut self) -> Option<(RecordBatch, UnixNanos, UnixNanos)> {
-		if self.rows == 0 {
-			return None;
-		}
-		let ts_min = self.oldest_ts.expect("set on first push");
-		let ts_max = self.newest_ts.expect("set on first push");
-		let arrays: Vec<ArrayRef> = match &mut self.buffer {
-			Buffer::Snapshots(b) => b.finish(),
-			Buffer::Deltas(b) => b.finish(),
-			Buffer::Trades(b) => b.finish(),
-			Buffer::Closes(b) => b.finish(),
-			Buffer::Custom(b) => b.finish(),
-		};
-		let batch = RecordBatch::try_new(self.schema.clone(), arrays).expect("valid schema/array shape");
-		self.rows = 0;
-		self.approx_bytes = 0;
-		self.oldest_ts = None;
-		self.newest_ts = None;
-		self.age_deadline = None;
-		Some((batch, ts_min, ts_max))
-	}
-}
-
-const fn per_row_min(lane: Lane) -> usize {
-	match lane {
-		Lane::Deltas | Lane::Trades => 40,
-		Lane::Snapshots => 32,
-		Lane::Closes | Lane::Custom => 16,
-	}
-}
-
-enum Buffer {
-	Snapshots(Box<SnapshotBuilders>),
-	Deltas(Box<DeltaBuilders>),
-	Trades(Box<TradeBuilders>),
-	Closes(Box<CloseBuilders>),
-	Custom(Box<CustomBuilders>),
-}
-
-struct DeltaBuilders {
-	ts_event: Int64Builder,
-	ts_init: Int64Builder,
-	monotonic_seq: UInt64Builder,
-	gapped: BooleanBuilder,
-	side: UInt8Builder,
-	price_raw: Int32Builder,
-	qty_raw: UInt32Builder,
-}
-impl DeltaBuilders {
-	fn finish(&mut self) -> Vec<ArrayRef> {
-		vec![
-			Arc::new(self.ts_event.finish()),
-			Arc::new(self.ts_init.finish()),
-			Arc::new(self.monotonic_seq.finish()),
-			Arc::new(self.gapped.finish()),
-			Arc::new(self.side.finish()),
-			Arc::new(self.price_raw.finish()),
-			Arc::new(self.qty_raw.finish()),
-		]
-	}
-}
-
-impl Default for DeltaBuilders {
-	fn default() -> Self {
-		Self {
-			ts_event: Int64Builder::new(),
-			ts_init: Int64Builder::new(),
-			monotonic_seq: UInt64Builder::new(),
-			gapped: BooleanBuilder::new(),
-			side: UInt8Builder::new(),
-			price_raw: Int32Builder::new(),
-			qty_raw: UInt32Builder::new(),
-		}
-	}
-}
-
-struct SnapshotBuilders {
-	ts_event: Int64Builder,
-	ts_init: Int64Builder,
-	monotonic_seq: UInt64Builder,
-	bid_prices: ListBuilder<Int32Builder>,
-	bid_qtys: ListBuilder<UInt32Builder>,
-	ask_prices: ListBuilder<Int32Builder>,
-	ask_qtys: ListBuilder<UInt32Builder>,
-}
-impl SnapshotBuilders {
-	fn finish(&mut self) -> Vec<ArrayRef> {
-		vec![
-			Arc::new(self.ts_event.finish()),
-			Arc::new(self.ts_init.finish()),
-			Arc::new(self.monotonic_seq.finish()),
-			Arc::new(self.bid_prices.finish()),
-			Arc::new(self.bid_qtys.finish()),
-			Arc::new(self.ask_prices.finish()),
-			Arc::new(self.ask_qtys.finish()),
-		]
-	}
-}
-
-impl Default for SnapshotBuilders {
-	fn default() -> Self {
-		Self {
-			ts_event: Int64Builder::new(),
-			ts_init: Int64Builder::new(),
-			monotonic_seq: UInt64Builder::new(),
-			bid_prices: ListBuilder::new(Int32Builder::new()),
-			bid_qtys: ListBuilder::new(UInt32Builder::new()),
-			ask_prices: ListBuilder::new(Int32Builder::new()),
-			ask_qtys: ListBuilder::new(UInt32Builder::new()),
-		}
-	}
-}
-
-struct TradeBuilders {
-	ts_event: Int64Builder,
-	ts_init: Int64Builder,
-	monotonic_seq: UInt64Builder,
-	trade_id: UInt64Builder,
-	side: UInt8Builder,
-	price_raw: Int32Builder,
-	qty_raw: UInt32Builder,
-}
-impl TradeBuilders {
-	fn finish(&mut self) -> Vec<ArrayRef> {
-		vec![
-			Arc::new(self.ts_event.finish()),
-			Arc::new(self.ts_init.finish()),
-			Arc::new(self.monotonic_seq.finish()),
-			Arc::new(self.trade_id.finish()),
-			Arc::new(self.side.finish()),
-			Arc::new(self.price_raw.finish()),
-			Arc::new(self.qty_raw.finish()),
-		]
-	}
-}
-
-impl Default for TradeBuilders {
-	fn default() -> Self {
-		Self {
-			ts_event: Int64Builder::new(),
-			ts_init: Int64Builder::new(),
-			monotonic_seq: UInt64Builder::new(),
-			trade_id: UInt64Builder::new(),
-			side: UInt8Builder::new(),
-			price_raw: Int32Builder::new(),
-			qty_raw: UInt32Builder::new(),
-		}
-	}
-}
-
-struct CloseBuilders {
-	ts_event: Int64Builder,
-	ts_init: Int64Builder,
-	reason: StringBuilder,
-}
-impl CloseBuilders {
-	fn finish(&mut self) -> Vec<ArrayRef> {
-		vec![Arc::new(self.ts_event.finish()), Arc::new(self.ts_init.finish()), Arc::new(self.reason.finish())]
-	}
-}
-
-impl Default for CloseBuilders {
-	fn default() -> Self {
-		Self {
-			ts_event: Int64Builder::new(),
-			ts_init: Int64Builder::new(),
-			reason: StringBuilder::new(),
-		}
-	}
-}
-
-struct CustomBuilders {
-	ts_event: Int64Builder,
-	ts_init: Int64Builder,
-	type_name: StringBuilder,
-	payload: BinaryBuilder,
-}
-impl CustomBuilders {
-	fn finish(&mut self) -> Vec<ArrayRef> {
-		vec![
-			Arc::new(self.ts_event.finish()),
-			Arc::new(self.ts_init.finish()),
-			Arc::new(self.type_name.finish()),
-			Arc::new(self.payload.finish()),
-		]
-	}
-}
-
-impl Default for CustomBuilders {
-	fn default() -> Self {
-		Self {
-			ts_event: Int64Builder::new(),
-			ts_init: Int64Builder::new(),
-			type_name: StringBuilder::new(),
-			payload: BinaryBuilder::new(),
-		}
-	}
 }
 
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use v_utils::trades::{ExchangeName, Instrument, Symbol};
+	use v_utils::trades::{Instrument, Side};
 
 	use super::*;
 
-	fn meta() -> FileMetadata {
-		FileMetadata {
-			exchange: "binance".into(),
-			pair: "BTC-USDT".into(),
-			price_precision: 2,
-			qty_precision: 5,
-		}
+	fn test_symbol() -> Symbol {
+		Symbol::new("BTC-USDT".try_into().unwrap(), Instrument::Spot)
+	}
+
+	fn prec() -> PrecisionPriceQty {
+		PrecisionPriceQty { price: 2, qty: 5 }
+	}
+
+	const FOREVER: RotationPolicy = RotationPolicy { max_bytes: None, max_age: None };
+
+	fn round_trip_batch<T: Row>(f: &mut Feather<T>, cat: &Catalog) -> Vec<T> {
+		let path = f.flush(cat).unwrap().expect("flush wrote a file");
+		let (schema, batches) = cat.read(&path).unwrap();
+		assert_eq!(batches.len(), 1);
+		T::decode(&batches[0], schema.as_ref())
 	}
 
 	#[test]
-	fn flush_writes_parquet() {
+	fn flush_writes_parquet_on_bytes_policy() {
 		let dir = tempdir().unwrap();
 		let catalog = Catalog::new(dir.path());
-		let symbol = Symbol::new("BTC-USDT".try_into().unwrap(), Instrument::Spot);
-		let key = LaneKey::book(Lane::Deltas, ExchangeName::Binance, symbol);
-		let mut feather = Feather::new_deltas(key, meta(), RotationPolicy { max_bytes: Some(1), max_age: None });
-		feather.push_delta(BookDelta {
+		let mut feather = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), RotationPolicy { max_bytes: Some(1), max_age: None });
+		feather.push(BookDelta {
 			ts_event: 1,
 			ts_init: 1,
 			monotonic_seq: 1,
 			gapped: false,
-			side: 0,
-			price_raw: 1,
-			qty_raw: 1,
+			side: Side::Buy,
+			price: 0.01,
+			qty: 0.00001,
 		});
 		assert!(feather.should_flush());
 		let path = feather.flush(&catalog).unwrap().unwrap();
 		assert!(path.exists());
 		assert_eq!(feather.len(), 0);
+	}
+
+	#[test]
+	fn trades_round_trip() {
+		let dir = tempdir().unwrap();
+		let cat = Catalog::new(dir.path());
+		let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
+		let row = Trade {
+			ts_event: 1,
+			ts_init: 2,
+			monotonic_seq: 3,
+			trade_id: 4,
+			side: Side::Sell,
+			price: 483.51,
+			qty: 0.00042,
+		};
+		f.push(row);
+		let decoded = round_trip_batch(&mut f, &cat);
+		assert_eq!(decoded, vec![row]);
+	}
+
+	#[test]
+	fn deltas_round_trip() {
+		let dir = tempdir().unwrap();
+		let cat = Catalog::new(dir.path());
+		let mut f = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
+		let row = BookDelta {
+			ts_event: 1,
+			ts_init: 2,
+			monotonic_seq: 9,
+			gapped: true,
+			side: Side::Buy,
+			price: 123.45,
+			qty: 0.0,
+		};
+		f.push(row);
+		let decoded = round_trip_batch(&mut f, &cat);
+		assert_eq!(decoded, vec![row]);
+	}
+
+	#[test]
+	fn snapshots_round_trip() {
+		let dir = tempdir().unwrap();
+		let cat = Catalog::new(dir.path());
+		let mut f = Feather::<BookSnapshot>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
+		f.push(BookSnapshot {
+			ts_event: 100,
+			ts_init: 110,
+			monotonic_seq: 1,
+			bid_prices: vec![100, 99],
+			bid_qtys: vec![10, 20],
+			ask_prices: vec![101, 102],
+			ask_qtys: vec![5, 7],
+		});
+		f.push(BookSnapshot {
+			ts_event: 200,
+			ts_init: 210,
+			monotonic_seq: 2,
+			bid_prices: vec![],
+			bid_qtys: vec![],
+			ask_prices: vec![103],
+			ask_qtys: vec![1],
+		});
+		let decoded = round_trip_batch(&mut f, &cat);
+		assert_eq!(decoded.len(), 2);
+		assert_eq!(decoded[0].bid_prices, vec![100, 99]);
+		assert_eq!(decoded[1].ask_prices, vec![103]);
+		assert_eq!(decoded[1].ts_event, 200);
+	}
+
+	#[test]
+	fn oi_round_trip() {
+		let dir = tempdir().unwrap();
+		let cat = Catalog::new(dir.path());
+		let mut f = Feather::<Oi>::new(ExchangeName::Bybit, test_symbol(), FOREVER);
+		let row = Oi { ts_event: 1, ts_init: 2, oi: 123_456.75 };
+		f.push(row);
+		let decoded = round_trip_batch(&mut f, &cat);
+		assert_eq!(decoded, vec![row]);
+	}
+
+	#[test]
+	fn mc_round_trip() {
+		let dir = tempdir().unwrap();
+		let cat = Catalog::new(dir.path());
+		let mut f = Feather::<Mc>::new(Asset::new("TAO"), FOREVER);
+		let with_rank = Mc {
+			ts_event: 1,
+			ts_init: 2,
+			market_cap: 2.5e9,
+			rank: Some(42),
+		};
+		let without_rank = Mc {
+			ts_event: 3,
+			ts_init: 4,
+			market_cap: 2.6e9,
+			rank: None,
+		};
+		f.push(with_rank);
+		f.push(without_rank);
+		let decoded = round_trip_batch(&mut f, &cat);
+		assert_eq!(decoded, vec![with_rank, without_rank]);
+	}
+
+	#[test]
+	#[should_panic(expected = "does not round-trip")]
+	fn precision_violation_panics() {
+		let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
+		f.push(Trade {
+			ts_event: 1,
+			ts_init: 1,
+			monotonic_seq: 1,
+			trade_id: 1,
+			side: Side::Buy,
+			price: 0.001, // 3 decimals under price precision 2
+			qty: 1.0,
+		});
 	}
 }

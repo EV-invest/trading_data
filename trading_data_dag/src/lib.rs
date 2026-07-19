@@ -23,6 +23,18 @@
 //!   No cross-symbol type-level machinery.
 //! - **Parallelism is across symbols (live) / episodes (backtest) only** — one graph per
 //!   unit, rayon across. Never intra-tick.
+//! - **Gates.** A [`Gate`] outputs plain `bool`; nodes naming it in [`Node::When`] are not
+//!   advanced at all while it is false — deps unpulled, out = [`Latent::latent`]. Laziness is
+//!   transitive only by declaration: give the same `When` to every node that exclusively
+//!   feeds gated nodes. A missed annotation is wasted work, never wrongness — except the
+//!   all-consumers-behind-one-gate case, which [`graph!`] rejects at compile time.
+//! - **Historic vs current.** Stateful derives (RSI, momentum) are *historic*: they must
+//!   advance every tick to stay warm, so gating one is a compile error. Only nodes declaring
+//!   [`Node::HISTORIC`]` = false` (*current*: skipping ticks is harmless) can be gated.
+//! - **Latches.** A [`Latch`] is a [`Gate`] armed by an external event and cut from within:
+//!   when its `Cut` node's out reads [`Episode::terminal`], [`graph!`] commutates it
+//!   post-sweep and resets every node gated on it to `Default` — a declared one-tick
+//!   back-edge (the synchronous-dataflow unit delay), never a `Deps` cycle.
 //!
 //! Impls that write concrete dep types hit E0195 (lifetime binder mismatch); use [`DepOuts`]
 //! so every impl is uniformly `fn advance<'t>(&mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>`.
@@ -67,6 +79,7 @@
 //! assert_eq!(f.head(), 43.0);
 //! ```
 #![no_std]
+#![feature(associated_type_defaults)]
 #![feature(const_type_name)]
 
 extern crate alloc;
@@ -193,6 +206,49 @@ impl core::fmt::Display for dyn Glance + '_ {
 	}
 }
 
+/// l/c/a only — hue is the renderer's; a node can never claim one.
+#[derive(Clone, Copy, Debug)]
+pub struct Ink {
+	pub l: f64,
+	pub c: f64,
+	pub a: f64,
+}
+
+impl Ink {
+	pub const FAINT: Ink = Ink { l: 0.55, c: 0.03, a: 0.35 };
+	pub const MAIN: Ink = Ink { l: 0.72, c: 0.13, a: 1.0 };
+}
+
+/// Constant horizontal guide line in the node's pane (e.g. RSI 30/70).
+#[derive(Clone, Copy, Debug)]
+pub struct Guide {
+	pub label: &'static str,
+	pub value: f64,
+	pub ink: Ink,
+}
+
+/// Optional drawing hints a node declares about its own output — the renderer owns everything
+/// else (hue above all). Defaults always suffice.
+#[derive(Clone, Copy, Debug)]
+pub struct Sketch {
+	/// Fixed y-scale, e.g. RSI (0, 100).
+	pub range: Option<(f64, f64)>,
+	pub guides: &'static [Guide],
+	/// Element names for vector outs; `[]` = indices.
+	pub labels: &'static [&'static str],
+	/// Per-element; `[]` = [`Ink::MAIN`] for all.
+	pub inks: &'static [Ink],
+}
+
+impl Sketch {
+	pub const DEFAULT: Sketch = Sketch {
+		range: None,
+		guides: &[],
+		labels: &[],
+		inks: &[],
+	};
+}
+
 pub trait DepSet {
 	type Outs<'t>;
 	const NAMES: &'static [&'static str];
@@ -217,9 +273,159 @@ pub trait Pull<'t, F, I>: DepSet {
 		F: 't;
 }
 
+/// The "didn't run" value for gated nodes. Implemented for `Option` only, so gating a
+/// non-`Option` node is a compile error — no dishonest zeros.
+pub trait Latent: Copy {
+	fn latent() -> Self;
+}
+impl<T: Copy> Latent for Option<T> {
+	fn latent() -> Self {
+		None
+	}
+}
+
+/// The gates a node waits on: `()` or a small tuple of [`Gate`]s, all of which must be true
+/// for its `advance` to run. Same arity ceiling note as deps.
+pub trait GateSet {
+	const NAMES: &'static [&'static str];
+}
+impl GateSet for () {
+	const NAMES: &'static [&'static str] = &[];
+}
+impl<A: Gate> GateSet for (A,) {
+	const NAMES: &'static [&'static str] = &[core::any::type_name::<A>()];
+}
+impl<A: Gate, B: Gate> GateSet for (A, B) {
+	const NAMES: &'static [&'static str] = &[core::any::type_name::<A>(), core::any::type_name::<B>()];
+}
+
 pub trait Node: Cell {
 	type Deps: DepSet;
+	type When: GateSet = ();
+	/// Historic nodes must advance every tick to stay warm; only current (`false`) nodes can
+	/// be gated — a gated historic node is a compile error:
+	///
+	/// ```compile_fail,E0080
+	/// use trading_data_dag::{Cell, Cons, DepOuts, Gate, Nil, Node, step};
+	///
+	/// struct Price;
+	/// impl Cell for Price {
+	/// 	type Out<'t> = f64;
+	/// }
+	///
+	/// struct Hot;
+	/// impl Cell for Hot {
+	/// 	type Out<'t> = bool;
+	/// }
+	/// impl Node for Hot {
+	/// 	type Deps = (Price,);
+	/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	/// 		p > 10.0
+	/// 	}
+	/// }
+	/// impl Gate for Hot {}
+	///
+	/// struct Expensive;
+	/// impl Cell for Expensive {
+	/// 	type Out<'t> = Option<f64>;
+	/// }
+	/// impl Node for Expensive {
+	/// 	type Deps = (Price,);
+	/// 	type When = (Hot,);
+	/// 	// HISTORIC left at its default `true`: does not compile.
+	/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	/// 		Some(p * 100.0)
+	/// 	}
+	/// }
+	///
+	/// let f = Cons::<Price, Nil> { out: 3.0, tail: Nil };
+	/// let f = step(f, &mut Hot);
+	/// let f = step(f, &mut Expensive);
+	/// ```
+	const HISTORIC: bool = true;
+	const SKETCH: Sketch = Sketch::DEFAULT;
 	fn advance<'t>(&mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
+}
+
+/// A binary control signal. Nodes naming it in [`Node::When`] are not advanced while it is
+/// false: deps not pulled, no work done, out = [`Latent::latent`].
+///
+/// ```
+/// use trading_data_dag::{Cell, Cons, DepOuts, Gate, Nil, Node, step};
+///
+/// struct Price;
+/// impl Cell for Price {
+/// 	type Out<'t> = f64;
+/// }
+///
+/// struct Hot;
+/// impl Cell for Hot {
+/// 	type Out<'t> = bool;
+/// }
+/// impl Node for Hot {
+/// 	type Deps = (Price,);
+/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
+/// 		p > 10.0
+/// 	}
+/// }
+/// impl Gate for Hot {}
+///
+/// struct Expensive;
+/// impl Cell for Expensive {
+/// 	type Out<'t> = Option<f64>;
+/// }
+/// impl Node for Expensive {
+/// 	type Deps = (Price,);
+/// 	type When = (Hot,);
+/// 	const HISTORIC: bool = false;
+/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
+/// 		Some(p * 100.0)
+/// 	}
+/// }
+///
+/// let f = Cons::<Price, Nil> { out: 3.0, tail: Nil };
+/// let f = step(f, &mut Hot);
+/// let f = step(f, &mut Expensive);
+/// assert_eq!(f.head(), None); // gate closed: advance never ran
+/// ```
+pub trait Gate: Node
+where
+	for<'t> Self: Cell<Out<'t> = bool>, {
+}
+
+/// Episode lifecycle on an out value; the initial state is the node's `Default`.
+pub trait Episode: Copy {
+	fn terminal(&self) -> bool;
+}
+
+/// `None` (latent / off-cadence) is never terminal.
+impl<T: Episode> Episode for Option<T> {
+	fn terminal(&self) -> bool {
+		match self {
+			Some(t) => t.terminal(),
+			None => false,
+		}
+	}
+}
+
+/// A [`Gate`] armed from outside and cut from within — the SCR/thyristor: an external event
+/// (its `Deps`) sets it, conduction latches in its own state, and it turns off by natural
+/// commutation when the episode it gates reaches a [`Episode::terminal`] out. No second
+/// external signal ever closes it.
+///
+/// `Cut` is read *post-sweep* by [`graph!`]: tick T the episode publishes its terminal out,
+/// the latch commutates after the sweep, tick T+1 the gated subtree is latent via the
+/// ordinary [`Drive`] skip and every node gated on the latch is reset to `Default` for a
+/// fresh episode. A trigger arriving during a live episode — including its terminal tick —
+/// is absorbed and lost to commutation: one episode at a time.
+pub trait Latch: Gate
+where
+	for<'t> Self: Cell<Out<'t> = bool>,
+	for<'t> <Self::Cut as Cell>::Out<'t>: Episode, {
+	/// The gated node whose terminal out commutates this latch — a declared one-tick
+	/// back-edge, not a `Deps` cycle.
+	type Cut: Cell;
+	fn commutate(&mut self);
 }
 
 /// Uniform binder-correct dep-tuple type for `advance` impls (concrete types there hit E0195).
@@ -334,6 +540,128 @@ impl_arity!(A Ia a, B Ib b, C Ic c, D Id d, E Ie e, G Ig g);
 impl_arity!(A Ia a, B Ib b, C Ic c, D Id d, E Ie e, G Ig g, H Ih h);
 impl_arity!(A Ia a, B Ib b, C Ic c, D Id d, E Ie e, G Ig g, H Ih h, J Ij j);
 
+/// [`step`]'s evaluation dispatch, keyed on the node's [`Node::When`]: ungated nodes advance
+/// unconditionally; gated nodes advance only while every gate reads true in the frame,
+/// yielding [`Latent::latent`] otherwise — deps not pulled. The `Has` bound on gate impls
+/// keeps the ordering guarantee: a node stepped before its gate does not compile, same story
+/// as [`Pull`]. `I`/`J` are inferred index paths — never named by callers.
+///
+/// ```compile_fail,E0277
+/// use trading_data_dag::{Cell, Cons, DepOuts, Gate, Nil, Node, step};
+///
+/// struct Price;
+/// impl Cell for Price {
+/// 	type Out<'t> = f64;
+/// }
+///
+/// struct Hot;
+/// impl Cell for Hot {
+/// 	type Out<'t> = bool;
+/// }
+/// impl Node for Hot {
+/// 	type Deps = (Price,);
+/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
+/// 		p > 10.0
+/// 	}
+/// }
+/// impl Gate for Hot {}
+///
+/// struct Expensive;
+/// impl Cell for Expensive {
+/// 	type Out<'t> = Option<f64>;
+/// }
+/// impl Node for Expensive {
+/// 	type Deps = (Price,);
+/// 	type When = (Hot,);
+/// 	const HISTORIC: bool = false;
+/// 	fn advance<'t>(&mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
+/// 		Some(p * 100.0)
+/// 	}
+/// }
+///
+/// // gated node stepped before its gate is in the frame: no `Has<Hot>` — does not compile.
+/// let f = Cons::<Price, Nil> { out: 3.0, tail: Nil };
+/// let f = step(f, &mut Expensive);
+/// let f = step(f, &mut Hot);
+/// ```
+pub trait Drive<'t, N: Node, F, I, J>: GateSet {
+	fn open(f: &F) -> bool
+	where
+		F: 't;
+	fn drive(node: &mut N, f: &F) -> N::Out<'t>
+	where
+		F: 't;
+}
+
+impl<'t, N, F, I> Drive<'t, N, F, I, ()> for ()
+where
+	N: Node<When = ()>,
+	N::Deps: Pull<'t, F, I>,
+{
+	fn open(_: &F) -> bool
+	where
+		F: 't, {
+		true
+	}
+
+	fn drive(node: &mut N, f: &F) -> N::Out<'t>
+	where
+		F: 't, {
+		node.advance(<N::Deps as Pull<'t, F, I>>::pull(f))
+	}
+}
+
+impl<'t, N, F, I, A, Ia> Drive<'t, N, F, I, (Ia,)> for (A,)
+where
+	A: Gate,
+	N: Node<When = (A,)>,
+	N::Deps: Pull<'t, F, I>,
+	F: Has<'t, A, Ia>,
+	for<'x> N::Out<'x>: Latent,
+{
+	fn open(f: &F) -> bool
+	where
+		F: 't, {
+		Has::<'t, A, Ia>::get(f)
+	}
+
+	fn drive(node: &mut N, f: &F) -> N::Out<'t>
+	where
+		F: 't, {
+		const { assert!(!N::HISTORIC, "historic node cannot be gated; declare `const HISTORIC: bool = false` or drop `When`") }
+		if !<Self as Drive<'t, N, F, I, (Ia,)>>::open(f) {
+			return Latent::latent();
+		}
+		node.advance(<N::Deps as Pull<'t, F, I>>::pull(f))
+	}
+}
+
+impl<'t, N, F, I, A, Ia, B, Ib> Drive<'t, N, F, I, (Ia, Ib)> for (A, B)
+where
+	A: Gate,
+	B: Gate,
+	N: Node<When = (A, B)>,
+	N::Deps: Pull<'t, F, I>,
+	F: Has<'t, A, Ia> + Has<'t, B, Ib>,
+	for<'x> N::Out<'x>: Latent,
+{
+	fn open(f: &F) -> bool
+	where
+		F: 't, {
+		Has::<'t, A, Ia>::get(f) && Has::<'t, B, Ib>::get(f)
+	}
+
+	fn drive(node: &mut N, f: &F) -> N::Out<'t>
+	where
+		F: 't, {
+		const { assert!(!N::HISTORIC, "historic node cannot be gated; declare `const HISTORIC: bool = false` or drop `When`") }
+		if !<Self as Drive<'t, N, F, I, (Ia, Ib)>>::open(f) {
+			return Latent::latent();
+		}
+		node.advance(<N::Deps as Pull<'t, F, I>>::pull(f))
+	}
+}
+
 /// Advances `node` over `frame` and pushes its output. The `Pull` bound is the engine's
 /// reason to exist: a node stepped before its deps are in the frame does not compile.
 ///
@@ -366,12 +694,12 @@ impl_arity!(A Ia a, B Ib b, C Ic c, D Id d, E Ie e, G Ig g, H Ih h, J Ij j);
 /// let f = step(Nil, &mut B);
 /// let f = step(f, &mut A);
 /// ```
-pub fn step<'t, N, F, I>(frame: F, node: &mut N) -> Cons<'t, N, F>
+pub fn step<'t, N, F, I, J>(frame: F, node: &mut N) -> Cons<'t, N, F>
 where
 	N: Node,
-	N::Deps: Pull<'t, F, I>,
+	N::When: Drive<'t, N, F, I, J>,
 	F: 't, {
-	let out = node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame));
+	let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
 	Cons { out, tail: frame }
 }
 
@@ -382,6 +710,7 @@ pub struct Fire<'a> {
 	/// Compact one-liner for viz cards; `debug` stays the full-detail view (hover/tooltip).
 	pub glance: &'a dyn Glance,
 	pub dims: &'static [usize],
+	pub sketch: &'static Sketch,
 	/// `None` = didn't fire.
 	pub vals: Option<&'a [f64]>,
 	pub dep_dims: &'a [&'static [usize]],
@@ -400,13 +729,14 @@ pub struct Fire<'a> {
 pub trait Observer {
 	/// Gates all flattening/FD work in [`step_obs`]; monomorphized away when `false`.
 	const ACTIVE: bool = true;
-	fn on(&mut self, node: &'static str, deps: &'static [&'static str], fire: Fire<'_>);
+	/// `gates` are the node's [`Node::When`] control edges (empty for ungated nodes and roots).
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [&'static str], fire: Fire<'_>);
 }
 
 impl Observer for () {
 	const ACTIVE: bool = false;
 
-	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: Fire<'_>) {}
+	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [&'static str], _: Fire<'_>) {}
 }
 
 /// [`step`] + [`Observer::on`] before the push. The `()` observer erases to exactly `step` —
@@ -417,14 +747,35 @@ impl Observer for () {
 /// pre-advance node, [`Flat::nudge`] one dep element, re-advance the clone, diff. This is why
 /// the bounds here require owned value outs — reference outs (`&'t Root`) can't nudge; graphs
 /// carrying those use [`step`].
-pub fn step_obs<'t, N, F, I, O: Observer>(frame: F, node: &mut N, obs: &mut O) -> Cons<'t, N, F>
+pub fn step_obs<'t, N, F, I, J, O: Observer>(frame: F, node: &mut N, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node + Clone,
+	N::When: Drive<'t, N, F, I, J>,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	N::Out<'t>: Flat + core::fmt::Debug + Glance,
 	F: 't, {
 	if !O::ACTIVE {
-		let out = node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame));
+		let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
+		return Cons { out, tail: frame };
+	}
+
+	// gate closed: no advance, no dep flatten, no FD — an unfired `Fire` is the honest view.
+	if !<N::When as Drive<'t, N, F, I, J>>::open(&frame) {
+		let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
+		obs.on(
+			core::any::type_name::<N>(),
+			<N::Deps as DepSet>::NAMES,
+			<N::When as GateSet>::NAMES,
+			Fire {
+				debug: &out,
+				glance: &out,
+				dims: <N::Out<'t> as Flat>::DIMS,
+				sketch: &N::SKETCH,
+				vals: None,
+				dep_dims: <N::Deps as DepFlat>::DIMS,
+				jac: None,
+			},
+		);
 		return Cons { out, tail: frame };
 	}
 
@@ -464,10 +815,12 @@ where
 	obs.on(
 		core::any::type_name::<N>(),
 		<N::Deps as DepSet>::NAMES,
+		<N::When as GateSet>::NAMES,
 		Fire {
 			debug: &out,
 			glance: &out,
 			dims: <N::Out<'t> as Flat>::DIMS,
+			sketch: &N::SKETCH,
 			vals: fired.then_some(out_buf.as_slice()),
 			dep_dims: <N::Deps as DepFlat>::DIMS,
 			jac: jac.as_deref(),
@@ -488,22 +841,164 @@ pub trait Dag: Default {
 	fn tick_obs(&mut self, ev: Option<Self::Event>, obs: &mut impl Observer);
 }
 
+/// `const_type_name` is feature-gated at the call site; this wrapper keeps [`graph!`] users
+/// off nightly feature attrs.
+#[doc(hidden)]
+pub const fn node_name<T>() -> &'static str {
+	core::any::type_name::<T>()
+}
+
+/// One node's compile-time shape, as [`graph!`] sees it. `name`/`deps`/`gates` are
+/// [`core::any::type_name`] strings: const-comparable, never persisted.
+#[doc(hidden)]
+pub struct NodeMeta {
+	pub name: &'static str,
+	pub deps: &'static [&'static str],
+	pub historic: bool,
+	pub gates: &'static [&'static str],
+}
+
+const fn str_eq(a: &str, b: &str) -> bool {
+	let (a, b) = (a.as_bytes(), b.as_bytes());
+	if a.len() != b.len() {
+		return false;
+	}
+	let mut i = 0;
+	while i < a.len() {
+		if a[i] != b[i] {
+			return false;
+		}
+		i += 1;
+	}
+	true
+}
+
+#[doc(hidden)]
+pub const fn contains(set: &[&str], name: &str) -> bool {
+	let mut i = 0;
+	while i < set.len() {
+		if str_eq(set[i], name) {
+			return true;
+		}
+		i += 1;
+	}
+	false
+}
+
+/// [`graph!`]'s completeness check: true when `name` is current, ungated, has in-graph
+/// consumers, and all of them sit behind one common gate (other than `name` itself) — sampling
+/// it while that gate is closed is pure waste, so it must be gated too or marked historic.
+/// Leaves (no in-graph consumers) are graph outputs — exempt.
+#[doc(hidden)]
+pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
+	let mut me = 0;
+	while me < nodes.len() && !str_eq(nodes[me].name, name) {
+		me += 1;
+	}
+	assert!(me < nodes.len(), "shadowed: name must be one of nodes");
+	if nodes[me].historic || !nodes[me].gates.is_empty() {
+		return false;
+	}
+	let mut fc = 0;
+	while fc < nodes.len() && !contains(nodes[fc].deps, name) {
+		fc += 1;
+	}
+	if fc == nodes.len() {
+		return false;
+	}
+	// a common gate must appear on the first consumer; try each of its gates against the rest
+	let mut g = 0;
+	while g < nodes[fc].gates.len() {
+		let gate = nodes[fc].gates[g];
+		if !str_eq(gate, name) {
+			let mut all = true;
+			let mut j = fc + 1;
+			while j < nodes.len() {
+				if contains(nodes[j].deps, name) && !contains(nodes[j].gates, gate) {
+					all = false;
+					break;
+				}
+				j += 1;
+			}
+			if all {
+				return true;
+			}
+		}
+		g += 1;
+	}
+	false
+}
+
 /// Wires a declared node list into a graph struct + typed out-struct + [`Dag`] impl. Fields in
 /// topo order — a wrong order fails the existing `Pull`/`Has` bounds at compile time. The root
 /// cell's `Out` must be `Option<Event>`. Out-struct fields keep each node's `Cell::Out`
 /// verbatim: Option-ness IS the multi-rate non-firing channel.
+///
+/// An optional `latch { field: Type, ... }` group names [`Latch`] fields (which also appear
+/// in the node list, at their topo position). Post-sweep, a latch whose `Cut` out reads
+/// [`Episode::terminal`] is commutated and every field gated on it reset to `Default` — the
+/// out-struct still carries the terminal tick's values.
 #[macro_export]
 macro_rules! graph {
+	// cross-product (each latch × every field) exceeds macro_rules' lockstep repetition rule;
+	// this tt-muncher peels one latch per step, re-passing the full field list.
+	(@commutate $self:ident, $f:ident, [] [$($field:ident: $Node:ty),*]) => {};
+	(@commutate $self:ident, $f:ident,
+		[$lfield:ident: $Latch:ty $(, $lrest:ident: $LRest:ty)*]
+		[$($field:ident: $Node:ty),*]
+	) => {
+		if $crate::Episode::terminal(&$crate::Has::<<$Latch as $crate::Latch>::Cut, _>::get(&$f)) {
+			<$Latch as $crate::Latch>::commutate(&mut $self.$lfield);
+			$(
+				if const {
+					$crate::contains(<<$Node as $crate::Node>::When as $crate::GateSet>::NAMES, $crate::node_name::<$Latch>())
+				} {
+					$self.$field = ::core::default::Default::default();
+				}
+			)*
+		}
+		$crate::graph!(@commutate $self, $f, [$($lrest: $LRest),*] [$($field: $Node),*]);
+	};
 	(
 		$vis:vis struct $Graph:ident;
 		root $Root:ty, event $Event:ty;
 		out $Out:ident;
 		$($field:ident: $Node:ty),+ $(,)?
 	) => {
+		$crate::graph! {
+			$vis struct $Graph;
+			root $Root, event $Event;
+			out $Out;
+			latch {}
+			$($field: $Node),+
+		}
+	};
+	(
+		$vis:vis struct $Graph:ident;
+		root $Root:ty, event $Event:ty;
+		out $Out:ident;
+		latch { $($lfield:ident: $Latch:ty),* $(,)? }
+		$($field:ident: $Node:ty),+ $(,)?
+	) => {
 		#[derive(Default)]
 		$vis struct $Graph {
 			$($field: $Node,)+
 		}
+
+		const _: () = {
+			const METAS: &[$crate::NodeMeta] = &[$(
+				$crate::NodeMeta {
+					name: $crate::node_name::<$Node>(),
+					deps: <<$Node as $crate::Node>::Deps as $crate::DepSet>::NAMES,
+					historic: <$Node as $crate::Node>::HISTORIC,
+					gates: <<$Node as $crate::Node>::When as $crate::GateSet>::NAMES,
+				},
+			)+];
+			$(assert!(
+				!$crate::shadowed($crate::node_name::<$Node>(), METAS),
+				concat!(stringify!($Node), " is only consumed under a gate: gate it too, or mark it historic")
+			);)+
+		};
 
 		#[derive(Clone, Copy, Debug)]
 		$vis struct $Out {
@@ -519,6 +1014,7 @@ macro_rules! graph {
 				$crate::observe_root::<$Root, _>(ev, obs);
 				let f = $crate::Cons::<$Root, $crate::Nil> { out: ev, tail: $crate::Nil };
 				$(let f = $crate::step_obs(f, &mut self.$field, obs);)+
+				$crate::graph!(@commutate self, f, [$($lfield: $Latch),*] [$($field: $Node),*]);
 				$Out {
 					$($field: $crate::Has::<$Node, _>::get(&f),)+
 				}
@@ -551,10 +1047,12 @@ where
 	obs.on(
 		core::any::type_name::<C>(),
 		&[],
+		&[],
 		Fire {
 			debug: &out,
 			glance: &out,
 			dims: <C::Out<'t> as Flat>::DIMS,
+			sketch: &Sketch::DEFAULT,
 			vals: fired.then_some(buf.as_slice()),
 			dep_dims: &[],
 			jac: None,

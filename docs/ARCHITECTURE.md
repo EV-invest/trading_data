@@ -23,7 +23,7 @@ trading_data_persistence    arrow/parquet — catalog, lanes, feather writer, ty
                    ▲
     trading_data_demo (examples/demo)   end-to-end demo; depends ONLY on the facade (facade-sufficiency test)
 
-trading_data_macros                  future `graph!` (pure ergonomics — `Pull` already rejects bad orders)
+trading_data_macros                  reserved for proc macros (`graph!` shipped as macro_rules in the dag crate)
 ```
 
 `trading_data_dag`'s `no_std` IS the enforced boundary: the engine can never grow domain or I/O
@@ -75,6 +75,17 @@ Structural rules (enforced by the signatures, not convention):
   compile error; distinguish via newtypes/const generics (`Rsi<14>` vs `Rsi<28>`).
 - Time-windowed logic with no event flow (expiry, decay) gets a `Time` root cell seeded each
   tick.
+- **Gates + historic/current.** A `Gate` is a bool-out node; nodes naming it in `When` are
+  skipped entirely while it's false (out = `None`). *Historic* nodes (stateful — RSI,
+  momentum) must advance every tick to stay warm: gating one is a compile error; only
+  declared-*current* nodes can be gated. A current node whose every in-graph consumer sits
+  behind one gate must be gated too — `graph!` rejects the omission at compile time.
+- **Latches.** A `Latch` is a `Gate` armed from outside and cut from within (an SCR: gate
+  pulse triggers, natural commutation turns off): an external event in its deps arms it; when
+  its named `Cut` node publishes an `Episode::terminal` out, `graph!` commutates it post-sweep
+  and resets every node gated on it to `Default` — next trigger starts a fresh episode. The
+  back-edge is a declared one-tick delay, never a `Deps` cycle. One episode at a time:
+  triggers during a live episode are absorbed.
 - **Universe/cross-sectional ops** are graph composition, not an execution tier: per-symbol
   graphs are values; a universe-level graph ticks at bar cadence, its roots seeded from the
   per-symbol graphs' collected outputs.

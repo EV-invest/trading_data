@@ -1,13 +1,13 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use v_utils::trades::{ExchangeName, Instrument, Pair, PrecisionPriceQty, Symbol};
+use v_utils::trades::{ExchangeName, Instrument, Pair, PrecisionPriceQty, Side, Symbol};
 
 use crate::{
 	book::BookShape,
-	catalog::{Catalog, CatalogError, Lane, LaneKey},
+	catalog::{Catalog, CatalogError},
 	clock::Clock,
-	feather::{Feather, RotationPolicy},
-	schema::{BookDelta, FileMetadata},
+	feather::Feather,
+	row::{BookDelta, BookSnapshot, Row as _},
 };
 
 pub struct LiveBook {
@@ -27,17 +27,12 @@ impl LiveBook {
 
 	pub fn persisting(catalog: Catalog, exchange: ExchangeName, pair: Pair, instrument: Instrument, prec: PrecisionPriceQty, clock: Arc<dyn Clock>) -> Self {
 		let symbol = Symbol::new(pair, instrument);
-		let meta = FileMetadata {
-			exchange: exchange.to_string(),
-			pair: pair.to_string(),
-			price_precision: prec.price,
-			qty_precision: prec.qty,
-		};
 		let sink = BookSink {
-			snapshots: Feather::new_snapshots(LaneKey::book(Lane::Snapshots, exchange, symbol), meta.clone(), RotationPolicy::snapshots()),
-			deltas: Feather::new_deltas(LaneKey::book(Lane::Deltas, exchange, symbol), meta, RotationPolicy::deltas()),
+			snapshots: Feather::<BookSnapshot>::new(exchange, symbol, prec, BookSnapshot::POLICY),
+			deltas: Feather::<BookDelta>::new(exchange, symbol, prec, BookDelta::POLICY),
 			catalog,
 			clock,
+			prec,
 			monotonic: 0,
 		};
 		Self {
@@ -93,9 +88,10 @@ fn apply(side: &mut BTreeMap<i32, u32>, changes: &BTreeMap<i32, u32>) {
 struct BookSink {
 	catalog: Catalog,
 	clock: Arc<dyn Clock>,
+	prec: PrecisionPriceQty,
 	monotonic: u64,
-	snapshots: Feather,
-	deltas: Feather,
+	snapshots: Feather<BookSnapshot>,
+	deltas: Feather<BookDelta>,
 }
 
 impl BookSink {
@@ -103,44 +99,40 @@ impl BookSink {
 		let ts = shape.ts_event.as_nanosecond() as i64;
 		let now = self.clock.now_ns();
 		self.monotonic += 1;
-		self.snapshots.push_snapshot(
-			ts,
-			now,
-			self.monotonic,
-			shape.bids.keys().copied(),
-			shape.bids.values().copied(),
-			shape.asks.keys().copied(),
-			shape.asks.values().copied(),
-		);
+		self.snapshots.push(BookSnapshot {
+			ts_event: ts,
+			ts_init: now,
+			monotonic_seq: self.monotonic,
+			bid_prices: shape.bids.keys().copied().collect(),
+			bid_qtys: shape.bids.values().copied().collect(),
+			ask_prices: shape.asks.keys().copied().collect(),
+			ask_qtys: shape.asks.values().copied().collect(),
+		});
 		self.snapshots.maybe_flush(&self.catalog).expect("snapshot feather flush failed: catalog state corrupted");
 	}
 
 	fn persist_delta(&mut self, shape: &BookShape, gapped: bool) {
 		let ts = shape.ts_event.as_nanosecond() as i64;
 		let now = self.clock.now_ns();
-		for (&price, &qty) in &shape.bids {
+		let p_scale = 10f64.powi(self.prec.price as i32);
+		let q_scale = 10f64.powi(self.prec.qty as i32);
+		let mut push = |side: Side, price: i32, qty: u32| {
 			self.monotonic += 1;
-			self.deltas.push_delta(BookDelta {
+			self.deltas.push(BookDelta {
 				ts_event: ts,
 				ts_init: now,
 				monotonic_seq: self.monotonic,
 				gapped,
-				side: 0,
-				price_raw: price,
-				qty_raw: qty,
+				side,
+				price: price as f64 / p_scale,
+				qty: qty as f64 / q_scale,
 			});
+		};
+		for (&price, &qty) in &shape.bids {
+			push(Side::Buy, price, qty);
 		}
 		for (&price, &qty) in &shape.asks {
-			self.monotonic += 1;
-			self.deltas.push_delta(BookDelta {
-				ts_event: ts,
-				ts_init: now,
-				monotonic_seq: self.monotonic,
-				gapped,
-				side: 1,
-				price_raw: price,
-				qty_raw: qty,
-			});
+			push(Side::Sell, price, qty);
 		}
 		self.deltas.maybe_flush(&self.catalog).expect("delta feather flush failed: catalog state corrupted");
 	}

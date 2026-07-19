@@ -51,6 +51,7 @@ miette = { version = "^7.6.0", features = ["fancy", "serde", "syntect-highlighte
 parquet = { version = "59", features = ["arrow", "snap", "zstd"] }
 proc-macro2 = "^1"
 quote = "^1"
+serde_json = "^1"
 syn = { version = "^2", features = ["full", "extra-traits"] }
 tempfile = "3"
 thiserror = "^2.0"
