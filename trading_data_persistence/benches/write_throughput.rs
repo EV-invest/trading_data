@@ -42,7 +42,8 @@ fn push_200_snapshots() {
 	let dir = TempDir::new().unwrap();
 	let cat = Catalog::new(dir.path());
 	let symbol = test_symbol();
-	let mut live = LiveBook::persisting(cat, ExchangeName::Binance, symbol.pair, symbol.instrument, prec(), Arc::new(LiveClock));
+	let mut live = Live::new(cat, ExchangeName::Binance, symbol, prec(), true, Arc::new(LiveClock));
+	let sink = live.sink();
 	for i in 0..N_SNAPSHOTS {
 		let ts = jiff::Timestamp::from_nanosecond((i as i128) * 1_000_000_000).unwrap();
 		let shape = BookShape {
@@ -53,8 +54,10 @@ fn push_200_snapshots() {
 			bids: (0..LEVELS).map(|p| (p, p as u32 + 1)).collect(),
 			asks: (LEVELS..2 * LEVELS).map(|p| (p, p as u32 + 1)).collect(),
 		};
-		live.snapshot(&shape);
+		sink.book(BookUpdate::Snapshot(shape));
 	}
+	drop(sink);
+	while live.next_batch().is_some() {}
 	black_box(&live);
 }
 

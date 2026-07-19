@@ -764,6 +764,13 @@ pub fn event_id<T: 'static>() -> TypeId {
 	TypeId::of::<T>()
 }
 
+/// A graph's required root events — its dep tree, computed in isolation: the `TypeId` of each
+/// declared root event whose root is consumed by some node. [`graph!`] implements it; the facade
+/// maps the `TypeId`s to source lanes.
+pub trait Roots {
+	fn required_events() -> alloc::vec::Vec<TypeId>;
+}
+
 #[doc(hidden)]
 pub use alloc::vec::Vec as MacroVec;
 

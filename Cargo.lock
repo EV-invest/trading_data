@@ -3039,6 +3039,7 @@ dependencies = [
  "jiff",
  "serde_json",
  "trading_data",
+ "trading_data_dag",
  "ureq",
  "v_utils",
 ]

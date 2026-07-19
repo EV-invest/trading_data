@@ -219,9 +219,9 @@ pub fn graph(input: TokenStream) -> TokenStream {
 			pub __lt: ::core::marker::PhantomData<&'t ()>,
 		}
 
-		impl #graph {
+		impl #dag::Roots for #graph {
 			/// `TypeId`s of the events whose root is consumed by some node (the dep tree).
-			#vis fn required_events() -> #dag::MacroVec<::core::any::TypeId> {
+			fn required_events() -> #dag::MacroVec<::core::any::TypeId> {
 				const NAMES: &[&[&str]] = &[#(<<#node_tys as #dag::Node>::Deps as #dag::DepSet>::NAMES),*];
 				let mut out = #dag::MacroVec::new();
 				#(
@@ -231,7 +231,9 @@ pub fn graph(input: TokenStream) -> TokenStream {
 				)*
 				out
 			}
+		}
 
+		impl #graph {
 			#vis fn tick<'t>(&'t mut self, b: #batches<'t>) -> #out<'t> {
 				self.tick_obs(b, &mut ())
 			}

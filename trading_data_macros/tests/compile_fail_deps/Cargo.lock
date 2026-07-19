@@ -42,6 +42,9 @@ dependencies = [
 [[package]]
 name = "trading_data_dag"
 version = "0.3.0"
+dependencies = [
+ "trading_data_macros",
+]
 
 [[package]]
 name = "trading_data_macros"

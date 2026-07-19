@@ -5,7 +5,7 @@
 
 use core::any::TypeId;
 
-use trading_data_dag::{Cell, DepOuts, Episode, Flat, Gate, Glance, Latch, Node, Nudge};
+use trading_data_dag::{Cell, DepOuts, Episode, Flat, Gate, Glance, Latch, Node, Nudge, Roots};
 use trading_data_macros::graph;
 
 #[derive(Clone, Copy, Debug)]
