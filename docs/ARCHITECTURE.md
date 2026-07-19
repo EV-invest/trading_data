@@ -80,6 +80,12 @@ Structural rules (enforced by the signatures, not convention):
   momentum) must advance every tick to stay warm: gating one is a compile error; only
   declared-*current* nodes can be gated. A current node whose every in-graph consumer sits
   behind one gate must be gated too — `graph!` rejects the omission at compile time.
+- **Latches.** A `Latch` is a `Gate` armed from outside and cut from within (an SCR: gate
+  pulse triggers, natural commutation turns off): an external event in its deps arms it; when
+  its named `Cut` node publishes an `Episode::terminal` out, `graph!` commutates it post-sweep
+  and resets every node gated on it to `Default` — next trigger starts a fresh episode. The
+  back-edge is a declared one-tick delay, never a `Deps` cycle. One episode at a time:
+  triggers during a live episode are absorbed.
 - **Universe/cross-sectional ops** are graph composition, not an execution tier: per-symbol
   graphs are values; a universe-level graph ticks at bar cadence, its roots seeded from the
   per-symbol graphs' collected outputs.

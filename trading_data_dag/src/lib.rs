@@ -31,6 +31,10 @@
 //! - **Historic vs current.** Stateful derives (RSI, momentum) are *historic*: they must
 //!   advance every tick to stay warm, so gating one is a compile error. Only nodes declaring
 //!   [`Node::HISTORIC`]` = false` (*current*: skipping ticks is harmless) can be gated.
+//! - **Latches.** A [`Latch`] is a [`Gate`] armed by an external event and cut from within:
+//!   when its `Cut` node's out reads [`Episode::terminal`], [`graph!`] commutates it
+//!   post-sweep and resets every node gated on it to `Default` — a declared one-tick
+//!   back-edge (the synchronous-dataflow unit delay), never a `Deps` cycle.
 //!
 //! Impls that write concrete dep types hit E0195 (lifetime binder mismatch); use [`DepOuts`]
 //! so every impl is uniformly `fn advance<'t>(&mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>`.
@@ -387,6 +391,41 @@ pub trait Node: Cell {
 pub trait Gate: Node
 where
 	for<'t> Self: Cell<Out<'t> = bool>, {
+}
+
+/// Episode lifecycle on an out value; the initial state is the node's `Default`.
+pub trait Episode: Copy {
+	fn terminal(&self) -> bool;
+}
+
+/// `None` (latent / off-cadence) is never terminal.
+impl<T: Episode> Episode for Option<T> {
+	fn terminal(&self) -> bool {
+		match self {
+			Some(t) => t.terminal(),
+			None => false,
+		}
+	}
+}
+
+/// A [`Gate`] armed from outside and cut from within — the SCR/thyristor: an external event
+/// (its `Deps`) sets it, conduction latches in its own state, and it turns off by natural
+/// commutation when the episode it gates reaches a [`Episode::terminal`] out. No second
+/// external signal ever closes it.
+///
+/// `Cut` is read *post-sweep* by [`graph!`]: tick T the episode publishes its terminal out,
+/// the latch commutates after the sweep, tick T+1 the gated subtree is latent via the
+/// ordinary [`Drive`] skip and every node gated on the latch is reset to `Default` for a
+/// fresh episode. A trigger arriving during a live episode — including its terminal tick —
+/// is absorbed and lost to commutation: one episode at a time.
+pub trait Latch: Gate
+where
+	for<'t> Self: Cell<Out<'t> = bool>,
+	for<'t> <Self::Cut as Cell>::Out<'t>: Episode, {
+	/// The gated node whose terminal out commutates this latch — a declared one-tick
+	/// back-edge, not a `Deps` cycle.
+	type Cut: Cell;
+	fn commutate(&mut self);
 }
 
 /// Uniform binder-correct dep-tuple type for `advance` impls (concrete types there hit E0195).
@@ -834,7 +873,8 @@ const fn str_eq(a: &str, b: &str) -> bool {
 	true
 }
 
-const fn contains(set: &[&str], name: &str) -> bool {
+#[doc(hidden)]
+pub const fn contains(set: &[&str], name: &str) -> bool {
 	let mut i = 0;
 	while i < set.len() {
 		if str_eq(set[i], name) {
@@ -893,12 +933,51 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 /// topo order — a wrong order fails the existing `Pull`/`Has` bounds at compile time. The root
 /// cell's `Out` must be `Option<Event>`. Out-struct fields keep each node's `Cell::Out`
 /// verbatim: Option-ness IS the multi-rate non-firing channel.
+///
+/// An optional `latch { field: Type, ... }` group names [`Latch`] fields (which also appear
+/// in the node list, at their topo position). Post-sweep, a latch whose `Cut` out reads
+/// [`Episode::terminal`] is commutated and every field gated on it reset to `Default` — the
+/// out-struct still carries the terminal tick's values.
 #[macro_export]
 macro_rules! graph {
+	// cross-product (each latch × every field) exceeds macro_rules' lockstep repetition rule;
+	// this tt-muncher peels one latch per step, re-passing the full field list.
+	(@commutate $self:ident, $f:ident, [] [$($field:ident: $Node:ty),*]) => {};
+	(@commutate $self:ident, $f:ident,
+		[$lfield:ident: $Latch:ty $(, $lrest:ident: $LRest:ty)*]
+		[$($field:ident: $Node:ty),*]
+	) => {
+		if $crate::Episode::terminal(&$crate::Has::<<$Latch as $crate::Latch>::Cut, _>::get(&$f)) {
+			<$Latch as $crate::Latch>::commutate(&mut $self.$lfield);
+			$(
+				if const {
+					$crate::contains(<<$Node as $crate::Node>::When as $crate::GateSet>::NAMES, $crate::node_name::<$Latch>())
+				} {
+					$self.$field = ::core::default::Default::default();
+				}
+			)*
+		}
+		$crate::graph!(@commutate $self, $f, [$($lrest: $LRest),*] [$($field: $Node),*]);
+	};
 	(
 		$vis:vis struct $Graph:ident;
 		root $Root:ty, event $Event:ty;
 		out $Out:ident;
+		$($field:ident: $Node:ty),+ $(,)?
+	) => {
+		$crate::graph! {
+			$vis struct $Graph;
+			root $Root, event $Event;
+			out $Out;
+			latch {}
+			$($field: $Node),+
+		}
+	};
+	(
+		$vis:vis struct $Graph:ident;
+		root $Root:ty, event $Event:ty;
+		out $Out:ident;
+		latch { $($lfield:ident: $Latch:ty),* $(,)? }
 		$($field:ident: $Node:ty),+ $(,)?
 	) => {
 		#[derive(Default)]
@@ -935,6 +1014,7 @@ macro_rules! graph {
 				$crate::observe_root::<$Root, _>(ev, obs);
 				let f = $crate::Cons::<$Root, $crate::Nil> { out: ev, tail: $crate::Nil };
 				$(let f = $crate::step_obs(f, &mut self.$field, obs);)+
+				$crate::graph!(@commutate self, f, [$($lfield: $Latch),*] [$($field: $Node),*]);
 				$Out {
 					$($field: $crate::Has::<$Node, _>::get(&f),)+
 				}
