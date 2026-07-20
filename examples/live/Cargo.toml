@@ -1,0 +1,26 @@
+[package]
+name = "trading_data_live_example"
+description = "End-to-end live proof: 15s of real Bybit BTC-USDT perp trades+book through the graph, recorded, then replayed identically"
+publish = false
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+color-eyre.workspace = true
+jiff.workspace = true
+miette.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+trading_data.workspace = true
+trading_data_dag.workspace = true
+v_exchanges = { workspace = true }
+v_utils.workspace = true
+
+[lints]
+workspace = true

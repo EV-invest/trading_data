@@ -57,8 +57,9 @@ fn collect(feed: &mut impl Feed) -> Vec<Sum> {
 	out
 }
 
-fn shape(clock: &EventClock, bids: &[(i32, u32)], asks: &[(i32, u32)]) -> BookShape {
-	let t = Timestamp::from_nanosecond(clock.now_ns() as i128).expect("in range");
+// ts_init is stamped at ingest, so a placeholder here is fine; ts_event is the exchange event time.
+fn shape(bids: &[(i32, u32)], asks: &[(i32, u32)]) -> BookShape {
+	let t = Timestamp::from_nanosecond(1_000).expect("in range");
 	BookShape {
 		ts_event: t,
 		ts_init: t,
@@ -97,9 +98,9 @@ fn main() {
 			oi: 42.0,
 		});
 		sink.trade(trade(2));
-		sink.book(BookUpdate::Snapshot(shape(&clock, &[(10_000, 5), (9_999, 3)], &[(10_001, 4), (10_002, 6)])));
+		sink.book(BookUpdate::Snapshot(shape(&[(10_000, 5), (9_999, 3)], &[(10_001, 4), (10_002, 6)])));
 		sink.book(BookUpdate::BatchDelta {
-			shape: shape(&clock, &[(9_998, 2)], &[(10_003, 1)]),
+			shape: shape(&[(9_998, 2)], &[(10_003, 1)]),
 			gapped: false,
 		});
 		sink.trade(trade(3));
@@ -109,7 +110,7 @@ fn main() {
 			oi: 43.0,
 		});
 		sink.book(BookUpdate::BatchDelta {
-			shape: shape(&clock, &[(9_997, 7)], &[]),
+			shape: shape(&[(9_997, 7)], &[]),
 			gapped: false,
 		});
 
@@ -137,4 +138,71 @@ fn main() {
 	assert!(live_summary.iter().filter(|s| matches!(s, Sum::Oi(_))).count() >= 1, "oi must weave");
 
 	println!("sync_round_trip: {} batches, identical live≡replay. ok", live_summary.len());
+
+	concurrent_streaming_matches_replay();
+}
+
+/// The paramount path: consume a `Live` feed *concurrently* with a producer thread (bounded
+/// streaming, blocking-recv drain), then replay the recording — the flattened event streams must
+/// match. Deterministic: one producer sends in a fixed order, ingest stamps in receive order.
+fn concurrent_streaming_matches_replay() {
+	use std::{thread, time::Duration};
+
+	let dir = tempdir().expect("temp dir");
+	let catalog = Catalog::new(dir.path());
+	let clock = Arc::new(EventClock(AtomicI64::new(1_000_000_000)));
+
+	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(), PREC, true, clock);
+	let sink = live.sink();
+	let producer = thread::spawn(move || {
+		for i in 0..40u64 {
+			sink.trade(Trade {
+				ts_event: 1_000,
+				ts_init: None,
+				monotonic_seq: i,
+				trade_id: i,
+				side: if i % 2 == 0 { Side::Buy } else { Side::Sell },
+				price: 100.0 + i as f64,
+				qty: 0.5,
+			});
+			if i % 4 == 0 {
+				sink.oi(Oi {
+					ts_event: 1_000,
+					ts_init: None,
+					oi: i as f64,
+				});
+			}
+			thread::sleep(Duration::from_micros(100)); // let the consumer find the channel empty and block
+		}
+		// sink dropped here → channel disconnects once the feed's own tx is gone
+	});
+
+	let live_flat = flat(&mut live);
+	producer.join().expect("producer panicked");
+
+	let latency = LatencyConfig {
+		p68: Duration::from_millis(10),
+		p95: Duration::from_millis(30),
+		p997: Duration::from_millis(90),
+		seed: 2,
+	};
+	let mut replay = Replay::new(&catalog, ExchangeName::Bybit, symbol(), 0, i64::MAX, &[LaneKind::Trades, LaneKind::Oi], latency);
+	let replay_flat = flat(&mut replay);
+
+	assert_eq!(live_flat, replay_flat, "concurrent streaming diverged from replay");
+	assert_eq!(live_flat.iter().filter(|(lane, _)| *lane == b't').count(), 40, "all 40 trades must weave");
+	println!("concurrent streaming: {} events, live≡replay. ok", live_flat.len());
+}
+
+/// Flatten a feed to `(lane_tag, seq)` per event, in emission order — robust to batch chunking.
+fn flat(feed: &mut impl Feed) -> Vec<(u8, u64)> {
+	let mut out = Vec::new();
+	while let Some(b) = feed.next_batch() {
+		match b {
+			Batch::Trades(ts) => out.extend(ts.iter().map(|t| (b't', t.monotonic_seq))),
+			Batch::Oi(os) => out.extend(os.iter().map(|o| (b'o', o.ts_init.expect("recorded") as u64))),
+			other => panic!("unexpected lane: {other:?}"),
+		}
+	}
+	out
 }

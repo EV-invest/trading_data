@@ -1,11 +1,14 @@
 //! Central replay: one graph, one router, two feeds. A [`Feed`] weaves the required source lanes
 //! into a single arrival-ordered stream of same-type [`Batch`]es. [`Replay`] is the backtest feed
 //! over a catalog; [`Live`] is the live feed over push handles, teeing into the same Feather lanes
-//! a backtest later reads — so a live recording replays into the *identical* batch stream.
+//! a backtest later reads — so a live recording replays into the *identical* event stream.
 //!
-//! Effective (arrival) time of every event is `ts_init` when real (live-recorded), else
-//! latency-simulated from `ts_event`. The weaver merges lanes by effective time and slices runs of
-//! one type, bounded by every other lane's head so the interleave is exact.
+//! Effective (arrival) time of every event is `ts_init`. For [`Replay`] that's the recorded value,
+//! or a latency-simulation of `ts_event` for historic (`None`) rows. For [`Live`], `ts_init` is
+//! stamped at **ingest** — a single point, on the consumer thread — so it is monotonic without
+//! cross-thread races, and everything currently buffered is a complete prefix (every future event
+//! gets a larger stamp). That is what lets [`Live`] weave-and-emit incrementally and drop consumed
+//! rows: **bounded memory, no end-of-stream buffering, no quiet-lane stall.**
 
 use std::sync::{
 	Arc,
@@ -80,6 +83,10 @@ impl<T> Lane<T> {
 		self.ts.get(self.cur).copied()
 	}
 
+	fn is_empty(&self) -> bool {
+		self.cur >= self.ts.len()
+	}
+
 	fn push(&mut self, ts: i64, row: T) {
 		debug_assert!(self.ts.last().is_none_or(|&last| ts >= last), "lane timestamps must be non-decreasing");
 		self.ts.push(ts);
@@ -93,6 +100,16 @@ impl<T> Lane<T> {
 			e += 1;
 		}
 		e
+	}
+
+	/// Reclaim the emitted prefix so a streaming lane stays bounded to its un-emitted window.
+	/// Amortized O(1)/element: only compacts once the consumed prefix dominates.
+	fn compact(&mut self) {
+		if self.cur > 0 && self.cur * 2 >= self.ts.len() {
+			self.ts.drain(..self.cur);
+			self.rows.drain(..self.cur);
+			self.cur = 0;
+		}
 	}
 }
 
@@ -109,6 +126,18 @@ struct Weaver {
 }
 
 impl Weaver {
+	fn is_empty(&self) -> bool {
+		self.trades.is_empty() && self.deltas.is_empty() && self.anchors.is_empty() && self.oi.is_empty() && self.mc.is_empty()
+	}
+
+	fn compact(&mut self) {
+		self.trades.compact();
+		self.deltas.compact();
+		self.anchors.compact();
+		self.oi.compact();
+		self.mc.compact();
+	}
+
 	fn next_batch(&mut self) -> Option<Batch<'_>> {
 		let heads = [self.trades.head(), self.deltas.head(), self.anchors.head(), self.oi.head(), self.mc.head()];
 		let winner = (0..heads.len()).filter(|&i| heads[i].is_some()).min_by_key(|&i| heads[i].expect("filtered to Some"))?;
@@ -173,6 +202,11 @@ fn snapshot_shape(row: &BookSnapshot, prec: PrecisionPriceQty) -> BookShape {
 
 /// Backtest feed: fills the weaver from the catalog's lanes, then emits their arrival-ordered
 /// merge. Historic rows (`ts_init = None`) get simulated arrival via `latency`.
+///
+// ponytail: eager-loads the whole [start,end] range into memory. Fine for day-scale ranges (a day
+// of trades is a few MB) and it streams from disk one file at a time while filling. For very large
+// ranges, chunk the range across successive `Replay`s, or make the fill lazy (hold the `LaneReader`s
+// and refill each lane to a lookahead watermark) — same `Weaver` core, per-lane exhaustion is known.
 pub struct Replay {
 	weaver: Weaver,
 }
@@ -236,6 +270,7 @@ impl Feed for Replay {
 
 /// A live event pushed through a [`Live`] handle. Crate-private: per-event dispatch is acceptable
 /// at network rates and preserves total arrival order across lanes, which per-lane channels can't.
+/// Carries no arrival time — [`Live::ingest`] stamps `ts_init` on the consumer thread.
 enum LiveEvt {
 	Trade(Trade),
 	Book(BookUpdate),
@@ -243,27 +278,23 @@ enum LiveEvt {
 	Mc(Mc),
 }
 
-/// Cloneable push handle stamping `ts_init` on the caller's thread. Book updates carry their own
-/// receipt time in the shape, so only trade/oi/mc handles consult the clock.
+/// Cloneable push handle: just enqueues. Arrival time is stamped at ingest (single-threaded), so
+/// the handle is clock-free and cheap to clone across pump tasks.
 #[derive(Clone)]
 pub struct Sink {
 	tx: Sender<LiveEvt>,
-	clock: Arc<dyn Clock>,
 }
 
 impl Sink {
-	pub fn trade(&self, mut t: Trade) {
-		t.ts_init = Some(self.clock.now_ns());
+	pub fn trade(&self, t: Trade) {
 		self.tx.send(LiveEvt::Trade(t)).ok();
 	}
 
-	pub fn oi(&self, mut o: Oi) {
-		o.ts_init = Some(self.clock.now_ns());
+	pub fn oi(&self, o: Oi) {
 		self.tx.send(LiveEvt::Oi(o)).ok();
 	}
 
-	pub fn mc(&self, mut m: Mc) {
-		m.ts_init = Some(self.clock.now_ns());
+	pub fn mc(&self, m: Mc) {
 		self.tx.send(LiveEvt::Mc(m)).ok();
 	}
 
@@ -282,22 +313,25 @@ struct Record {
 	mc: Feather<Mc>,
 }
 
-/// Live feed: drains the ordered event queue into the same weaver, optionally teeing every event
-/// into its Feather lane. Bounded record sessions drain to end-of-stream (all senders dropped),
-/// then emit the identical batch stream a [`Replay`] would — the live≡backtest invariant.
-///
-// ponytail: drains to end-of-stream then weaves (guarantees byte-identical replay); streaming
-// mid-session emission is a future refinement, not needed for bounded record runs.
+/// Live feed. `next_batch` drains what's currently available (blocking for the first event),
+/// stamps each with a monotonic arrival time, weaves one batch, and drops consumed rows — memory
+/// stays bounded to the un-emitted window regardless of session length. Recording tees each event
+/// to disk incrementally, so a live recording replays into the identical event stream (the
+/// live≡backtest invariant). `None` once every sink is dropped and the buffer is drained.
 pub struct Live {
-	rx: Option<Receiver<LiveEvt>>,
-	// dropped at drain so the channel disconnects once external handles are gone; also gates
-	// `sink()` to before-drain.
+	rx: Receiver<LiveEvt>,
+	// dropped on first `next_batch` so the channel disconnects once external sinks drop; also gates
+	// `sink()` to before-consume.
 	tx: Option<Sender<LiveEvt>>,
 	clock: Arc<dyn Clock>,
+	/// Last stamp issued; arrival time is strictly increasing (`max(clock, last+1)`), so events are
+	/// globally uniquely ordered and the weave is unambiguous.
+	last_stamp: i64,
 	prec: PrecisionPriceQty,
 	monotonic: u64,
 	record: Option<Record>,
-	weaver: Option<Weaver>,
+	weaver: Weaver,
+	disconnected: bool,
 }
 
 impl Live {
@@ -315,67 +349,79 @@ impl Live {
 			}
 		});
 		Self {
-			rx: Some(rx),
+			rx,
 			tx: Some(tx),
 			clock,
+			last_stamp: i64::MIN,
 			prec,
 			monotonic: 0,
 			record,
-			weaver: None,
+			weaver: Weaver::default(),
+			disconnected: false,
 		}
 	}
 
-	/// A cloneable push handle. Drop every handle (and this `Live`'s own `tx`) to end the stream.
+	/// A cloneable push handle. Take all sinks before consuming; the first `next_batch` drops the
+	/// feed's own sender so the channel can disconnect once external sinks are gone.
 	pub fn sink(&self) -> Sink {
 		Sink {
-			tx: self.tx.as_ref().expect("sinks must be taken before the feed is drained").clone(),
-			clock: self.clock.clone(),
+			tx: self.tx.as_ref().expect("sinks must be taken before the feed is consumed").clone(),
 		}
 	}
 
-	fn ingest(&mut self, evt: LiveEvt, weaver: &mut Weaver) {
+	/// Strictly-increasing arrival stamp (single-threaded, so no atomics): every buffered event is
+	/// `<= last_stamp`, every future event `> last_stamp`.
+	fn stamp(&mut self) -> i64 {
+		let t = self.clock.now_ns().max(self.last_stamp + 1);
+		self.last_stamp = t;
+		t
+	}
+
+	fn ingest(&mut self, evt: LiveEvt) {
+		let ts = self.stamp();
 		match evt {
-			LiveEvt::Trade(t) => {
-				let ts = t.ts_init.expect("live trade stamped on push");
+			LiveEvt::Trade(mut t) => {
+				t.ts_init = Some(ts);
 				if let Some(r) = &mut self.record {
 					r.trades.push(t);
 					r.trades.maybe_flush(&r.catalog).expect("trade feather flush");
 				}
-				weaver.trades.push(ts, t);
+				self.weaver.trades.push(ts, t);
 			}
-			LiveEvt::Oi(o) => {
-				let ts = o.ts_init.expect("live oi stamped on push");
+			LiveEvt::Oi(mut o) => {
+				o.ts_init = Some(ts);
 				if let Some(r) = &mut self.record {
 					r.oi.push(o);
 					r.oi.maybe_flush(&r.catalog).expect("oi feather flush");
 				}
-				weaver.oi.push(ts, o);
+				self.weaver.oi.push(ts, o);
 			}
-			LiveEvt::Mc(m) => {
-				let ts = m.ts_init.expect("live mc stamped on push");
+			LiveEvt::Mc(mut m) => {
+				m.ts_init = Some(ts);
 				if let Some(r) = &mut self.record {
 					r.mc.push(m);
 					r.mc.maybe_flush(&r.catalog).expect("mc feather flush");
 				}
-				weaver.mc.push(ts, m);
+				self.weaver.mc.push(ts, m);
 			}
-			LiveEvt::Book(u) => self.ingest_book(u, weaver),
+			LiveEvt::Book(u) => self.ingest_book(u, ts),
 		}
 	}
 
 	/// The single book flattener — shared by weave and record, so they can never drift. A snapshot
 	/// resyncs (row + `BookAnchor`); a batch-delta flattens to `BookDelta` rows once, those very
-	/// rows both weaving and teeing.
-	fn ingest_book(&mut self, u: BookUpdate, weaver: &mut Weaver) {
-		let shape = u.shape().clone();
-		let (ev, init) = (ts_ns(shape.ts_event), ts_ns(shape.ts_init));
+	/// rows both weaving and teeing. Arrival `ts` (the ingest stamp) is the shape/rows' `ts_init`.
+	fn ingest_book(&mut self, u: BookUpdate, ts: i64) {
+		let mut shape = u.shape().clone();
+		let ev = ts_ns(shape.ts_event);
+		shape.ts_init = Timestamp::from_nanosecond(ts as i128).expect("stamp in range");
 		match &u {
 			BookUpdate::Snapshot(_) => {
 				self.monotonic += 1;
 				if let Some(r) = &mut self.record {
 					r.snapshots.push(BookSnapshot {
 						ts_event: ev,
-						ts_init: Some(init),
+						ts_init: Some(ts),
 						monotonic_seq: self.monotonic,
 						bid_prices: shape.bids.keys().copied().collect(),
 						bid_qtys: shape.bids.values().copied().collect(),
@@ -384,7 +430,7 @@ impl Live {
 					});
 					r.snapshots.maybe_flush(&r.catalog).expect("snapshot feather flush");
 				}
-				weaver.anchors.push(init, shape);
+				self.weaver.anchors.push(ts, shape);
 			}
 			BookUpdate::BatchDelta { gapped, .. } => {
 				let (p_scale, q_scale) = (10f64.powi(self.prec.price as i32), 10f64.powi(self.prec.qty as i32));
@@ -393,7 +439,7 @@ impl Live {
 					*seq += 1;
 					rows.push(BookDelta {
 						ts_event: ev,
-						ts_init: Some(init),
+						ts_init: Some(ts),
 						monotonic_seq: *seq,
 						gapped: *gapped,
 						side,
@@ -414,19 +460,13 @@ impl Live {
 					r.deltas.maybe_flush(&r.catalog).expect("delta feather flush");
 				}
 				for d in rows {
-					weaver.deltas.push(init, d);
+					self.weaver.deltas.push(ts, d);
 				}
 			}
 		}
 	}
 
-	fn drain(&mut self) {
-		self.tx.take(); // disconnect our own handle so the channel closes once external sinks drop
-		let rx = self.rx.take().expect("drain runs once");
-		let mut weaver = Weaver::default();
-		while let Ok(evt) = rx.recv() {
-			self.ingest(evt, &mut weaver);
-		}
+	fn final_flush(&mut self) {
 		if let Some(r) = &mut self.record {
 			r.trades.flush(&r.catalog).expect("trade flush");
 			r.snapshots.flush(&r.catalog).expect("snapshot flush");
@@ -434,15 +474,29 @@ impl Live {
 			r.oi.flush(&r.catalog).expect("oi flush");
 			r.mc.flush(&r.catalog).expect("mc flush");
 		}
-		self.weaver = Some(weaver);
 	}
 }
 
 impl Feed for Live {
 	fn next_batch(&mut self) -> Option<Batch<'_>> {
-		if self.weaver.is_none() {
-			self.drain();
+		self.tx = None; // drop our own sender so the channel disconnects once external sinks are gone
+		self.weaver.compact(); // reclaim the previous batch's consumed rows (its borrow has ended)
+
+		// Top up until there's something to weave. Everything ingested is a complete prefix (future
+		// stamps are larger), so the whole current buffer is safe to emit — no watermark needed.
+		while self.weaver.is_empty() {
+			if self.disconnected {
+				self.final_flush();
+				return None;
+			}
+			match self.rx.recv() {
+				Ok(e) => self.ingest(e),
+				Err(_) => self.disconnected = true,
+			}
+			while let Ok(e) = self.rx.try_recv() {
+				self.ingest(e);
+			}
 		}
-		self.weaver.as_mut().expect("drained").next_batch()
+		self.weaver.next_batch()
 	}
 }

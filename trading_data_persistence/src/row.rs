@@ -4,6 +4,7 @@ use arrow::{
 	array::{Array, ArrayRef, BooleanArray, BooleanBuilder, Float64Array, Float64Builder, Int32Array, Int64Array, ListArray, RecordBatch, UInt8Array, UInt32Array, UInt64Array},
 	datatypes::{DataType, Field, Schema, SchemaRef},
 };
+use trading_data_core::BatchTrades;
 use trading_data_dag::{Flat, Glance};
 use v_utils::trades::{PrecisionPriceQty, Side};
 
@@ -11,6 +12,30 @@ use crate::feather::RotationPolicy;
 
 pub const SCHEMA_VERSION: &str = "4";
 pub type UnixNanos = i64;
+
+/// Decode a ws trade batch straight into rows — `trading_data_core::BatchTrades` is the shared parse
+/// boundary, so no lossy hand-off. `ts_init` stays `None` (the live [`crate::Sink`] stamps arrival
+/// on push); `monotonic_seq`/`trade_id` come from the running `seq` (we don't carry exchange ids).
+pub fn trades_from_batch(batch: &BatchTrades, seq: &mut u64) -> Vec<Trade> {
+	let prec = batch.prec();
+	let (p_scale, q_scale) = (10f64.powi(prec.price as i32), 10f64.powi(prec.qty as i32));
+	batch
+		.iter()
+		.map(|(time, price_raw, qty_raw, side)| {
+			let s = *seq;
+			*seq += 1;
+			Trade {
+				ts_event: time.as_nanosecond() as i64,
+				ts_init: None,
+				monotonic_seq: s,
+				trade_id: s,
+				side,
+				price: price_raw as f64 / p_scale,
+				qty: qty_raw as f64 / q_scale,
+			}
+		})
+		.collect()
+}
 
 /// A lane's row type. Sealed: the set of lanes is this crate's contract with the disk.
 pub trait Row: sealed::Sealed {

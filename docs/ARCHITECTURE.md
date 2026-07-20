@@ -16,6 +16,7 @@ recalculated, so recomputing them can't muddy persistence.
 ```
 trading_data_dag                     #![no_std], zero deps — domain-free derivation engine
 trading_data_derivatives    zero deps — indicator state machines, embedded inside user Nodes; never learn Cell/Node
+trading_data_core           InnerTrade/BatchTrades — the shared parse boundary both v_exchanges and persistence see
 trading_data_persistence    arrow/parquet — catalog, lanes, feather writer, and `sync`: the central replay/live weaver
 trading_data_macros                  proc-macro home of `graph!` (emits the `step` chain over `::trading_data_dag`)
         ▲          ▲          ▲
@@ -23,7 +24,12 @@ trading_data_macros                  proc-macro home of `graph!` (emits the `ste
              trading_data            facade/prelude; `required_lanes<G>()` maps a graph's dep tree to source lanes
                    ▲
     trading_data_demo (examples/demo)   end-to-end demo; depends ONLY on the facade (facade-sufficiency test)
+    trading_data_live_example (examples/live)   real Bybit trades+book recorded then replayed identically
 ```
+
+`trading_data_core` sits below both persistence and the external `v_exchanges` bridge, so a live ws
+`BatchTrades` parses straight into persistence `Trade` rows (`trades_from_batch`) with no lossy
+hand-off — no exchange type leaks into the store, no store type leaks into the exchange layer.
 
 `trading_data_dag`'s `no_std` IS the enforced boundary: the engine can never grow domain or I/O
 knowledge. Persistence knows nothing of derivations.
@@ -84,10 +90,16 @@ Structural rules (enforced by the signatures, not convention):
 The **backtest / live** seam is only where events come from. `persistence::sync` weaves the
 required source lanes into one arrival-ordered stream of same-type `Batch`es (a `Feed`). `Replay`
 feeds from the catalog; `Live` feeds from push handles and *tees* every event into the same Feather
-lanes a backtest later reads — so a live recording replays into the identical batch stream (the
-round-trip is the invariant test). Arrival time is `ts_init` when real (live-recorded, `Some`),
-else latency-simulated from `ts_event` (historic ingest writes `None`). Node code is identical
-across the two.
+lanes a backtest later reads — so a live recording replays into the identical *event* stream (the
+round-trip is the invariant test; batching never alters fold order, so batch boundaries are
+incidental). Node code is identical across the two.
+
+`Live` is **streaming and memory-bounded**: `next_batch` drains what's currently available, stamps
+each event's `ts_init` at ingest (a single point on the consumer thread → strictly monotonic, so
+the current buffer is always a complete prefix — safe to weave and emit with no watermark), then
+drops consumed rows. A long-lived live session never accumulates; recording tees to disk
+incrementally. Arrival time is that ingest stamp for `Live`; for `Replay` it's the recorded
+`ts_init`, or a latency-simulation of `ts_event` for historic (`None`) rows.
 
 ## Polars boundary
 
