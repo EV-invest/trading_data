@@ -268,6 +268,9 @@ pub struct Sketch {
 	pub labels: &'static [&'static str],
 	/// Per-element; `[]` = [`Ink::MAIN`] for all.
 	pub inks: &'static [Ink],
+	/// Render this node's series on the price pane instead of its own indicator pane;
+	/// price-denominated.
+	pub overlay: bool,
 }
 
 impl Sketch {
@@ -276,6 +279,7 @@ impl Sketch {
 		guides: &[],
 		labels: &[],
 		inks: &[],
+		overlay: false,
 	};
 }
 

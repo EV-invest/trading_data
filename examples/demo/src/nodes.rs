@@ -19,6 +19,7 @@ const VOL_TH: f64 = 100_000.0;
 const STREAK_N: u32 = 2;
 const MOM_HIGH_BAND: f64 = 3.0;
 const MOM_MID_BAND: f64 = 2.0;
+const ATR_STOP_K: f64 = 3.0;
 
 fn signed_notional(t: &Trade) -> f64 {
 	let notional = t.price * t.qty;
@@ -506,6 +507,30 @@ impl Node for Classify {
 }
 slice_nudge!(Classify, Option<Dist>);
 
+/// Price-denominated trailing stop `close - K·ATR`, rendered on the candle pane (overlay).
+#[derive(Clone, Default)]
+pub struct AtrStop {
+	buf: Vec<Option<f64>>,
+}
+impl Cell for AtrStop {
+	type Out<'t> = &'t [Option<f64>];
+}
+impl Node for AtrStop {
+	type Deps = (Bar1m, Atr14);
+
+	const SKETCH: Sketch = Sketch { overlay: true, ..Sketch::DEFAULT };
+
+	fn advance<'t>(&'t mut self, (bars, atr): DepOuts<'t, Self>) -> Self::Out<'t> {
+		assert_eq!(bars.len(), atr.len(), "Bar1m/Atr14 rate mismatch");
+		self.buf.clear();
+		for i in 0..bars.len() {
+			self.buf.push(atr[i].map(|a| bars[i].close - ATR_STOP_K * a));
+		}
+		&self.buf
+	}
+}
+slice_nudge!(AtrStop, Option<f64>);
+
 trading_data::graph! {
 	pub struct Graph;
 	batches Batches;
@@ -515,6 +540,7 @@ trading_data::graph! {
 	cvd: Cvd,
 	rsi: Rsi14,
 	atr: Atr14,
+	atr_stop: AtrStop,
 	momentum: Momentum,
 	vol_usd_1h: VolUsd1h,
 	lambda: Lambda1m,
