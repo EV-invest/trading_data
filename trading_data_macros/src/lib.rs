@@ -18,6 +18,7 @@ mod kw {
 	syn::custom_keyword!(roots);
 	syn::custom_keyword!(out);
 	syn::custom_keyword!(latch);
+	syn::custom_keyword!(diff);
 }
 
 /// `field: Ty [Event]` — a root cell and the event type its slice carries.
@@ -59,6 +60,7 @@ struct GraphDef {
 	roots: Vec<Root>,
 	out: Ident,
 	latches: Vec<FieldNode>,
+	diffs: Vec<FieldNode>,
 	nodes: Vec<FieldNode>,
 }
 impl Parse for GraphDef {
@@ -94,6 +96,15 @@ impl Parse for GraphDef {
 			Vec::new()
 		};
 
+		let diffs = if input.peek(kw::diff) && input.peek2(token::Brace) {
+			input.parse::<kw::diff>()?;
+			let content;
+			braced!(content in input);
+			Punctuated::<FieldNode, Token![,]>::parse_terminated(&content)?.into_iter().collect()
+		} else {
+			Vec::new()
+		};
+
 		let nodes: Punctuated<FieldNode, Token![,]> = Punctuated::parse_terminated(input)?;
 		if nodes.is_empty() {
 			return Err(syn::Error::new(input.span(), "graph! needs at least one node"));
@@ -106,6 +117,7 @@ impl Parse for GraphDef {
 			roots: roots.into_iter().collect(),
 			out,
 			latches,
+			diffs: diffs.into_iter().collect(),
 			nodes: nodes.into_iter().collect(),
 		})
 	}
@@ -133,6 +145,9 @@ impl Parse for GraphDef {
 /// An optional `latch { field: Type, .. }` group names `Latch` fields (also in the node list). A
 /// latch whose `Cut` out reads `Episode::terminal` is commutated and its gated fields reset to
 /// `Default` at the *next* tick's start (deferred: the frame still borrows batch fields).
+///
+/// An optional `diff { field: Type, .. }` group names `Diff` fields (also in the node list): they
+/// sweep via `step_exact`, emitting exact partials + formula + derivatives alongside the FD view.
 #[proc_macro]
 pub fn graph(input: TokenStream) -> TokenStream {
 	let GraphDef {
@@ -142,6 +157,7 @@ pub fn graph(input: TokenStream) -> TokenStream {
 		roots,
 		out,
 		latches,
+		diffs,
 		nodes,
 	} = parse_macro_input!(input as GraphDef);
 
@@ -156,6 +172,17 @@ pub fn graph(input: TokenStream) -> TokenStream {
 
 	let fields: Vec<&Ident> = nodes.iter().map(|n| &n.field).collect();
 	let node_tys: Vec<&Type> = nodes.iter().map(|n| &n.ty).collect();
+
+	// `diff { }` fields sweep via `step_exact` (exact partials + formula + derivatives); the rest
+	// keep the FD-only `step_obs`. Same choke point, one extra reading for the routed fields.
+	let steps = nodes.iter().map(|n| {
+		let field = &n.field;
+		if diffs.iter().any(|d| d.field == n.field) {
+			quote!(let f = #dag::step_exact(f, #field, obs);)
+		} else {
+			quote!(let f = #dag::step_obs(f, #field, obs);)
+		}
+	});
 
 	// deferred commutation, inlined per latch: reset every field gated on the commutated latch.
 	// (The cross-product latch × field is a plain nested loop here — no tt-muncher needed.)
@@ -248,7 +275,7 @@ pub fn graph(input: TokenStream) -> TokenStream {
 				#(#dag::observe_root::<#root_tys, _>(#rfields, obs);)*
 				let f = #dag::Nil;
 				#(let f = #dag::Cons::<#root_tys, _> { out: #rfields, tail: f };)*
-				#(let f = #dag::step_obs(f, #fields, obs);)*
+				#(#steps)*
 
 				#(
 					if #dag::Episode::terminal(&#dag::Has::<<#latch_tys as #dag::Latch>::Cut, _>::get(&f)) {

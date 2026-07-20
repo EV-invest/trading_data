@@ -4,13 +4,55 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use trading_data::{Batch, Feed, LatencyConfig, Mc, Oi, Replay, read_mc, read_oi, required_lanes};
+use trading_data::{Batch, Feed, Fire, LatencyConfig, Mc, Observer, Oi, Replay, read_mc, read_oi, required_lanes};
 use trading_data_demo::{
 	asset, day_bounds, ensure_catalog, ensure_mc, ensure_oi,
 	nodes::{Batches, Category, Graph},
 	symbol,
 };
 use v_utils::trades::ExchangeName;
+
+/// Surfaces the `Signal` node's self-documentation through the observation choke point: prints its
+/// formula, per-dep derivatives, and (behind `SIGNAL_TRACE`) the debug trace once; and asserts the
+/// exact Jacobian agrees with the retained finite-difference one on every fired tick — the wiring's
+/// acceptance test.
+#[derive(Default)]
+struct SignalDoc {
+	shown: bool,
+	checked: u64,
+	max_rel: f64,
+}
+impl Observer for SignalDoc {
+	fn on(&mut self, node: &'static str, _: &'static [&'static str], _: &'static [&'static str], fire: Fire<'_>) {
+		if node.rsplit("::").next() != Some("Signal") {
+			return;
+		}
+		if let (Some(jac), Some(exact)) = (fire.jac, fire.exact_jac) {
+			for (fd, ex) in jac.iter().zip(exact) {
+				if fd.is_finite() && ex.is_finite() {
+					self.max_rel = self.max_rel.max((fd - ex).abs() / ex.abs().max(1e-9));
+					self.checked += 1;
+				}
+			}
+		}
+		if !self.shown && fire.vals.is_some_and(|v| v[0].is_finite()) {
+			self.shown = true;
+			println!("\n── Signal, self-documenting (value = {:.6}) ──", fire.vals.expect("just checked")[0]);
+			if let Some(f) = fire.formula {
+				println!("formula:  {f}");
+			}
+			if let Some(d) = fire.deriv {
+				println!("∂:\n{d}");
+			}
+			if std::env::var_os("SIGNAL_TRACE").is_some()
+				&& let Some(t) = fire.trace
+			{
+				println!("trace:\n{t}");
+			}
+			println!();
+		}
+	}
+}
 
 fn main() {
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/demo_cache"));
@@ -30,6 +72,7 @@ fn main() {
 	let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), day_start, day_end, &lanes, latency);
 
 	let mut graph = Graph::default();
+	let mut doc = SignalDoc::default();
 	let (mut n_trades, mut bars, mut hits, mut classifications, mut lambda_fires, mut oi_consumed) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
 	let (mut cvd, mut vol1h) = (0.0f64, 0.0f64);
 	let (mut atr_end, mut lambda_end, mut oi_chg) = (None, None, None);
@@ -38,11 +81,11 @@ fn main() {
 		let out = match b {
 			Batch::Trades(ts) => {
 				n_trades += ts.len() as u64;
-				graph.tick(Batches { trades: ts, ..Default::default() })
+				graph.tick_obs(Batches { trades: ts, ..Default::default() }, &mut doc)
 			}
 			Batch::Oi(os) => {
 				oi_consumed += os.len() as u64;
-				graph.tick(Batches { oi: os, ..Default::default() })
+				graph.tick_obs(Batches { oi: os, ..Default::default() }, &mut doc)
 			}
 			other => panic!("unexpected lane in demo replay: {other:?}"),
 		};
@@ -106,6 +149,10 @@ fn main() {
 	assert!(lambda_fires >= 1, "lambda never fired");
 	assert!(cvd != 0.0 && cvd.is_finite(), "day-end CVD degenerate: {cvd}");
 	assert!(oi_consumed >= 1, "OiChange consumed no events — multi-lane replay broken");
+
+	println!("signal exact/FD agreement: checked={} max_rel={:.2e}", doc.checked, doc.max_rel);
+	assert!(doc.checked > 0, "Signal never produced a finite Jacobian");
+	assert!(doc.max_rel < 1e-3, "exact Jacobian disagrees with FD: max_rel={}", doc.max_rel);
 
 	let oi: Vec<Oi> = read_oi(&catalog, ExchangeName::Bybit, symbol(), 0, i64::MAX).expect("open oi lane").collect();
 	assert!(!oi.is_empty(), "oi lane empty after ensure_oi");
