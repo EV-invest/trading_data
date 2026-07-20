@@ -32,6 +32,7 @@
           enable = true;
           lastSupportedVersion = "nightly-2026-07-14";
           jobs.default = true;
+          lfs = false;
         };
         readme = v_flakes.readme-fw {
           inherit pkgs pname;
@@ -75,6 +76,7 @@
               + combined.shellHook
               + ''
                 cp -f ${(v_flakes.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
+                cp -f ${(v_flakes.files.gitattributes) { inherit pkgs; lfs = false; }} ./.gitattributes
               '';
 
             packages = [
