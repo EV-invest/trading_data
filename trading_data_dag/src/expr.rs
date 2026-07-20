@@ -19,9 +19,10 @@ pub trait Expr: Copy {
 	/// Chain-rule pass: returns `self`'s value and adds `seed · ∂self/∂env[i]` into `grad[i]`
 	/// (`grad.len() == env.len()`). `seed` is `∂output/∂self` — 1.0 at the root.
 	///
-	/// ponytail: `Mul`/`Div`/`Square`/`Abs` re-`eval` their operands for the local partial, so a
-	/// nest of `k` products costs O(2^k) — negligible for the shallow scalar kernels this serves;
-	/// switch to a stored forward pass if deep products ever appear.
+	/// ponytail: `Mul`/`Div`/`Square`/`Abs` re-`eval` a subtree then `grad` re-walks it —
+	/// `T(s) = s + 2·T(s/2)`, i.e. O(n·log n), exact and fine for the shallow scalar kernels this
+	/// serves; switch to single-pass reverse-mode over a small tape (cached node values) only if a
+	/// genuinely large/deep kernel appears.
 	fn grad(&self, env: &[f64], seed: f64, grad: &mut [f64]) -> f64;
 	fn lower(&self) -> Ast;
 }
@@ -188,6 +189,8 @@ impl<E: Expr> Expr for Abs<E> {
 	}
 
 	fn grad(&self, env: &[f64], seed: f64, grad: &mut [f64]) -> f64 {
+		// at the kink `sign(0)=0` picks subgradient 0; `diff().eval` gives `0/0 = NaN` there —
+		// the two agree only off the kink.
 		let v = self.0.eval(env);
 		self.0.grad(env, seed * sign(v), grad);
 		v.abs()
@@ -342,6 +345,8 @@ impl Ast {
 			),
 			Ast::Neg(e) => Ast::Neg(b(e.diff(var))),
 			Ast::Square(e) => Ast::Mul(b(Ast::Const(2.0)), b(Ast::Mul(e.clone(), b(e.diff(var))))),
+			// `e/|e|` is `0/0 = NaN` at `e = 0`; `Div`-by-zero propagates `inf`/`NaN` — the honest
+			// numeric result, matching the FD path's own NaN handling.
 			Ast::Abs(e) => Ast::Mul(b(Ast::Div(e.clone(), b(Ast::Abs(e.clone())))), b(e.diff(var))),
 			Ast::Sum(xs) => Ast::Sum(xs.iter().map(|e| e.diff(var)).collect()),
 		}
@@ -426,11 +431,7 @@ impl Ast {
 				if acc != 0.0 || rest.is_empty() {
 					rest.push(Ast::Const(acc));
 				}
-				if rest.len() == 1 {
-					rest.pop().expect("len == 1")
-				} else {
-					Ast::Sum(rest)
-				}
+				if rest.len() == 1 { rest.pop().expect("len == 1") } else { Ast::Sum(rest) }
 			}
 		}
 	}

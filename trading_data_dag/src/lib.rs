@@ -371,6 +371,9 @@ pub trait Node: Cell {
 /// each dep read at its [`Flat`] scalar, a batch dep as its last element, matching the observer's
 /// end-of-batch view. [`Symbolic`] earns [`Node`] for free via the blanket below: its `advance` is
 /// `body().eval(env)`, so it *cannot* compute any other way — the algebra is load-bearing.
+///
+/// `Out = f64` has no `None` channel: reading historic (warmup) deps emits `NaN` yet still reports
+/// `fired = true`, so don't route a warmup-sensitive consumer off a Symbolic node unguarded.
 pub trait Symbolic: Cell
 where
 	for<'t> Self: Cell<Out<'t> = f64>, {
@@ -391,8 +394,15 @@ where
 	type Deps = <S as Symbolic>::Deps;
 
 	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t> {
+		const {
+			let deps = <<S as Symbolic>::Deps as DepSet>::NAMES.len();
+			assert!(
+				<<S as Symbolic>::Deps as DepFlat>::LEN == deps,
+				"Symbolic deps must be scalar (one env slot each): a vector-valued dep desyncs Var<I> from dep I"
+			);
+			assert!(deps <= MAX_VARS, "Symbolic arity exceeds the env buffer (MAX_VARS)");
+		}
 		let n = <<S as Symbolic>::Deps as DepFlat>::LEN;
-		assert!(n <= MAX_VARS, "Symbolic arity exceeds the dep-tuple ceiling");
 		let mut env = [0.0f64; MAX_VARS];
 		<<S as Symbolic>::Deps as DepFlat>::flat(&deps, &mut env[..n]);
 		self.body(Vars).eval(&env[..n])
@@ -839,7 +849,7 @@ where
 			exact_jac: None,
 			formula: None,
 			deriv: None,
-				trace: None,
+			trace: None,
 		},
 	);
 	Cons { out, tail: frame }
@@ -1088,7 +1098,7 @@ where
 			exact_jac: None,
 			formula: None,
 			deriv: None,
-				trace: None,
+			trace: None,
 		},
 	);
 }

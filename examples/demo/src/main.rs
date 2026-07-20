@@ -12,48 +12,6 @@ use trading_data_demo::{
 };
 use v_utils::trades::ExchangeName;
 
-/// Surfaces the `Signal` node's self-documentation through the observation choke point: prints its
-/// formula, per-dep derivatives, and (behind `SIGNAL_TRACE`) the debug trace once; and asserts the
-/// exact Jacobian agrees with the retained finite-difference one on every fired tick — the wiring's
-/// acceptance test.
-#[derive(Default)]
-struct SignalDoc {
-	shown: bool,
-	checked: u64,
-	max_rel: f64,
-}
-impl Observer for SignalDoc {
-	fn on(&mut self, node: &'static str, _: &'static [&'static str], _: &'static [&'static str], fire: Fire<'_>) {
-		if node.rsplit("::").next() != Some("Signal") {
-			return;
-		}
-		if let (Some(jac), Some(exact)) = (fire.jac, fire.exact_jac) {
-			for (fd, ex) in jac.iter().zip(exact) {
-				if fd.is_finite() && ex.is_finite() {
-					self.max_rel = self.max_rel.max((fd - ex).abs() / ex.abs().max(1e-9));
-					self.checked += 1;
-				}
-			}
-		}
-		if !self.shown && fire.vals.is_some_and(|v| v[0].is_finite()) {
-			self.shown = true;
-			println!("\n── Signal, self-documenting (value = {:.6}) ──", fire.vals.expect("just checked")[0]);
-			if let Some(f) = fire.formula {
-				println!("formula:  {f}");
-			}
-			if let Some(d) = fire.deriv {
-				println!("∂:\n{d}");
-			}
-			if std::env::var_os("SIGNAL_TRACE").is_some()
-				&& let Some(t) = fire.trace
-			{
-				println!("trace:\n{t}");
-			}
-			println!();
-		}
-	}
-}
-
 fn main() {
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/demo_cache"));
 	let catalog = ensure_catalog(&cache);
@@ -121,7 +79,7 @@ fn main() {
 			let bar = out.bar[i];
 			let ts = jiff::Timestamp::from_nanosecond(bar.ts_open as i128).expect("ts in range");
 			println!(
-				"{ts} {:?} dist={:?} o={:.3} c={:.3} mom={:.2} rsi={:.1} atr={:.4} vol1h={:.0} flow={:.0} cvd={:.0} λ={:.3e} oiΔ={:?}",
+				"{ts} {:?} dist={:?} o={:.3} c={:.3} mom={:.2} rsi={:.1} atr={:.4} vol1h={:.0} flow={:.0} cvd={cvd:.0} λ={:.3e} oiΔ={oi_chg:?}",
 				Category::argmax(dist.0),
 				dist.0,
 				bar.open,
@@ -131,9 +89,7 @@ fn main() {
 				out.atr[i].expect("warm"),
 				out.vol_usd_1h[i],
 				bar.flow_quote,
-				cvd,
 				out.lambda[i].expect("warm"),
-				oi_chg,
 			);
 		}
 	}
@@ -163,4 +119,45 @@ fn main() {
 	println!("oi rows={} mc rows={} (mc={:.3e} rank={:?})", oi.len(), mc.len(), mc[0].market_cap, mc[0].rank);
 
 	println!("demo: ok");
+}
+/// Surfaces the `Signal` node's self-documentation through the observation choke point: prints its
+/// formula, per-dep derivatives, and (behind `SIGNAL_TRACE`) the debug trace once; and asserts the
+/// exact Jacobian agrees with the retained finite-difference one on every fired tick — the wiring's
+/// acceptance test.
+#[derive(Default)]
+struct SignalDoc {
+	shown: bool,
+	checked: u64,
+	max_rel: f64,
+}
+impl Observer for SignalDoc {
+	fn on(&mut self, node: &'static str, _: &'static [&'static str], _: &'static [&'static str], fire: Fire<'_>) {
+		if node.rsplit("::").next() != Some("Signal") {
+			return;
+		}
+		if let (Some(jac), Some(exact)) = (fire.jac, fire.exact_jac) {
+			for (fd, ex) in jac.iter().zip(exact) {
+				if fd.is_finite() && ex.is_finite() {
+					self.max_rel = self.max_rel.max((fd - ex).abs() / ex.abs().max(1e-9));
+					self.checked += 1;
+				}
+			}
+		}
+		if !self.shown && fire.vals.is_some_and(|v| v[0].is_finite()) {
+			self.shown = true;
+			println!("\n── Signal, self-documenting (value = {:.6}) ──", fire.vals.expect("just checked")[0]);
+			if let Some(f) = fire.formula {
+				println!("formula:  {f}");
+			}
+			if let Some(d) = fire.deriv {
+				println!("∂:\n{d}");
+			}
+			if std::env::var_os("SIGNAL_TRACE").is_some()
+				&& let Some(t) = fire.trace
+			{
+				println!("trace:\n{t}");
+			}
+			println!();
+		}
+	}
 }
