@@ -14,8 +14,8 @@
 //!
 //! An [`exec_viz::Viz`] rides the live pass and its server runs alongside the feed, so the graph is
 //! watchable as it fills; it outlives the asserts so the run stays browsable afterwards. This
-//! example owns the runtime — exec_viz is only a library. `viz live` (devShell) builds the
-//! front-end bundle and runs this.
+//! example owns the runtime — exec_viz is only a library. `nix run .#live` builds the
+//! `exec_viz_web` bundle and runs this against it.
 
 mod nodes;
 

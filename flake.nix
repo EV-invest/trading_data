@@ -45,22 +45,44 @@
           badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
         };
         combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
+
+        # `viz <demo|live>` — our example owns the runtime, the graph and the port; exec_viz is a
+        # library plus a bundle builder, so all we take from it is a directory to serve. It builds
+        # from the sibling working tree (path deps span three checkouts), hence the `cd`.
+        viz = pkgs.writeShellApplication {
+          name = "viz";
+          runtimeInputs = with pkgs; [ rust git nix pkg-config openssl mold ];
+          text = ''
+            case "''${1:-demo}" in
+              demo) pkg=trading_data_demo ;;
+              live) pkg=trading_data_live_example ;;
+              *) echo "usage: viz <demo|live>" >&2; exit 1 ;;
+            esac
+            repo="$(git rev-parse --show-toplevel)"
+            EXEC_VIZ_WEB_DIR="$(cd "$repo/../exec_viz" && nix run .)"
+            export EXEC_VIZ_WEB_DIR
+            export PORT=${toString port_range_base}
+            exec cargo run --manifest-path "$repo/Cargo.toml" -p "$pkg"
+          '';
+        };
       in
       {
-        apps.help = {
-          type = "app";
-          program = pkgs.lib.getExe (pkgs.writeShellScriptBin "help" ''
-            cat <<'EOF'
-            nix run .                 trading_data CLI
-            nix run .#help            this listing
+        apps = {
+          demo = { type = "app"; program = "${pkgs.writeShellScript "demo" ''exec ${viz}/bin/viz demo''}"; };
+          live = { type = "app"; program = "${pkgs.writeShellScript "live" ''exec ${viz}/bin/viz live''}"; };
+          help = {
+            type = "app";
+            program = pkgs.lib.getExe (pkgs.writeShellScriptBin "help" ''
+              cat <<'EOF'
+              nix run .          trading_data CLI
+              nix run .#demo     examples/demo — replays a cached day  (port ${toString (port_range_base + 1)})
+              nix run .#live     examples/live — 15s of live Bybit     (port ${toString (port_range_base + 2)})
+              nix run .#help     this listing
 
-            devShell (`nix develop`):
-              viz demo                front-end bundle + examples/demo   (PORT+1 = ${toString (port_range_base + 1)})
-              viz live                front-end bundle + examples/live   (PORT+2 = ${toString (port_range_base + 2)})
-              cargo r -p trading_data_demo           demo without the UI assets
-              cargo r -p trading_data_live_example   live without the UI assets
-            EOF
-          '');
+              `nix develop` adds `viz <demo|live>`, the same runner against your working tree.
+              EOF
+            '');
+          };
         };
 
         packages =
@@ -103,10 +125,7 @@
               openssl
               pkg-config
               rust
-              # `viz demo` / `viz live` — the wasm front-end's toolchain is pinned in the sibling
-              # exec_viz flake, so that one owns the build; the example it runs lives here. It
-              # locates itself via `git rev-parse`, hence the cd.
-              (writeShellScriptBin "viz" ''cd "$(git rev-parse --show-toplevel)/../exec_viz" && exec nix run . -- "$@"'')
+              viz
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
             env.PORT = port_range_base;

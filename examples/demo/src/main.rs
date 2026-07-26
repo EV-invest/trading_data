@@ -3,9 +3,9 @@
 //! bit-identical to the pre-batch run — the asserts below are the integration test.
 //!
 //! The same sweep is recorded by an attached [`Viz`] and served afterwards, so the day is
-//! browsable tick-by-tick. This example owns the runtime; exec_viz is only a library. `viz demo`
-//! (devShell) builds the front-end bundle and runs this; plain `cargo r -p trading_data_demo`
-//! still runs the asserts, it just serves a UI with no assets.
+//! browsable tick-by-tick. This example owns the runtime; exec_viz is only a library. `nix run
+//! .#demo` builds the `exec_viz_web` bundle and runs this against it — a bare `cargo r` needs
+//! `EXEC_VIZ_WEB_DIR` and `PORT` set by hand.
 
 use std::{path::PathBuf, time::Duration};
 

@@ -1292,8 +1292,6 @@ dependencies = [
  "tokio",
  "tower-http",
  "trading_data_dag",
- "v_utils",
- "wasm-bindgen",
 ]
 
 [[package]]
