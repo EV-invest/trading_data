@@ -47,6 +47,22 @@
         combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
       in
       {
+        apps.help = {
+          type = "app";
+          program = pkgs.lib.getExe (pkgs.writeShellScriptBin "help" ''
+            cat <<'EOF'
+            nix run .                 trading_data CLI
+            nix run .#help            this listing
+
+            devShell (`nix develop`):
+              viz demo                front-end bundle + examples/demo   (PORT+1 = ${toString (port_range_base + 1)})
+              viz live                front-end bundle + examples/live   (PORT+2 = ${toString (port_range_base + 2)})
+              cargo r -p trading_data_demo           demo without the UI assets
+              cargo r -p trading_data_live_example   live without the UI assets
+            EOF
+          '');
+        };
+
         packages =
           let
             rustc = rust;
