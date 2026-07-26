@@ -18,7 +18,8 @@ use trading_data_demo::{
 	symbol,
 };
 
-/// This app's slot in the devShell's `PORT` range.
+/// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a
+/// slot in it, so several can be up at once.
 const ORDINAL: u16 = 1;
 /// Retained ticks. `Replay` weaves the day into ~600 batches, so the whole run fits comfortably;
 /// the cap is only there so nothing unbounded rides on a feed's batching.
@@ -147,7 +148,8 @@ async fn main() {
 	println!("oi rows={} mc rows={} (mc={:.3e} rank={:?})", oi.len(), mc.len(), mc[0].market_cap, mc[0].rank);
 
 	println!("demo: ok");
-	viz.serve(ORDINAL).await;
+	let base: u16 = std::env::var("PORT").expect("PORT: the devShell sets the base of the port range").parse().expect("PORT is a u16");
+	viz.serve(base + ORDINAL).await;
 }
 /// Surfaces the `Signal` node's self-documentation through the observation choke point: prints its
 /// formula, per-dep derivatives, and (behind `SIGNAL_TRACE`) the debug trace once; and asserts the

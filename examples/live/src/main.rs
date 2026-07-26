@@ -27,7 +27,8 @@ use trading_data::{Batch, Catalog, Feed, LatencyConfig, Live, LiveClock, Replay,
 use v_exchanges::prelude::*;
 
 const SECONDS: u64 = 15;
-/// This app's slot in the devShell's `PORT` range.
+/// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a
+/// slot in it, so several can be up at once.
 const ORDINAL: u16 = 2;
 
 #[tokio::main]
@@ -55,7 +56,8 @@ async fn main() {
 	// sampled every 100ms.
 	let viz = Viz::new(None, 100_000, 100);
 	let mut server = tokio::task::JoinSet::new();
-	server.spawn(viz.clone().serve(ORDINAL));
+	let base: u16 = std::env::var("PORT").expect("PORT: the devShell sets the base of the port range").parse().expect("PORT is a u16");
+	server.spawn(viz.clone().serve(base + ORDINAL));
 
 	// graph consumes on a blocking thread (blocking recv) while the async pumps feed it.
 	let ts_sink = live.sink();
