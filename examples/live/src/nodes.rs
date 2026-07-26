@@ -3,7 +3,7 @@
 //! rides on these per-event outputs, not bars.
 
 use trading_data::{BookDelta, Cell, DepOuts, Flat, Node, Nudge, Trade};
-use v_utils::trades::Side;
+use trading_data_core::Side;
 
 macro_rules! slice_nudge {
 	($C:ty, $E:ty) => {

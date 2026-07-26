@@ -31,5 +31,10 @@ fn base_config(dir: PathBuf, root: &Path) -> ui_test::Config {
 	);
 	config.bless_command = Some("cargo test --test compile_fail -- --bless".to_string());
 	config.path_stderr_filter(root, "$DIR");
+	// Snapshots pin diagnostic text, not source positions: an unrelated edit to a quoted file
+	// otherwise shifts every line number, and with it the gutter width.
+	config.stderr_filter(r"\.rs:\d+:\d+", ".rs:LL:CC");
+	config.stderr_filter(r"(?m)^ *\d+( *\|)", "LL$1");
+	config.stderr_filter(r"(?m)^ *(\||-->)", "  $1");
 	config
 }

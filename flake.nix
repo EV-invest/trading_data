@@ -22,7 +22,7 @@
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
         # Base of our port range. Each app that listens claims `PORT + <its ordinal>` — demo 1,
         # live 2 — so they can all be up at once and the URL says which is which.
-        port = 59994;
+        port_range_base = 59990;
 
         rs = v_flakes.rs {
           inherit pkgs rust;
@@ -93,7 +93,7 @@
               (writeShellScriptBin "viz" ''cd "$(git rev-parse --show-toplevel)/../exec_viz" && exec nix run . -- "$@"'')
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
-            env.PORT = port;
+            env.PORT = port_range_base;
             env.RUST_BACKTRACE = 1;
             env.RUST_LIB_BACKTRACE = 0;
           };

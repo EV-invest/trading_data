@@ -4,9 +4,8 @@ use arrow::{
 	array::{Array, ArrayRef, BooleanArray, BooleanBuilder, Float64Array, Float64Builder, Int32Array, Int64Array, ListArray, RecordBatch, UInt8Array, UInt32Array, UInt64Array},
 	datatypes::{DataType, Field, Schema, SchemaRef},
 };
-use trading_data_core::BatchTrades;
+use trading_data_core::{BatchTrades, PrecisionPriceQty, Side};
 use trading_data_dag::{Flat, Glance};
-use v_utils::trades::{PrecisionPriceQty, Side};
 
 use crate::feather::RotationPolicy;
 

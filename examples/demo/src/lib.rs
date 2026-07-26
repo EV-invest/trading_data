@@ -13,7 +13,7 @@ use std::{
 };
 
 use trading_data::{Catalog, Feather, Mc, Oi, Row as _, Trade, read_mc, read_oi, read_trades};
-use v_utils::trades::{Asset, ExchangeName, Instrument, Pair, PrecisionPriceQty, Side, Symbol};
+use trading_data_core::{Asset, ExchangeName, Instrument, Pair, PrecisionPriceQty, Side, Symbol};
 
 const DAY: &str = "2025-01-03";
 const BYBIT_SYMBOL: &str = "TAOUSDT";

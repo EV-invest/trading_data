@@ -10,7 +10,7 @@ use parquet::{
 	file::properties::WriterProperties,
 };
 use thiserror::Error;
-use v_utils::trades::{Asset, ExchangeName, Symbol};
+use trading_data_core::{Asset, ExchangeName, Symbol};
 
 use crate::row::UnixNanos;
 
@@ -147,7 +147,7 @@ fn intervals_overlap(a: (UnixNanos, UnixNanos), b: (UnixNanos, UnixNanos)) -> bo
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use v_utils::trades::{Instrument, PrecisionPriceQty, Side};
+	use trading_data_core::{Instrument, PrecisionPriceQty, Side};
 
 	use super::*;
 	use crate::{

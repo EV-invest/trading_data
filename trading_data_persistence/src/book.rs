@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use jiff::Timestamp;
-use v_utils::trades::{PrecisionPriceQty, Timestamped};
+use trading_data_core::{PrecisionPriceQty, Timestamped};
 
 /// (price, qty) levels for both sides of an orderbook, keyed by raw price.
 /// Both BTreeMaps are ascending; consumers reverse `bids` for best-bid.

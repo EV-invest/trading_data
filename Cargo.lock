@@ -3759,6 +3759,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "199905e6153d6405f9728fe44daace35f8f837bbf830bb6e85fbd5828709a886"
 
 [[package]]
+name = "snapshot_fonts"
+version = "1.3.0"
+dependencies = [
+ "bon",
+ "clap",
+ "color-eyre",
+ "derive-new",
+ "trading_data_core",
+ "v_utils",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4338,7 +4350,15 @@ dependencies = [
 name = "trading_data_core"
 version = "0.3.0"
 dependencies = [
+ "derive-new",
+ "derive_more",
+ "eyre",
+ "insta",
  "jiff",
+ "serde",
+ "snapshot_fonts",
+ "strum",
+ "thiserror 2.0.18",
  "v_utils",
 ]
 
@@ -4359,6 +4379,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "trading_data",
+ "trading_data_core",
  "trading_data_dag",
  "ureq",
  "v_utils",
@@ -4379,6 +4400,7 @@ dependencies = [
  "tokio",
  "tracing",
  "trading_data",
+ "trading_data_core",
  "trading_data_dag",
  "v_exchanges",
  "v_utils",
@@ -4758,7 +4780,6 @@ dependencies = [
  "futures",
  "indexmap 2.14.0",
  "insta",
- "jiff",
  "libc",
  "macro-attr",
  "miette",

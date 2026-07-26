@@ -4,7 +4,7 @@ use arrow::{
 	array::RecordBatch,
 	datatypes::{Schema, SchemaRef},
 };
-use v_utils::trades::{Asset, ExchangeName, Symbol};
+use trading_data_core::{Asset, ExchangeName, Symbol};
 
 use crate::{
 	book::BookShape,
@@ -116,7 +116,7 @@ pub(crate) fn read_book_snapshots(catalog: &Catalog, exchange: ExchangeName, sym
 
 /// Price/qty precision stored in a book lane's files (deltas preferred, else snapshots). `None`
 /// when neither lane has any file yet.
-pub(crate) fn book_prec(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol) -> Result<Option<v_utils::trades::PrecisionPriceQty>, CatalogError> {
+pub(crate) fn book_prec(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol) -> Result<Option<trading_data_core::PrecisionPriceQty>, CatalogError> {
 	for key in [LaneKey::BookDeltas { exchange, symbol }, LaneKey::BookSnapshots { exchange, symbol }] {
 		if let Some(file) = catalog.list(&key)?.first() {
 			let (schema, _) = catalog.read(&file.path)?;
@@ -187,7 +187,7 @@ pub(crate) fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Sym
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use v_utils::trades::{Instrument, PrecisionPriceQty, Side};
+	use trading_data_core::{Instrument, PrecisionPriceQty, Side};
 
 	use super::*;
 	use crate::feather::{Feather, RotationPolicy};

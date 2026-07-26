@@ -16,10 +16,8 @@ use std::sync::{
 };
 
 use jiff::Timestamp;
-use v_utils::{
-	distributions::LatencyConfig,
-	trades::{Asset, ExchangeName, PrecisionPriceQty, Side, Symbol},
-};
+use trading_data_core::{Asset, ExchangeName, PrecisionPriceQty, Side, Symbol};
+use v_utils::distributions::LatencyConfig;
 
 use crate::{
 	book::{BookShape, BookUpdate},

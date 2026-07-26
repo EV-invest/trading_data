@@ -1,6 +1,6 @@
 [package]
 name = "trading_data_core"
-description = "Low-level shared trade primitives (InnerTrade, BatchTrades): the parse boundary between exchange feeds and the persistence tier"
+description = "Shared trade primitives (Pair, Symbol, Side, Kline, BatchTrades): the parse boundary between exchange feeds and the persistence tier"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -11,8 +11,18 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+derive-new.workspace = true
+derive_more.workspace = true
+eyre.workspace = true
 jiff.workspace = true
+serde.workspace = true
+strum.workspace = true
+thiserror.workspace = true
 v_utils.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+snapshot_fonts.workspace = true
 
 [lints]
 workspace = true

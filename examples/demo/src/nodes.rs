@@ -6,7 +6,7 @@
 use core::fmt;
 
 use trading_data::{Cell, DepOuts, Expr, Flat, Glance, Guide, Ink, Node, Nudge, Oi, Sketch, Symbolic, Trade, Vars, WilderAtr, WilderRsi, constant};
-use v_utils::trades::Side;
+use trading_data_core::Side;
 
 pub const MOM_WINDOW: usize = 60;
 /// Same value as [`MOM_WINDOW`], different identity: λ's window is its own tunable.

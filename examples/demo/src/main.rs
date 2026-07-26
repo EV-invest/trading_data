@@ -11,12 +11,12 @@ use std::{path::PathBuf, time::Duration};
 
 use exec_viz::{Viz, api_types::BarOut};
 use trading_data::{Batch, Feed, Fire, LatencyConfig, Mc, Observer, Oi, Replay, read_mc, read_oi, required_lanes};
+use trading_data_core::ExchangeName;
 use trading_data_demo::{
 	asset, day_bounds, ensure_catalog, ensure_mc, ensure_oi,
 	nodes::{Batches, Category, Graph},
 	symbol,
 };
-use v_utils::trades::ExchangeName;
 
 /// This app's slot in the devShell's `PORT` range.
 const ORDINAL: u16 = 1;

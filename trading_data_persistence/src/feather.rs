@@ -4,7 +4,7 @@ use std::{
 };
 
 use arrow::{array::RecordBatch, datatypes::SchemaRef};
-use v_utils::trades::{Asset, ExchangeName, PrecisionPriceQty, Symbol};
+use trading_data_core::{Asset, ExchangeName, PrecisionPriceQty, Symbol};
 
 use crate::{
 	catalog::{Catalog, CatalogError, LaneKey},
@@ -146,7 +146,7 @@ impl<T: Row> Feather<T> {
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use v_utils::trades::{Instrument, Side};
+	use trading_data_core::{Instrument, Side};
 
 	use super::*;
 

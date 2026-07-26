@@ -19,6 +19,7 @@ miette.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 trading_data.workspace = true
+trading_data_core.workspace = true
 trading_data_dag.workspace = true
 v_exchanges = { workspace = true }
 v_utils.workspace = true

@@ -12,8 +12,8 @@ use std::sync::{
 
 use jiff::Timestamp;
 use tempfile::tempdir;
+use trading_data_core::{ExchangeName, Instrument, PrecisionPriceQty, Side, Symbol};
 use trading_data_persistence::{Batch, BookShape, BookUpdate, Catalog, Clock, Feed, LaneKind, LatencyConfig, Live, Oi, Replay, Trade};
-use v_utils::trades::{ExchangeName, Instrument, PrecisionPriceQty, Side, Symbol};
 
 /// Monotonic synthetic clock: each read advances 1ms, so live `ts_init` stamps are strictly
 /// increasing across lanes and the recording replays deterministically.

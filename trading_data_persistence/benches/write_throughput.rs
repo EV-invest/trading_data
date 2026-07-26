@@ -2,8 +2,8 @@ use std::{hint::black_box, sync::Arc};
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use tempfile::TempDir;
+use trading_data_core::{ExchangeName, Instrument, PrecisionPriceQty, Side, Symbol};
 use trading_data_persistence::{BookShape, BookUpdate, Catalog, Feather, Feed, Live, LiveClock, RotationPolicy, Trade};
-use v_utils::trades::{ExchangeName, Instrument, PrecisionPriceQty, Side, Symbol};
 
 const N_TRADES: u64 = 100_000;
 const N_SNAPSHOTS: u64 = 200;
