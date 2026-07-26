@@ -689,6 +689,7 @@ where
 
 /// One node firing, flattened: values and the finite-difference local Jacobian wrt its deps,
 /// à la Jane Street's "Computations that differentiate, debug and document themselves".
+#[derive(Clone, Copy)]
 pub struct Fire<'a> {
 	pub debug: &'a dyn core::fmt::Debug,
 	/// Compact one-liner for viz cards; `debug` stays the full-detail view (hover/tooltip).
@@ -729,6 +730,16 @@ impl Observer for () {
 	const ACTIVE: bool = false;
 
 	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [&'static str], _: Fire<'_>) {}
+}
+
+/// Two interpretations of the same sweep — e.g. an app's own assertions next to a viz recorder.
+impl<A: Observer, B: Observer> Observer for (A, B) {
+	const ACTIVE: bool = A::ACTIVE || B::ACTIVE;
+
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [&'static str], fire: Fire<'_>) {
+		self.0.on(node, deps, gates, fire);
+		self.1.on(node, deps, gates, fire);
+	}
 }
 
 /// One finite-difference column: re-advance a fresh clone on `deps` with element `slot` bumped by

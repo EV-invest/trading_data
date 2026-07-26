@@ -20,6 +20,9 @@
         manifest = (pkgs.lib.importTOML ./trading_data/Cargo.toml).package;
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
+        # Base of our port range. Each app that listens claims `PORT + <its ordinal>` — demo 1,
+        # live 2 — so they can all be up at once and the URL says which is which.
+        port = 59994;
 
         rs = v_flakes.rs {
           inherit pkgs rust;
@@ -84,8 +87,13 @@
               openssl
               pkg-config
               rust
+              # `viz demo` / `viz live` — the wasm front-end's toolchain is pinned in the sibling
+              # exec_viz flake, so that one owns the build; the example it runs lives here. It
+              # locates itself via `git rev-parse`, hence the cd.
+              (writeShellScriptBin "viz" ''cd "$(git rev-parse --show-toplevel)/../exec_viz" && exec nix run . -- "$@"'')
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
+            env.PORT = port;
             env.RUST_BACKTRACE = 1;
             env.RUST_LIB_BACKTRACE = 0;
           };

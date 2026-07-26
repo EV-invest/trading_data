@@ -11,16 +11,24 @@
 //!
 //! The v_exchanges → push-handle layer here is a temporary bridge; when v_exchanges learns a native
 //! `Listener` it dies. Kept thin and self-contained accordingly.
+//!
+//! An [`exec_viz::Viz`] rides the live pass and its server runs alongside the feed, so the graph is
+//! watchable as it fills; it outlives the asserts so the run stays browsable afterwards. This
+//! example owns the runtime — exec_viz is only a library. `viz live` (devShell) builds the
+//! front-end bundle and runs this.
 
 mod nodes;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
+use exec_viz::Viz;
 use nodes::{Batches, Graph};
 use trading_data::{Batch, Catalog, Feed, LatencyConfig, Live, LiveClock, Replay, Sink, required_lanes, trades_from_batch};
 use v_exchanges::prelude::*;
 
 const SECONDS: u64 = 15;
+/// This app's slot in the devShell's `PORT` range.
+const ORDINAL: u16 = 2;
 
 #[tokio::main]
 async fn main() {
@@ -43,12 +51,19 @@ async fn main() {
 	let trades_stream = bybit.ws_trades(&[pair()], Instrument::Perp).await.expect("open ws_trades");
 	let book_stream = bybit.ws_book(&[pair()], Instrument::Perp).await.expect("open ws_book");
 
+	// No bars close in 15s, so there's no price node — the chart is the per-event series alone,
+	// sampled every 100ms.
+	let viz = Viz::new(None, 100_000, 100);
+	let mut server = tokio::task::JoinSet::new();
+	server.spawn(viz.clone().serve(ORDINAL));
+
 	// graph consumes on a blocking thread (blocking recv) while the async pumps feed it.
 	let ts_sink = live.sink();
 	let bk_sink = live.sink();
+	let recorder = viz.clone();
 	let consumer = tokio::task::spawn_blocking(move || {
 		let mut graph = Graph::default();
-		run(&mut live, &mut graph)
+		run(&mut live, &mut graph, &mut Some(recorder))
 	});
 
 	let mut pumps = tokio::task::JoinSet::new();
@@ -82,7 +97,7 @@ async fn main() {
 	};
 	let mut replay = Replay::new(&catalog, ExchangeName::Bybit, symbol(), 0, i64::MAX, &lanes, latency);
 	let mut graph = Graph::default();
-	let replay_out = run(&mut replay, &mut graph);
+	let replay_out = run(&mut replay, &mut graph, &mut None);
 
 	assert_eq!(live_out.events, replay_out.events, "flattened event streams diverged");
 	assert_eq!(live_out.n_trades, replay_out.n_trades, "trade count diverged");
@@ -91,6 +106,7 @@ async fn main() {
 	assert_eq!(live_out.book_flow, replay_out.book_flow, "book flow diverged");
 
 	println!("live≡replay on {} real events. ok", replay_out.events.len());
+	server.join_all().await; // the recorded run stays browsable until ctrl-c
 }
 fn pair() -> Pair {
 	Pair::from_str("BTCUSDT").expect("static pair")
@@ -116,7 +132,9 @@ struct RunOut {
 	n_deltas: u64,
 }
 
-fn run(feed: &mut impl Feed, graph: &mut Graph) -> RunOut {
+/// `viz` is `Some` only for the live pass — the replay pass re-derives the same outputs and would
+/// just double the tape.
+fn run(feed: &mut impl Feed, graph: &mut Graph, viz: &mut Option<Viz>) -> RunOut {
 	let mut o = RunOut {
 		events: Vec::new(),
 		cvd: 0.0,
@@ -125,25 +143,32 @@ fn run(feed: &mut impl Feed, graph: &mut Graph) -> RunOut {
 		n_deltas: 0,
 	};
 	while let Some(b) = feed.next_batch() {
-		match b {
+		let (batches, ts_ns) = match b {
 			Batch::Trades(ts) => {
 				o.n_trades += ts.len() as u64;
 				o.events.extend(ts.iter().map(|t| Ev::Trade(t.monotonic_seq)));
-				let out = graph.tick(Batches { trades: ts, ..Default::default() });
-				if let Some(&c) = out.cvd.last() {
-					o.cvd = c;
-				}
+				(Batches { trades: ts, ..Default::default() }, ts.last().expect("non-empty batch").ts_event)
 			}
 			Batch::Book(ds) => {
 				o.n_deltas += ds.len() as u64;
 				o.events.extend(ds.iter().map(|d| Ev::Delta(d.monotonic_seq)));
-				let out = graph.tick(Batches { book: ds, ..Default::default() });
-				if let Some(&f) = out.book_flow.last() {
-					o.book_flow = f;
-				}
+				(Batches { book: ds, ..Default::default() }, ds.last().expect("non-empty batch").ts_event)
 			}
-			Batch::BookAnchor(s) => o.events.push(Ev::Anchor(s.bids.len(), s.asks.len())),
+			Batch::BookAnchor(s) => {
+				o.events.push(Ev::Anchor(s.bids.len(), s.asks.len()));
+				continue;
+			}
 			other => panic!("unexpected lane in live replay: {other:?}"),
+		};
+		let out = match viz {
+			Some(v) => graph.tick_obs(batches, v.at(ts_ns)),
+			None => graph.tick(batches),
+		};
+		if let Some(&c) = out.cvd.last() {
+			o.cvd = c;
+		}
+		if let Some(&f) = out.book_flow.last() {
+			o.book_flow = f;
 		}
 	}
 	o
@@ -167,4 +192,3 @@ async fn pump_book(mut stream: Box<dyn ExchangeStream<Item = BookUpdate>>, sink:
 		}
 	}
 }
-

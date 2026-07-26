@@ -1,9 +1,15 @@
 //! Assert-driver over the demo data layer: catalog → `Replay` weaves trades + OI → batch-native
 //! GAT sweep → classifications. Batching must not alter fold order, so the day-end counts are
 //! bit-identical to the pre-batch run — the asserts below are the integration test.
+//!
+//! The same sweep is recorded by an attached [`Viz`] and served afterwards, so the day is
+//! browsable tick-by-tick. This example owns the runtime; exec_viz is only a library. `viz demo`
+//! (devShell) builds the front-end bundle and runs this; plain `cargo r -p trading_data_demo`
+//! still runs the asserts, it just serves a UI with no assets.
 
 use std::{path::PathBuf, time::Duration};
 
+use exec_viz::{Viz, api_types::BarOut};
 use trading_data::{Batch, Feed, Fire, LatencyConfig, Mc, Observer, Oi, Replay, read_mc, read_oi, required_lanes};
 use trading_data_demo::{
 	asset, day_bounds, ensure_catalog, ensure_mc, ensure_oi,
@@ -12,7 +18,14 @@ use trading_data_demo::{
 };
 use v_utils::trades::ExchangeName;
 
-fn main() {
+/// This app's slot in the devShell's `PORT` range.
+const ORDINAL: u16 = 1;
+/// Retained ticks. `Replay` weaves the day into ~600 batches, so the whole run fits comfortably;
+/// the cap is only there so nothing unbounded rides on a feed's batching.
+const SCROLLBACK: usize = 20_000;
+
+#[tokio::main]
+async fn main() {
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/demo_cache"));
 	let catalog = ensure_catalog(&cache);
 	ensure_oi(&catalog);
@@ -30,24 +43,38 @@ fn main() {
 	let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), day_start, day_end, &lanes, latency);
 
 	let mut graph = Graph::default();
-	let mut doc = SignalDoc::default();
+	let viz = Viz::new(Some("Bar1m"), SCROLLBACK, 60_000);
+	// `Signal`'s exact/FD agreement check and the viz recording are two readings of one sweep.
+	let mut obs = (SignalDoc::default(), viz.clone());
 	let (mut n_trades, mut bars, mut hits, mut classifications, mut lambda_fires, mut oi_consumed) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
 	let (mut cvd, mut vol1h) = (0.0f64, 0.0f64);
 	let (mut atr_end, mut lambda_end, mut oi_chg) = (None, None, None);
 
 	while let Some(b) = feed.next_batch() {
-		let out = match b {
+		let (batches, ts_ns) = match b {
 			Batch::Trades(ts) => {
 				n_trades += ts.len() as u64;
-				graph.tick_obs(Batches { trades: ts, ..Default::default() }, &mut doc)
+				(Batches { trades: ts, ..Default::default() }, ts.last().expect("non-empty batch").ts_event)
 			}
 			Batch::Oi(os) => {
 				oi_consumed += os.len() as u64;
-				graph.tick_obs(Batches { oi: os, ..Default::default() }, &mut doc)
+				(Batches { oi: os, ..Default::default() }, os.last().expect("non-empty batch").ts_event)
 			}
 			other => panic!("unexpected lane in demo replay: {other:?}"),
 		};
+		obs.1.at(ts_ns);
+		let out = graph.tick_obs(batches, &mut obs);
 
+		for b in out.bar {
+			viz.bar(BarOut {
+				ts_ms: b.ts_open / 1_000_000,
+				open: b.open,
+				high: b.high,
+				low: b.low,
+				close: b.close,
+				volume: b.vol_quote,
+			});
+		}
 		bars += out.bar.len() as u64;
 		hits += out.screener.iter().filter(|&&h| h).count() as u64;
 		lambda_fires += out.lambda.iter().filter(|o| o.is_some()).count() as u64;
@@ -106,6 +133,7 @@ fn main() {
 	assert!(cvd != 0.0 && cvd.is_finite(), "day-end CVD degenerate: {cvd}");
 	assert!(oi_consumed >= 1, "OiChange consumed no events — multi-lane replay broken");
 
+	let doc = obs.0;
 	println!("signal exact/FD agreement: checked={} max_rel={:.2e}", doc.checked, doc.max_rel);
 	assert!(doc.checked > 0, "Signal never produced a finite Jacobian");
 	assert!(doc.max_rel < 1e-3, "exact Jacobian disagrees with FD: max_rel={}", doc.max_rel);
@@ -119,6 +147,7 @@ fn main() {
 	println!("oi rows={} mc rows={} (mc={:.3e} rank={:?})", oi.len(), mc.len(), mc[0].market_cap, mc[0].rank);
 
 	println!("demo: ok");
+	viz.serve(ORDINAL).await;
 }
 /// Surfaces the `Signal` node's self-documentation through the observation choke point: prints its
 /// formula, per-dep derivatives, and (behind `SIGNAL_TRACE`) the debug trace once; and asserts the

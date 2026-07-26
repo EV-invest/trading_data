@@ -46,6 +46,9 @@ arrow = "59"
 clap = { version = "^4.6.2", features = ["derive"] }
 color-eyre = "^0.6.5"
 derive-new = "^0"
+# The examples attach it to their own graph and run its server on their own runtime; its `web`
+# feature (the wasm front-end) is never enabled from here.
+exec_viz = { path = "../exec_viz/exec_viz" }
 flate2 = "^1"
 iai-callgrind = "0.16"
 jiff = "^0.2"

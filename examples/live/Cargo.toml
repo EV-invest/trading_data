@@ -13,6 +13,7 @@ categories.workspace = true
 
 [dependencies]
 color-eyre.workspace = true
+exec_viz.workspace = true
 jiff.workspace = true
 miette.workspace = true
 tokio.workspace = true
