@@ -241,8 +241,10 @@ pub struct Aggregate {
 ///
 /// `recv` is absent for a static endpoint pulled on demand: the reading we'd record is when the
 /// download landed, which says nothing about the fact and is not a wire arrival.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, derive_more::Deref, Eq, PartialEq)]
 pub struct Relay<From, To> {
+	pub exec: Option<Ts<To>>,
+	#[deref]
 	pub send: Ts<From>,
 	pub recv: Option<Ts<To>>,
 }
