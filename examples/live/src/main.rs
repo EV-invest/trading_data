@@ -1,7 +1,7 @@
 #![feature(default_field_values)]
 //! The end-to-end live proof: 15s of real Bybit BTC-USDT perp trades + book streamed through the
 //! graph *concurrently* (the graph consumes on a blocking thread while ws pumps feed it — bounded
-//! memory, no end-of-stream buffering), recorded (ts_init stamped at ingest), then replayed from
+//! memory, no end-of-stream buffering), recorded (reception stamped at ingest), then replayed from
 //! the recording. The two flattened event streams and graph outputs must be identical — the
 //! live≡backtest invariant on real data.
 //!
@@ -23,7 +23,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use exec_viz::Viz;
 use nodes::{Batches, Graph};
-use trading_data::{Batch, Catalog, Feed, LatencyConfig, Live, LiveClock, Replay, Sink, required_lanes, trades_from_batch};
+use trading_data::{Batch, Catalog, Feed, LatencyConfig, Live, LiveClock, Replay, Sink, Ts, required_lanes, trades_from_batch};
 use v_exchanges::prelude::*;
 
 const SECONDS: u64 = 15;
@@ -89,7 +89,7 @@ async fn main() {
 	assert!(live_out.n_trades > 0, "no trades arrived — Bybit ws_trades broken or market dead");
 	assert!(live_out.n_deltas > 0, "no book deltas arrived — Bybit ws_book broken");
 
-	// --- replay the recording; recorded ts_init ⇒ deterministic, no latency sim ---
+	// --- replay the recording; recorded reception ⇒ deterministic, no latency sim ---
 	let lanes = required_lanes::<Graph>();
 	let latency = LatencyConfig {
 		p68: Duration::from_millis(10),
@@ -97,7 +97,7 @@ async fn main() {
 		p997: Duration::from_millis(90),
 		seed: 0,
 	};
-	let mut replay = Replay::new(&catalog, ExchangeName::Bybit, symbol(), 0, i64::MAX, &lanes, latency);
+	let mut replay = Replay::new(&catalog, ExchangeName::Bybit, symbol(), Ts::MIN, Ts::MAX, &lanes, latency);
 	let mut graph = Graph::default();
 	let replay_out = run(&mut replay, &mut graph, &mut None);
 
@@ -149,12 +149,12 @@ fn run(feed: &mut impl Feed, graph: &mut Graph, viz: &mut Option<Viz>) -> RunOut
 			Batch::Trades(ts) => {
 				o.n_trades += ts.len() as u64;
 				o.events.extend(ts.iter().map(|t| Ev::Trade(t.monotonic_seq)));
-				(Batches { trades: ts, ..Default::default() }, ts.last().expect("non-empty batch").ts_event)
+				(Batches { trades: ts, ..Default::default() }, ts.last().expect("non-empty batch").ts_venue_exec.as_nanos())
 			}
 			Batch::Book(ds) => {
 				o.n_deltas += ds.len() as u64;
 				o.events.extend(ds.iter().map(|d| Ev::Delta(d.monotonic_seq)));
-				(Batches { book: ds, ..Default::default() }, ds.last().expect("non-empty batch").ts_event)
+				(Batches { book: ds, ..Default::default() }, ds.last().expect("non-empty batch").ts_venue_exec.as_nanos())
 			}
 			Batch::BookAnchor(s) => {
 				o.events.push(Ev::Anchor(s.bids.len(), s.asks.len()));

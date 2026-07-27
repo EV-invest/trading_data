@@ -4,33 +4,34 @@ use arrow::{
 	array::{Array, ArrayRef, BooleanArray, BooleanBuilder, Float64Array, Float64Builder, Int32Array, Int64Array, ListArray, RecordBatch, UInt8Array, UInt32Array, UInt64Array},
 	datatypes::{DataType, Field, Schema, SchemaRef},
 };
-use trading_data_core::{BatchTrades, PrecisionPriceQty, Side};
+use trading_data_core::{BatchTrades, Local, PrecisionPriceQty, Side, Ts, Venue};
 use trading_data_dag::{Flat, Glance};
 
 use crate::feather::RotationPolicy;
 
-pub const SCHEMA_VERSION: &str = "4";
+pub const SCHEMA_VERSION: &str = "5";
 pub type UnixNanos = i64;
 
 /// Decode a ws trade batch straight into rows — `trading_data_core::BatchTrades` is the shared parse
-/// boundary, so no lossy hand-off. `ts_init` stays `None` (the live [`crate::Sink`] stamps arrival
-/// on push); `monotonic_seq`/`trade_id` come from the running `seq` (we don't carry exchange ids).
+/// boundary, so no lossy hand-off. `ts_local_recv` stays `None` (the live [`crate::Sink`] stamps
+/// arrival on push); `monotonic_seq`/`trade_id` come from the running `seq` (no exchange ids).
 pub fn trades_from_batch(batch: &BatchTrades, seq: &mut u64) -> Vec<Trade> {
 	let prec = batch.prec();
 	let (p_scale, q_scale) = (10f64.powi(prec.price as i32), 10f64.powi(prec.qty as i32));
 	batch
 		.iter()
-		.map(|(time, price_raw, qty_raw, side)| {
+		.map(|t| {
 			let s = *seq;
 			*seq += 1;
 			Trade {
-				ts_event: time.as_nanosecond() as i64,
-				ts_init: None,
+				ts_venue_exec: t.time,
+				ts_venue_send: t.sent,
+				ts_local_recv: None,
 				monotonic_seq: s,
 				trade_id: s,
-				side,
-				price: price_raw as f64 / p_scale,
-				qty: qty_raw as f64 / q_scale,
+				side: t.side,
+				price: t.price as f64 / p_scale,
+				qty: t.qty as f64 / q_scale,
 			}
 		})
 		.collect()
@@ -40,14 +41,21 @@ pub fn trades_from_batch(batch: &BatchTrades, seq: &mut u64) -> Vec<Trade> {
 pub trait Row: sealed::Sealed {
 	/// Rotation default for this lane.
 	const POLICY: RotationPolicy;
+	/// The actor whose clock this lane's primary axis belongs to. Fixed per lane at compile time,
+	/// which is what lets query bounds be typed without a per-row discriminant.
+	type Axis;
+	/// The reading every row of this lane has, and the one files are bounded and queried on.
+	fn ts_axis(&self) -> Ts<Self::Axis>;
 }
 
 /// Surfaces are f64 + typed [`Side`]; scaled ints are a storage detail.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Trade {
-	pub ts_event: UnixNanos,
-	/// `Some` ⇔ real arrival time (live-recorded); historic ingest writes `None`.
-	pub ts_init: Option<UnixNanos>,
+	pub ts_venue_exec: Ts<Venue>,
+	/// `Some` once the adapter reports an envelope time distinct from the execution time.
+	pub ts_venue_send: Option<Ts<Venue>>,
+	/// `Some` ⇔ we were there when it arrived (live-recorded); historic ingest writes `None`.
+	pub ts_local_recv: Option<Ts<Local>>,
 	pub monotonic_seq: u64,
 	pub trade_id: u64,
 	pub side: Side,
@@ -57,9 +65,10 @@ pub struct Trade {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BookDelta {
-	pub ts_event: UnixNanos,
-	/// `Some` ⇔ real arrival time (live-recorded); historic ingest writes `None`.
-	pub ts_init: Option<UnixNanos>,
+	pub ts_venue_exec: Ts<Venue>,
+	pub ts_venue_send: Option<Ts<Venue>>,
+	/// `Some` ⇔ we were there when it arrived (live-recorded); historic ingest writes `None`.
+	pub ts_local_recv: Option<Ts<Local>>,
 	pub monotonic_seq: u64,
 	pub gapped: bool,
 	/// Buy = bid, Sell = ask.
@@ -72,17 +81,18 @@ pub struct BookDelta {
 /// Open interest, base units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Oi {
-	pub ts_event: UnixNanos,
-	/// `Some` ⇔ real arrival time (live-recorded); historic ingest writes `None`.
-	pub ts_init: Option<UnixNanos>,
+	pub ts_venue_exec: Ts<Venue>,
+	pub ts_venue_send: Option<Ts<Venue>>,
+	/// `Some` ⇔ we were there when it arrived (live-recorded); historic ingest writes `None`.
+	pub ts_local_recv: Option<Ts<Local>>,
 	pub oi: f64,
 }
 
+/// Market cap. The source reports no event time, so the only reading is **ours** — this lane's
+/// axis is `Local`, and venue-named columns would be a lie about whose clock produced it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mc {
-	pub ts_event: UnixNanos,
-	/// `Some` ⇔ real arrival time (live-recorded); historic ingest writes `None`.
-	pub ts_init: Option<UnixNanos>,
+	pub ts_local_exec: Ts<Local>,
 	pub market_cap: f64,
 	/// Honest-None when the source lacks it.
 	pub rank: Option<u32>,
@@ -91,9 +101,10 @@ pub struct Mc {
 /// Raw-keyed book snapshot; internal to the Book persistence model.
 #[derive(Clone, Debug)]
 pub(crate) struct BookSnapshot {
-	pub ts_event: UnixNanos,
-	/// `Some` ⇔ real arrival time (live-recorded); historic ingest writes `None`.
-	pub ts_init: Option<UnixNanos>,
+	pub ts_venue_exec: Ts<Venue>,
+	pub ts_venue_send: Option<Ts<Venue>>,
+	/// `Some` ⇔ we were there when it arrived (live-recorded); historic ingest writes `None`.
+	pub ts_local_recv: Option<Ts<Local>>,
 	pub monotonic_seq: u64,
 	pub bid_prices: Vec<i32>,
 	pub bid_qtys: Vec<u32>,
@@ -102,34 +113,64 @@ pub(crate) struct BookSnapshot {
 }
 
 impl Row for Trade {
+	type Axis = Venue;
+
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: Some(50 * 1024 * 1024),
 		max_age: Some(std::time::Duration::from_secs(24 * 3600)),
 	};
+
+	fn ts_axis(&self) -> Ts<Venue> {
+		self.ts_venue_exec
+	}
 }
 impl Row for BookDelta {
+	type Axis = Venue;
+
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: Some(256 * 1024 * 1024),
 		max_age: Some(std::time::Duration::from_secs(3600)),
 	};
+
+	fn ts_axis(&self) -> Ts<Venue> {
+		self.ts_venue_exec
+	}
 }
 impl Row for BookSnapshot {
+	type Axis = Venue;
+
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: Some(64 * 1024 * 1024),
 		max_age: Some(std::time::Duration::from_secs(6 * 3600)),
 	};
+
+	fn ts_axis(&self) -> Ts<Venue> {
+		self.ts_venue_exec
+	}
 }
 impl Row for Oi {
+	type Axis = Venue;
+
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: None,
 		max_age: Some(std::time::Duration::from_secs(7 * 24 * 3600)),
 	};
+
+	fn ts_axis(&self) -> Ts<Venue> {
+		self.ts_venue_exec
+	}
 }
 impl Row for Mc {
+	type Axis = Local;
+
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: None,
 		max_age: Some(std::time::Duration::from_secs(7 * 24 * 3600)),
 	};
+
+	fn ts_axis(&self) -> Ts<Local> {
+		self.ts_local_exec
+	}
 }
 
 pub(crate) mod sealed {
@@ -146,8 +187,6 @@ pub(crate) mod sealed {
 		fn decode(batch: &RecordBatch, file_schema: &Schema) -> Vec<Self>;
 		/// Metadata that must agree across every file of a read range; `None` when the lane has none.
 		fn file_sig(schema: &Schema) -> Option<String>;
-		fn ts_event(&self) -> UnixNanos;
-		fn ts_init(&self) -> Option<UnixNanos>;
 		fn approx_bytes(&self) -> usize;
 	}
 }
@@ -214,22 +253,34 @@ fn prec_sig(schema: &Schema) -> Option<String> {
 	Some(format!("{}/{}", p.price, p.qty))
 }
 
-fn col_i64(b: &RecordBatch, idx: usize) -> &Int64Array {
-	b.column(idx).as_any().downcast_ref::<Int64Array>().expect("i64 column")
+/// The wire columns every venue-sourced lane carries, in schema order.
+fn venue_ts_fields() -> [Field; 3] {
+	[
+		Field::new("ts_venue_exec", DataType::Int64, false),
+		Field::new("ts_venue_send", DataType::Int64, true),
+		Field::new("ts_local_recv", DataType::Int64, true),
+	]
 }
 
-fn col_u64(b: &RecordBatch, idx: usize) -> &UInt64Array {
-	b.column(idx).as_any().downcast_ref::<UInt64Array>().expect("u64 column")
+// Named lookup, not positional: inserting a column would otherwise shift every index in every
+// decoder at once, and round-trip tests still pass when both sides shift together.
+fn col<'a, T: 'static>(b: &'a RecordBatch, name: &str) -> &'a T {
+	b.column_by_name(name)
+		.unwrap_or_else(|| panic!("stored lane missing column {name}"))
+		.as_any()
+		.downcast_ref::<T>()
+		.unwrap_or_else(|| panic!("column {name} has unexpected arrow type"))
 }
 
-fn col_f64(b: &RecordBatch, idx: usize) -> &Float64Array {
-	b.column(idx).as_any().downcast_ref::<Float64Array>().expect("f64 column")
+fn opt_ts<A>(a: &Int64Array, i: usize) -> Option<Ts<A>> {
+	(!a.is_null(i)).then(|| Ts::from_nanos(a.value(i)))
 }
 
 #[derive(Default)]
 pub struct TradeBuilders {
-	ts_event: arrow::array::Int64Builder,
-	ts_init: arrow::array::Int64Builder,
+	ts_venue_exec: arrow::array::Int64Builder,
+	ts_venue_send: arrow::array::Int64Builder,
+	ts_local_recv: arrow::array::Int64Builder,
 	monotonic_seq: arrow::array::UInt64Builder,
 	trade_id: arrow::array::UInt64Builder,
 	side: arrow::array::UInt8Builder,
@@ -241,26 +292,24 @@ impl Sealed for Trade {
 	type Builders = TradeBuilders;
 	type Meta = PrecisionPriceQty;
 
-	const PER_ROW_MIN: usize = 40;
+	const PER_ROW_MIN: usize = 48;
 
 	fn schema(meta: PrecisionPriceQty) -> SchemaRef {
-		schema_with(
-			vec![
-				Field::new("ts_event", DataType::Int64, false),
-				Field::new("ts_init", DataType::Int64, true),
-				Field::new("monotonic_seq", DataType::UInt64, false),
-				Field::new("trade_id", DataType::UInt64, false),
-				Field::new("side", DataType::UInt8, false),
-				Field::new("price_raw", DataType::Int32, false),
-				Field::new("qty_raw", DataType::UInt32, false),
-			],
-			&prec_pairs(meta),
-		)
+		let mut fields = venue_ts_fields().to_vec();
+		fields.extend([
+			Field::new("monotonic_seq", DataType::UInt64, false),
+			Field::new("trade_id", DataType::UInt64, false),
+			Field::new("side", DataType::UInt8, false),
+			Field::new("price_raw", DataType::Int32, false),
+			Field::new("qty_raw", DataType::UInt32, false),
+		]);
+		schema_with(fields, &prec_pairs(meta))
 	}
 
 	fn append(&self, b: &mut TradeBuilders, meta: PrecisionPriceQty) {
-		b.ts_event.append_value(self.ts_event);
-		b.ts_init.append_option(self.ts_init);
+		b.ts_venue_exec.append_value(self.ts_venue_exec.as_nanos());
+		b.ts_venue_send.append_option(self.ts_venue_send.map(Ts::as_nanos));
+		b.ts_local_recv.append_option(self.ts_local_recv.map(Ts::as_nanos));
 		b.monotonic_seq.append_value(self.monotonic_seq);
 		b.trade_id.append_value(self.trade_id);
 		b.side.append_value(side_u8(self.side));
@@ -270,8 +319,9 @@ impl Sealed for Trade {
 
 	fn finish(b: &mut TradeBuilders) -> Vec<ArrayRef> {
 		vec![
-			Arc::new(b.ts_event.finish()),
-			Arc::new(b.ts_init.finish()),
+			Arc::new(b.ts_venue_exec.finish()),
+			Arc::new(b.ts_venue_send.finish()),
+			Arc::new(b.ts_local_recv.finish()),
 			Arc::new(b.monotonic_seq.finish()),
 			Arc::new(b.trade_id.finish()),
 			Arc::new(b.side.finish()),
@@ -283,17 +333,19 @@ impl Sealed for Trade {
 	fn decode(batch: &RecordBatch, file_schema: &Schema) -> Vec<Self> {
 		let prec = prec_from_schema(file_schema);
 		let (p_scale, q_scale) = (10f64.powi(prec.price as i32), 10f64.powi(prec.qty as i32));
-		let ts_event = col_i64(batch, 0);
-		let ts_init = col_i64(batch, 1);
-		let monotonic = col_u64(batch, 2);
-		let trade_id = col_u64(batch, 3);
-		let side = batch.column(4).as_any().downcast_ref::<UInt8Array>().expect("u8 column");
-		let price = batch.column(5).as_any().downcast_ref::<Int32Array>().expect("i32 column");
-		let qty = batch.column(6).as_any().downcast_ref::<UInt32Array>().expect("u32 column");
+		let exec = col::<Int64Array>(batch, "ts_venue_exec");
+		let send = col::<Int64Array>(batch, "ts_venue_send");
+		let recv = col::<Int64Array>(batch, "ts_local_recv");
+		let monotonic = col::<UInt64Array>(batch, "monotonic_seq");
+		let trade_id = col::<UInt64Array>(batch, "trade_id");
+		let side = col::<UInt8Array>(batch, "side");
+		let price = col::<Int32Array>(batch, "price_raw");
+		let qty = col::<UInt32Array>(batch, "qty_raw");
 		(0..batch.num_rows())
 			.map(|i| Trade {
-				ts_event: ts_event.value(i),
-				ts_init: (!ts_init.is_null(i)).then(|| ts_init.value(i)),
+				ts_venue_exec: Ts::from_nanos(exec.value(i)),
+				ts_venue_send: opt_ts(send, i),
+				ts_local_recv: opt_ts(recv, i),
 				monotonic_seq: monotonic.value(i),
 				trade_id: trade_id.value(i),
 				side: side_from(side.value(i)),
@@ -307,23 +359,16 @@ impl Sealed for Trade {
 		prec_sig(schema)
 	}
 
-	fn ts_event(&self) -> UnixNanos {
-		self.ts_event
-	}
-
-	fn ts_init(&self) -> Option<UnixNanos> {
-		self.ts_init
-	}
-
 	fn approx_bytes(&self) -> usize {
-		40
+		48
 	}
 }
 
 #[derive(Default)]
 pub struct BookDeltaBuilders {
-	ts_event: arrow::array::Int64Builder,
-	ts_init: arrow::array::Int64Builder,
+	ts_venue_exec: arrow::array::Int64Builder,
+	ts_venue_send: arrow::array::Int64Builder,
+	ts_local_recv: arrow::array::Int64Builder,
 	monotonic_seq: arrow::array::UInt64Builder,
 	gapped: BooleanBuilder,
 	side: arrow::array::UInt8Builder,
@@ -335,26 +380,24 @@ impl Sealed for BookDelta {
 	type Builders = BookDeltaBuilders;
 	type Meta = PrecisionPriceQty;
 
-	const PER_ROW_MIN: usize = 40;
+	const PER_ROW_MIN: usize = 48;
 
 	fn schema(meta: PrecisionPriceQty) -> SchemaRef {
-		schema_with(
-			vec![
-				Field::new("ts_event", DataType::Int64, false),
-				Field::new("ts_init", DataType::Int64, true),
-				Field::new("monotonic_seq", DataType::UInt64, false),
-				Field::new("gapped", DataType::Boolean, false),
-				Field::new("side", DataType::UInt8, false),
-				Field::new("price_raw", DataType::Int32, false),
-				Field::new("qty_raw", DataType::UInt32, false),
-			],
-			&prec_pairs(meta),
-		)
+		let mut fields = venue_ts_fields().to_vec();
+		fields.extend([
+			Field::new("monotonic_seq", DataType::UInt64, false),
+			Field::new("gapped", DataType::Boolean, false),
+			Field::new("side", DataType::UInt8, false),
+			Field::new("price_raw", DataType::Int32, false),
+			Field::new("qty_raw", DataType::UInt32, false),
+		]);
+		schema_with(fields, &prec_pairs(meta))
 	}
 
 	fn append(&self, b: &mut BookDeltaBuilders, meta: PrecisionPriceQty) {
-		b.ts_event.append_value(self.ts_event);
-		b.ts_init.append_option(self.ts_init);
+		b.ts_venue_exec.append_value(self.ts_venue_exec.as_nanos());
+		b.ts_venue_send.append_option(self.ts_venue_send.map(Ts::as_nanos));
+		b.ts_local_recv.append_option(self.ts_local_recv.map(Ts::as_nanos));
 		b.monotonic_seq.append_value(self.monotonic_seq);
 		b.gapped.append_value(self.gapped);
 		b.side.append_value(side_u8(self.side));
@@ -364,8 +407,9 @@ impl Sealed for BookDelta {
 
 	fn finish(b: &mut BookDeltaBuilders) -> Vec<ArrayRef> {
 		vec![
-			Arc::new(b.ts_event.finish()),
-			Arc::new(b.ts_init.finish()),
+			Arc::new(b.ts_venue_exec.finish()),
+			Arc::new(b.ts_venue_send.finish()),
+			Arc::new(b.ts_local_recv.finish()),
 			Arc::new(b.monotonic_seq.finish()),
 			Arc::new(b.gapped.finish()),
 			Arc::new(b.side.finish()),
@@ -377,17 +421,19 @@ impl Sealed for BookDelta {
 	fn decode(batch: &RecordBatch, file_schema: &Schema) -> Vec<Self> {
 		let prec = prec_from_schema(file_schema);
 		let (p_scale, q_scale) = (10f64.powi(prec.price as i32), 10f64.powi(prec.qty as i32));
-		let ts_event = col_i64(batch, 0);
-		let ts_init = col_i64(batch, 1);
-		let monotonic = col_u64(batch, 2);
-		let gapped = batch.column(3).as_any().downcast_ref::<BooleanArray>().expect("bool column");
-		let side = batch.column(4).as_any().downcast_ref::<UInt8Array>().expect("u8 column");
-		let price = batch.column(5).as_any().downcast_ref::<Int32Array>().expect("i32 column");
-		let qty = batch.column(6).as_any().downcast_ref::<UInt32Array>().expect("u32 column");
+		let exec = col::<Int64Array>(batch, "ts_venue_exec");
+		let send = col::<Int64Array>(batch, "ts_venue_send");
+		let recv = col::<Int64Array>(batch, "ts_local_recv");
+		let monotonic = col::<UInt64Array>(batch, "monotonic_seq");
+		let gapped = col::<BooleanArray>(batch, "gapped");
+		let side = col::<UInt8Array>(batch, "side");
+		let price = col::<Int32Array>(batch, "price_raw");
+		let qty = col::<UInt32Array>(batch, "qty_raw");
 		(0..batch.num_rows())
 			.map(|i| BookDelta {
-				ts_event: ts_event.value(i),
-				ts_init: (!ts_init.is_null(i)).then(|| ts_init.value(i)),
+				ts_venue_exec: Ts::from_nanos(exec.value(i)),
+				ts_venue_send: opt_ts(send, i),
+				ts_local_recv: opt_ts(recv, i),
 				monotonic_seq: monotonic.value(i),
 				gapped: gapped.value(i),
 				side: side_from(side.value(i)),
@@ -401,23 +447,16 @@ impl Sealed for BookDelta {
 		prec_sig(schema)
 	}
 
-	fn ts_event(&self) -> UnixNanos {
-		self.ts_event
-	}
-
-	fn ts_init(&self) -> Option<UnixNanos> {
-		self.ts_init
-	}
-
 	fn approx_bytes(&self) -> usize {
-		40
+		48
 	}
 }
 
 #[derive(Default)]
 pub struct BookSnapshotBuilders {
-	ts_event: arrow::array::Int64Builder,
-	ts_init: arrow::array::Int64Builder,
+	ts_venue_exec: arrow::array::Int64Builder,
+	ts_venue_send: arrow::array::Int64Builder,
+	ts_local_recv: arrow::array::Int64Builder,
 	monotonic_seq: arrow::array::UInt64Builder,
 	bid_prices: arrow::array::ListBuilder<arrow::array::Int32Builder>,
 	bid_qtys: arrow::array::ListBuilder<arrow::array::UInt32Builder>,
@@ -429,28 +468,26 @@ impl Sealed for BookSnapshot {
 	type Builders = BookSnapshotBuilders;
 	type Meta = PrecisionPriceQty;
 
-	const PER_ROW_MIN: usize = 32;
+	const PER_ROW_MIN: usize = 40;
 
 	fn schema(meta: PrecisionPriceQty) -> SchemaRef {
 		let i32_list = || DataType::List(Arc::new(Field::new("item", DataType::Int32, true)));
 		let u32_list = || DataType::List(Arc::new(Field::new("item", DataType::UInt32, true)));
-		schema_with(
-			vec![
-				Field::new("ts_event", DataType::Int64, false),
-				Field::new("ts_init", DataType::Int64, true),
-				Field::new("monotonic_seq", DataType::UInt64, false),
-				Field::new("bid_prices", i32_list(), false),
-				Field::new("bid_qtys", u32_list(), false),
-				Field::new("ask_prices", i32_list(), false),
-				Field::new("ask_qtys", u32_list(), false),
-			],
-			&prec_pairs(meta),
-		)
+		let mut fields = venue_ts_fields().to_vec();
+		fields.extend([
+			Field::new("monotonic_seq", DataType::UInt64, false),
+			Field::new("bid_prices", i32_list(), false),
+			Field::new("bid_qtys", u32_list(), false),
+			Field::new("ask_prices", i32_list(), false),
+			Field::new("ask_qtys", u32_list(), false),
+		]);
+		schema_with(fields, &prec_pairs(meta))
 	}
 
 	fn append(&self, b: &mut BookSnapshotBuilders, _meta: PrecisionPriceQty) {
-		b.ts_event.append_value(self.ts_event);
-		b.ts_init.append_option(self.ts_init);
+		b.ts_venue_exec.append_value(self.ts_venue_exec.as_nanos());
+		b.ts_venue_send.append_option(self.ts_venue_send.map(Ts::as_nanos));
+		b.ts_local_recv.append_option(self.ts_local_recv.map(Ts::as_nanos));
 		b.monotonic_seq.append_value(self.monotonic_seq);
 		for &p in &self.bid_prices {
 			b.bid_prices.values().append_value(p);
@@ -472,8 +509,9 @@ impl Sealed for BookSnapshot {
 
 	fn finish(b: &mut BookSnapshotBuilders) -> Vec<ArrayRef> {
 		vec![
-			Arc::new(b.ts_event.finish()),
-			Arc::new(b.ts_init.finish()),
+			Arc::new(b.ts_venue_exec.finish()),
+			Arc::new(b.ts_venue_send.finish()),
+			Arc::new(b.ts_local_recv.finish()),
 			Arc::new(b.monotonic_seq.finish()),
 			Arc::new(b.bid_prices.finish()),
 			Arc::new(b.bid_qtys.finish()),
@@ -483,17 +521,19 @@ impl Sealed for BookSnapshot {
 	}
 
 	fn decode(batch: &RecordBatch, _file_schema: &Schema) -> Vec<Self> {
-		let ts_event = col_i64(batch, 0);
-		let ts_init = col_i64(batch, 1);
-		let monotonic = col_u64(batch, 2);
-		let bid_prices = col_i32_list(batch, 3);
-		let bid_qtys = col_u32_list(batch, 4);
-		let ask_prices = col_i32_list(batch, 5);
-		let ask_qtys = col_u32_list(batch, 6);
+		let exec = col::<Int64Array>(batch, "ts_venue_exec");
+		let send = col::<Int64Array>(batch, "ts_venue_send");
+		let recv = col::<Int64Array>(batch, "ts_local_recv");
+		let monotonic = col::<UInt64Array>(batch, "monotonic_seq");
+		let bid_prices = col_i32_list(batch, "bid_prices");
+		let bid_qtys = col_u32_list(batch, "bid_qtys");
+		let ask_prices = col_i32_list(batch, "ask_prices");
+		let ask_qtys = col_u32_list(batch, "ask_qtys");
 		(0..batch.num_rows())
 			.map(|i| BookSnapshot {
-				ts_event: ts_event.value(i),
-				ts_init: (!ts_init.is_null(i)).then(|| ts_init.value(i)),
+				ts_venue_exec: Ts::from_nanos(exec.value(i)),
+				ts_venue_send: opt_ts(send, i),
+				ts_local_recv: opt_ts(recv, i),
 				monotonic_seq: monotonic.value(i),
 				bid_prices: bid_prices[i].clone(),
 				bid_qtys: bid_qtys[i].clone(),
@@ -507,23 +547,16 @@ impl Sealed for BookSnapshot {
 		prec_sig(schema)
 	}
 
-	fn ts_event(&self) -> UnixNanos {
-		self.ts_event
-	}
-
-	fn ts_init(&self) -> Option<UnixNanos> {
-		self.ts_init
-	}
-
 	fn approx_bytes(&self) -> usize {
-		32 + 8 * (self.bid_prices.len() + self.ask_prices.len())
+		40 + 8 * (self.bid_prices.len() + self.ask_prices.len())
 	}
 }
 
 #[derive(Default)]
 pub struct OiBuilders {
-	ts_event: arrow::array::Int64Builder,
-	ts_init: arrow::array::Int64Builder,
+	ts_venue_exec: arrow::array::Int64Builder,
+	ts_venue_send: arrow::array::Int64Builder,
+	ts_local_recv: arrow::array::Int64Builder,
 	oi: Float64Builder,
 }
 
@@ -531,37 +564,40 @@ impl Sealed for Oi {
 	type Builders = OiBuilders;
 	type Meta = ();
 
-	const PER_ROW_MIN: usize = 24;
+	const PER_ROW_MIN: usize = 32;
 
 	fn schema(_meta: ()) -> SchemaRef {
-		schema_with(
-			vec![
-				Field::new("ts_event", DataType::Int64, false),
-				Field::new("ts_init", DataType::Int64, true),
-				Field::new("oi", DataType::Float64, false),
-			],
-			&[],
-		)
+		let mut fields = venue_ts_fields().to_vec();
+		fields.push(Field::new("oi", DataType::Float64, false));
+		schema_with(fields, &[])
 	}
 
 	fn append(&self, b: &mut OiBuilders, _meta: ()) {
-		b.ts_event.append_value(self.ts_event);
-		b.ts_init.append_option(self.ts_init);
+		b.ts_venue_exec.append_value(self.ts_venue_exec.as_nanos());
+		b.ts_venue_send.append_option(self.ts_venue_send.map(Ts::as_nanos));
+		b.ts_local_recv.append_option(self.ts_local_recv.map(Ts::as_nanos));
 		b.oi.append_value(self.oi);
 	}
 
 	fn finish(b: &mut OiBuilders) -> Vec<ArrayRef> {
-		vec![Arc::new(b.ts_event.finish()), Arc::new(b.ts_init.finish()), Arc::new(b.oi.finish())]
+		vec![
+			Arc::new(b.ts_venue_exec.finish()),
+			Arc::new(b.ts_venue_send.finish()),
+			Arc::new(b.ts_local_recv.finish()),
+			Arc::new(b.oi.finish()),
+		]
 	}
 
 	fn decode(batch: &RecordBatch, _file_schema: &Schema) -> Vec<Self> {
-		let ts_event = col_i64(batch, 0);
-		let ts_init = col_i64(batch, 1);
-		let oi = col_f64(batch, 2);
+		let exec = col::<Int64Array>(batch, "ts_venue_exec");
+		let send = col::<Int64Array>(batch, "ts_venue_send");
+		let recv = col::<Int64Array>(batch, "ts_local_recv");
+		let oi = col::<Float64Array>(batch, "oi");
 		(0..batch.num_rows())
 			.map(|i| Oi {
-				ts_event: ts_event.value(i),
-				ts_init: (!ts_init.is_null(i)).then(|| ts_init.value(i)),
+				ts_venue_exec: Ts::from_nanos(exec.value(i)),
+				ts_venue_send: opt_ts(send, i),
+				ts_local_recv: opt_ts(recv, i),
 				oi: oi.value(i),
 			})
 			.collect()
@@ -571,23 +607,14 @@ impl Sealed for Oi {
 		None
 	}
 
-	fn ts_event(&self) -> UnixNanos {
-		self.ts_event
-	}
-
-	fn ts_init(&self) -> Option<UnixNanos> {
-		self.ts_init
-	}
-
 	fn approx_bytes(&self) -> usize {
-		24
+		32
 	}
 }
 
 #[derive(Default)]
 pub struct McBuilders {
-	ts_event: arrow::array::Int64Builder,
-	ts_init: arrow::array::Int64Builder,
+	ts_local_exec: arrow::array::Int64Builder,
 	market_cap: Float64Builder,
 	rank: arrow::array::UInt32Builder,
 }
@@ -596,13 +623,12 @@ impl Sealed for Mc {
 	type Builders = McBuilders;
 	type Meta = ();
 
-	const PER_ROW_MIN: usize = 28;
+	const PER_ROW_MIN: usize = 20;
 
 	fn schema(_meta: ()) -> SchemaRef {
 		schema_with(
 			vec![
-				Field::new("ts_event", DataType::Int64, false),
-				Field::new("ts_init", DataType::Int64, true),
+				Field::new("ts_local_exec", DataType::Int64, false),
 				Field::new("market_cap", DataType::Float64, false),
 				Field::new("rank", DataType::UInt32, true),
 			],
@@ -611,30 +637,22 @@ impl Sealed for Mc {
 	}
 
 	fn append(&self, b: &mut McBuilders, _meta: ()) {
-		b.ts_event.append_value(self.ts_event);
-		b.ts_init.append_option(self.ts_init);
+		b.ts_local_exec.append_value(self.ts_local_exec.as_nanos());
 		b.market_cap.append_value(self.market_cap);
 		b.rank.append_option(self.rank);
 	}
 
 	fn finish(b: &mut McBuilders) -> Vec<ArrayRef> {
-		vec![
-			Arc::new(b.ts_event.finish()),
-			Arc::new(b.ts_init.finish()),
-			Arc::new(b.market_cap.finish()),
-			Arc::new(b.rank.finish()),
-		]
+		vec![Arc::new(b.ts_local_exec.finish()), Arc::new(b.market_cap.finish()), Arc::new(b.rank.finish())]
 	}
 
 	fn decode(batch: &RecordBatch, _file_schema: &Schema) -> Vec<Self> {
-		let ts_event = col_i64(batch, 0);
-		let ts_init = col_i64(batch, 1);
-		let market_cap = col_f64(batch, 2);
-		let rank = batch.column(3).as_any().downcast_ref::<UInt32Array>().expect("u32 column");
+		let exec = col::<Int64Array>(batch, "ts_local_exec");
+		let market_cap = col::<Float64Array>(batch, "market_cap");
+		let rank = col::<UInt32Array>(batch, "rank");
 		(0..batch.num_rows())
 			.map(|i| Mc {
-				ts_event: ts_event.value(i),
-				ts_init: (!ts_init.is_null(i)).then(|| ts_init.value(i)),
+				ts_local_exec: Ts::from_nanos(exec.value(i)),
 				market_cap: market_cap.value(i),
 				rank: (!rank.is_null(i)).then(|| rank.value(i)),
 			})
@@ -645,21 +663,13 @@ impl Sealed for Mc {
 		None
 	}
 
-	fn ts_event(&self) -> UnixNanos {
-		self.ts_event
-	}
-
-	fn ts_init(&self) -> Option<UnixNanos> {
-		self.ts_init
-	}
-
 	fn approx_bytes(&self) -> usize {
-		28
+		20
 	}
 }
 
-fn col_i32_list(b: &RecordBatch, idx: usize) -> Vec<Vec<i32>> {
-	let list = b.column(idx).as_any().downcast_ref::<ListArray>().expect("list column");
+fn col_i32_list(b: &RecordBatch, name: &str) -> Vec<Vec<i32>> {
+	let list = col::<ListArray>(b, name);
 	let values = list.values().as_any().downcast_ref::<Int32Array>().expect("i32 inner");
 	let offsets = list.offsets();
 	(0..list.len())
@@ -671,8 +681,8 @@ fn col_i32_list(b: &RecordBatch, idx: usize) -> Vec<Vec<i32>> {
 		.collect()
 }
 
-fn col_u32_list(b: &RecordBatch, idx: usize) -> Vec<Vec<u32>> {
-	let list = b.column(idx).as_any().downcast_ref::<ListArray>().expect("list column");
+fn col_u32_list(b: &RecordBatch, name: &str) -> Vec<Vec<u32>> {
+	let list = col::<ListArray>(b, name);
 	let values = list.values().as_any().downcast_ref::<UInt32Array>().expect("u32 inner");
 	let offsets = list.offsets();
 	(0..list.len())

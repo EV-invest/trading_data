@@ -21,6 +21,8 @@ tracing.workspace = true
 trading_data.workspace = true
 trading_data_core.workspace = true
 trading_data_dag.workspace = true
+# The only edge pointing out of this workspace, declared here rather than in the root manifest so
+# `trading_data` itself has no path back to a venue adapter.
 v_exchanges = { workspace = true }
 v_utils.workspace = true
 

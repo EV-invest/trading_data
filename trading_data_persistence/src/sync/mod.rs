@@ -3,29 +3,27 @@
 //! over a catalog; [`Live`] is the live feed over push handles, teeing into the same Feather lanes
 //! a backtest later reads — so a live recording replays into the *identical* event stream.
 //!
-//! Effective (arrival) time of every event is `ts_init`. For [`Replay`] that's the recorded value,
-//! or a latency-simulation of `ts_event` for historic (`None`) rows. For [`Live`], `ts_init` is
-//! stamped at **ingest** — a single point, on the consumer thread — so it is monotonic without
-//! cross-thread races, and everything currently buffered is a complete prefix (every future event
-//! gets a larger stamp). That is what lets [`Live`] weave-and-emit incrementally and drop consumed
-//! rows: **bounded memory, no end-of-stream buffering, no quiet-lane stall.**
+//! Every event is woven on an [`Arrival`] key. For [`Replay`] that's the recorded `ts_local_recv`,
+//! or a latency-simulation of the venue axis for historic (`None`) rows. For [`Live`] it is stamped
+//! at **ingest** — a single point, on the consumer thread — so it is monotonic without cross-thread
+//! races, and everything currently buffered is a complete prefix (every future event gets a larger
+//! stamp). That is what lets [`Live`] weave-and-emit incrementally and drop consumed rows:
+//! **bounded memory, no end-of-stream buffering, no quiet-lane stall.**
 
 use std::sync::{
 	Arc,
 	mpsc::{Receiver, Sender, channel},
 };
 
-use jiff::Timestamp;
-use trading_data_core::{Asset, ExchangeName, PrecisionPriceQty, Side, Symbol};
+use trading_data_core::{Arrival, Asset, BookShape, BookUpdate, ExchangeName, Local, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
 use v_utils::distributions::LatencyConfig;
 
 use crate::{
-	book::{BookShape, BookUpdate},
 	catalog::Catalog,
 	clock::Clock,
 	feather::Feather,
-	read::{book_prec, pick_anchor, read_book_deltas, read_book_snapshots, read_mc, read_oi, read_trades},
-	row::{BookDelta, BookSnapshot, Mc, Oi, Row as _, Trade, UnixNanos},
+	read::{book_prec, pick_anchor, read_book_deltas, read_book_snapshots, read_mc, read_oi, read_trades, snapshot_shape},
+	row::{BookDelta, BookSnapshot, Mc, Oi, Row as _, Trade},
 };
 
 /// The source lanes a graph may require. `Debug`/`Hash` back the deterministic per-lane latency
@@ -55,13 +53,10 @@ pub trait Feed {
 	fn next_batch(&mut self) -> Option<Batch<'_>>;
 }
 
-fn ts_ns(t: Timestamp) -> i64 {
-	t.as_nanosecond() as i64
-}
-
-/// One time-sorted lane: effective timestamps in `ts`, rows in `rows`, consumed up to `cur`.
+/// One arrival-sorted lane: weave keys in `ts`, rows in `rows`, consumed up to `cur`. The key lives
+/// beside the row, not in it — it is an ordering device, not a property of the datum.
 struct Lane<T> {
-	ts: Vec<i64>,
+	ts: Vec<Arrival>,
 	rows: Vec<T>,
 	cur: usize,
 }
@@ -77,7 +72,7 @@ impl<T> Default for Lane<T> {
 }
 
 impl<T> Lane<T> {
-	fn head(&self) -> Option<i64> {
+	fn head(&self) -> Option<Arrival> {
 		self.ts.get(self.cur).copied()
 	}
 
@@ -85,14 +80,14 @@ impl<T> Lane<T> {
 		self.cur >= self.ts.len()
 	}
 
-	fn push(&mut self, ts: i64, row: T) {
-		debug_assert!(self.ts.last().is_none_or(|&last| ts >= last), "lane timestamps must be non-decreasing");
+	fn push(&mut self, ts: Arrival, row: T) {
+		debug_assert!(self.ts.last().is_none_or(|&last| ts >= last), "lane arrivals must be non-decreasing");
 		self.ts.push(ts);
 		self.rows.push(row);
 	}
 
-	/// End index (exclusive) of the maximal run from `cur` whose timestamps stay `<= bound`.
-	fn run_end(&self, bound: i64) -> usize {
+	/// End index (exclusive) of the maximal run from `cur` whose keys stay `<= bound`.
+	fn run_end(&self, bound: Arrival) -> usize {
 		let mut e = self.cur + 1;
 		while e < self.ts.len() && self.ts[e] <= bound {
 			e += 1;
@@ -120,7 +115,7 @@ struct Weaver {
 	anchors: Lane<BookShape>,
 	oi: Lane<Oi>,
 	mc: Lane<Mc>,
-	prev_emit: i64,
+	prev_emit: Arrival,
 }
 
 impl Weaver {
@@ -140,8 +135,8 @@ impl Weaver {
 		let heads = [self.trades.head(), self.deltas.head(), self.anchors.head(), self.oi.head(), self.mc.head()];
 		let winner = (0..heads.len()).filter(|&i| heads[i].is_some()).min_by_key(|&i| heads[i].expect("filtered to Some"))?;
 		let win_ts = heads[winner].expect("winner has a head");
-		let bound = (0..heads.len()).filter(|&i| i != winner).filter_map(|i| heads[i]).min().unwrap_or(i64::MAX);
-		assert!(win_ts >= self.prev_emit, "weaver emitted out of arrival order: {win_ts} < {}", self.prev_emit);
+		let bound = (0..heads.len()).filter(|&i| i != winner).filter_map(|i| heads[i]).min().unwrap_or(Arrival::from_nanos(i64::MAX));
+		assert!(win_ts >= self.prev_emit, "weaver emitted out of arrival order: {win_ts:?} < {:?}", self.prev_emit);
 
 		Some(match winner {
 			0 => {
@@ -178,28 +173,23 @@ impl Weaver {
 	}
 }
 
-fn effective(ts_init: Option<UnixNanos>, ts_event: UnixNanos, sampler: &mut Option<v_utils::distributions::LatencySampler>) -> i64 {
-	match ts_init {
-		Some(t) => t,
-		None => sampler.as_mut().expect("historic lane needs a latency sampler").arrival(ts_event),
+/// The weave key for a stored row: the recorded reception when we were there, else a simulated one.
+fn effective<A>(recv: Option<Ts<Local>>, axis: Ts<A>, sampler: &mut Option<v_utils::distributions::LatencySampler>) -> Arrival {
+	match recv {
+		Some(t) => Arrival::from_nanos(t.as_nanos()),
+		None => Arrival::from_nanos(sampler.as_mut().expect("historic lane needs a latency sampler").arrival(axis.as_nanos())),
 	}
 }
 
-fn snapshot_shape(row: &BookSnapshot, prec: PrecisionPriceQty) -> BookShape {
-	let ts_event = Timestamp::from_nanosecond(row.ts_event as i128).expect("stored ts in range");
-	let ts_init = Timestamp::from_nanosecond(row.ts_init.unwrap_or(row.ts_event) as i128).expect("stored ts in range");
-	BookShape {
-		ts_event,
-		ts_init,
-		ts_last: ts_init,
-		prec,
-		bids: row.bid_prices.iter().copied().zip(row.bid_qtys.iter().copied()).collect(),
-		asks: row.ask_prices.iter().copied().zip(row.ask_qtys.iter().copied()).collect(),
-	}
+/// Market cap is daily-resolution, so venue/local skew is orders of magnitude below the sampling
+/// interval and cannot change which rows a range selects. Named, not implicit, so the one place
+/// this crate crosses actors on a query bound is greppable.
+fn mc_bound(t: Ts<Venue>) -> Ts<Local> {
+	Ts::from_nanos(t.as_nanos())
 }
 
 /// Backtest feed: fills the weaver from the catalog's lanes, then emits their arrival-ordered
-/// merge. Historic rows (`ts_init = None`) get simulated arrival via `latency`.
+/// merge. Historic rows (no recorded reception) get a simulated arrival via `latency`.
 ///
 // ponytail: eager-loads the whole [start,end] range into memory. Fine for day-scale ranges (a day
 // of trades is a few MB) and it streams from disk one file at a time while filling. For very large
@@ -210,7 +200,7 @@ pub struct Replay {
 }
 
 impl Replay {
-	pub fn new(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: UnixNanos, end: UnixNanos, lanes: &[LaneKind], latency: LatencyConfig) -> Self {
+	pub fn new(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: Ts<Venue>, end: Ts<Venue>, lanes: &[LaneKind], latency: LatencyConfig) -> Self {
 		let mut weaver = Weaver::default();
 		let sampler = |lane: LaneKind| Some(latency.sampler(&format!("{lane:?}:{symbol}")));
 
@@ -219,38 +209,40 @@ impl Replay {
 				LaneKind::Trades => {
 					let mut s = sampler(lane);
 					for t in read_trades(catalog, exchange, symbol, start, end).expect("open trades lane") {
-						let ts = effective(t.ts_init, t.ts_event, &mut s);
+						let ts = effective(t.ts_local_recv, t.ts_venue_exec, &mut s);
 						weaver.trades.push(ts, t);
 					}
 				}
 				LaneKind::Oi => {
 					let mut s = sampler(lane);
 					for o in read_oi(catalog, exchange, symbol, start, end).expect("open oi lane") {
-						let ts = effective(o.ts_init, o.ts_event, &mut s);
+						let ts = effective(o.ts_local_recv, o.ts_venue_exec, &mut s);
 						weaver.oi.push(ts, o);
 					}
 				}
 				LaneKind::Mc => {
 					let mut s = sampler(lane);
 					let asset = Asset::new(symbol.pair.base().to_string());
-					for m in read_mc(catalog, asset, start, end).expect("open mc lane") {
-						let ts = effective(m.ts_init, m.ts_event, &mut s);
+					for m in read_mc(catalog, asset, mc_bound(start), mc_bound(end)).expect("open mc lane") {
+						// This lane's axis is already ours, so it is its own reception reading.
+						let ts = effective(Some(m.ts_local_exec), m.ts_local_exec, &mut s);
 						weaver.mc.push(ts, m);
 					}
 				}
 				LaneKind::Book => {
 					let prec = book_prec(catalog, exchange, symbol).expect("read book prec").expect("book lane has files");
-					// pre-start anchor first (sorts before the range by construction).
+					// The pre-start anchor is state carried into the range, not an event that arrived
+					// in it — it has no arrival of its own, and must sort before everything.
 					if let Some(shape) = pick_anchor(catalog, exchange, symbol, start).expect("pick anchor") {
-						weaver.anchors.push(ts_ns(shape.ts_event), shape);
+						weaver.anchors.push(Arrival::MIN, shape);
 					}
 					let mut s = sampler(lane);
 					for snap in read_book_snapshots(catalog, exchange, symbol, start, end).expect("open snapshot lane") {
-						let ts = effective(snap.ts_init, snap.ts_event, &mut s);
+						let ts = effective(snap.ts_local_recv, snap.ts_venue_exec, &mut s);
 						weaver.anchors.push(ts, snapshot_shape(&snap, prec));
 					}
 					for d in read_book_deltas(catalog, exchange, symbol, start, end).expect("open delta lane") {
-						let ts = effective(d.ts_init, d.ts_event, &mut s);
+						let ts = effective(d.ts_local_recv, d.ts_venue_exec, &mut s);
 						weaver.deltas.push(ts, d);
 					}
 				}
@@ -322,11 +314,14 @@ pub struct Live {
 	// `sink()` to before-consume.
 	tx: Option<Sender<LiveEvt>>,
 	clock: Arc<dyn Clock>,
-	/// Last stamp issued; arrival time is strictly increasing (`max(clock, last+1)`), so events are
-	/// globally uniquely ordered and the weave is unambiguous.
-	last_stamp: i64,
+	/// Last key issued; strictly increasing (`max(clock, last+1)`), so events are globally uniquely
+	/// ordered and the weave is unambiguous.
+	last_stamp: Arrival,
 	prec: PrecisionPriceQty,
 	monotonic: u64,
+	/// Local reception time of the current book epoch's start — reset by every snapshot resync, so
+	/// a folded shape carries how long it has been drifting since it was last known-good.
+	book_epoch: Option<Ts<Local>>,
 	record: Option<Record>,
 	weaver: Weaver,
 	disconnected: bool,
@@ -350,9 +345,10 @@ impl Live {
 			rx,
 			tx: Some(tx),
 			clock,
-			last_stamp: i64::MIN,
+			last_stamp: Arrival::MIN,
 			prec,
 			monotonic: 0,
+			book_epoch: None,
 			record,
 			weaver: Weaver::default(),
 			disconnected: false,
@@ -367,19 +363,26 @@ impl Live {
 		}
 	}
 
-	/// Strictly-increasing arrival stamp (single-threaded, so no atomics): every buffered event is
+	/// Strictly-increasing weave key (single-threaded, so no atomics): every buffered event is
 	/// `<= last_stamp`, every future event `> last_stamp`.
-	fn stamp(&mut self) -> i64 {
-		let t = self.clock.now_ns().max(self.last_stamp + 1);
+	fn stamp(&mut self) -> Arrival {
+		let t = Arrival::from_nanos(self.clock.now_ns().max(self.last_stamp.as_nanos() + 1));
 		self.last_stamp = t;
 		t
+	}
+
+	/// The recorded reception reading. It is the weave key rather than a second, raw clock read:
+	/// replay must reconstruct the same order from disk, and a raw read can tie where the key
+	/// cannot. The `+1` that monotonisation can introduce is far below wire-latency resolution.
+	fn recv_of(a: Arrival) -> Ts<Local> {
+		Ts::from_nanos(a.as_nanos())
 	}
 
 	fn ingest(&mut self, evt: LiveEvt) {
 		let ts = self.stamp();
 		match evt {
 			LiveEvt::Trade(mut t) => {
-				t.ts_init = Some(ts);
+				t.ts_local_recv = Some(Self::recv_of(ts));
 				if let Some(r) = &mut self.record {
 					r.trades.push(t);
 					r.trades.maybe_flush(&r.catalog).expect("trade feather flush");
@@ -387,7 +390,7 @@ impl Live {
 				self.weaver.trades.push(ts, t);
 			}
 			LiveEvt::Oi(mut o) => {
-				o.ts_init = Some(ts);
+				o.ts_local_recv = Some(Self::recv_of(ts));
 				if let Some(r) = &mut self.record {
 					r.oi.push(o);
 					r.oi.maybe_flush(&r.catalog).expect("oi feather flush");
@@ -395,7 +398,7 @@ impl Live {
 				self.weaver.oi.push(ts, o);
 			}
 			LiveEvt::Mc(mut m) => {
-				m.ts_init = Some(ts);
+				m.ts_local_exec = Self::recv_of(ts);
 				if let Some(r) = &mut self.record {
 					r.mc.push(m);
 					r.mc.maybe_flush(&r.catalog).expect("mc feather flush");
@@ -408,18 +411,25 @@ impl Live {
 
 	/// The single book flattener — shared by weave and record, so they can never drift. A snapshot
 	/// resyncs (row + `BookAnchor`); a batch-delta flattens to `BookDelta` rows once, those very
-	/// rows both weaving and teeing. Arrival `ts` (the ingest stamp) is the shape/rows' `ts_init`.
-	fn ingest_book(&mut self, u: BookUpdate, ts: i64) {
+	/// rows both weaving and teeing.
+	///
+	/// The local epoch restarts on a snapshot and continues across deltas; the venue epoch is the
+	/// adapter's to report, since only it holds the folded book.
+	fn ingest_book(&mut self, u: BookUpdate, ts: Arrival) {
 		let mut shape = u.shape().clone();
-		let ev = ts_ns(shape.ts_event);
-		shape.ts_init = Timestamp::from_nanosecond(ts as i128).expect("stamp in range");
+		let recv = Self::recv_of(ts);
+		let ev = shape.ts.venue.last;
+		let send = shape.venue_send;
 		match &u {
 			BookUpdate::Snapshot(_) => {
 				self.monotonic += 1;
+				self.book_epoch = Some(recv);
+				shape.ts.local = Some(Span::at(recv));
 				if let Some(r) = &mut self.record {
 					r.snapshots.push(BookSnapshot {
-						ts_event: ev,
-						ts_init: Some(ts),
+						ts_venue_exec: ev,
+						ts_venue_send: send,
+						ts_local_recv: Some(recv),
 						monotonic_seq: self.monotonic,
 						bid_prices: shape.bids.keys().copied().collect(),
 						bid_qtys: shape.bids.values().copied().collect(),
@@ -431,13 +441,17 @@ impl Live {
 				self.weaver.anchors.push(ts, shape);
 			}
 			BookUpdate::BatchDelta { gapped, .. } => {
+				// A delta before any snapshot *is* the start of the epoch — not a fallback.
+				let first = *self.book_epoch.get_or_insert(recv);
+				shape.ts.local = Some(Span::new(first, recv));
 				let (p_scale, q_scale) = (10f64.powi(self.prec.price as i32), 10f64.powi(self.prec.qty as i32));
 				let mut rows = Vec::new();
 				let mut push = |side: Side, price: i32, qty: u32, seq: &mut u64| {
 					*seq += 1;
 					rows.push(BookDelta {
-						ts_event: ev,
-						ts_init: Some(ts),
+						ts_venue_exec: ev,
+						ts_venue_send: send,
+						ts_local_recv: Some(recv),
 						monotonic_seq: *seq,
 						gapped: *gapped,
 						side,

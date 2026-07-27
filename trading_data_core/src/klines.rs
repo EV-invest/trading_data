@@ -64,8 +64,6 @@ pub fn mock_p_to_ohlc(p: &[f64], step: usize) -> Vec<Ohlc> {
 }
 
 /// Standard candlestick data unit. Can only ever be full, - if an exchange returns partial data for an ongoing candle, or if trading/exchange is down leading to the associated data being cut, the [Kline] object is NOT created.
-/// # Other
-/// Timestamp is often [unsafely converted](crate::guess_timestamp_unsafe) from a string
 #[derive(Clone, Copy, Debug, Default, derive_more::Deref, derive_more::DerefMut, PartialEq, derive_new::new)]
 pub struct Kline {
 	pub open_time: Timestamp,

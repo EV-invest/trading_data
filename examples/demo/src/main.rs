@@ -10,7 +10,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use exec_viz::{Viz, api_types::BarOut};
-use trading_data::{Batch, Feed, Fire, LatencyConfig, Mc, Observer, Oi, Replay, read_mc, read_oi, required_lanes};
+use trading_data::{Batch, Feed, Fire, LatencyConfig, Mc, Observer, Oi, Replay, Ts, read_mc, read_oi, required_lanes};
 use trading_data_core::ExchangeName;
 use trading_data_demo::{
 	asset, day_bounds, ensure_catalog, ensure_mc, ensure_oi,
@@ -55,11 +55,11 @@ async fn main() {
 		let (batches, ts_ns) = match b {
 			Batch::Trades(ts) => {
 				n_trades += ts.len() as u64;
-				(Batches { trades: ts, ..Default::default() }, ts.last().expect("non-empty batch").ts_event)
+				(Batches { trades: ts, ..Default::default() }, ts.last().expect("non-empty batch").ts_venue_exec.as_nanos())
 			}
 			Batch::Oi(os) => {
 				oi_consumed += os.len() as u64;
-				(Batches { oi: os, ..Default::default() }, os.last().expect("non-empty batch").ts_event)
+				(Batches { oi: os, ..Default::default() }, os.last().expect("non-empty batch").ts_venue_exec.as_nanos())
 			}
 			other => panic!("unexpected lane in demo replay: {other:?}"),
 		};
@@ -139,12 +139,12 @@ async fn main() {
 	assert!(doc.checked > 0, "Signal never produced a finite Jacobian");
 	assert!(doc.max_rel < 1e-3, "exact Jacobian disagrees with FD: max_rel={}", doc.max_rel);
 
-	let oi: Vec<Oi> = read_oi(&catalog, ExchangeName::Bybit, symbol(), 0, i64::MAX).expect("open oi lane").collect();
+	let oi: Vec<Oi> = read_oi(&catalog, ExchangeName::Bybit, symbol(), Ts::MIN, Ts::MAX).expect("open oi lane").collect();
 	assert!(!oi.is_empty(), "oi lane empty after ensure_oi");
-	assert!(oi.windows(2).all(|w| w[0].ts_event <= w[1].ts_event), "oi timestamps unordered");
-	let mc: Vec<Mc> = read_mc(&catalog, asset(), 0, i64::MAX).expect("open mc lane").collect();
+	assert!(oi.windows(2).all(|w| w[0].ts_venue_exec <= w[1].ts_venue_exec), "oi timestamps unordered");
+	let mc: Vec<Mc> = read_mc(&catalog, asset(), Ts::MIN, Ts::MAX).expect("open mc lane").collect();
 	assert!(!mc.is_empty(), "mc lane empty after ensure_mc");
-	assert!(mc.windows(2).all(|w| w[0].ts_event <= w[1].ts_event), "mc timestamps unordered");
+	assert!(mc.windows(2).all(|w| w[0].ts_local_exec <= w[1].ts_local_exec), "mc timestamps unordered");
 	println!("oi rows={} mc rows={} (mc={:.3e} rank={:?})", oi.len(), mc.len(), mc[0].market_cap, mc[0].rank);
 
 	println!("demo: ok");

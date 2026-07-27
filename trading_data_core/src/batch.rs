@@ -1,11 +1,13 @@
-use jiff::Timestamp;
-
-use crate::{PrecisionPriceQty, Side, Timestamped};
+use crate::{Accumulator, Local, PrecisionPriceQty, Side, Span, Timestamped, Timestamps, Ts, Venue};
 
 /// One trade in raw (scaled-int) form; `price`/`qty` are meaningless without the batch's `prec`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InnerTrade {
-	pub time: Timestamp,
+	/// When the venue matched it.
+	pub time: Ts<Venue>,
+	/// When the venue put it on the wire, if it reports that separately from `time`. The gap is the
+	/// venue's own internal latency — ours to observe, not to average away.
+	pub sent: Option<Ts<Venue>>,
 	pub price: i32,
 	/// Base qty.
 	pub qty: u32,
@@ -14,29 +16,23 @@ pub struct InnerTrade {
 }
 
 /// Batched trade stream event. All trades share `prec`.
+///
+/// A container, not an accumulator: it is stamped **once** on reception, so there is no local
+/// span to speak of. The venue span is derived from the elements, which keep their own times.
 #[derive(Clone, Debug, Default)]
 pub struct BatchTrades {
 	prec: PrecisionPriceQty,
 	trades: Vec<InnerTrade>,
-	/// Exchange-provided event time of the latest trade in the batch.
-	ts_event: Timestamp,
-	/// When we first received the data backing this batch.
-	ts_init: Timestamp,
-	/// When we last appended into this batch. Equals `ts_init` for batches built from one message.
-	ts_last: Timestamp,
+	local_recv: Ts<Local>,
 }
 
 impl BatchTrades {
-	pub fn new(prec: PrecisionPriceQty, trades: Vec<InnerTrade>, ts_init: Timestamp, ts_last: Timestamp) -> Self {
+	pub fn new(prec: PrecisionPriceQty, trades: Vec<InnerTrade>, local_recv: Ts<Local>) -> Self {
 		assert!(!trades.is_empty(), "BatchTrades is never empty by construction");
-		let ts_event = trades.last().expect("never empty").time;
-		Self {
-			prec,
-			trades,
-			ts_event,
-			ts_init,
-			ts_last,
-		}
+		// Drained across multiple WS frames, so venue-time monotonicity is an assumption, not a
+		// guarantee — and `span` reads only the ends.
+		assert!(trades.is_sorted_by_key(|t| t.time), "BatchTrades must be sorted by venue event time");
+		Self { prec, trades, local_recv }
 	}
 
 	pub fn len(&self) -> usize {
@@ -52,22 +48,21 @@ impl BatchTrades {
 		self.prec
 	}
 
-	/// Iterate `(time, price_raw, qty_raw, side)` tuples. Precision is shared via [`Self::prec`].
-	pub fn iter(&self) -> impl Iterator<Item = (Timestamp, i32, u32, Side)> + '_ {
-		self.trades.iter().map(|t| (t.time, t.price, t.qty, t.side))
+	pub fn span(&self) -> Span<Venue> {
+		Span::new(self.trades.first().expect("never empty").time, self.trades.last().expect("never empty").time)
+	}
+
+	/// Raw ints; decode them with [`Self::prec`].
+	pub fn iter(&self) -> impl Iterator<Item = InnerTrade> + '_ {
+		self.trades.iter().copied()
 	}
 }
 
 impl Timestamped for BatchTrades {
-	fn ts_event(&self) -> Timestamp {
-		self.ts_event
-	}
-
-	fn ts_init(&self) -> Timestamp {
-		self.ts_init
-	}
-
-	fn ts_last(&self) -> Timestamp {
-		self.ts_last
+	fn timestamps(&self) -> Timestamps {
+		Timestamps::Accumulator(Accumulator {
+			venue: self.span(),
+			local: Some(Span::at(self.local_recv)),
+		})
 	}
 }

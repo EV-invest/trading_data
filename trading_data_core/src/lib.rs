@@ -5,6 +5,9 @@
 pub mod batch;
 pub use batch::*;
 
+pub mod book;
+pub use book::*;
+
 pub mod exchange;
 pub use exchange::*;
 
@@ -17,8 +20,8 @@ pub use pair::*;
 pub mod side;
 pub use side::*;
 
-pub mod timestamp;
-pub use timestamp::*;
+pub mod ts;
+pub use ts::*;
 
 pub mod usd;
 pub use usd::*;

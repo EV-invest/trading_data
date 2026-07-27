@@ -5,8 +5,10 @@
 
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Expr, Flat, Glance, Guide, Ink, Node, Nudge, Oi, Sketch, Symbolic, Trade, Vars, WilderAtr, WilderRsi, constant};
+use trading_data::{Cell, DepOuts, Exact, Expr, Flat, Glance, Guide, Ink, Node, Nudge, Oi, Sketch, Symbolic, Trade, Vars, WilderAtr, WilderRsi, constant};
 use trading_data_core::Side;
+
+const MINUTE: Exact = Exact::from_nanos(60_000_000_000);
 
 pub const MOM_WINDOW: usize = 60;
 /// Same value as [`MOM_WINDOW`], different identity: λ's window is its own tunable.
@@ -163,7 +165,7 @@ impl Node for Bar1m {
 	fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for t in trades {
-			let ts_open = t.ts_event - t.ts_event.rem_euclid(60_000_000_000);
+			let ts_open = t.ts_venue_exec.floor(MINUTE).as_nanos();
 			match &mut self.acc {
 				Some(b) if b.ts_open == ts_open => {
 					b.high = b.high.max(t.price);

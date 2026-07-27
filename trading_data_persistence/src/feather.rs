@@ -4,11 +4,11 @@ use std::{
 };
 
 use arrow::{array::RecordBatch, datatypes::SchemaRef};
-use trading_data_core::{Asset, ExchangeName, PrecisionPriceQty, Symbol};
+use trading_data_core::{Asset, ExchangeName, PrecisionPriceQty, Symbol, Ts};
 
 use crate::{
 	catalog::{Catalog, CatalogError, LaneKey},
-	row::{BookDelta, BookSnapshot, Mc, Oi, Row, Trade, UnixNanos},
+	row::{BookDelta, BookSnapshot, Mc, Oi, Row, Trade},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -26,8 +26,8 @@ pub struct Feather<T: Row> {
 	builders: T::Builders,
 	rows: usize,
 	approx_bytes: usize,
-	oldest_ts: Option<UnixNanos>,
-	newest_ts: Option<UnixNanos>,
+	oldest_ts: Option<Ts<T::Axis>>,
+	newest_ts: Option<Ts<T::Axis>>,
 	age_deadline: Option<Instant>,
 	next_check_at_rows: usize,
 }
@@ -84,8 +84,9 @@ impl<T: Row> Feather<T> {
 		row.append(&mut self.builders, self.meta);
 		self.rows += 1;
 		self.approx_bytes += row.approx_bytes();
-		// interval bounds track arrival time when real, else fall back to event time.
-		let ts = row.ts_init().unwrap_or_else(|| row.ts_event());
+		// Interval bounds must be on the axis readers filter and prune on. Reception is always >=
+		// execution, so bounding by reception prunes files that do hold matching rows.
+		let ts = row.ts_axis();
 		let was_empty = self.oldest_ts.is_none();
 		self.oldest_ts = Some(self.oldest_ts.map_or(ts, |o| o.min(ts)));
 		self.newest_ts = Some(self.newest_ts.map_or(ts, |n| n.max(ts)));
@@ -131,7 +132,7 @@ impl<T: Row> Feather<T> {
 		self.oldest_ts = None;
 		self.newest_ts = None;
 		self.age_deadline = None;
-		let path = catalog.write(&self.key, &batch, ts_min, ts_max)?;
+		let path = catalog.write(&self.key, &batch, ts_min.as_nanos(), ts_max.as_nanos())?;
 		Ok(Some(path))
 	}
 
@@ -146,7 +147,7 @@ impl<T: Row> Feather<T> {
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use trading_data_core::{Instrument, Side};
+	use trading_data_core::{Instrument, Local, Side, Venue};
 
 	use super::*;
 
@@ -156,6 +157,14 @@ mod tests {
 
 	fn prec() -> PrecisionPriceQty {
 		PrecisionPriceQty { price: 2, qty: 5 }
+	}
+
+	fn venue(ns: i64) -> Ts<Venue> {
+		Ts::from_nanos(ns)
+	}
+
+	fn local(ns: i64) -> Ts<Local> {
+		Ts::from_nanos(ns)
 	}
 
 	const FOREVER: RotationPolicy = RotationPolicy { max_bytes: None, max_age: None };
@@ -173,8 +182,9 @@ mod tests {
 		let catalog = Catalog::new(dir.path());
 		let mut feather = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), RotationPolicy { max_bytes: Some(1), max_age: None });
 		feather.push(BookDelta {
-			ts_event: 1,
-			ts_init: Some(1),
+			ts_venue_exec: venue(1),
+			ts_venue_send: None,
+			ts_local_recv: Some(local(1)),
 			monotonic_seq: 1,
 			gapped: false,
 			side: Side::Buy,
@@ -193,8 +203,9 @@ mod tests {
 		let cat = Catalog::new(dir.path());
 		let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		let row = Trade {
-			ts_event: 1,
-			ts_init: Some(2),
+			ts_venue_exec: venue(1),
+			ts_venue_send: Some(venue(2)),
+			ts_local_recv: Some(local(3)),
 			monotonic_seq: 3,
 			trade_id: 4,
 			side: Side::Sell,
@@ -206,14 +217,36 @@ mod tests {
 		assert_eq!(decoded, vec![row]);
 	}
 
+	/// A null `ts_venue_send` must decode back to `None`, not to a neighbouring reading.
+	#[test]
+	fn absent_venue_send_stays_absent() {
+		let dir = tempdir().unwrap();
+		let cat = Catalog::new(dir.path());
+		let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
+		f.push(Trade {
+			ts_venue_exec: venue(1),
+			ts_venue_send: None,
+			ts_local_recv: None,
+			monotonic_seq: 1,
+			trade_id: 1,
+			side: Side::Buy,
+			price: 1.0,
+			qty: 1.0,
+		});
+		let decoded = round_trip_batch(&mut f, &cat);
+		assert_eq!(decoded[0].ts_venue_send, None);
+		assert_eq!(decoded[0].ts_local_recv, None);
+	}
+
 	#[test]
 	fn deltas_round_trip() {
 		let dir = tempdir().unwrap();
 		let cat = Catalog::new(dir.path());
 		let mut f = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		let row = BookDelta {
-			ts_event: 1,
-			ts_init: Some(2),
+			ts_venue_exec: venue(1),
+			ts_venue_send: None,
+			ts_local_recv: Some(local(2)),
 			monotonic_seq: 9,
 			gapped: true,
 			side: Side::Buy,
@@ -231,8 +264,9 @@ mod tests {
 		let cat = Catalog::new(dir.path());
 		let mut f = Feather::<BookSnapshot>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		f.push(BookSnapshot {
-			ts_event: 100,
-			ts_init: Some(110),
+			ts_venue_exec: venue(100),
+			ts_venue_send: None,
+			ts_local_recv: Some(local(110)),
 			monotonic_seq: 1,
 			bid_prices: vec![100, 99],
 			bid_qtys: vec![10, 20],
@@ -240,8 +274,9 @@ mod tests {
 			ask_qtys: vec![5, 7],
 		});
 		f.push(BookSnapshot {
-			ts_event: 200,
-			ts_init: Some(210),
+			ts_venue_exec: venue(200),
+			ts_venue_send: None,
+			ts_local_recv: Some(local(210)),
 			monotonic_seq: 2,
 			bid_prices: vec![],
 			bid_qtys: vec![],
@@ -252,7 +287,7 @@ mod tests {
 		assert_eq!(decoded.len(), 2);
 		assert_eq!(decoded[0].bid_prices, vec![100, 99]);
 		assert_eq!(decoded[1].ask_prices, vec![103]);
-		assert_eq!(decoded[1].ts_event, 200);
+		assert_eq!(decoded[1].ts_venue_exec, venue(200));
 	}
 
 	#[test]
@@ -261,8 +296,9 @@ mod tests {
 		let cat = Catalog::new(dir.path());
 		let mut f = Feather::<Oi>::new(ExchangeName::Bybit, test_symbol(), FOREVER);
 		let row = Oi {
-			ts_event: 1,
-			ts_init: Some(2),
+			ts_venue_exec: venue(1),
+			ts_venue_send: None,
+			ts_local_recv: Some(local(2)),
 			oi: 123_456.75,
 		};
 		f.push(row);
@@ -276,14 +312,12 @@ mod tests {
 		let cat = Catalog::new(dir.path());
 		let mut f = Feather::<Mc>::new(Asset::new("TAO"), FOREVER);
 		let with_rank = Mc {
-			ts_event: 1,
-			ts_init: Some(2),
+			ts_local_exec: local(1),
 			market_cap: 2.5e9,
 			rank: Some(42),
 		};
 		let without_rank = Mc {
-			ts_event: 3,
-			ts_init: Some(4),
+			ts_local_exec: local(3),
 			market_cap: 2.6e9,
 			rank: None,
 		};
@@ -298,8 +332,9 @@ mod tests {
 	fn precision_violation_panics() {
 		let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		f.push(Trade {
-			ts_event: 1,
-			ts_init: Some(1),
+			ts_venue_exec: venue(1),
+			ts_venue_send: None,
+			ts_local_recv: Some(local(1)),
 			monotonic_seq: 1,
 			trade_id: 1,
 			side: Side::Buy,

@@ -1,34 +1,26 @@
 use std::collections::BTreeMap;
 
-use jiff::Timestamp;
-use trading_data_core::{PrecisionPriceQty, Timestamped};
+use crate::{Accumulator, PrecisionPriceQty, Timestamped, Timestamps, Ts, Venue};
 
 /// (price, qty) levels for both sides of an orderbook, keyed by raw price.
 /// Both BTreeMaps are ascending; consumers reverse `bids` for best-bid.
 #[derive(Clone, Debug, Default)]
 pub struct BookShape {
-	/// Exchange-provided event time.
-	pub ts_event: Timestamp,
-	/// When we first received the data backing this shape.
-	pub ts_init: Timestamp,
-	/// When we last wrote into this shape. Equals `ts_init` for shapes built from a single message.
-	pub ts_last: Timestamp,
+	/// `ts.venue.first`/`ts.local.first` are the start of the **current accumulation epoch**: they
+	/// reset on snapshot resync, so time-since-resync — how much folded drift this book carries —
+	/// is readable off the shape.
+	pub ts: Accumulator,
+	/// When the venue put the latest contributing update on the wire, if it reports that separately
+	/// from the update's own time.
+	pub venue_send: Option<Ts<Venue>>,
 	pub prec: PrecisionPriceQty,
 	pub asks: BTreeMap<i32, u32>,
 	pub bids: BTreeMap<i32, u32>,
 }
 
 impl Timestamped for BookShape {
-	fn ts_event(&self) -> Timestamp {
-		self.ts_event
-	}
-
-	fn ts_init(&self) -> Timestamp {
-		self.ts_init
-	}
-
-	fn ts_last(&self) -> Timestamp {
-		self.ts_last
+	fn timestamps(&self) -> Timestamps {
+		Timestamps::Accumulator(self.ts)
 	}
 }
 
@@ -49,19 +41,5 @@ impl BookUpdate {
 		match self {
 			Self::Snapshot(s) | Self::BatchDelta { shape: s, .. } => s,
 		}
-	}
-}
-
-impl Timestamped for BookUpdate {
-	fn ts_event(&self) -> Timestamp {
-		self.shape().ts_event
-	}
-
-	fn ts_init(&self) -> Timestamp {
-		self.shape().ts_init
-	}
-
-	fn ts_last(&self) -> Timestamp {
-		self.shape().ts_last
 	}
 }

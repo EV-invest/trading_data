@@ -13,7 +13,7 @@ use std::{
 };
 
 use trading_data::{Catalog, Feather, Mc, Oi, Row as _, Trade, read_mc, read_oi, read_trades};
-use trading_data_core::{Asset, ExchangeName, Instrument, Pair, PrecisionPriceQty, Side, Symbol};
+use trading_data_core::{Asset, ExchangeName, Instrument, Local, Pair, PrecisionPriceQty, Side, Symbol, Ts, Venue};
 
 const DAY: &str = "2025-01-03";
 const BYBIT_SYMBOL: &str = "TAOUSDT";
@@ -51,23 +51,24 @@ pub fn ensure_catalog(cache: &Path) -> Catalog {
 	catalog
 }
 
-/// UTC nanosecond bounds `[start, end)` of the demo day — the Replay range.
-pub fn day_bounds() -> (i64, i64) {
+/// UTC bounds `[start, end)` of the demo day — the Replay range, on the venue axis the trade and
+/// oi lanes are stored against.
+pub fn day_bounds() -> (Ts<Venue>, Ts<Venue>) {
 	let date = jiff::civil::Date::from_str(DAY).expect("static date");
 	let start = date.in_tz("UTC").expect("UTC exists").timestamp().as_nanosecond() as i64;
-	(start, start + 24 * 3600 * 1_000_000_000)
+	(Ts::from_nanos(start), Ts::from_nanos(start + 24 * 3600 * 1_000_000_000))
 }
 
 /// Idempotent: fetches the demo day's Bybit open interest (5min ⇒ 288 rows ⇒ 2 pages) into the oi
-/// lane so OI genuinely weaves into [`DAY`]. Historic ingest, so `ts_init = None`. Staging for
+/// lane so OI genuinely weaves into [`DAY`]. Historic ingest, so there is no local reading. Staging for
 /// v_exchanges — self-contained and liftable.
 pub fn ensure_oi(catalog: &Catalog) {
-	if read_oi(catalog, ExchangeName::Bybit, symbol(), 0, i64::MAX).expect("open oi lane").next().is_some() {
+	if read_oi(catalog, ExchangeName::Bybit, symbol(), Ts::MIN, Ts::MAX).expect("open oi lane").next().is_some() {
 		println!("oi lane already populated, skipping fetch");
 		return;
 	}
 	let (day_start, day_end) = day_bounds();
-	let (start_ms, end_ms) = (day_start / 1_000_000, day_end / 1_000_000);
+	let (start_ms, end_ms) = (day_start.as_nanos() / 1_000_000, day_end.as_nanos() / 1_000_000);
 
 	let mut rows: Vec<Oi> = Vec::new();
 	let mut cursor = String::new();
@@ -88,8 +89,9 @@ pub fn ensure_oi(catalog: &Catalog) {
 			}
 			let oi: f64 = e["openInterest"].as_str().expect("openInterest string").parse().expect("openInterest f64");
 			rows.push(Oi {
-				ts_event: ts_ms * 1_000_000,
-				ts_init: None,
+				ts_venue_exec: Ts::from_nanos(ts_ms * 1_000_000),
+				ts_venue_send: None,
+				ts_local_recv: None,
 				oi,
 			});
 		}
@@ -103,8 +105,8 @@ pub fn ensure_oi(catalog: &Catalog) {
 		"Bybit returned no open interest inside {DAY} — its 5min OI retention likely doesn't reach that day. \
 		 Surface this: the decision (not code) is either picking a recent day or dropping the Oi root."
 	);
-	rows.sort_by_key(|r| r.ts_event);
-	rows.dedup_by_key(|r| r.ts_event);
+	rows.sort_by_key(|r| r.ts_venue_exec);
+	rows.dedup_by_key(|r| r.ts_venue_exec);
 
 	let mut feather = Feather::<Oi>::new(ExchangeName::Bybit, symbol(), Oi::POLICY);
 	for row in rows {
@@ -117,7 +119,7 @@ pub fn ensure_oi(catalog: &Catalog) {
 /// Idempotent: fetches current CoinGecko market cap into the mc lane. Staging for v_exchanges —
 /// self-contained and liftable.
 pub fn ensure_mc(catalog: &Catalog) {
-	if read_mc(catalog, asset(), 0, i64::MAX).expect("open mc lane").next().is_some() {
+	if read_mc(catalog, asset(), Ts::MIN, Ts::MAX).expect("open mc lane").next().is_some() {
 		println!("mc lane already populated, skipping fetch");
 		return;
 	}
@@ -129,11 +131,11 @@ pub fn ensure_mc(catalog: &Catalog) {
 	let market_cap = coin["market_cap"].as_f64().expect("market_cap f64");
 	let rank = coin["market_cap_rank"].as_u64().map(|r| u32::try_from(r).expect("rank fits u32"));
 
-	let now = jiff::Timestamp::now().as_nanosecond() as i64;
+	// CoinGecko reports no event time, so the only reading here is our own.
+	let now: Ts<Local> = jiff::Timestamp::now().into();
 	let mut feather = Feather::<Mc>::new(asset(), Mc::POLICY);
 	feather.push(Mc {
-		ts_event: now,
-		ts_init: None,
+		ts_local_exec: now,
 		market_cap,
 		rank,
 	});
@@ -186,8 +188,9 @@ fn ingest(gz: &Path, catalog: &Catalog) {
 
 		// i64→f64 is exact at these magnitudes; feather's round-trip assert guards the rest.
 		feather.push(Trade {
-			ts_event: ts,
-			ts_init: None,
+			ts_venue_exec: Ts::from_nanos(ts),
+			ts_venue_send: None,
+			ts_local_recv: None,
 			monotonic_seq: i as u64,
 			trade_id: i as u64,
 			side,

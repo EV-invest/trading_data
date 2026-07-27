@@ -4,13 +4,13 @@
 use std::any::TypeId;
 
 pub use trading_data_dag::{
-	Abs, Add, Ast, Cell, Cons, Const, DepOuts, Diff, Div, Episode, Ex, Expr, Fire, Flat, Gate, Glance, Guide, Ink, Latch, Mul, Neg, Nil, Node, Nudge, Observer, Roots, Sketch, Square, Sub, Sum, Symbolic,
-	Trace, Var, Vars, abs, constant, graph, observe_root, square, step, step_exact, step_obs, sum,
+	Abs, Add, Ast, Cell, Cons, Const, DepOuts, Diff, Div, Episode, Ex, Expr, Fire, Flat, Gate, Glance, Guide, Ink, Latch, Mul, Neg, Nil, Node, Nudge, Observer, Roots, Sketch, Square, Sub,
+	Sum, Symbolic, Trace, Var, Vars, abs, constant, graph, observe_root, square, step, step_exact, step_obs, sum,
 };
 pub use trading_data_derivatives::{WilderAtr, WilderRsi};
 pub use trading_data_persistence::{
-	Batch, BatchTrades, BookDelta, BookShape, BookUpdate, Catalog, CatalogError, Clock, Feather, Feed, LaneKind, LaneReader, LatencyConfig, Live, LiveClock, Mc, Oi, Replay, RotationPolicy, Row,
-	Sink, Trade, UnixNanos, read_mc, read_oi, read_trades, trades_from_batch,
+	Accumulator, Arrival, Batch, BatchTrades, BookDelta, BookShape, BookUpdate, Catalog, CatalogError, Clock, Exact, Feather, Feed, LaneKind, LaneReader, LatencyConfig, Live, LiveClock,
+	Local, Mc, Oi, Replay, RotationPolicy, Row, Sink, Span, Trade, Ts, UnixNanos, Venue, read_mc, read_oi, read_trades, trades_from_batch,
 };
 
 /// The source lanes a graph requires: maps its [`Roots::required_events`] `TypeId`s to
