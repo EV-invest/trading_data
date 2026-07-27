@@ -183,8 +183,7 @@ mod tests {
 		let mut feather = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), RotationPolicy { max_bytes: Some(1), max_age: None });
 		feather.push(BookDelta {
 			ts_venue_exec: venue(1),
-			ts_venue_send: None,
-			ts_local_recv: Some(local(1)),
+			ts_local_recv: local(1),
 			monotonic_seq: 1,
 			gapped: false,
 			side: Side::Buy,
@@ -245,8 +244,7 @@ mod tests {
 		let mut f = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		let row = BookDelta {
 			ts_venue_exec: venue(1),
-			ts_venue_send: None,
-			ts_local_recv: Some(local(2)),
+			ts_local_recv: local(2),
 			monotonic_seq: 9,
 			gapped: true,
 			side: Side::Buy,
@@ -265,8 +263,7 @@ mod tests {
 		let mut f = Feather::<BookSnapshot>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		f.push(BookSnapshot {
 			ts_venue_exec: venue(100),
-			ts_venue_send: None,
-			ts_local_recv: Some(local(110)),
+			ts_local_recv: local(110),
 			monotonic_seq: 1,
 			bid_prices: vec![100, 99],
 			bid_qtys: vec![10, 20],
@@ -275,8 +272,7 @@ mod tests {
 		});
 		f.push(BookSnapshot {
 			ts_venue_exec: venue(200),
-			ts_venue_send: None,
-			ts_local_recv: Some(local(210)),
+			ts_local_recv: local(210),
 			monotonic_seq: 2,
 			bid_prices: vec![],
 			bid_qtys: vec![],

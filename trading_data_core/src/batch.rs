@@ -1,4 +1,4 @@
-use crate::{Accumulator, Local, PrecisionPriceQty, Side, Span, Timestamped, Timestamps, Ts, Venue};
+use crate::{Aggregate, Local, PrecisionPriceQty, Side, Span, Timestamped, Timestamps, Ts, Venue};
 
 /// One trade in raw (scaled-int) form; `price`/`qty` are meaningless without the batch's `prec`.
 #[derive(Clone, Copy, Debug, Default)]
@@ -60,9 +60,9 @@ impl BatchTrades {
 
 impl Timestamped for BatchTrades {
 	fn timestamps(&self) -> Timestamps {
-		Timestamps::Accumulator(Accumulator {
-			venue: self.span(),
-			local: Some(Span::at(self.local_recv)),
+		Timestamps::Aggregate(Aggregate {
+			venue_exec: self.span(),
+			local_recv: Span::at(self.local_recv),
 		})
 	}
 }

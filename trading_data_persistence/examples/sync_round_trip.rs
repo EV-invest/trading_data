@@ -11,7 +11,7 @@ use std::sync::{
 };
 
 use tempfile::tempdir;
-use trading_data_core::{Accumulator, ExchangeName, Instrument, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
+use trading_data_core::{Aggregate, ExchangeName, Instrument, Local, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
 use trading_data_persistence::{Batch, BookShape, BookUpdate, Catalog, Clock, Feed, LaneKind, LatencyConfig, Live, Oi, Replay, Trade};
 
 /// Monotonic synthetic clock: each read advances 1ms, so live arrival stamps are strictly
@@ -43,8 +43,8 @@ fn collect(feed: &mut impl Feed) -> Vec<Sum> {
 	while let Some(b) = feed.next_batch() {
 		out.push(match b {
 			Batch::Trades(ts) => Sum::Trades(ts.iter().map(|t| (t.ts_local_recv.expect("recorded").as_nanos(), t.monotonic_seq, t.trade_id)).collect()),
-			Batch::Book(ds) => Sum::Book(ds.iter().map(|d| (d.ts_local_recv.expect("recorded").as_nanos(), d.monotonic_seq)).collect()),
-			Batch::BookAnchor(s) => Sum::Anchor(s.ts.local.expect("recorded").last.as_nanos(), s.bids.len(), s.asks.len()),
+			Batch::Book(ds) => Sum::Book(ds.iter().map(|d| (d.ts_local_recv.as_nanos(), d.monotonic_seq)).collect()),
+			Batch::BookAnchor(s) => Sum::Anchor(s.ts.local_recv.last.as_nanos(), s.bids.len(), s.asks.len()),
 			Batch::Oi(os) => Sum::Oi(os.iter().map(|o| o.ts_local_recv.expect("recorded").as_nanos()).collect()),
 			Batch::Mc(_) => panic!("mc lane not driven"),
 		});
@@ -52,14 +52,14 @@ fn collect(feed: &mut impl Feed) -> Vec<Sum> {
 	out
 }
 
-// The local span is filled at ingest; the adapter only knows the venue side.
+// A real adapter stamps its own reception; `Live` then overwrites it with the ingest stamp so the
+// woven rows and the shape agree.
 fn shape(bids: &[(i32, u32)], asks: &[(i32, u32)]) -> BookShape {
 	BookShape {
-		ts: Accumulator {
-			venue: Span::at(Ts::<Venue>::from_nanos(1_000)),
-			local: None,
+		ts: Aggregate {
+			venue_exec: Span::at(Ts::<Venue>::from_nanos(1_000)),
+			local_recv: Span::at(Ts::<Local>::from_nanos(1_000)),
 		},
-		venue_send: None,
 		prec: PREC,
 		bids: bids.iter().copied().collect(),
 		asks: asks.iter().copied().collect(),

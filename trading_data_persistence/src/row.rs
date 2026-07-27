@@ -9,7 +9,7 @@ use trading_data_dag::{Flat, Glance};
 
 use crate::feather::RotationPolicy;
 
-pub const SCHEMA_VERSION: &str = "5";
+pub const SCHEMA_VERSION: &str = "6";
 pub type UnixNanos = i64;
 
 /// Decode a ws trade batch straight into rows — `trading_data_core::BatchTrades` is the shared parse
@@ -66,9 +66,10 @@ pub struct Trade {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BookDelta {
 	pub ts_venue_exec: Ts<Venue>,
-	pub ts_venue_send: Option<Ts<Venue>>,
-	/// `Some` ⇔ we were there when it arrived (live-recorded); historic ingest writes `None`.
-	pub ts_local_recv: Option<Ts<Local>>,
+	/// Book lanes are only ever written by a live recording, and the adapter that took the frame
+	/// off the wire always knows its own reception time — so unlike the trade lane there is no
+	/// historic-ingest path that could leave this absent.
+	pub ts_local_recv: Ts<Local>,
 	pub monotonic_seq: u64,
 	pub gapped: bool,
 	/// Buy = bid, Sell = ask.
@@ -102,9 +103,8 @@ pub struct Mc {
 #[derive(Clone, Debug)]
 pub(crate) struct BookSnapshot {
 	pub ts_venue_exec: Ts<Venue>,
-	pub ts_venue_send: Option<Ts<Venue>>,
-	/// `Some` ⇔ we were there when it arrived (live-recorded); historic ingest writes `None`.
-	pub ts_local_recv: Option<Ts<Local>>,
+	/// Always present: see [`BookDelta::ts_local_recv`].
+	pub ts_local_recv: Ts<Local>,
 	pub monotonic_seq: u64,
 	pub bid_prices: Vec<i32>,
 	pub bid_qtys: Vec<u32>,
@@ -253,7 +253,13 @@ fn prec_sig(schema: &Schema) -> Option<String> {
 	Some(format!("{}/{}", p.price, p.qty))
 }
 
-/// The wire columns every venue-sourced lane carries, in schema order.
+/// A book lane's readings: an aggregate has an event window and a reception window, and nothing
+/// else. Both are always known, hence non-nullable.
+fn book_ts_fields() -> [Field; 2] {
+	[Field::new("ts_venue_exec", DataType::Int64, false), Field::new("ts_local_recv", DataType::Int64, false)]
+}
+
+/// The wire columns a point-event venue lane carries, in schema order.
 fn venue_ts_fields() -> [Field; 3] {
 	[
 		Field::new("ts_venue_exec", DataType::Int64, false),
@@ -367,7 +373,6 @@ impl Sealed for Trade {
 #[derive(Default)]
 pub struct BookDeltaBuilders {
 	ts_venue_exec: arrow::array::Int64Builder,
-	ts_venue_send: arrow::array::Int64Builder,
 	ts_local_recv: arrow::array::Int64Builder,
 	monotonic_seq: arrow::array::UInt64Builder,
 	gapped: BooleanBuilder,
@@ -380,10 +385,10 @@ impl Sealed for BookDelta {
 	type Builders = BookDeltaBuilders;
 	type Meta = PrecisionPriceQty;
 
-	const PER_ROW_MIN: usize = 48;
+	const PER_ROW_MIN: usize = 40;
 
 	fn schema(meta: PrecisionPriceQty) -> SchemaRef {
-		let mut fields = venue_ts_fields().to_vec();
+		let mut fields = book_ts_fields().to_vec();
 		fields.extend([
 			Field::new("monotonic_seq", DataType::UInt64, false),
 			Field::new("gapped", DataType::Boolean, false),
@@ -396,8 +401,7 @@ impl Sealed for BookDelta {
 
 	fn append(&self, b: &mut BookDeltaBuilders, meta: PrecisionPriceQty) {
 		b.ts_venue_exec.append_value(self.ts_venue_exec.as_nanos());
-		b.ts_venue_send.append_option(self.ts_venue_send.map(Ts::as_nanos));
-		b.ts_local_recv.append_option(self.ts_local_recv.map(Ts::as_nanos));
+		b.ts_local_recv.append_value(self.ts_local_recv.as_nanos());
 		b.monotonic_seq.append_value(self.monotonic_seq);
 		b.gapped.append_value(self.gapped);
 		b.side.append_value(side_u8(self.side));
@@ -408,7 +412,6 @@ impl Sealed for BookDelta {
 	fn finish(b: &mut BookDeltaBuilders) -> Vec<ArrayRef> {
 		vec![
 			Arc::new(b.ts_venue_exec.finish()),
-			Arc::new(b.ts_venue_send.finish()),
 			Arc::new(b.ts_local_recv.finish()),
 			Arc::new(b.monotonic_seq.finish()),
 			Arc::new(b.gapped.finish()),
@@ -422,7 +425,6 @@ impl Sealed for BookDelta {
 		let prec = prec_from_schema(file_schema);
 		let (p_scale, q_scale) = (10f64.powi(prec.price as i32), 10f64.powi(prec.qty as i32));
 		let exec = col::<Int64Array>(batch, "ts_venue_exec");
-		let send = col::<Int64Array>(batch, "ts_venue_send");
 		let recv = col::<Int64Array>(batch, "ts_local_recv");
 		let monotonic = col::<UInt64Array>(batch, "monotonic_seq");
 		let gapped = col::<BooleanArray>(batch, "gapped");
@@ -432,8 +434,7 @@ impl Sealed for BookDelta {
 		(0..batch.num_rows())
 			.map(|i| BookDelta {
 				ts_venue_exec: Ts::from_nanos(exec.value(i)),
-				ts_venue_send: opt_ts(send, i),
-				ts_local_recv: opt_ts(recv, i),
+				ts_local_recv: Ts::from_nanos(recv.value(i)),
 				monotonic_seq: monotonic.value(i),
 				gapped: gapped.value(i),
 				side: side_from(side.value(i)),
@@ -448,14 +449,13 @@ impl Sealed for BookDelta {
 	}
 
 	fn approx_bytes(&self) -> usize {
-		48
+		40
 	}
 }
 
 #[derive(Default)]
 pub struct BookSnapshotBuilders {
 	ts_venue_exec: arrow::array::Int64Builder,
-	ts_venue_send: arrow::array::Int64Builder,
 	ts_local_recv: arrow::array::Int64Builder,
 	monotonic_seq: arrow::array::UInt64Builder,
 	bid_prices: arrow::array::ListBuilder<arrow::array::Int32Builder>,
@@ -468,12 +468,12 @@ impl Sealed for BookSnapshot {
 	type Builders = BookSnapshotBuilders;
 	type Meta = PrecisionPriceQty;
 
-	const PER_ROW_MIN: usize = 40;
+	const PER_ROW_MIN: usize = 32;
 
 	fn schema(meta: PrecisionPriceQty) -> SchemaRef {
 		let i32_list = || DataType::List(Arc::new(Field::new("item", DataType::Int32, true)));
 		let u32_list = || DataType::List(Arc::new(Field::new("item", DataType::UInt32, true)));
-		let mut fields = venue_ts_fields().to_vec();
+		let mut fields = book_ts_fields().to_vec();
 		fields.extend([
 			Field::new("monotonic_seq", DataType::UInt64, false),
 			Field::new("bid_prices", i32_list(), false),
@@ -486,8 +486,7 @@ impl Sealed for BookSnapshot {
 
 	fn append(&self, b: &mut BookSnapshotBuilders, _meta: PrecisionPriceQty) {
 		b.ts_venue_exec.append_value(self.ts_venue_exec.as_nanos());
-		b.ts_venue_send.append_option(self.ts_venue_send.map(Ts::as_nanos));
-		b.ts_local_recv.append_option(self.ts_local_recv.map(Ts::as_nanos));
+		b.ts_local_recv.append_value(self.ts_local_recv.as_nanos());
 		b.monotonic_seq.append_value(self.monotonic_seq);
 		for &p in &self.bid_prices {
 			b.bid_prices.values().append_value(p);
@@ -510,7 +509,6 @@ impl Sealed for BookSnapshot {
 	fn finish(b: &mut BookSnapshotBuilders) -> Vec<ArrayRef> {
 		vec![
 			Arc::new(b.ts_venue_exec.finish()),
-			Arc::new(b.ts_venue_send.finish()),
 			Arc::new(b.ts_local_recv.finish()),
 			Arc::new(b.monotonic_seq.finish()),
 			Arc::new(b.bid_prices.finish()),
@@ -522,7 +520,6 @@ impl Sealed for BookSnapshot {
 
 	fn decode(batch: &RecordBatch, _file_schema: &Schema) -> Vec<Self> {
 		let exec = col::<Int64Array>(batch, "ts_venue_exec");
-		let send = col::<Int64Array>(batch, "ts_venue_send");
 		let recv = col::<Int64Array>(batch, "ts_local_recv");
 		let monotonic = col::<UInt64Array>(batch, "monotonic_seq");
 		let bid_prices = col_i32_list(batch, "bid_prices");
@@ -532,8 +529,7 @@ impl Sealed for BookSnapshot {
 		(0..batch.num_rows())
 			.map(|i| BookSnapshot {
 				ts_venue_exec: Ts::from_nanos(exec.value(i)),
-				ts_venue_send: opt_ts(send, i),
-				ts_local_recv: opt_ts(recv, i),
+				ts_local_recv: Ts::from_nanos(recv.value(i)),
 				monotonic_seq: monotonic.value(i),
 				bid_prices: bid_prices[i].clone(),
 				bid_qtys: bid_qtys[i].clone(),
@@ -548,7 +544,7 @@ impl Sealed for BookSnapshot {
 	}
 
 	fn approx_bytes(&self) -> usize {
-		40 + 8 * (self.bid_prices.len() + self.ask_prices.len())
+		32 + 8 * (self.bid_prices.len() + self.ask_prices.len())
 	}
 }
 

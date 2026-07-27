@@ -217,14 +217,23 @@ impl<A> Span<A> {
 	}
 }
 
-/// What a folded object's readings look like: one span per actor.
+/// A fold over many wire messages: one span per actor, `first` resetting on every resync.
 ///
-/// `local` is absent for anything reconstructed from historic storage — we were not there when it
-/// arrived, and epoch-0 would be a fabrication rather than a missing value.
+/// An aggregate has no `exec` of its own — *we* built it, the venue never performed it — so it is
+/// not a [`Leg`] or a [`RoundTrip`] and carries none of that machinery. What it has is the window
+/// of venue events that fed it and the window in which we took them off the wire.
+///
+/// `venue_exec` is the venue's reading of when the fact happened. Where a venue reports only when
+/// it *sent* the frame, that send stands in: what we need is when the event occurred and when it
+/// reached us, and the send-vs-exec difference is a debugging signal about the venue's internal
+/// latency, not a third thing the model is built around.
+///
+/// Neither field is optional. Every message has a venue reading of some kind, and the adapter that
+/// took it off the wire is itself the local actor — so it knows its own reception time.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Accumulator {
-	pub venue: Span<Venue>,
-	pub local: Option<Span<Local>>,
+pub struct Aggregate {
+	pub venue_exec: Span<Venue>,
+	pub local_recv: Span<Local>,
 }
 
 /// Transmitted it, but not attested as its origin — so no `exec`. Covers a relaying vendor and a
@@ -288,7 +297,7 @@ impl<F, T> Wire<F, T> for Leg<F, T> {
 pub enum Timestamps {
 	Relay(Relay<Venue, Local>),
 	External(External),
-	Accumulator(Accumulator),
+	Aggregate(Aggregate),
 	RoundTrip(RoundTrip),
 	/// We are the origin and nothing crossed a wire.
 	Origin(Ts<Local>),

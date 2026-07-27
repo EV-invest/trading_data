@@ -9,7 +9,7 @@ pub use trading_data_dag::{
 };
 pub use trading_data_derivatives::{WilderAtr, WilderRsi};
 pub use trading_data_persistence::{
-	Accumulator, Arrival, Batch, BatchTrades, BookDelta, BookShape, BookUpdate, Catalog, CatalogError, Clock, Exact, Feather, Feed, LaneKind, LaneReader, LatencyConfig, Live, LiveClock,
+	Aggregate, Arrival, Batch, BatchTrades, BookDelta, BookShape, BookUpdate, Catalog, CatalogError, Clock, Exact, Feather, Feed, LaneKind, LaneReader, LatencyConfig, Live, LiveClock,
 	Local, Mc, Oi, Replay, RotationPolicy, Row, Sink, Span, Trade, Ts, UnixNanos, Venue, read_mc, read_oi, read_trades, trades_from_batch,
 };
 

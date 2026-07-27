@@ -4,7 +4,7 @@ use arrow::{
 	array::RecordBatch,
 	datatypes::{Schema, SchemaRef},
 };
-use trading_data_core::{Accumulator, Asset, BookShape, Exact, ExchangeName, Local, Span, Symbol, Ts, Venue};
+use trading_data_core::{Aggregate, Asset, BookShape, Exact, ExchangeName, Local, Span, Symbol, Ts, Venue};
 
 use crate::{
 	catalog::{Catalog, CatalogError, FileEntry, LaneKey},
@@ -116,16 +116,13 @@ pub(crate) fn read_book_snapshots(catalog: &Catalog, exchange: ExchangeName, sym
 	lane_reader(catalog, LaneKey::BookSnapshots { exchange, symbol }, start, end)
 }
 
-/// A stored snapshot is a resync point, so both epochs are degenerate: `first == last`. `local` is
-/// absent for historic ingest — we were not there, and copying the venue reading across would be
-/// exactly the aliasing this schema exists to remove.
+/// A stored snapshot is a resync point, so both epochs are degenerate: `first == last`.
 pub(crate) fn snapshot_shape(row: &BookSnapshot, prec: trading_data_core::PrecisionPriceQty) -> BookShape {
 	BookShape {
-		ts: Accumulator {
-			venue: Span::at(row.ts_venue_exec),
-			local: row.ts_local_recv.map(Span::at),
+		ts: Aggregate {
+			venue_exec: Span::at(row.ts_venue_exec),
+			local_recv: Span::at(row.ts_local_recv),
 		},
-		venue_send: row.ts_venue_send,
 		prec,
 		bids: row.bid_prices.iter().copied().zip(row.bid_qtys.iter().copied()).collect(),
 		asks: row.ask_prices.iter().copied().zip(row.ask_qtys.iter().copied()).collect(),
@@ -215,8 +212,7 @@ mod tests {
 		let mut f = Feather::<BookSnapshot>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		f.push(BookSnapshot {
 			ts_venue_exec: venue(ts),
-			ts_venue_send: None,
-			ts_local_recv: Some(Ts::from_nanos(ts)),
+			ts_local_recv: Ts::from_nanos(ts),
 			monotonic_seq: ts as u64,
 			bid_prices: vec![100],
 			bid_qtys: vec![10],
@@ -230,8 +226,7 @@ mod tests {
 		let mut f = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		f.push(BookDelta {
 			ts_venue_exec: venue(ts),
-			ts_venue_send: None,
-			ts_local_recv: Some(Ts::from_nanos(ts)),
+			ts_local_recv: Ts::from_nanos(ts),
 			monotonic_seq: mseq,
 			gapped: false,
 			side: Side::Buy,
@@ -278,7 +273,7 @@ mod tests {
 
 		let (shape, deltas) = read_book(&cat, ExchangeName::Binance, test_symbol(), venue(100 * s), venue(200 * s)).unwrap();
 		let shape = shape.expect("anchor within window");
-		assert_eq!(shape.ts.venue.last, venue(50 * s));
+		assert_eq!(shape.ts.venue_exec.last, venue(50 * s));
 		assert_eq!(shape.bids.get(&100), Some(&10));
 		let deltas: Vec<BookDelta> = deltas.collect();
 		assert_eq!(deltas.len(), 1);

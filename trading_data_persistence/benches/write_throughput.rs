@@ -2,7 +2,7 @@ use std::{hint::black_box, sync::Arc};
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use tempfile::TempDir;
-use trading_data_core::{Accumulator, ExchangeName, Instrument, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
+use trading_data_core::{Aggregate, ExchangeName, Instrument, Local, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
 use trading_data_persistence::{BookShape, BookUpdate, Catalog, Feather, Feed, Live, LiveClock, RotationPolicy, Trade};
 
 const N_TRADES: u64 = 100_000;
@@ -47,11 +47,10 @@ fn push_200_snapshots() {
 	let sink = live.sink();
 	for i in 0..N_SNAPSHOTS {
 		let shape = BookShape {
-			ts: Accumulator {
-				venue: Span::at(Ts::<Venue>::from_nanos((i as i64) * 1_000_000_000)),
-				local: None,
+			ts: Aggregate {
+				venue_exec: Span::at(Ts::<Venue>::from_nanos((i as i64) * 1_000_000_000)),
+				local_recv: Span::at(Ts::<Local>::from_nanos((i as i64) * 1_000_000_000)),
 			},
-			venue_send: None,
 			prec: prec(),
 			bids: (0..LEVELS).map(|p| (p, p as u32 + 1)).collect(),
 			asks: (LEVELS..2 * LEVELS).map(|p| (p, p as u32 + 1)).collect(),

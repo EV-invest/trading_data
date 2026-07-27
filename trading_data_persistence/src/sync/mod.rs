@@ -238,11 +238,11 @@ impl Replay {
 					}
 					let mut s = sampler(lane);
 					for snap in read_book_snapshots(catalog, exchange, symbol, start, end).expect("open snapshot lane") {
-						let ts = effective(snap.ts_local_recv, snap.ts_venue_exec, &mut s);
+						let ts = effective(Some(snap.ts_local_recv), snap.ts_venue_exec, &mut s);
 						weaver.anchors.push(ts, snapshot_shape(&snap, prec));
 					}
 					for d in read_book_deltas(catalog, exchange, symbol, start, end).expect("open delta lane") {
-						let ts = effective(d.ts_local_recv, d.ts_venue_exec, &mut s);
+						let ts = effective(Some(d.ts_local_recv), d.ts_venue_exec, &mut s);
 						weaver.deltas.push(ts, d);
 					}
 				}
@@ -418,18 +418,16 @@ impl Live {
 	fn ingest_book(&mut self, u: BookUpdate, ts: Arrival) {
 		let mut shape = u.shape().clone();
 		let recv = Self::recv_of(ts);
-		let ev = shape.ts.venue.last;
-		let send = shape.venue_send;
+		let ev = shape.ts.venue_exec.last;
 		match &u {
 			BookUpdate::Snapshot(_) => {
 				self.monotonic += 1;
 				self.book_epoch = Some(recv);
-				shape.ts.local = Some(Span::at(recv));
+				shape.ts.local_recv = Span::at(recv);
 				if let Some(r) = &mut self.record {
 					r.snapshots.push(BookSnapshot {
 						ts_venue_exec: ev,
-						ts_venue_send: send,
-						ts_local_recv: Some(recv),
+						ts_local_recv: recv,
 						monotonic_seq: self.monotonic,
 						bid_prices: shape.bids.keys().copied().collect(),
 						bid_qtys: shape.bids.values().copied().collect(),
@@ -443,15 +441,14 @@ impl Live {
 			BookUpdate::BatchDelta { gapped, .. } => {
 				// A delta before any snapshot *is* the start of the epoch — not a fallback.
 				let first = *self.book_epoch.get_or_insert(recv);
-				shape.ts.local = Some(Span::new(first, recv));
+				shape.ts.local_recv = Span::new(first, recv);
 				let (p_scale, q_scale) = (10f64.powi(self.prec.price as i32), 10f64.powi(self.prec.qty as i32));
 				let mut rows = Vec::new();
 				let mut push = |side: Side, price: i32, qty: u32, seq: &mut u64| {
 					*seq += 1;
 					rows.push(BookDelta {
 						ts_venue_exec: ev,
-						ts_venue_send: send,
-						ts_local_recv: Some(recv),
+						ts_local_recv: recv,
 						monotonic_seq: *seq,
 						gapped: *gapped,
 						side,
