@@ -4358,6 +4358,7 @@ dependencies = [
  "snapshot_fonts",
  "strum",
  "thiserror 2.0.18",
+ "trading_data_dag",
  "v_utils",
 ]
 

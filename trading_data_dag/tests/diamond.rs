@@ -1,27 +1,7 @@
 //! Diamond over two multi-rate roots: `None` propagation through the DAG, plus an
 //! inference-stress graph (chain depth 10 + one arity-8 node, zero call-site annotations).
 
-use trading_data_dag::{Cell, Cons, DepOuts, Fire, Flat, Nil, Node, Nudge, Observer, step, step_obs};
-
-/// A scalar (value-out) cell's finite-difference witness: the scratch is just the value itself.
-macro_rules! value_nudge {
-	($C:ty) => {
-		impl Nudge for $C {
-			type Scratch = <$C as Cell>::Out<'static>;
-
-			fn stage<'t>(out: <$C as Cell>::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) {
-				*s = match bump {
-					Some(slot) => Flat::nudge(&out, slot, h),
-					None => out,
-				};
-			}
-
-			fn view<'l>(s: &'l Self::Scratch) -> <$C as Cell>::Out<'l> {
-				*s
-			}
-		}
-	};
-}
+use trading_data_dag::{Cell, Cons, DepOuts, Fire, Nil, Node, Observer, step, step_obs, value_nudge};
 
 struct Trades;
 impl Cell for Trades {
@@ -297,11 +277,12 @@ impl Node for OnOff {
 }
 
 #[test]
-fn fd_bool_dep_zero_column() {
+fn fd_discrete_dep_nan_column() {
 	let mut rec = JacRec::default();
 	let f = Cons::<Gate, Nil> { out: true, tail: Nil };
 	step_obs(f, &mut OnOff, &mut rec);
-	assert_eq!(rec.0[0].as_deref(), Some(&[0.0][..]));
+	let jac = rec.0[0].as_deref().expect("OnOff always fires");
+	assert!(jac[0].is_nan(), "a dep that cannot be perturbed has no slope, not a zero one: {jac:?}");
 }
 
 #[derive(Clone)]

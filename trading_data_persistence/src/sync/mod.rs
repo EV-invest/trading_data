@@ -1,77 +1,132 @@
 //! Central replay: one graph, one router, two feeds. A [`Feed`] weaves the required source lanes
-//! into a single arrival-ordered stream of same-type [`Batch`]es. [`Replay`] is the backtest feed
-//! over a catalog; [`Live`] is the live feed over push handles, teeing into the same Feather lanes
-//! a backtest later reads — so a live recording replays into the *identical* event stream.
+//! into a single arrival-ordered stream of [`Lanes`]. [`Replay`] is the backtest feed over a
+//! catalog; [`Live`] is the live feed over push handles, teeing into the same Feather lanes a
+//! backtest later reads — so a live recording replays into the *identical* event stream.
 //!
-//! Every event is woven on an [`Arrival`] key. For [`Replay`] that's the recorded `ts_local_recv`,
-//! or a latency-simulation of the venue axis for historic (`None`) rows. For [`Live`] it is stamped
-//! at **ingest** — a single point, on the consumer thread — so it is monotonic without cross-thread
+//! Every event is woven on an [`Arrival`] key. For [`Replay`] that's the recorded reception, or a
+//! latency-simulation of the venue axis for historic (`None`) rows. For [`Live`] it is stamped at
+//! **ingest** — a single point, on the consumer thread — so it is monotonic without cross-thread
 //! races, and everything currently buffered is a complete prefix (every future event gets a larger
 //! stamp). That is what lets [`Live`] weave-and-emit incrementally and drop consumed rows:
 //! **bounded memory, no end-of-stream buffering, no quiet-lane stall.**
+//!
+//! The book lane is *our own recollection*, not the venue's story: [`Live`] runs every venue update
+//! through a `ShadowBook`, which reconciles gaps and snapshot disagreements once, at ingest, and
+//! emits checkpoints on our cadence. Venue snapshots are consumed, never stored.
 
 use std::sync::{
 	Arc,
 	mpsc::{Receiver, Sender, channel},
 };
 
-use trading_data_core::{Arrival, Asset, BookShape, BookUpdate, ExchangeName, Local, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
+use trading_data_core::{
+	Arrival, Asset, BatchTrades, BookShape, BookUpdate, DeltaBuf, DeltaFrame, Exact, ExchangeName, Local, PrecisionPriceQty, ShadowBook, Symbol, TradeBuf, TradeCols, Ts, Venue,
+};
 use v_utils::distributions::LatencyConfig;
 
 use crate::{
-	catalog::Catalog,
+	catalog::{Catalog, LaneKey},
 	clock::Clock,
 	feather::Feather,
-	read::{book_prec, pick_anchor, read_book_deltas, read_book_snapshots, read_mc, read_oi, read_trades, snapshot_shape},
+	read::{lane_prec, pick_anchor, read_book_deltas, read_book_snapshots, read_mc, read_oi, read_trades, snapshot_shape},
 	row::{BookDelta, BookSnapshot, Mc, Oi, Row as _, Trade},
 };
 
+/// How often we write a book checkpoint of our own. Bounds how far back a replay must read; drift
+/// is not the concern, since the delta lane we write is gapless by construction.
+const CHECKPOINT_CADENCE: Exact = Exact::from_nanos(60_000_000_000);
+
 /// The source lanes a graph may require. `Debug`/`Hash` back the deterministic per-lane latency
-/// seed; the router reads only the lanes in the graph's dep tree.
+/// seed; the router reads only the lanes in the graph's dep tree. Deltas and anchors are separate
+/// kinds: naming one must not load *and accumulate* the other, since an un-drained lane in [`Live`]
+/// grows without bound.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum LaneKind {
 	Trades,
-	Book,
+	BookDeltas,
+	BookAnchors,
 	Oi,
 	Mc,
 }
 
-/// One arrival-ordered run of same-type events, borrowed straight from a lane buffer (zero-copy).
-/// A `BookAnchor` is a single snapshot resync; everything else is a contiguous slice.
-#[derive(Debug)]
-pub enum Batch<'a> {
-	Trades(&'a [Trade]),
-	Book(&'a [BookDelta]),
-	BookAnchor(&'a BookShape),
-	Oi(&'a [Oi]),
-	Mc(&'a [Mc]),
+/// One arrival-ordered step. Every lane is present; lanes that did not arrive here are empty.
+///
+/// Batch-ness needs no tag — it iterates. The consumer's job is to hand these to its graph, not to
+/// re-dispatch a discriminant back into per-root fields.
+pub struct Lanes<'a> {
+	pub arrival: Arrival,
+	/// The winning run's last event, on the venue axis — the viz x-axis.
+	pub ts_venue: Ts<Venue>,
+	pub trades: TradeCols<'a>,
+	pub deltas: DeltaFrame<'a>,
+	/// Our checkpoints.
+	pub anchors: &'a [BookShape],
+	pub oi: &'a [Oi],
+	pub mc: &'a [Mc],
 }
 
-/// A source of woven batches. `None` = exhausted (end-of-range for [`Replay`]; all senders dropped
+/// A source of woven lanes. `None` = exhausted (end-of-range for [`Replay`]; all senders dropped
 /// and drained for [`Live`]).
 pub trait Feed {
-	fn next_batch(&mut self) -> Option<Batch<'_>>;
+	fn next(&mut self) -> Option<Lanes<'_>>;
 }
 
-/// One arrival-sorted lane: weave keys in `ts`, rows in `rows`, consumed up to `cur`. The key lives
-/// beside the row, not in it — it is an ordering device, not a property of the datum.
-struct Lane<T> {
+/// The buffer behind one lane. Columnar for the raw lanes, a plain `Vec` for the f64-native ones —
+/// uniformity was the old `Batch` enum's sin; each lane keeps its natural shape.
+trait LaneBuf {
+	fn len(&self) -> usize;
+	fn drain_prefix(&mut self, n: usize);
+}
+
+impl<T> LaneBuf for Vec<T> {
+	fn len(&self) -> usize {
+		self.len()
+	}
+
+	fn drain_prefix(&mut self, n: usize) {
+		self.drain(..n);
+	}
+}
+
+impl LaneBuf for TradeBuf {
+	fn len(&self) -> usize {
+		self.len()
+	}
+
+	fn drain_prefix(&mut self, n: usize) {
+		self.drain_prefix(n);
+	}
+}
+
+impl LaneBuf for DeltaBuf {
+	fn len(&self) -> usize {
+		self.len()
+	}
+
+	fn drain_prefix(&mut self, n: usize) {
+		self.drain_prefix(n);
+	}
+}
+
+/// One arrival-sorted lane: weave keys in `ts`, data in `buf`, consumed up to `cur`. The key lives
+/// beside the datum, not in it — it is an ordering device, not a property of the datum.
+struct Lane<C> {
 	ts: Vec<Arrival>,
-	rows: Vec<T>,
+	buf: C,
 	cur: usize,
 }
 
-impl<T> Default for Lane<T> {
+impl<C: Default> Default for Lane<C> {
 	fn default() -> Self {
 		Self {
 			ts: Vec::new(),
-			rows: Vec::new(),
+			buf: C::default(),
 			cur: 0,
 		}
 	}
 }
 
-impl<T> Lane<T> {
+impl<C: LaneBuf> Lane<C> {
 	fn head(&self) -> Option<Arrival> {
 		self.ts.get(self.cur).copied()
 	}
@@ -80,10 +135,11 @@ impl<T> Lane<T> {
 		self.cur >= self.ts.len()
 	}
 
-	fn push(&mut self, ts: Arrival, row: T) {
+	/// Claim `n` weave slots at `ts`; the caller has already appended `n` elements to `buf`.
+	fn key(&mut self, ts: Arrival, n: usize) {
 		debug_assert!(self.ts.last().is_none_or(|&last| ts >= last), "lane arrivals must be non-decreasing");
-		self.ts.push(ts);
-		self.rows.push(row);
+		self.ts.resize(self.ts.len() + n, ts);
+		debug_assert_eq!(self.ts.len(), self.buf.len(), "lane keys and lane data must stay in step");
 	}
 
 	/// End index (exclusive) of the maximal run from `cur` whose keys stay `<= bound`.
@@ -100,21 +156,67 @@ impl<T> Lane<T> {
 	fn compact(&mut self) {
 		if self.cur > 0 && self.cur * 2 >= self.ts.len() {
 			self.ts.drain(..self.cur);
-			self.rows.drain(..self.cur);
+			self.buf.drain_prefix(self.cur);
 			self.cur = 0;
 		}
 	}
 }
 
-/// Merges the filled lanes into one arrival-ordered batch stream. The book lane is two sub-lanes
-/// (anchors + deltas) that weave independently by effective time.
+impl Lane<Vec<Oi>> {
+	fn push(&mut self, ts: Arrival, row: Oi) {
+		self.buf.push(row);
+		self.key(ts, 1);
+	}
+}
+
+impl Lane<Vec<Mc>> {
+	fn push(&mut self, ts: Arrival, row: Mc) {
+		self.buf.push(row);
+		self.key(ts, 1);
+	}
+}
+
+impl Lane<Vec<BookShape>> {
+	fn push(&mut self, ts: Arrival, row: BookShape) {
+		self.buf.push(row);
+		self.key(ts, 1);
+	}
+}
+
+impl Lane<TradeBuf> {
+	fn extend(&mut self, ts: Arrival, cols: TradeCols<'_>) {
+		self.buf.extend(cols);
+		self.key(ts, cols.len());
+	}
+}
+
+impl Lane<DeltaBuf> {
+	fn extend(&mut self, ts: Arrival, frame: DeltaFrame<'_>) {
+		let n = frame.cols().len();
+		self.buf.extend(frame);
+		self.key(ts, n);
+	}
+
+	/// A frame is homogeneous, so the run breaks where the kind changes as well as at the bound —
+	/// that is what lets the enum wrap the run instead of every row.
+	fn run_end_of_kind(&self, bound: Arrival) -> usize {
+		let kind = self.buf.kind_at(self.cur);
+		let mut e = self.cur + 1;
+		while e < self.ts.len() && self.ts[e] <= bound && self.buf.kind_at(e) == kind {
+			e += 1;
+		}
+		e
+	}
+}
+
+/// Merges the filled lanes into one arrival-ordered stream.
 #[derive(Default)]
 struct Weaver {
-	trades: Lane<Trade>,
-	deltas: Lane<BookDelta>,
-	anchors: Lane<BookShape>,
-	oi: Lane<Oi>,
-	mc: Lane<Mc>,
+	trades: Lane<TradeBuf>,
+	deltas: Lane<DeltaBuf>,
+	anchors: Lane<Vec<BookShape>>,
+	oi: Lane<Vec<Oi>>,
+	mc: Lane<Vec<Mc>>,
 	prev_emit: Arrival,
 }
 
@@ -131,44 +233,56 @@ impl Weaver {
 		self.mc.compact();
 	}
 
-	fn next_batch(&mut self) -> Option<Batch<'_>> {
+	fn next(&mut self) -> Option<Lanes<'_>> {
 		let heads = [self.trades.head(), self.deltas.head(), self.anchors.head(), self.oi.head(), self.mc.head()];
 		let winner = (0..heads.len()).filter(|&i| heads[i].is_some()).min_by_key(|&i| heads[i].expect("filtered to Some"))?;
 		let win_ts = heads[winner].expect("winner has a head");
 		let bound = (0..heads.len()).filter(|&i| i != winner).filter_map(|i| heads[i]).min().unwrap_or(Arrival::from_nanos(i64::MAX));
 		assert!(win_ts >= self.prev_emit, "weaver emitted out of arrival order: {win_ts:?} < {:?}", self.prev_emit);
 
-		Some(match winner {
+		// Claim the winning run first, so the borrows below are all shared and disjoint.
+		let (mut t, mut d, mut a, mut o, mut m) = ((0, 0), (0, 0), (0, 0), (0, 0), (0, 0));
+		let ts_venue = match winner {
 			0 => {
-				let (a, e) = (self.trades.cur, self.trades.run_end(bound));
-				self.trades.cur = e;
-				self.prev_emit = self.trades.ts[e - 1];
-				Batch::Trades(&self.trades.rows[a..e])
+				t = (self.trades.cur, self.trades.run_end(bound));
+				self.trades.cur = t.1;
+				self.prev_emit = self.trades.ts[t.1 - 1];
+				self.trades.buf.exec_at(t.1 - 1)
 			}
 			1 => {
-				let (a, e) = (self.deltas.cur, self.deltas.run_end(bound));
-				self.deltas.cur = e;
-				self.prev_emit = self.deltas.ts[e - 1];
-				Batch::Book(&self.deltas.rows[a..e])
+				d = (self.deltas.cur, self.deltas.run_end_of_kind(bound));
+				self.deltas.cur = d.1;
+				self.prev_emit = self.deltas.ts[d.1 - 1];
+				self.deltas.buf.exec_at(d.1 - 1)
 			}
 			2 => {
-				let a = self.anchors.cur;
-				self.anchors.cur += 1;
-				self.prev_emit = self.anchors.ts[a];
-				Batch::BookAnchor(&self.anchors.rows[a])
+				a = (self.anchors.cur, self.anchors.run_end(bound));
+				self.anchors.cur = a.1;
+				self.prev_emit = self.anchors.ts[a.1 - 1];
+				self.anchors.buf[a.1 - 1].ts.venue_exec.last
 			}
 			3 => {
-				let (a, e) = (self.oi.cur, self.oi.run_end(bound));
-				self.oi.cur = e;
-				self.prev_emit = self.oi.ts[e - 1];
-				Batch::Oi(&self.oi.rows[a..e])
+				o = (self.oi.cur, self.oi.run_end(bound));
+				self.oi.cur = o.1;
+				self.prev_emit = self.oi.ts[o.1 - 1];
+				self.oi.buf[o.1 - 1].ts_venue_exec
 			}
 			_ => {
-				let (a, e) = (self.mc.cur, self.mc.run_end(bound));
-				self.mc.cur = e;
-				self.prev_emit = self.mc.ts[e - 1];
-				Batch::Mc(&self.mc.rows[a..e])
+				m = (self.mc.cur, self.mc.run_end(bound));
+				self.mc.cur = m.1;
+				self.prev_emit = self.mc.ts[m.1 - 1];
+				mc_axis(self.mc.buf[m.1 - 1].ts_local_exec)
 			}
+		};
+
+		Some(Lanes {
+			arrival: self.prev_emit,
+			ts_venue,
+			trades: self.trades.buf.cols(t.0..t.1),
+			deltas: self.deltas.buf.frame(d.0..d.1),
+			anchors: &self.anchors.buf[a.0..a.1],
+			oi: &self.oi.buf[o.0..o.1],
+			mc: &self.mc.buf[m.0..m.1],
 		})
 	}
 }
@@ -182,9 +296,9 @@ fn effective<A>(recv: Option<Ts<Local>>, axis: Ts<A>, sampler: &mut Option<v_uti
 }
 
 /// Market cap is daily-resolution, so venue/local skew is orders of magnitude below the sampling
-/// interval and cannot change which rows a range selects. Named, not implicit, so the one place
-/// this crate crosses actors on a query bound is greppable.
-fn mc_bound(t: Ts<Venue>) -> Ts<Local> {
+/// interval and cannot change which rows a range selects, nor where the lane weaves. Named, not
+/// implicit, so the one place this crate crosses actors on a time axis is greppable.
+fn mc_axis<A, B>(t: Ts<A>) -> Ts<B> {
 	Ts::from_nanos(t.as_nanos())
 }
 
@@ -203,14 +317,23 @@ impl Replay {
 	pub fn new(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: Ts<Venue>, end: Ts<Venue>, lanes: &[LaneKind], latency: LatencyConfig) -> Self {
 		let mut weaver = Weaver::default();
 		let sampler = |lane: LaneKind| Some(latency.sampler(&format!("{lane:?}:{symbol}")));
+		let prec = |keys: &[LaneKey]| lane_prec(catalog, keys).expect("read lane precision").unwrap_or_default();
 
+		// A graph naming both book roots would otherwise load each lane twice.
+		let mut seen = Vec::new();
 		for &lane in lanes {
+			if seen.contains(&lane) {
+				continue;
+			}
+			seen.push(lane);
 			match lane {
 				LaneKind::Trades => {
+					weaver.trades.buf.prec = prec(&[LaneKey::Trades { exchange, symbol }]);
 					let mut s = sampler(lane);
 					for t in read_trades(catalog, exchange, symbol, start, end).expect("open trades lane") {
 						let ts = effective(t.ts_local_recv, t.ts_venue_exec, &mut s);
-						weaver.trades.push(ts, t);
+						weaver.trades.buf.push(t.ts_venue_exec, t.ts_venue_send, t.ts_local_recv, t.monotonic_seq, t.side, t.price, t.qty);
+						weaver.trades.key(ts, 1);
 					}
 				}
 				LaneKind::Oi => {
@@ -223,27 +346,32 @@ impl Replay {
 				LaneKind::Mc => {
 					let mut s = sampler(lane);
 					let asset = Asset::new(symbol.pair.base().to_string());
-					for m in read_mc(catalog, asset, mc_bound(start), mc_bound(end)).expect("open mc lane") {
+					for m in read_mc(catalog, asset, mc_axis(start), mc_axis(end)).expect("open mc lane") {
 						// This lane's axis is already ours, so it is its own reception reading.
 						let ts = effective(Some(m.ts_local_exec), m.ts_local_exec, &mut s);
 						weaver.mc.push(ts, m);
 					}
 				}
-				LaneKind::Book => {
-					let prec = book_prec(catalog, exchange, symbol).expect("read book prec").expect("book lane has files");
-					// The pre-start anchor is state carried into the range, not an event that arrived
-					// in it — it has no arrival of its own, and must sort before everything.
+				LaneKind::BookDeltas => {
+					weaver.deltas.buf.prec = prec(&[LaneKey::BookDeltas { exchange, symbol }, LaneKey::BookSnapshots { exchange, symbol }]);
+					let mut s = sampler(lane);
+					for d in read_book_deltas(catalog, exchange, symbol, start, end).expect("open delta lane") {
+						let ts = effective(Some(d.ts_local_recv), d.ts_venue_exec, &mut s);
+						weaver.deltas.buf.push(d.ts_venue_exec, Some(d.ts_local_recv), d.monotonic_seq, d.kind, d.side, d.price, d.qty);
+						weaver.deltas.key(ts, 1);
+					}
+				}
+				LaneKind::BookAnchors => {
+					let p = prec(&[LaneKey::BookSnapshots { exchange, symbol }, LaneKey::BookDeltas { exchange, symbol }]);
+					// The pre-start checkpoint is state carried into the range, not an event that
+					// arrived in it — it has no arrival of its own, and must sort before everything.
 					if let Some(shape) = pick_anchor(catalog, exchange, symbol, start).expect("pick anchor") {
 						weaver.anchors.push(Arrival::MIN, shape);
 					}
 					let mut s = sampler(lane);
 					for snap in read_book_snapshots(catalog, exchange, symbol, start, end).expect("open snapshot lane") {
 						let ts = effective(Some(snap.ts_local_recv), snap.ts_venue_exec, &mut s);
-						weaver.anchors.push(ts, snapshot_shape(&snap, prec));
-					}
-					for d in read_book_deltas(catalog, exchange, symbol, start, end).expect("open delta lane") {
-						let ts = effective(Some(d.ts_local_recv), d.ts_venue_exec, &mut s);
-						weaver.deltas.push(ts, d);
+						weaver.anchors.push(ts, snapshot_shape(&snap, p));
 					}
 				}
 			}
@@ -253,16 +381,16 @@ impl Replay {
 }
 
 impl Feed for Replay {
-	fn next_batch(&mut self) -> Option<Batch<'_>> {
-		self.weaver.next_batch()
+	fn next(&mut self) -> Option<Lanes<'_>> {
+		self.weaver.next()
 	}
 }
 
-/// A live event pushed through a [`Live`] handle. Crate-private: per-event dispatch is acceptable
-/// at network rates and preserves total arrival order across lanes, which per-lane channels can't.
-/// Carries no arrival time — [`Live::ingest`] stamps `ts_init` on the consumer thread.
+/// A live event pushed through a [`Live`] handle. Crate-private: per-*message* dispatch is
+/// acceptable at network rates and preserves total arrival order across lanes, which per-lane
+/// channels can't. Carries no arrival time — [`Live::ingest`] stamps it on the consumer thread.
 enum LiveEvt {
-	Trade(Trade),
+	Trades(BatchTrades),
 	Book(BookUpdate),
 	Oi(Oi),
 	Mc(Mc),
@@ -276,8 +404,10 @@ pub struct Sink {
 }
 
 impl Sink {
-	pub fn trade(&self, t: Trade) {
-		self.tx.send(LiveEvt::Trade(t)).ok();
+	/// A whole venue message, whole: one clock read, one flush check and one send for the batch,
+	/// instead of one of each per trade.
+	pub fn trades(&self, b: BatchTrades) {
+		self.tx.send(LiveEvt::Trades(b)).ok();
 	}
 
 	pub fn oi(&self, o: Oi) {
@@ -303,14 +433,14 @@ struct Record {
 	mc: Feather<Mc>,
 }
 
-/// Live feed. `next_batch` drains what's currently available (blocking for the first event),
-/// stamps each with a monotonic arrival time, weaves one batch, and drops consumed rows — memory
-/// stays bounded to the un-emitted window regardless of session length. Recording tees each event
-/// to disk incrementally, so a live recording replays into the identical event stream (the
-/// live≡backtest invariant). `None` once every sink is dropped and the buffer is drained.
+/// Live feed. [`Feed::next`] drains what's currently available (blocking for the first event),
+/// stamps each message with a monotonic arrival time, weaves one step, and drops consumed rows —
+/// memory stays bounded to the un-emitted window regardless of session length. Recording tees
+/// incrementally, so a live recording replays into the identical event stream (the live≡backtest
+/// invariant). `None` once every sink is dropped and the buffer is drained.
 pub struct Live {
 	rx: Receiver<LiveEvt>,
-	// dropped on first `next_batch` so the channel disconnects once external sinks drop; also gates
+	// dropped on first `next` so the channel disconnects once external sinks drop; also gates
 	// `sink()` to before-consume.
 	tx: Option<Sender<LiveEvt>>,
 	clock: Arc<dyn Clock>,
@@ -318,10 +448,10 @@ pub struct Live {
 	/// ordered and the weave is unambiguous.
 	last_stamp: Arrival,
 	prec: PrecisionPriceQty,
-	monotonic: u64,
-	/// Local reception time of the current book epoch's start — reset by every snapshot resync, so
-	/// a folded shape carries how long it has been drifting since it was last known-good.
-	book_epoch: Option<Ts<Local>>,
+	trade_seq: u64,
+	/// Scratch for one message's trade run — extended into the weaver and the tee in one pass.
+	staging: TradeBuf,
+	shadow: ShadowBook,
 	record: Option<Record>,
 	weaver: Weaver,
 	disconnected: bool,
@@ -341,21 +471,25 @@ impl Live {
 				catalog,
 			}
 		});
+		let mut weaver = Weaver::default();
+		weaver.trades.buf.prec = prec;
+		weaver.deltas.buf.prec = prec;
 		Self {
 			rx,
 			tx: Some(tx),
 			clock,
 			last_stamp: Arrival::MIN,
 			prec,
-			monotonic: 0,
-			book_epoch: None,
+			trade_seq: 0,
+			staging: TradeBuf::new(prec),
+			shadow: ShadowBook::new(prec, CHECKPOINT_CADENCE),
 			record,
-			weaver: Weaver::default(),
+			weaver,
 			disconnected: false,
 		}
 	}
 
-	/// A cloneable push handle. Take all sinks before consuming; the first `next_batch` drops the
+	/// A cloneable push handle. Take all sinks before consuming; the first [`Feed::next`] drops the
 	/// feed's own sender so the channel can disconnect once external sinks are gone.
 	pub fn sink(&self) -> Sink {
 		Sink {
@@ -381,13 +515,20 @@ impl Live {
 	fn ingest(&mut self, evt: LiveEvt) {
 		let ts = self.stamp();
 		match evt {
-			LiveEvt::Trade(mut t) => {
-				t.ts_local_recv = Some(Self::recv_of(ts));
+			LiveEvt::Trades(b) => {
+				assert_eq!(b.prec(), self.prec, "trade batch precision differs from the lane's");
+				let recv = Self::recv_of(ts);
+				self.staging.clear();
+				for t in b.iter() {
+					self.trade_seq += 1;
+					self.staging.push(t.time, t.sent, Some(recv), self.trade_seq, t.side, t.price, t.qty);
+				}
+				let cols = self.staging.cols(0..self.staging.len());
 				if let Some(r) = &mut self.record {
-					r.trades.push(t);
+					r.trades.extend(cols);
 					r.trades.maybe_flush(&r.catalog).expect("trade feather flush");
 				}
-				self.weaver.trades.push(ts, t);
+				self.weaver.trades.extend(ts, cols);
 			}
 			LiveEvt::Oi(mut o) => {
 				o.ts_local_recv = Some(Self::recv_of(ts));
@@ -409,69 +550,32 @@ impl Live {
 		}
 	}
 
-	/// The single book flattener — shared by weave and record, so they can never drift. A snapshot
-	/// resyncs (row + `BookAnchor`); a batch-delta flattens to `BookDelta` rows once, those very
-	/// rows both weaving and teeing.
-	///
-	/// The local epoch restarts on a snapshot and continues across deltas; the venue epoch is the
-	/// adapter's to report, since only it holds the folded book.
+	/// The single book path — shared by weave and record, so they can never drift. The venue update
+	/// goes through the shadow book; what leaves here is *our* frame, and then *our* checkpoint if
+	/// the cadence has elapsed (after the fold, so the checkpoint includes it).
 	fn ingest_book(&mut self, u: BookUpdate, ts: Arrival) {
-		let mut shape = u.shape().clone();
 		let recv = Self::recv_of(ts);
-		let ev = shape.ts.venue_exec.last;
-		match &u {
-			BookUpdate::Snapshot(_) => {
-				self.monotonic += 1;
-				self.book_epoch = Some(recv);
-				shape.ts.local_recv = Span::at(recv);
-				if let Some(r) = &mut self.record {
-					r.snapshots.push(BookSnapshot {
-						ts_venue_exec: ev,
-						ts_local_recv: recv,
-						monotonic_seq: self.monotonic,
-						bid_prices: shape.bids.keys().copied().collect(),
-						bid_qtys: shape.bids.values().copied().collect(),
-						ask_prices: shape.asks.keys().copied().collect(),
-						ask_qtys: shape.asks.values().copied().collect(),
-					});
-					r.snapshots.maybe_flush(&r.catalog).expect("snapshot feather flush");
-				}
-				self.weaver.anchors.push(ts, shape);
+		if let Some(frame) = self.shadow.ingest(&u, recv) {
+			if let Some(r) = &mut self.record {
+				r.deltas.extend(frame);
+				r.deltas.maybe_flush(&r.catalog).expect("delta feather flush");
 			}
-			BookUpdate::BatchDelta { gapped, .. } => {
-				// A delta before any snapshot *is* the start of the epoch — not a fallback.
-				let first = *self.book_epoch.get_or_insert(recv);
-				shape.ts.local_recv = Span::new(first, recv);
-				let (p_scale, q_scale) = (10f64.powi(self.prec.price as i32), 10f64.powi(self.prec.qty as i32));
-				let mut rows = Vec::new();
-				let mut push = |side: Side, price: i32, qty: u32, seq: &mut u64| {
-					*seq += 1;
-					rows.push(BookDelta {
-						ts_venue_exec: ev,
-						ts_local_recv: recv,
-						monotonic_seq: *seq,
-						gapped: *gapped,
-						side,
-						price: price as f64 / p_scale,
-						qty: qty as f64 / q_scale,
-					});
-				};
-				for (&p, &q) in &shape.bids {
-					push(Side::Buy, p, q, &mut self.monotonic);
-				}
-				for (&p, &q) in &shape.asks {
-					push(Side::Sell, p, q, &mut self.monotonic);
-				}
-				if let Some(r) = &mut self.record {
-					for d in &rows {
-						r.deltas.push(*d);
-					}
-					r.deltas.maybe_flush(&r.catalog).expect("delta feather flush");
-				}
-				for d in rows {
-					self.weaver.deltas.push(ts, d);
-				}
+			self.weaver.deltas.extend(ts, frame);
+		}
+		if let Some(shape) = self.shadow.checkpoint(recv) {
+			if let Some(r) = &mut self.record {
+				r.snapshots.push(BookSnapshot {
+					ts_venue_exec: shape.ts.venue_exec.last,
+					ts_local_recv: recv,
+					monotonic_seq: 0,
+					bid_prices: shape.bids.keys().copied().collect(),
+					bid_qtys: shape.bids.values().copied().collect(),
+					ask_prices: shape.asks.keys().copied().collect(),
+					ask_qtys: shape.asks.values().copied().collect(),
+				});
+				r.snapshots.maybe_flush(&r.catalog).expect("snapshot feather flush");
 			}
+			self.weaver.anchors.push(ts, shape);
 		}
 	}
 
@@ -487,9 +591,9 @@ impl Live {
 }
 
 impl Feed for Live {
-	fn next_batch(&mut self) -> Option<Batch<'_>> {
+	fn next(&mut self) -> Option<Lanes<'_>> {
 		self.tx = None; // drop our own sender so the channel disconnects once external sinks are gone
-		self.weaver.compact(); // reclaim the previous batch's consumed rows (its borrow has ended)
+		self.weaver.compact(); // reclaim the previous step's consumed rows (its borrow has ended)
 
 		// Top up until there's something to weave. Everything ingested is a complete prefix (future
 		// stamps are larger), so the whole current buffer is safe to emit — no watermark needed.
@@ -506,6 +610,6 @@ impl Feed for Live {
 				self.ingest(e);
 			}
 		}
-		self.weaver.next_batch()
+		self.weaver.next()
 	}
 }

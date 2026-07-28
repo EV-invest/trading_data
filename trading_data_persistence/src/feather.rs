@@ -4,7 +4,7 @@ use std::{
 };
 
 use arrow::{array::RecordBatch, datatypes::SchemaRef};
-use trading_data_core::{Asset, ExchangeName, PrecisionPriceQty, Symbol, Ts};
+use trading_data_core::{Asset, DeltaFrame, ExchangeName, PrecisionPriceQty, Symbol, TradeCols, Ts};
 
 use crate::{
 	catalog::{Catalog, CatalogError, LaneKey},
@@ -36,6 +36,24 @@ impl Feather<Trade> {
 	pub fn new(exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, policy: RotationPolicy) -> Self {
 		Self::init(LaneKey::Trades { exchange, symbol }, prec, policy)
 	}
+
+	/// Append a whole run. Raw columns go to disk as they came off the wire — the only conversion
+	/// left anywhere on this path is the one at the CSV parse boundary.
+	pub fn extend(&mut self, cols: TradeCols<'_>) {
+		assert_eq!(self.meta, cols.prec, "trade run's precision differs from the lane's");
+		let recv = cols.ts.recv;
+		for (i, &exec) in cols.exec().iter().enumerate() {
+			self.push(Trade {
+				ts_venue_exec: exec,
+				ts_venue_send: cols.ts.send.map(|s| s[i]),
+				ts_local_recv: recv.map(|r| r.last),
+				monotonic_seq: cols.monotonic_seq[i],
+				side: cols.side[i],
+				price: cols.price[i],
+				qty: cols.qty[i],
+			});
+		}
+	}
 }
 
 impl Feather<Oi> {
@@ -53,6 +71,23 @@ impl Feather<Mc> {
 impl Feather<BookDelta> {
 	pub(crate) fn new(exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, policy: RotationPolicy) -> Self {
 		Self::init(LaneKey::BookDeltas { exchange, symbol }, prec, policy)
+	}
+
+	pub(crate) fn extend(&mut self, frame: DeltaFrame<'_>) {
+		let (kind, cols) = (frame.kind(), frame.cols());
+		assert_eq!(self.meta, cols.prec, "delta run's precision differs from the lane's");
+		let recv = cols.ts.recv;
+		for (i, &exec) in cols.exec().iter().enumerate() {
+			self.push(BookDelta {
+				ts_venue_exec: exec,
+				ts_local_recv: recv.map(|r| r.last).expect("a book lane is only ever written by a live recording"),
+				monotonic_seq: cols.monotonic_seq[i],
+				kind,
+				side: cols.side[i],
+				price: cols.price[i],
+				qty: cols.qty[i],
+			});
+		}
 	}
 }
 
@@ -147,7 +182,7 @@ impl<T: Row> Feather<T> {
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use trading_data_core::{Instrument, Local, Side, Venue};
+	use trading_data_core::{FrameKind, Instrument, Local, Side, Venue};
 
 	use super::*;
 
@@ -185,10 +220,10 @@ mod tests {
 			ts_venue_exec: venue(1),
 			ts_local_recv: local(1),
 			monotonic_seq: 1,
-			gapped: false,
+			kind: FrameKind::Update,
 			side: Side::Buy,
-			price: 0.01,
-			qty: 0.00001,
+			price: 1,
+			qty: 1,
 		});
 		assert!(feather.should_flush());
 		let path = feather.flush(&catalog).unwrap().unwrap();
@@ -206,10 +241,9 @@ mod tests {
 			ts_venue_send: Some(venue(2)),
 			ts_local_recv: Some(local(3)),
 			monotonic_seq: 3,
-			trade_id: 4,
 			side: Side::Sell,
-			price: 483.51,
-			qty: 0.00042,
+			price: 48_351,
+			qty: 42,
 		};
 		f.push(row);
 		let decoded = round_trip_batch(&mut f, &cat);
@@ -227,10 +261,9 @@ mod tests {
 			ts_venue_send: None,
 			ts_local_recv: None,
 			monotonic_seq: 1,
-			trade_id: 1,
 			side: Side::Buy,
-			price: 1.0,
-			qty: 1.0,
+			price: 100,
+			qty: 100_000,
 		});
 		let decoded = round_trip_batch(&mut f, &cat);
 		assert_eq!(decoded[0].ts_venue_send, None);
@@ -246,10 +279,10 @@ mod tests {
 			ts_venue_exec: venue(1),
 			ts_local_recv: local(2),
 			monotonic_seq: 9,
-			gapped: true,
+			kind: FrameKind::Correction,
 			side: Side::Buy,
-			price: 123.45,
-			qty: 0.0,
+			price: 12_345,
+			qty: 0,
 		};
 		f.push(row);
 		let decoded = round_trip_batch(&mut f, &cat);
@@ -321,21 +354,5 @@ mod tests {
 		f.push(without_rank);
 		let decoded = round_trip_batch(&mut f, &cat);
 		assert_eq!(decoded, vec![with_rank, without_rank]);
-	}
-
-	#[test]
-	#[should_panic(expected = "does not round-trip")]
-	fn precision_violation_panics() {
-		let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
-		f.push(Trade {
-			ts_venue_exec: venue(1),
-			ts_venue_send: None,
-			ts_local_recv: Some(local(1)),
-			monotonic_seq: 1,
-			trade_id: 1,
-			side: Side::Buy,
-			price: 0.001, // 3 decimals under price precision 2
-			qty: 1.0,
-		});
 	}
 }

@@ -98,13 +98,19 @@ pub trait Flat: Copy {
 	};
 	/// Writes all `LEN` slots of `out`; returns fired. `!fired` ⇒ NaN-filled.
 	fn flat(&self, out: &mut [f64]) -> bool;
-	/// Typed-space bump of one element. Discrete slots (bool, category) return `self` — an
-	/// honest zero derivative — which is why no `unflat` inverse is ever needed.
-	fn nudge(&self, slot: usize, h: f64) -> Self;
 	/// How many elements this out fired: scalars/arrays 1, `Option` 0/1, `&[T]` its len.
 	fn fires(&self) -> usize {
 		1
 	}
+}
+
+/// Typed-space perturbation of one flattened element, for the finite-difference witness. Returns
+/// the perturbation **actually applied**, in the element's own units — a quantized column can only
+/// move in whole ticks, and pretending otherwise divides the difference by a step never taken.
+/// `0.0` ⇒ this slot cannot be perturbed (discrete, structural), so its Jacobian column stays NaN
+/// rather than a fabricated zero.
+pub trait Bump: Copy {
+	fn bump(self, slot: usize, h: f64) -> (Self, f64);
 }
 
 impl Flat for f64 {
@@ -114,10 +120,12 @@ impl Flat for f64 {
 		out[0] = *self;
 		true
 	}
+}
 
-	fn nudge(&self, slot: usize, h: f64) -> Self {
+impl Bump for f64 {
+	fn bump(self, slot: usize, h: f64) -> (Self, f64) {
 		debug_assert_eq!(slot, 0);
-		self + h
+		(self + h, h)
 	}
 }
 
@@ -128,9 +136,11 @@ impl Flat for bool {
 		out[0] = u8::from(*self) as f64;
 		true
 	}
+}
 
-	fn nudge(&self, _: usize, _: f64) -> Self {
-		*self
+impl Bump for bool {
+	fn bump(self, _: usize, _: f64) -> (Self, f64) {
+		(self, 0.0)
 	}
 }
 
@@ -141,11 +151,12 @@ impl<const N: usize> Flat for [f64; N] {
 		out.copy_from_slice(self);
 		true
 	}
+}
 
-	fn nudge(&self, slot: usize, h: f64) -> Self {
-		let mut r = *self;
-		r[slot] += h;
-		r
+impl<const N: usize> Bump for [f64; N] {
+	fn bump(mut self, slot: usize, h: f64) -> (Self, f64) {
+		self[slot] += h;
+		(self, h)
 	}
 }
 
@@ -163,17 +174,24 @@ impl<T: Flat> Flat for Option<T> {
 		}
 	}
 
-	fn nudge(&self, slot: usize, h: f64) -> Self {
-		self.map(|t| t.nudge(slot, h))
-	}
-
 	fn fires(&self) -> usize {
 		self.is_some() as usize
 	}
 }
 
-/// A batch out flattens to its *last* element (empty ⇒ NaN + unfired); its rate is its len. Deps
-/// nudge via [`Nudge`], so [`Flat::nudge`] here is unreachable.
+impl<T: Bump> Bump for Option<T> {
+	fn bump(self, slot: usize, h: f64) -> (Self, f64) {
+		match self {
+			Some(t) => {
+				let (t, dh) = t.bump(slot, h);
+				(Some(t), dh)
+			}
+			None => (None, 0.0),
+		}
+	}
+}
+
+/// A batch out flattens to its *last* element (empty ⇒ NaN + unfired); its rate is its len.
 impl<T: Flat> Flat for &[T] {
 	const DIMS: &'static [usize] = T::DIMS;
 
@@ -185,10 +203,6 @@ impl<T: Flat> Flat for &[T] {
 				false
 			}
 		}
-	}
-
-	fn nudge(&self, _: usize, _: f64) -> Self {
-		unreachable!("slice deps nudge via Nudge")
 	}
 
 	fn fires(&self) -> usize {
@@ -300,11 +314,12 @@ pub trait DepFlat: DepSet {
 	/// Per-dep scratch for the finite-difference re-advance (slice deps copy their batch here).
 	type Scratch: Default;
 	fn flat(outs: &Self::Outs<'_>, dst: &mut [f64]);
-	/// Materializes the pulled outs into owned `scratch`, bumping the element owning `slot` by `h`.
+	/// Materializes the pulled outs into owned `scratch`, bumping the element owning `slot` by `h`
+	/// and returning the perturbation that dep actually applied (see [`Bump`]).
 	/// Consumes the pulled outs at their lifetime; the scratch owns copies, so [`DepFlat::view`]
 	/// hands them back at a fresh, independent lifetime — that untying is what lets the
 	/// self-borrowing re-`advance` on a short-lived clone typecheck.
-	fn stage<'t>(outs: Self::Outs<'t>, scratch: &mut Self::Scratch, slot: usize, h: f64);
+	fn stage<'t>(outs: Self::Outs<'t>, scratch: &mut Self::Scratch, slot: usize, h: f64) -> f64;
 	/// Views staged `scratch` as dep outs at the borrow's own lifetime `'l`.
 	fn view<'l>(scratch: &'l Self::Scratch) -> Self::Outs<'l>;
 }
@@ -317,10 +332,67 @@ pub trait DepFlat: DepSet {
 /// impl — the value/slice cases overlap — so every observed cell writes its own short impl.
 pub trait Nudge: Cell {
 	type Scratch: Default;
-	/// Materialize `out` into `scratch`; if `bump` is `Some(slot)`, add `h` to that element.
-	fn stage<'t>(out: Self::Out<'t>, scratch: &mut Self::Scratch, bump: Option<usize>, h: f64);
+	/// Materialize `out` into `scratch`; if `bump` is `Some(slot)`, perturb that element by about
+	/// `h`. Returns the perturbation actually applied, in the dep's own units — see [`Bump`].
+	fn stage<'t>(out: Self::Out<'t>, scratch: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64;
 	/// View staged `scratch` as this cell's out at the borrow lifetime `'l`.
 	fn view<'l>(scratch: &'l Self::Scratch) -> Self::Out<'l>;
+}
+
+/// A slice-out cell's finite-difference witness: copy the batch into `Vec<$E>` scratch, bump the
+/// last element when asked, view it back at the borrow's own lifetime.
+#[macro_export]
+macro_rules! slice_nudge {
+	($C:ty, $E:ty) => {
+		impl $crate::Nudge for $C {
+			type Scratch = $crate::MacroVec<$E>;
+
+			fn stage<'t>(out: &'t [$E], s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
+				s.clear();
+				s.extend_from_slice(out);
+				match (bump, s.last_mut()) {
+					(Some(slot), Some(last)) => {
+						let (e, dh) = $crate::Bump::bump(*last, slot, h);
+						*last = e;
+						dh
+					}
+					_ => 0.0,
+				}
+			}
+
+			fn view<'l>(s: &'l Self::Scratch) -> &'l [$E] {
+				s
+			}
+		}
+	};
+}
+
+/// A value-out cell's finite-difference witness: the scratch is just the value itself.
+#[macro_export]
+macro_rules! value_nudge {
+	($C:ty) => {
+		impl $crate::Nudge for $C {
+			type Scratch = <$C as $crate::Cell>::Out<'static>;
+
+			fn stage<'t>(out: <$C as $crate::Cell>::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
+				match bump {
+					Some(slot) => {
+						let (v, dh) = $crate::Bump::bump(out, slot, h);
+						*s = v;
+						dh
+					}
+					None => {
+						*s = out;
+						0.0
+					}
+				}
+			}
+
+			fn view<'l>(s: &'l Self::Scratch) -> <$C as $crate::Cell>::Out<'l> {
+				*s
+			}
+		}
+	};
 }
 
 /// Extracts a [`DepSet`]'s outputs from frame `F`. `I` is the inferred index path — never
@@ -528,7 +600,9 @@ impl DepFlat for () {
 		debug_assert!(dst.is_empty());
 	}
 
-	fn stage<'t>(_: Self::Outs<'t>, _: &mut Self::Scratch, _: usize, _: f64) {}
+	fn stage<'t>(_: Self::Outs<'t>, _: &mut Self::Scratch, _: usize, _: f64) -> f64 {
+		0.0
+	}
 
 	fn view<'l>(_: &'l Self::Scratch) -> Self::Outs<'l> {}
 }
@@ -564,19 +638,23 @@ macro_rules! impl_arity {
 				debug_assert_eq!(off, Self::LEN);
 			}
 
-			fn stage<'t>(outs: Self::Outs<'t>, scratch: &mut Self::Scratch, slot: usize, h: f64) {
+			fn stage<'t>(outs: Self::Outs<'t>, scratch: &mut Self::Scratch, slot: usize, h: f64) -> f64 {
 				let ($($v,)+) = outs;
 				let ($($s,)+) = scratch;
-				let mut off = 0;
+				let (mut off, mut realized) = (0, 0.0);
 				$(
 					{
 						let len = <<$T as Cell>::Out<'static> as Flat>::LEN;
 						let bump = if (off..off + len).contains(&slot) { Some(slot - off) } else { None };
-						<$T as Nudge>::stage($v, $s, bump, h);
+						let dh = <$T as Nudge>::stage($v, $s, bump, h);
+						if bump.is_some() {
+							realized = dh;
+						}
 						off += len;
 					}
 				)+
 				debug_assert_eq!(off, Self::LEN);
+				realized
 			}
 
 			fn view<'l>(scratch: &'l Self::Scratch) -> Self::Outs<'l> {
@@ -743,19 +821,20 @@ impl<A: Observer, B: Observer> Observer for (A, B) {
 }
 
 /// One finite-difference column: re-advance a fresh clone on `deps` with element `slot` bumped by
-/// `h`, writing the bumped out into `bumped`; returns whether it fired. Isolated from [`step_obs`]
-/// so the re-advance lifetime is purely local — the clone and its nudged deps never escape, which
-/// keeps the self-borrowing `advance` from pinning them to the caller's tick lifetime.
-fn fd_col<'d, N>(pre: &N, deps: DepOuts<'d, N>, slot: usize, h: f64, bumped: &mut [f64]) -> bool
+/// about `h`, writing the bumped out into `bumped`; returns whether it fired and the perturbation
+/// the dep actually applied. Isolated from [`step_obs`] so the re-advance lifetime is purely local
+/// — the clone and its nudged deps never escape, which keeps the self-borrowing `advance` from
+/// pinning them to the caller's tick lifetime.
+fn fd_col<'d, N>(pre: &N, deps: DepOuts<'d, N>, slot: usize, h: f64, bumped: &mut [f64]) -> (bool, f64)
 where
 	N: Node + Clone,
 	N::Deps: DepFlat,
 	DepOuts<'d, N>: Copy,
 	for<'x> N::Out<'x>: Flat, {
 	let mut scratch = <N::Deps as DepFlat>::Scratch::default();
-	<N::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
+	let dh = <N::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
 	let mut clone = pre.clone();
-	clone.advance(<N::Deps as DepFlat>::view(&scratch)).flat(bumped)
+	(clone.advance(<N::Deps as DepFlat>::view(&scratch)).flat(bumped), dh)
 }
 
 /// The full finite-difference Jacobian: one [`fd_col`] per dep element, NaN columns where a dep is
@@ -775,11 +854,14 @@ where
 			continue;
 		}
 		let h = (x.abs() * 1e-6).max(1e-9);
-		if !fd_col::<N>(pre, deps, slot, h, &mut bumped) {
-			continue; // bump crossed a firing branch — column stays NaN
+		// `dh`, not `h`: a quantized dep moves in whole ticks, and dividing by a step it never took
+		// is a fabricated slope. `0.0` ⇒ the slot has no derivative at all.
+		let (fired, dh) = fd_col::<N>(pre, deps, slot, h, &mut bumped);
+		if !fired || dh == 0.0 {
+			continue; // bump crossed a firing branch, or the slot is discrete — column stays NaN
 		}
 		for i in 0..out_len {
-			jac[i * dep_len + slot] = (bumped[i] - out_buf[i]) / h;
+			jac[i * dep_len + slot] = (bumped[i] - out_buf[i]) / dh;
 		}
 	}
 	jac
@@ -1067,10 +1149,11 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 /// }
 /// ```
 ///
-/// Each root cell must have `Out<'t> = &'t [Event]`. `Batches<'t>` gets one `&'t [Event]` field
-/// per root (`Default` = all empty). `tick<'t>(&'t mut self, b: Batches<'t>) -> TickOut<'t>` seeds
-/// the frame with every root slice and sweeps. `required_events()` returns the `TypeId`s of the
-/// events whose root is consumed by some node — the dep tree, computed in isolation.
+/// `Batches<'t>` gets one field per root, of that root cell's `Out<'t>` — deliberately not
+/// `Default`: every field is filled explicitly from a woven step, and a silently-empty root is a
+/// footgun. `tick<'t>(&'t mut self, b: Batches<'t>) -> TickOut<'t>` seeds the frame with every root
+/// out and sweeps. `required_events()` returns the `TypeId`s of the events whose root is consumed
+/// by some node — the dep tree, computed in isolation.
 ///
 /// An optional `latch { field: Type, .. }` group names [`Latch`] fields (also in the node list).
 /// A latch whose `Cut` out reads [`Episode::terminal`] is commutated and its gated fields reset

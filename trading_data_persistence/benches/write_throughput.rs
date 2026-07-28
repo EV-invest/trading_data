@@ -3,7 +3,7 @@ use std::{hint::black_box, sync::Arc};
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use tempfile::TempDir;
 use trading_data_core::{Aggregate, ExchangeName, Instrument, Local, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
-use trading_data_persistence::{BookShape, BookUpdate, Catalog, Feather, Feed, Live, LiveClock, RotationPolicy, Trade};
+use trading_data_persistence::{BookShape, BookUpdate, Catalog, Feather, Feed, Live, LiveClock, RotationPolicy, Trade, TradeBuf};
 
 const N_TRADES: u64 = 100_000;
 const N_SNAPSHOTS: u64 = 200;
@@ -22,19 +22,21 @@ fn push_100k_trades() {
 	let dir = TempDir::new().unwrap();
 	let cat = Catalog::new(dir.path());
 	let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), prec(), RotationPolicy { max_bytes: None, max_age: None });
+	// one columnar append and one rotation check per run, and no scale conversion at all
+	let mut run = TradeBuf::new(prec());
 	for i in 0..N_TRADES {
-		f.push(Trade {
-			ts_venue_exec: Ts::from_nanos(i as i64),
-			ts_venue_send: None,
-			ts_local_recv: Some(Ts::from_nanos(i as i64)),
-			monotonic_seq: i,
-			trade_id: i,
-			side: if i & 1 == 0 { Side::Buy } else { Side::Sell },
-			price: (i as i32) as f64 / 100.0,
-			qty: (i as u32) as f64 / 100_000.0,
-		});
-		f.maybe_flush(&cat).unwrap();
+		run.push(
+			Ts::from_nanos(i as i64),
+			None,
+			Some(Ts::from_nanos(i as i64)),
+			i,
+			if i & 1 == 0 { Side::Buy } else { Side::Sell },
+			i as i32,
+			i as u32,
+		);
 	}
+	f.extend(run.cols(0..run.len()));
+	f.maybe_flush(&cat).unwrap();
 	black_box(&f);
 }
 
@@ -58,7 +60,7 @@ fn push_200_snapshots() {
 		sink.book(BookUpdate::Snapshot(shape));
 	}
 	drop(sink);
-	while live.next_batch().is_some() {}
+	while live.next().is_some() {}
 	black_box(&live);
 }
 

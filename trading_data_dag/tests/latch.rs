@@ -6,7 +6,7 @@
 //! The root is batch (`&[Pulse]`); the gate/latch/episode nodes stay scalar-out. `None` becomes
 //! an empty root slice, `Some(Pulse)` a one-element slice.
 
-use trading_data_dag::{Cell, DepOuts, Episode, Flat, Gate, Glance, Latch, Node, Nudge, graph};
+use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Glance, Latch, Node, graph, slice_nudge};
 
 #[derive(Clone, Copy, Debug)]
 struct Pulse;
@@ -17,9 +17,10 @@ impl Flat for Pulse {
 		out[0] = 1.0;
 		true
 	}
-
-	fn nudge(&self, _: usize, _: f64) -> Self {
-		*self
+}
+impl Bump for Pulse {
+	fn bump(self, _: usize, _: f64) -> (Self, f64) {
+		(self, 0.0)
 	}
 }
 impl Glance for Pulse {
@@ -32,23 +33,7 @@ struct Trig;
 impl Cell for Trig {
 	type Out<'t> = &'t [Pulse];
 }
-impl Nudge for Trig {
-	type Scratch = Vec<Pulse>;
-
-	fn stage<'t>(out: &'t [Pulse], s: &mut Vec<Pulse>, bump: Option<usize>, h: f64) {
-		s.clear();
-		s.extend_from_slice(out);
-		if let Some(slot) = bump
-			&& let Some(last) = s.last_mut()
-		{
-			*last = Flat::nudge(&*last, slot, h);
-		}
-	}
-
-	fn view<'l>(s: &'l Vec<Pulse>) -> &'l [Pulse] {
-		s
-	}
-}
+slice_nudge!(Trig, Pulse);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Phase {
@@ -70,9 +55,10 @@ impl Flat for Phase {
 		};
 		true
 	}
-
-	fn nudge(&self, _: usize, _: f64) -> Self {
-		*self
+}
+impl Bump for Phase {
+	fn bump(self, _: usize, _: f64) -> (Self, f64) {
+		(self, 0.0)
 	}
 }
 impl Glance for Phase {

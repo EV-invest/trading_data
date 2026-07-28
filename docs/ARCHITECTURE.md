@@ -16,7 +16,8 @@ recalculated, so recomputing them can't muddy persistence.
 ```
 trading_data_dag                     #![no_std], zero deps — domain-free derivation engine
 trading_data_derivatives    zero deps — indicator state machines, embedded inside user Nodes; never learn Cell/Node
-trading_data_core           InnerTrade/BatchTrades — the shared parse boundary both v_exchanges and persistence see
+trading_data_core           the shared parse boundary both v_exchanges and persistence see: BatchTrades, the raw
+                            columnar lane holders, the Book fold + ShadowBook, and (orphan rules) their dag impls
 trading_data_persistence    arrow/parquet — catalog, lanes, feather writer, and `sync`: the central replay/live weaver
 trading_data_macros                  proc-macro home of `graph!` (emits the `step` chain over `::trading_data_dag`)
         ▲          ▲          ▲
@@ -28,11 +29,51 @@ trading_data_macros                  proc-macro home of `graph!` (emits the `ste
 ```
 
 `trading_data_core` sits below both persistence and the external `v_exchanges` bridge, so a live ws
-`BatchTrades` parses straight into persistence `Trade` rows (`trades_from_batch`) with no lossy
-hand-off — no exchange type leaks into the store, no store type leaks into the exchange layer.
+`BatchTrades` extends the lane columns and the parquet writer in one pass — no exchange type leaks
+into the store, no store type leaks into the exchange layer.
 
 `trading_data_dag`'s `no_std` IS the enforced boundary: the engine can never grow domain or I/O
-knowledge. Persistence knows nothing of derivations.
+knowledge. Persistence knows nothing of derivations. Core depends on the dag for `Flat`/`Glance`/
+`Cell` only because orphan rules put a type's impls in the type's crate — nothing flows back.
+
+## Raw columnar lanes
+
+A lane is columns, not rows, and the columns are **raw** end to end: venue `i32` → lane `i32` →
+parquet `i32`, and back. Precision belongs to the *holder* (`TradeCols::prec`), not the element, so a
+node hoists `prec.price_scale()` once per run and divides inside the loop — one setup per batch
+instead of a conversion per element, and no f64 round trip anywhere to lose a bit in. The single
+decimal→raw conversion left is at the CSV parse boundary, where the exactness assert belongs.
+
+Precision-on-the-holder is why a run stays whole: `Feather::extend(cols)` is one append and one
+rotation check for a whole venue message, where the row model was N pushes and N flush checks.
+
+Each lane keeps its natural shape — Oi/Mc are genuinely f64 and stay `&[Oi]`/`&[Mc]`. Uniformity was
+the old `Batch` enum's sin.
+
+Finite differences respect the grid: `Nudge::stage` returns the perturbation it **actually** applied,
+so a raw column bumps by whole ticks and reports `ticks / scale`, and a discrete slot reports `0.0`
+and leaves its Jacobian column NaN rather than a fabricated zero.
+
+## The shadow book: we persist our own recollection
+
+A gap or a resync is a fact about *our connection*, not about the market. Stored raw, every replay
+would re-derive the reconciliation from whatever venue snapshots happened to land, so the replayed
+book would depend on a cadence we neither control nor can reproduce.
+
+`ShadowBook` consumes the venue stream at ingest and emits ours:
+
+| venue input | emitted |
+|---|---|
+| delta, chain intact | `DeltaFrame::Update` — the levels, verbatim |
+| delta, gapped | `DeltaFrame::Correction` |
+| snapshot agreeing with our fold | nothing |
+| snapshot disagreeing | `DeltaFrame::Correction` — exactly the diffs |
+| our cadence elapsed | a `BookShape` checkpoint |
+
+The persisted delta lane is therefore gapless and self-consistent, and checkpoints are ours on our
+cadence — venue snapshots are consumed, never stored. `Book` folds both kinds identically; the kind
+is the frame's *identity* so that a flow or imbalance node must say explicitly which it means, and
+cannot fabricate signal out of a dropped websocket packet.
 
 <a id="dep_tree"></a>
 ## Dependency tree
@@ -76,6 +117,12 @@ Structural rules (enforced by the signatures, not convention):
   must advance every tick to stay warm: gating one is a compile error; only *current* nodes gate.
   A current node whose every in-graph consumer sits behind one gate must be gated too — `graph!`
   rejects the omission at compile time.
+- **Gateable stateful nodes.** `Book` is the worked example: its out is `Option<&Book>` (hence
+  `Latent`, hence gateable) and `HISTORIC = false` is sound because — unlike a recurrence — a book
+  **re-warms from a checkpoint**. Gate it off and the frames go by unread; gate it back on and the
+  `monotonic_seq` discontinuity desyncs it until the next checkpoint, so it never folds onto stale
+  state. `Node::When` is fixed on the impl, so the shipped `Book` node is the ungated one; gating it
+  is an eight-line wrapper over the same public `Book::step` fold.
 - **Latches.** A `Latch` is a `Gate` armed from outside and cut from within (an SCR): an external
   event arms it; when its `Cut` node publishes an `Episode::terminal` out, `graph!` commutates it
   and resets every node gated on it to `Default` at the *next* tick's start (deferred: the frame
@@ -88,18 +135,23 @@ Structural rules (enforced by the signatures, not convention):
 ## One graph, one router, two feeds
 
 The **backtest / live** seam is only where events come from. `persistence::sync` weaves the
-required source lanes into one arrival-ordered stream of same-type `Batch`es (a `Feed`). `Replay`
+required source lanes into one arrival-ordered stream of `Lanes` (a `Feed`) — every lane present,
+lanes that did not arrive empty. There is no routing discriminant: batch-ness needs no tag, it
+iterates, and an app's whole routing layer is `impl From<Lanes> for Batches`. `Replay`
 feeds from the catalog; `Live` feeds from push handles and *tees* every event into the same Feather
 lanes a backtest later reads — so a live recording replays into the identical *event* stream (the
 round-trip is the invariant test; batching never alters fold order, so batch boundaries are
 incidental). Node code is identical across the two.
 
-`Live` is **streaming and memory-bounded**: `next_batch` drains what's currently available, stamps
-each event's `ts_init` at ingest (a single point on the consumer thread → strictly monotonic, so
+`Live` is **streaming and memory-bounded**: `next` drains what's currently available, stamps
+each *message*'s arrival at ingest (a single point on the consumer thread → strictly monotonic, so
 the current buffer is always a complete prefix — safe to weave and emit with no watermark), then
 drops consumed rows. A long-lived live session never accumulates; recording tees to disk
 incrementally. Arrival time is that ingest stamp for `Live`; for `Replay` it's the recorded
-`ts_init`, or a latency-simulation of `ts_event` for historic (`None`) rows.
+reception, or a latency-simulation of the venue axis for historic (`None`) rows.
+
+One clock read, one flush check and one send per venue message — a 50-trade frame is one arrival,
+not fifty.
 
 ## Polars boundary
 

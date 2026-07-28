@@ -68,6 +68,16 @@ pub struct PrecisionPriceQty {
 }
 
 impl PrecisionPriceQty {
+	/// Raw ticks per unit price. Hoist it once per run and divide inside the loop — the raw column
+	/// is what the venue sent and what the disk holds, so this is the only decode there is.
+	pub fn price_scale(&self) -> f64 {
+		10f64.powi(self.price as i32)
+	}
+
+	pub fn qty_scale(&self) -> f64 {
+		10f64.powi(self.qty as i32)
+	}
+
 	/// Strip the decimal point from a string and right-pad to `expected_precision` decimals.
 	/// Trailing zeros beyond `expected_precision` are ignored (Binance pads `.24` to `.24000000`);
 	/// any non-zero digit beyond `expected_precision` is a bug and panics.

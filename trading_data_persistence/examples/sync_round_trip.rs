@@ -1,9 +1,13 @@
 //! The live≡backtest invariant: drive `Live` (record=true) with a synthetic multi-lane stream,
-//! collect its woven batches, then `Replay` the just-recorded catalog over the same range and
-//! assert the two batch streams are byte-identical — lane runs, contents, and effective-ts order,
-//! including the `BookAnchor` from an in-range snapshot both feeds emit at the same weave position.
+//! collect its woven [`Lanes`], then `Replay` the just-recorded catalog over the same range and
+//! assert the two streams agree step for step — lane runs, contents, arrival order, *and* the book
+//! a consumer folds out of them.
 //!
-//! Real `ts_local_recv` is recorded, so replay short-circuits latency simulation and the equality is exact.
+//! The book assertion is the one that pays for the shadow layer: the persisted delta lane is our
+//! own reconciliation, so replaying it must land on bit-identical `(epoch, len, best_bid,
+//! best_ask)` at every step, not merely "a snapshot appeared in both streams".
+//!
+//! Real `ts_local_recv` is recorded, so replay short-circuits latency simulation and equality is exact.
 
 use std::sync::{
 	Arc,
@@ -11,8 +15,8 @@ use std::sync::{
 };
 
 use tempfile::tempdir;
-use trading_data_core::{Aggregate, ExchangeName, Instrument, Local, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
-use trading_data_persistence::{Batch, BookShape, BookUpdate, Catalog, Clock, Feed, LaneKind, LatencyConfig, Live, Oi, Replay, Trade};
+use trading_data_core::{Aggregate, ExchangeName, InnerTrade, Instrument, Local, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
+use trading_data_persistence::{BatchTrades, Book, BookShape, BookUpdate, Catalog, Clock, DeltaFrame, Feed, LaneKind, LatencyConfig, Live, Oi, Replay};
 
 /// Monotonic synthetic clock: each read advances 1ms, so live arrival stamps are strictly
 /// increasing across lanes and the recording replays deterministically.
@@ -24,29 +28,49 @@ impl Clock for EventClock {
 }
 
 const PREC: PrecisionPriceQty = PrecisionPriceQty { price: 2, qty: 4 };
+const LANES: &[LaneKind] = &[LaneKind::Trades, LaneKind::BookDeltas, LaneKind::BookAnchors, LaneKind::Oi];
 
 fn symbol() -> Symbol {
 	Symbol::new("BTC-USDT".try_into().expect("static pair"), Instrument::Perp)
 }
 
-/// Owned, comparable projection of one woven batch — enough to catch any weave/content drift.
+/// Owned, comparable projection of one woven step: every lane's contents, plus what a consumer's
+/// book reads after folding it. Enough to catch any weave, content or reconciliation drift.
+/// What a consumer reads off the folded book: epoch, level count, best bid, best ask.
+type BookRead = (u64, usize, Option<(i32, u32)>, Option<(i32, u32)>);
+
 #[derive(Debug, PartialEq)]
-enum Sum {
-	Trades(Vec<(i64, u64, u64)>),
-	Book(Vec<(i64, u64)>),
-	Anchor(i64, usize, usize),
-	Oi(Vec<i64>),
+struct Step {
+	trades: Vec<(i64, u64, i32, u32)>,
+	deltas: (bool, Vec<(i64, u64, i32, u32)>),
+	anchors: Vec<(i64, usize, usize)>,
+	oi: Vec<i64>,
+	book: BookRead,
 }
 
-fn collect(feed: &mut impl Feed) -> Vec<Sum> {
+fn collect(feed: &mut impl Feed) -> Vec<Step> {
 	let mut out = Vec::new();
-	while let Some(b) = feed.next_batch() {
-		out.push(match b {
-			Batch::Trades(ts) => Sum::Trades(ts.iter().map(|t| (t.ts_local_recv.expect("recorded").as_nanos(), t.monotonic_seq, t.trade_id)).collect()),
-			Batch::Book(ds) => Sum::Book(ds.iter().map(|d| (d.ts_local_recv.as_nanos(), d.monotonic_seq)).collect()),
-			Batch::BookAnchor(s) => Sum::Anchor(s.ts.local_recv.last.as_nanos(), s.bids.len(), s.asks.len()),
-			Batch::Oi(os) => Sum::Oi(os.iter().map(|o| o.ts_local_recv.expect("recorded").as_nanos()).collect()),
-			Batch::Mc(_) => panic!("mc lane not driven"),
+	let mut book = Book::default();
+	while let Some(l) = feed.next() {
+		let t = l.trades;
+		let d = l.deltas.cols();
+		let synced = book.step(l.anchors.last(), l.deltas);
+		out.push(Step {
+			trades: (0..t.len())
+				.map(|i| (t.ts.recv.expect("recorded").last.as_nanos(), t.monotonic_seq[i], t.price[i], t.qty[i]))
+				.collect(),
+			deltas: (
+				matches!(l.deltas, DeltaFrame::Correction(_)),
+				(0..d.len())
+					.map(|i| (d.ts.recv.expect("recorded").last.as_nanos(), d.monotonic_seq[i], d.price[i], d.qty[i]))
+					.collect(),
+			),
+			anchors: l.anchors.iter().map(|s| (s.ts.local_recv.last.as_nanos(), s.bids.len(), s.asks.len())).collect(),
+			oi: l.oi.iter().map(|o| o.ts_local_recv.expect("recorded").as_nanos()).collect(),
+			book: match synced {
+				true => (book.epoch(), book.len(), book.best_bid(), book.best_ask()),
+				false => (0, 0, None, None),
+			},
 		});
 	}
 	out
@@ -66,6 +90,29 @@ fn shape(bids: &[(i32, u32)], asks: &[(i32, u32)]) -> BookShape {
 	}
 }
 
+fn trades(seqs: &[u64]) -> BatchTrades {
+	let inner = seqs
+		.iter()
+		.map(|&seq| InnerTrade {
+			time: Ts::from_nanos(1_000),
+			sent: None,
+			price: 10_000 + seq as i32,
+			qty: 5_000,
+			side: if seq % 2 == 0 { Side::Buy } else { Side::Sell },
+		})
+		.collect();
+	BatchTrades::new(PREC, inner, Ts::from_nanos(0))
+}
+
+fn oi(v: f64) -> Oi {
+	Oi {
+		ts_venue_exec: Ts::from_nanos(1_000),
+		ts_venue_send: None,
+		ts_local_recv: None,
+		oi: v,
+	}
+}
+
 fn main() {
 	let dir = tempdir().expect("temp dir");
 	let catalog = Catalog::new(dir.path());
@@ -76,42 +123,23 @@ fn main() {
 		let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(), PREC, true, clock.clone());
 		let sink = live.sink();
 
-		let trade = |seq: u64| Trade {
-			ts_venue_exec: Ts::from_nanos(1_000),
-			ts_venue_send: None,
-			ts_local_recv: None, // stamped on push
-			monotonic_seq: seq,
-			trade_id: seq,
-			side: if seq % 2 == 0 { Side::Buy } else { Side::Sell },
-			price: 100.0 + seq as f64,
-			qty: 0.5,
-		};
-
 		// interleave lanes so the weaver actually merges non-trivially.
-		sink.trade(trade(1));
-		sink.oi(Oi {
-			ts_venue_exec: Ts::from_nanos(1_000),
-			ts_venue_send: None,
-			ts_local_recv: None,
-			oi: 42.0,
-		});
-		sink.trade(trade(2));
+		sink.trades(trades(&[1]));
+		sink.oi(oi(42.0));
+		sink.trades(trades(&[2, 3]));
 		sink.book(BookUpdate::Snapshot(shape(&[(10_000, 5), (9_999, 3)], &[(10_001, 4), (10_002, 6)])));
 		sink.book(BookUpdate::BatchDelta {
 			shape: shape(&[(9_998, 2)], &[(10_003, 1)]),
 			gapped: false,
 		});
-		sink.trade(trade(3));
-		sink.oi(Oi {
-			ts_venue_exec: Ts::from_nanos(1_000),
-			ts_venue_send: None,
-			ts_local_recv: None,
-			oi: 43.0,
-		});
+		sink.trades(trades(&[4]));
+		sink.oi(oi(43.0));
+		// a dropped websocket packet: our own frame says so, and the venue's next snapshot corrects it
 		sink.book(BookUpdate::BatchDelta {
 			shape: shape(&[(9_997, 7)], &[]),
-			gapped: false,
+			gapped: true,
 		});
+		sink.book(BookUpdate::Snapshot(shape(&[(10_000, 5), (9_999, 3), (9_998, 2)], &[(10_001, 4), (10_002, 6), (10_003, 1)])));
 
 		drop(sink);
 		collect(&mut live)
@@ -124,27 +152,21 @@ fn main() {
 		p997: std::time::Duration::from_millis(90),
 		seed: 1,
 	};
-	let mut replay = Replay::new(
-		&catalog,
-		ExchangeName::Bybit,
-		symbol(),
-		Ts::from_nanos(0),
-		Ts::from_nanos(i64::MAX),
-		&[LaneKind::Trades, LaneKind::Book, LaneKind::Oi],
-		latency,
-	);
+	let mut replay = Replay::new(&catalog, ExchangeName::Bybit, symbol(), Ts::from_nanos(0), Ts::from_nanos(i64::MAX), LANES, latency);
 	let replay_summary = collect(&mut replay);
 
-	assert_eq!(live_summary, replay_summary, "live and replay batch streams diverged");
+	assert_eq!(live_summary, replay_summary, "live and replay streams diverged");
+	let final_book = live_summary.last().expect("non-empty run").book;
+	assert!(final_book.0 > 0 && final_book.2.is_some(), "the folded book never synced: {final_book:?}");
 	assert!(
-		live_summary.iter().any(|s| matches!(s, Sum::Anchor(..))),
-		"the in-range snapshot's BookAnchor must appear in both streams"
+		live_summary.iter().any(|s| s.deltas.0),
+		"the gapped delta must reach the consumer as a Correction, in both streams"
 	);
-	assert!(live_summary.iter().filter(|s| matches!(s, Sum::Trades(_))).count() >= 1, "trades must weave");
-	assert!(live_summary.iter().filter(|s| matches!(s, Sum::Book(_))).count() >= 1, "book deltas must weave");
-	assert!(live_summary.iter().filter(|s| matches!(s, Sum::Oi(_))).count() >= 1, "oi must weave");
+	assert!(live_summary.iter().any(|s| !s.anchors.is_empty()), "our own checkpoint must weave into both streams");
+	assert!(live_summary.iter().filter(|s| !s.trades.is_empty()).count() >= 1, "trades must weave");
+	assert!(live_summary.iter().filter(|s| !s.oi.is_empty()).count() >= 1, "oi must weave");
 
-	println!("sync_round_trip: {} batches, identical live≡replay. ok", live_summary.len());
+	println!("sync_round_trip: {} steps, identical live≡replay incl. book state. ok", live_summary.len());
 
 	concurrent_streaming_matches_replay();
 }
@@ -163,23 +185,9 @@ fn concurrent_streaming_matches_replay() {
 	let sink = live.sink();
 	let producer = thread::spawn(move || {
 		for i in 0..40u64 {
-			sink.trade(Trade {
-				ts_venue_exec: Ts::from_nanos(1_000),
-				ts_venue_send: None,
-				ts_local_recv: None,
-				monotonic_seq: i,
-				trade_id: i,
-				side: if i % 2 == 0 { Side::Buy } else { Side::Sell },
-				price: 100.0 + i as f64,
-				qty: 0.5,
-			});
+			sink.trades(trades(&[i]));
 			if i % 4 == 0 {
-				sink.oi(Oi {
-					ts_venue_exec: Ts::from_nanos(1_000),
-					ts_venue_send: None,
-					ts_local_recv: None,
-					oi: i as f64,
-				});
+				sink.oi(oi(i as f64));
 			}
 			thread::sleep(Duration::from_micros(100)); // let the consumer find the channel empty and block
 		}
@@ -214,12 +222,10 @@ fn concurrent_streaming_matches_replay() {
 /// Flatten a feed to `(lane_tag, seq)` per event, in emission order — robust to batch chunking.
 fn flat(feed: &mut impl Feed) -> Vec<(u8, u64)> {
 	let mut out = Vec::new();
-	while let Some(b) = feed.next_batch() {
-		match b {
-			Batch::Trades(ts) => out.extend(ts.iter().map(|t| (b't', t.monotonic_seq))),
-			Batch::Oi(os) => out.extend(os.iter().map(|o| (b'o', o.ts_local_recv.expect("recorded").as_nanos() as u64))),
-			other => panic!("unexpected lane: {other:?}"),
-		}
+	while let Some(l) = feed.next() {
+		out.extend(l.trades.monotonic_seq.iter().map(|&s| (b't', s)));
+		out.extend(l.oi.iter().map(|o| (b'o', o.ts_local_recv.expect("recorded").as_nanos() as u64)));
+		assert!(l.mc.is_empty() && l.anchors.is_empty() && l.deltas.cols().is_empty(), "only the trade and oi lanes are driven");
 	}
 	out
 }

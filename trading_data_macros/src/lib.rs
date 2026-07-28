@@ -137,10 +137,11 @@ impl Parse for GraphDef {
 /// }
 /// ```
 ///
-/// Each root cell must have `Out<'t> = &'t [Event]`. `Batches<'t>` gets one `&'t [Event]` field per
-/// root (`Default` = all empty). `tick<'t>(&'t mut self, b: Batches<'t>) -> TickOut<'t>` seeds the
-/// frame with every root slice and sweeps. `required_events()` returns the `TypeId`s of the events
-/// whose root is consumed by some node — the dep tree, computed in isolation.
+/// `Batches<'t>` gets one field per root, of that root cell's `Out<'t>`. It is deliberately not
+/// `Default`: every field is filled explicitly from a woven step, and a silently-empty root is a
+/// footgun. `tick<'t>(&'t mut self, b: Batches<'t>) -> TickOut<'t>` seeds the frame with every root
+/// out and sweeps. `required_events()` returns the `TypeId`s of the events whose root is consumed
+/// by some node — the dep tree, computed in isolation.
 ///
 /// An optional `latch { field: Type, .. }` group names `Latch` fields (also in the node list). A
 /// latch whose `Cut` out reads `Episode::terminal` is commutated and its gated fields reset to
@@ -207,7 +208,6 @@ pub fn graph(input: TokenStream) -> TokenStream {
 	});
 
 	quote! {
-		#[derive(Default)]
 		#vis struct #batches<'t> {
 			#(pub #rfields: <#root_tys as #dag::Cell>::Out<'t>,)*
 		}

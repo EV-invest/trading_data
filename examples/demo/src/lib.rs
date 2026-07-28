@@ -12,7 +12,7 @@ use std::{
 	str::FromStr as _,
 };
 
-use trading_data::{Catalog, Feather, Mc, Oi, Row as _, Trade, read_mc, read_oi, read_trades};
+use trading_data::{Catalog, Feather, Mc, Oi, Row as _, Trade, TradeBuf, read_mc, read_oi, read_trades};
 use trading_data_core::{Asset, ExchangeName, Instrument, Local, Pair, PrecisionPriceQty, Side, Symbol, Ts, Venue};
 
 const DAY: &str = "2025-01-03";
@@ -164,7 +164,7 @@ fn download(gz: &Path) {
 
 fn ingest(gz: &Path, catalog: &Catalog) {
 	let mut feather = Feather::<Trade>::new(ExchangeName::Bybit, symbol(), PREC, Trade::POLICY);
-	let (p_scale, q_scale) = (10f64.powi(PREC.price as i32), 10f64.powi(PREC.qty as i32));
+	let mut day = TradeBuf::new(PREC);
 
 	let file = fs::File::open(gz).expect("open archive");
 	let mut lines = BufReader::new(flate2::read::GzDecoder::new(file)).lines();
@@ -186,18 +186,18 @@ fn ingest(gz: &Path, catalog: &Catalog) {
 		assert!(ts >= prev_ts, "trades not time-ordered at line {i}: {prev_ts} > {ts}");
 		prev_ts = ts;
 
-		// i64→f64 is exact at these magnitudes; feather's round-trip assert guards the rest.
-		feather.push(Trade {
-			ts_venue_exec: Ts::from_nanos(ts),
-			ts_venue_send: None,
-			ts_local_recv: None,
-			monotonic_seq: i as u64,
-			trade_id: i as u64,
+		// Historic ingest: no wire time, and we were not there to receive it.
+		day.push(
+			Ts::from_nanos(ts),
+			None,
+			None,
+			i as u64,
 			side,
-			price: price_raw as f64 / p_scale,
-			qty: qty_raw as f64 / q_scale,
-		});
+			price_raw.try_into().unwrap_or_else(|_| panic!("price out of i32 range on line {i}")),
+			qty_raw.try_into().unwrap_or_else(|_| panic!("qty out of u32 range on line {i}")),
+		);
 	}
+	feather.extend(day.cols(0..day.len()));
 	let path = feather.flush(catalog).expect("flush day of trades").expect("non-empty day");
 	println!("ingested to {}", path.display());
 }

@@ -1,41 +1,16 @@
 use std::sync::Arc;
 
 use arrow::{
-	array::{Array, ArrayRef, BooleanArray, BooleanBuilder, Float64Array, Float64Builder, Int32Array, Int64Array, ListArray, RecordBatch, UInt8Array, UInt32Array, UInt64Array},
+	array::{Array, ArrayRef, Float64Array, Float64Builder, Int32Array, Int64Array, ListArray, RecordBatch, UInt8Array, UInt32Array, UInt64Array},
 	datatypes::{DataType, Field, Schema, SchemaRef},
 };
-use trading_data_core::{BatchTrades, Local, PrecisionPriceQty, Side, Ts, Venue};
-use trading_data_dag::{Flat, Glance};
+use trading_data_core::{FrameKind, Local, PrecisionPriceQty, Side, Ts, Venue};
+use trading_data_dag::{Bump, Cell, Flat, Glance, slice_nudge};
 
 use crate::feather::RotationPolicy;
 
-pub const SCHEMA_VERSION: &str = "6";
+pub const SCHEMA_VERSION: &str = "7";
 pub type UnixNanos = i64;
-
-/// Decode a ws trade batch straight into rows — `trading_data_core::BatchTrades` is the shared parse
-/// boundary, so no lossy hand-off. `ts_local_recv` stays `None` (the live [`crate::Sink`] stamps
-/// arrival on push); `monotonic_seq`/`trade_id` come from the running `seq` (no exchange ids).
-pub fn trades_from_batch(batch: &BatchTrades, seq: &mut u64) -> Vec<Trade> {
-	let prec = batch.prec();
-	let (p_scale, q_scale) = (10f64.powi(prec.price as i32), 10f64.powi(prec.qty as i32));
-	batch
-		.iter()
-		.map(|t| {
-			let s = *seq;
-			*seq += 1;
-			Trade {
-				ts_venue_exec: t.time,
-				ts_venue_send: t.sent,
-				ts_local_recv: None,
-				monotonic_seq: s,
-				trade_id: s,
-				side: t.side,
-				price: t.price as f64 / p_scale,
-				qty: t.qty as f64 / q_scale,
-			}
-		})
-		.collect()
-}
 
 /// A lane's row type. Sealed: the set of lanes is this crate's contract with the disk.
 pub trait Row: sealed::Sealed {
@@ -48,7 +23,8 @@ pub trait Row: sealed::Sealed {
 	fn ts_axis(&self) -> Ts<Self::Axis>;
 }
 
-/// Surfaces are f64 + typed [`Side`]; scaled ints are a storage detail.
+/// One stored trade, raw as the venue sent it: `price`/`qty` are meaningless without the lane's
+/// precision. It is the *disk* row, never a graph view — nodes read [`TradeCols`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Trade {
 	pub ts_venue_exec: Ts<Venue>,
@@ -57,12 +33,13 @@ pub struct Trade {
 	/// `Some` ⇔ we were there when it arrived (live-recorded); historic ingest writes `None`.
 	pub ts_local_recv: Option<Ts<Local>>,
 	pub monotonic_seq: u64,
-	pub trade_id: u64,
 	pub side: Side,
-	pub price: f64,
-	pub qty: f64,
+	pub price: i32,
+	pub qty: u32,
 }
 
+/// One stored level of our own recollection — see `ShadowBook`: the persisted delta lane is
+/// gapless and self-consistent, so `kind` (not the venue's `gapped` flag) is what a consumer reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BookDelta {
 	pub ts_venue_exec: Ts<Venue>,
@@ -71,12 +48,12 @@ pub struct BookDelta {
 	/// historic-ingest path that could leave this absent.
 	pub ts_local_recv: Ts<Local>,
 	pub monotonic_seq: u64,
-	pub gapped: bool,
+	pub kind: FrameKind,
 	/// Buy = bid, Sell = ask.
 	pub side: Side,
-	pub price: f64,
-	/// `0.0` means delete this level.
-	pub qty: f64,
+	pub price: i32,
+	/// `0` means delete this level.
+	pub qty: u32,
 }
 
 /// Open interest, base units.
@@ -208,19 +185,20 @@ fn side_from(v: u8) -> Side {
 	}
 }
 
-/// f64 → scaled int with a bit-exact round-trip assert: no silent truncation.
-fn raw_price(price: f64, prec: u8) -> i32 {
-	let scale = 10f64.powi(prec as i32);
-	let raw = (price * scale).round() as i32;
-	assert!(raw as f64 / scale == price, "price {price} does not round-trip at precision {prec}");
-	raw
+// storage encoding, exactly parallel to `side_u8`: 0 = market activity, 1 = our reconciliation
+fn kind_u8(k: FrameKind) -> u8 {
+	match k {
+		FrameKind::Update => 0,
+		FrameKind::Correction => 1,
+	}
 }
 
-fn raw_qty(qty: f64, prec: u8) -> u32 {
-	let scale = 10f64.powi(prec as i32);
-	let raw = (qty * scale).round() as u32;
-	assert!(raw as f64 / scale == qty, "qty {qty} does not round-trip at precision {prec}");
-	raw
+fn kind_from(v: u8) -> FrameKind {
+	match v {
+		0 => FrameKind::Update,
+		1 => FrameKind::Correction,
+		x => panic!("invalid frame-kind byte {x} in stored lane"),
+	}
 }
 
 pub(crate) fn prec_from_schema(schema: &Schema) -> PrecisionPriceQty {
@@ -288,7 +266,6 @@ pub struct TradeBuilders {
 	ts_venue_send: arrow::array::Int64Builder,
 	ts_local_recv: arrow::array::Int64Builder,
 	monotonic_seq: arrow::array::UInt64Builder,
-	trade_id: arrow::array::UInt64Builder,
 	side: arrow::array::UInt8Builder,
 	price_raw: arrow::array::Int32Builder,
 	qty_raw: arrow::array::UInt32Builder,
@@ -304,7 +281,6 @@ impl Sealed for Trade {
 		let mut fields = venue_ts_fields().to_vec();
 		fields.extend([
 			Field::new("monotonic_seq", DataType::UInt64, false),
-			Field::new("trade_id", DataType::UInt64, false),
 			Field::new("side", DataType::UInt8, false),
 			Field::new("price_raw", DataType::Int32, false),
 			Field::new("qty_raw", DataType::UInt32, false),
@@ -312,15 +288,14 @@ impl Sealed for Trade {
 		schema_with(fields, &prec_pairs(meta))
 	}
 
-	fn append(&self, b: &mut TradeBuilders, meta: PrecisionPriceQty) {
+	fn append(&self, b: &mut TradeBuilders, _meta: PrecisionPriceQty) {
 		b.ts_venue_exec.append_value(self.ts_venue_exec.as_nanos());
 		b.ts_venue_send.append_option(self.ts_venue_send.map(Ts::as_nanos));
 		b.ts_local_recv.append_option(self.ts_local_recv.map(Ts::as_nanos));
 		b.monotonic_seq.append_value(self.monotonic_seq);
-		b.trade_id.append_value(self.trade_id);
 		b.side.append_value(side_u8(self.side));
-		b.price_raw.append_value(raw_price(self.price, meta.price));
-		b.qty_raw.append_value(raw_qty(self.qty, meta.qty));
+		b.price_raw.append_value(self.price);
+		b.qty_raw.append_value(self.qty);
 	}
 
 	fn finish(b: &mut TradeBuilders) -> Vec<ArrayRef> {
@@ -329,21 +304,17 @@ impl Sealed for Trade {
 			Arc::new(b.ts_venue_send.finish()),
 			Arc::new(b.ts_local_recv.finish()),
 			Arc::new(b.monotonic_seq.finish()),
-			Arc::new(b.trade_id.finish()),
 			Arc::new(b.side.finish()),
 			Arc::new(b.price_raw.finish()),
 			Arc::new(b.qty_raw.finish()),
 		]
 	}
 
-	fn decode(batch: &RecordBatch, file_schema: &Schema) -> Vec<Self> {
-		let prec = prec_from_schema(file_schema);
-		let (p_scale, q_scale) = (10f64.powi(prec.price as i32), 10f64.powi(prec.qty as i32));
+	fn decode(batch: &RecordBatch, _file_schema: &Schema) -> Vec<Self> {
 		let exec = col::<Int64Array>(batch, "ts_venue_exec");
 		let send = col::<Int64Array>(batch, "ts_venue_send");
 		let recv = col::<Int64Array>(batch, "ts_local_recv");
 		let monotonic = col::<UInt64Array>(batch, "monotonic_seq");
-		let trade_id = col::<UInt64Array>(batch, "trade_id");
 		let side = col::<UInt8Array>(batch, "side");
 		let price = col::<Int32Array>(batch, "price_raw");
 		let qty = col::<UInt32Array>(batch, "qty_raw");
@@ -353,10 +324,9 @@ impl Sealed for Trade {
 				ts_venue_send: opt_ts(send, i),
 				ts_local_recv: opt_ts(recv, i),
 				monotonic_seq: monotonic.value(i),
-				trade_id: trade_id.value(i),
 				side: side_from(side.value(i)),
-				price: price.value(i) as f64 / p_scale,
-				qty: qty.value(i) as f64 / q_scale,
+				price: price.value(i),
+				qty: qty.value(i),
 			})
 			.collect()
 	}
@@ -375,7 +345,7 @@ pub struct BookDeltaBuilders {
 	ts_venue_exec: arrow::array::Int64Builder,
 	ts_local_recv: arrow::array::Int64Builder,
 	monotonic_seq: arrow::array::UInt64Builder,
-	gapped: BooleanBuilder,
+	kind: arrow::array::UInt8Builder,
 	side: arrow::array::UInt8Builder,
 	price_raw: arrow::array::Int32Builder,
 	qty_raw: arrow::array::UInt32Builder,
@@ -391,7 +361,7 @@ impl Sealed for BookDelta {
 		let mut fields = book_ts_fields().to_vec();
 		fields.extend([
 			Field::new("monotonic_seq", DataType::UInt64, false),
-			Field::new("gapped", DataType::Boolean, false),
+			Field::new("kind", DataType::UInt8, false),
 			Field::new("side", DataType::UInt8, false),
 			Field::new("price_raw", DataType::Int32, false),
 			Field::new("qty_raw", DataType::UInt32, false),
@@ -399,14 +369,14 @@ impl Sealed for BookDelta {
 		schema_with(fields, &prec_pairs(meta))
 	}
 
-	fn append(&self, b: &mut BookDeltaBuilders, meta: PrecisionPriceQty) {
+	fn append(&self, b: &mut BookDeltaBuilders, _meta: PrecisionPriceQty) {
 		b.ts_venue_exec.append_value(self.ts_venue_exec.as_nanos());
 		b.ts_local_recv.append_value(self.ts_local_recv.as_nanos());
 		b.monotonic_seq.append_value(self.monotonic_seq);
-		b.gapped.append_value(self.gapped);
+		b.kind.append_value(kind_u8(self.kind));
 		b.side.append_value(side_u8(self.side));
-		b.price_raw.append_value(raw_price(self.price, meta.price));
-		b.qty_raw.append_value(raw_qty(self.qty, meta.qty));
+		b.price_raw.append_value(self.price);
+		b.qty_raw.append_value(self.qty);
 	}
 
 	fn finish(b: &mut BookDeltaBuilders) -> Vec<ArrayRef> {
@@ -414,20 +384,18 @@ impl Sealed for BookDelta {
 			Arc::new(b.ts_venue_exec.finish()),
 			Arc::new(b.ts_local_recv.finish()),
 			Arc::new(b.monotonic_seq.finish()),
-			Arc::new(b.gapped.finish()),
+			Arc::new(b.kind.finish()),
 			Arc::new(b.side.finish()),
 			Arc::new(b.price_raw.finish()),
 			Arc::new(b.qty_raw.finish()),
 		]
 	}
 
-	fn decode(batch: &RecordBatch, file_schema: &Schema) -> Vec<Self> {
-		let prec = prec_from_schema(file_schema);
-		let (p_scale, q_scale) = (10f64.powi(prec.price as i32), 10f64.powi(prec.qty as i32));
+	fn decode(batch: &RecordBatch, _file_schema: &Schema) -> Vec<Self> {
 		let exec = col::<Int64Array>(batch, "ts_venue_exec");
 		let recv = col::<Int64Array>(batch, "ts_local_recv");
 		let monotonic = col::<UInt64Array>(batch, "monotonic_seq");
-		let gapped = col::<BooleanArray>(batch, "gapped");
+		let kind = col::<UInt8Array>(batch, "kind");
 		let side = col::<UInt8Array>(batch, "side");
 		let price = col::<Int32Array>(batch, "price_raw");
 		let qty = col::<UInt32Array>(batch, "qty_raw");
@@ -436,10 +404,10 @@ impl Sealed for BookDelta {
 				ts_venue_exec: Ts::from_nanos(exec.value(i)),
 				ts_local_recv: Ts::from_nanos(recv.value(i)),
 				monotonic_seq: monotonic.value(i),
-				gapped: gapped.value(i),
+				kind: kind_from(kind.value(i)),
 				side: side_from(side.value(i)),
-				price: price.value(i) as f64 / p_scale,
-				qty: qty.value(i) as f64 / q_scale,
+				price: price.value(i),
+				qty: qty.value(i),
 			})
 			.collect()
 	}
@@ -690,58 +658,8 @@ fn col_u32_list(b: &RecordBatch, name: &str) -> Vec<Vec<u32>> {
 		.collect()
 }
 
-// DAG impls live here: `trading_data_dag` is dep-free, orphan rules force them into this crate.
-// Nodes receive the full struct as deps; `Flat` is observation-only, so side/ts stay metadata.
-
-impl Flat for Trade {
-	const DIMS: &'static [usize] = &[2];
-
-	fn flat(&self, out: &mut [f64]) -> bool {
-		out.copy_from_slice(&[self.price, self.qty]);
-		true
-	}
-
-	fn nudge(&self, slot: usize, h: f64) -> Self {
-		let mut r = *self;
-		*match slot {
-			0 => &mut r.price,
-			1 => &mut r.qty,
-			_ => unreachable!("LEN = 2"),
-		} += h;
-		r
-	}
-}
-
-impl Glance for Trade {
-	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		write!(f, "{} {}@{}", self.side, self.qty, self.price)
-	}
-}
-
-impl Flat for BookDelta {
-	const DIMS: &'static [usize] = &[2];
-
-	fn flat(&self, out: &mut [f64]) -> bool {
-		out.copy_from_slice(&[self.price, self.qty]);
-		true
-	}
-
-	fn nudge(&self, slot: usize, h: f64) -> Self {
-		let mut r = *self;
-		*match slot {
-			0 => &mut r.price,
-			1 => &mut r.qty,
-			_ => unreachable!("LEN = 2"),
-		} += h;
-		r
-	}
-}
-
-impl Glance for BookDelta {
-	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		write!(f, "{} {}@{}", self.side, self.qty, self.price)
-	}
-}
+// DAG impls for this crate's own row types; the core out-types carry theirs in `trading_data_core`,
+// where orphan rules put them.
 
 impl Flat for Oi {
 	const DIMS: &'static [usize] = &[1];
@@ -750,9 +668,11 @@ impl Flat for Oi {
 		out[0] = self.oi;
 		true
 	}
+}
 
-	fn nudge(&self, _slot: usize, h: f64) -> Self {
-		Self { oi: self.oi + h, ..*self }
+impl Bump for Oi {
+	fn bump(self, _slot: usize, h: f64) -> (Self, f64) {
+		(Self { oi: self.oi + h, ..self }, h)
 	}
 }
 
@@ -769,12 +689,17 @@ impl Flat for Mc {
 		out[0] = self.market_cap;
 		true
 	}
+}
 
-	fn nudge(&self, _slot: usize, h: f64) -> Self {
-		Self {
-			market_cap: self.market_cap + h,
-			..*self
-		}
+impl Bump for Mc {
+	fn bump(self, _slot: usize, h: f64) -> (Self, f64) {
+		(
+			Self {
+				market_cap: self.market_cap + h,
+				..self
+			},
+			h,
+		)
 	}
 }
 
@@ -783,3 +708,15 @@ impl Glance for Mc {
 		write!(f, "mc {:.3e}", self.market_cap)
 	}
 }
+
+pub struct OiRoot;
+impl Cell for OiRoot {
+	type Out<'t> = &'t [Oi];
+}
+slice_nudge!(OiRoot, Oi);
+
+pub struct McRoot;
+impl Cell for McRoot {
+	type Out<'t> = &'t [Mc];
+}
+slice_nudge!(McRoot, Mc);

@@ -5,7 +5,7 @@ LL | / graph! {
 LL | |     struct G;
 LL | |     batches Batches;
 LL | |     roots { src: Src[Ev] };
-...   |
+...  |
 LL | |     sink: Sink,
 LL | | }
   | |_^ evaluation of `_` failed here

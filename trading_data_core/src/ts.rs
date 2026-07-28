@@ -236,18 +236,47 @@ pub struct Aggregate {
 	pub local_recv: Span<Local>,
 }
 
-/// Transmitted it, but not attested as its origin — so no `exec`. Covers a relaying vendor and a
-/// venue that reports only an envelope time.
+/// Transmitted it, and *may* attest to being its origin. Covers a relaying vendor and a venue that
+/// reports only an envelope time.
 ///
 /// `recv` is absent for a static endpoint pulled on demand: the reading we'd record is when the
 /// download landed, which says nothing about the fact and is not a wire arrival.
 #[derive(Clone, Copy, Debug, derive_more::Deref, Eq, PartialEq)]
 pub struct Relay<From, To> {
-	pub exec: Option<Ts<To>>,
+	/// `None` when the origin does not attest when it acted — a relaying vendor, or a run whose
+	/// elements each attest their own.
+	pub exec: Option<Ts<From>>,
 	#[deref]
 	pub send: Ts<From>,
 	pub recv: Option<Ts<To>>,
 }
+
+/// [`Relay`]'s columnar twin: per element where the element attests, on the holder where the run
+/// does. Both shapes stay — [`Relay`] for a single event, this for a run.
+#[derive(Debug)]
+pub struct RelayCols<'a, From, To> {
+	pub exec: Option<&'a [Ts<From>]>,
+	/// `None` when the venue reports no wire time distinct from `exec`. A per-venue property, so it
+	/// is all-or-nothing across a run — asserted on decode rather than mixed per element.
+	pub send: Option<&'a [Ts<From>]>,
+	/// The run's reception window; `None` for historic ingest — we were not there. A [`Span`], not a
+	/// stamp: a merged run covers several venue messages, each stamped once on arrival.
+	pub recv: Option<Span<To>>,
+}
+
+// Hand-written for the same reason [`Ts`]'s are: derives would demand `From: Copy, To: Copy`.
+impl<From, To> Copy for RelayCols<'_, From, To> {}
+impl<From, To> Clone for RelayCols<'_, From, To> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+impl<From, To> PartialEq for RelayCols<'_, From, To> {
+	fn eq(&self, other: &Self) -> bool {
+		self.exec == other.exec && self.send == other.send && self.recv == other.recv
+	}
+}
+impl<From, To> Eq for RelayCols<'_, From, To> {}
 
 /// The origin acts, then sends; the destination receives. [`Relay`] plus an attested origin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -299,7 +328,11 @@ impl<F, T> Wire<F, T> for Leg<F, T> {
 pub enum Timestamps {
 	Relay(Relay<Venue, Local>),
 	External(External),
-	Aggregate(Aggregate),
+	/// A fold over many wire messages. `local` is `None` for historic ingest — we were not there.
+	Accumulator {
+		venue: Span<Venue>,
+		local: Option<Span<Local>>,
+	},
 	RoundTrip(RoundTrip),
 	/// We are the origin and nothing crossed a wire.
 	Origin(Ts<Local>),

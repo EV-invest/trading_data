@@ -5,7 +5,9 @@
 
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Exact, Expr, Flat, Glance, Guide, Ink, Node, Nudge, Oi, Sketch, Symbolic, Trade, Vars, WilderAtr, WilderRsi, constant};
+use trading_data::{
+	Bump, Cell, DepOuts, Exact, Expr, Flat, Glance, Guide, Ink, Lanes, Node, Oi, OiRoot, Sketch, Symbolic, TradeCols, Trades, Vars, WilderAtr, WilderRsi, constant, slice_nudge,
+};
 use trading_data_core::Side;
 
 const MINUTE: Exact = Exact::from_nanos(60_000_000_000);
@@ -23,36 +25,11 @@ const MOM_HIGH_BAND: f64 = 3.0;
 const MOM_MID_BAND: f64 = 2.0;
 const ATR_STOP_K: f64 = 3.0;
 
-fn signed_notional(t: &Trade) -> f64 {
-	let notional = t.price * t.qty;
-	match t.side {
+fn signed(side: Side, notional: f64) -> f64 {
+	match side {
 		Side::Buy => notional,
 		Side::Sell => -notional,
 	}
-}
-
-/// A slice-out cell's finite-difference witness: copy the batch into `Vec<$E>` scratch, bump the
-/// last element when asked, view it back at the borrow's own lifetime.
-macro_rules! slice_nudge {
-	($C:ty, $E:ty) => {
-		impl Nudge for $C {
-			type Scratch = Vec<$E>;
-
-			fn stage<'t>(out: &'t [$E], s: &mut Vec<$E>, bump: Option<usize>, h: f64) {
-				s.clear();
-				s.extend_from_slice(out);
-				if let Some(slot) = bump
-					&& let Some(last) = s.last_mut()
-				{
-					*last = Flat::nudge(&*last, slot, h);
-				}
-			}
-
-			fn view<'l>(s: &'l Vec<$E>) -> &'l [$E] {
-				s
-			}
-		}
-	};
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -74,19 +51,20 @@ impl Flat for Bar {
 		out.copy_from_slice(&[self.open, self.high, self.low, self.close, self.vol_quote, self.flow_quote]);
 		true
 	}
+}
 
-	fn nudge(&self, slot: usize, h: f64) -> Self {
-		let mut r = *self;
+impl Bump for Bar {
+	fn bump(mut self, slot: usize, h: f64) -> (Self, f64) {
 		*match slot {
-			0 => &mut r.open,
-			1 => &mut r.high,
-			2 => &mut r.low,
-			3 => &mut r.close,
-			4 => &mut r.vol_quote,
-			5 => &mut r.flow_quote,
+			0 => &mut self.open,
+			1 => &mut self.high,
+			2 => &mut self.low,
+			3 => &mut self.close,
+			4 => &mut self.vol_quote,
+			5 => &mut self.flow_quote,
 			_ => unreachable!("LEN = 6"),
 		} += h;
-		r
+		(self, h)
 	}
 }
 
@@ -123,9 +101,12 @@ impl Flat for Dist {
 	fn flat(&self, out: &mut [f64]) -> bool {
 		self.0.flat(out)
 	}
+}
 
-	fn nudge(&self, slot: usize, h: f64) -> Self {
-		Dist(self.0.nudge(slot, h))
+impl Bump for Dist {
+	fn bump(self, slot: usize, h: f64) -> (Self, f64) {
+		let (a, dh) = self.0.bump(slot, h);
+		(Dist(a), dh)
 	}
 }
 
@@ -135,18 +116,6 @@ impl Glance for Dist {
 		write!(f, "{:?}: {:.0}%", Category::argmax(self.0), p * 100.0)
 	}
 }
-
-pub struct Trades;
-impl Cell for Trades {
-	type Out<'t> = &'t [Trade];
-}
-slice_nudge!(Trades, Trade);
-
-pub struct OiRoot;
-impl Cell for OiRoot {
-	type Out<'t> = &'t [Oi];
-}
-slice_nudge!(OiRoot, Oi);
 
 /// Trades → 1m OHLC bars. Rate-changing: emits one non-optional bar per minute boundary crossed,
 /// so a trades batch spanning two minutes emits two bars; a partial minute emits none (its bar
@@ -164,15 +133,18 @@ impl Node for Bar1m {
 
 	fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		for t in trades {
-			let ts_open = t.ts_venue_exec.floor(MINUTE).as_nanos();
+		// precision is the run's, so the two scales are hoisted once instead of read per trade.
+		let (ps, qs) = (trades.prec.price_scale(), trades.prec.qty_scale());
+		for (i, exec) in trades.exec().iter().enumerate() {
+			let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
+			let ts_open = exec.floor(MINUTE).as_nanos();
 			match &mut self.acc {
 				Some(b) if b.ts_open == ts_open => {
-					b.high = b.high.max(t.price);
-					b.low = b.low.min(t.price);
-					b.close = t.price;
-					b.vol_quote += t.price * t.qty;
-					b.flow_quote += signed_notional(t);
+					b.high = b.high.max(price);
+					b.low = b.low.min(price);
+					b.close = price;
+					b.vol_quote += price * qty;
+					b.flow_quote += signed(trades.side[i], price * qty);
 				}
 				acc => {
 					if let Some(done) = acc.take() {
@@ -180,12 +152,12 @@ impl Node for Bar1m {
 					}
 					*acc = Some(Bar {
 						ts_open,
-						open: t.price,
-						high: t.price,
-						low: t.price,
-						close: t.price,
-						vol_quote: t.price * t.qty,
-						flow_quote: signed_notional(t),
+						open: price,
+						high: price,
+						low: price,
+						close: price,
+						vol_quote: price * qty,
+						flow_quote: signed(trades.side[i], price * qty),
 					});
 				}
 			}
@@ -209,8 +181,9 @@ impl Node for Cvd {
 
 	fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		for t in trades {
-			self.sum += signed_notional(t);
+		let (ps, qs) = (trades.prec.price_scale(), trades.prec.qty_scale());
+		for i in 0..trades.len() {
+			self.sum += signed(trades.side[i], (trades.price[i] as f64 / ps) * (trades.qty[i] as f64 / qs));
 			self.buf.push(self.sum);
 		}
 		&self.buf
@@ -554,7 +527,7 @@ impl Symbolic for Signal {
 trading_data::graph! {
 	pub struct Graph;
 	batches Batches;
-	roots { trades: Trades[Trade], oi: OiRoot[Oi] };
+	roots { trades: Trades[TradeCols], oi: OiRoot[Oi] };
 	out TickOut;
 	diff { signal: Signal }
 	bar: Bar1m,
@@ -569,4 +542,12 @@ trading_data::graph! {
 	signal: Signal,
 	screener: Screener,
 	classified: Classify,
+}
+
+/// The whole of the routing an app needs: every lane is present, and the graph names the ones it
+/// takes. No discriminant to re-dispatch, no `Default` fill.
+impl<'t> From<Lanes<'t>> for Batches<'t> {
+	fn from(l: Lanes<'t>) -> Self {
+		Self { trades: l.trades, oi: l.oi }
+	}
 }

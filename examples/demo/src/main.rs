@@ -10,11 +10,11 @@
 use std::{path::PathBuf, time::Duration};
 
 use exec_viz::{Viz, api_types::BarOut};
-use trading_data::{Batch, Feed, Fire, LatencyConfig, Mc, Observer, Oi, Replay, Ts, read_mc, read_oi, required_lanes};
+use trading_data::{Feed, Fire, LatencyConfig, Mc, Observer, Oi, Replay, Ts, read_mc, read_oi, required_lanes};
 use trading_data_core::ExchangeName;
 use trading_data_demo::{
 	asset, day_bounds, ensure_catalog, ensure_mc, ensure_oi,
-	nodes::{Batches, Category, Graph},
+	nodes::{Category, Graph},
 	symbol,
 };
 
@@ -51,20 +51,11 @@ async fn main() {
 	let (mut cvd, mut vol1h) = (0.0f64, 0.0f64);
 	let (mut atr_end, mut lambda_end, mut oi_chg) = (None, None, None);
 
-	while let Some(b) = feed.next_batch() {
-		let (batches, ts_ns) = match b {
-			Batch::Trades(ts) => {
-				n_trades += ts.len() as u64;
-				(Batches { trades: ts, ..Default::default() }, ts.last().expect("non-empty batch").ts_venue_exec.as_nanos())
-			}
-			Batch::Oi(os) => {
-				oi_consumed += os.len() as u64;
-				(Batches { oi: os, ..Default::default() }, os.last().expect("non-empty batch").ts_venue_exec.as_nanos())
-			}
-			other => panic!("unexpected lane in demo replay: {other:?}"),
-		};
-		obs.1.at(ts_ns);
-		let out = graph.tick_obs(batches, &mut obs);
+	while let Some(lanes) = feed.next() {
+		n_trades += lanes.trades.len() as u64;
+		oi_consumed += lanes.oi.len() as u64;
+		obs.1.at(lanes.ts_venue.as_nanos());
+		let out = graph.tick_obs(lanes.into(), &mut obs);
 
 		for b in out.bar {
 			viz.bar(BarOut {

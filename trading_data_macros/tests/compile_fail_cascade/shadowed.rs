@@ -2,7 +2,7 @@
 //! while `Hot` is closed is pure waste, so the macro's `shadowed` completeness assert must reject
 //! the graph.
 
-use trading_data_dag::{Cell, DepOuts, Flat, Gate, Glance, Node, Nudge};
+use trading_data_dag::{Bump, Cell, DepOuts, Flat, Gate, Glance, Node, slice_nudge, value_nudge};
 use trading_data_macros::graph;
 
 #[derive(Clone, Copy, Debug)]
@@ -14,9 +14,11 @@ impl Flat for Ev {
 		out[0] = 1.0;
 		true
 	}
+}
 
-	fn nudge(&self, _: usize, _: f64) -> Self {
-		*self
+impl Bump for Ev {
+	fn bump(self, _: usize, _: f64) -> (Self, f64) {
+		(self, 0.0)
 	}
 }
 impl Glance for Ev {
@@ -29,18 +31,7 @@ struct Src;
 impl Cell for Src {
 	type Out<'t> = &'t [Ev];
 }
-impl Nudge for Src {
-	type Scratch = Vec<Ev>;
-
-	fn stage<'t>(out: &'t [Ev], s: &mut Vec<Ev>, _: Option<usize>, _: f64) {
-		s.clear();
-		s.extend_from_slice(out);
-	}
-
-	fn view<'l>(s: &'l Vec<Ev>) -> &'l [Ev] {
-		s
-	}
-}
+slice_nudge!(Src, Ev);
 
 #[derive(Clone, Default)]
 struct Hot;
@@ -70,20 +61,7 @@ impl Node for Cur {
 		Some(s.len() as f64)
 	}
 }
-impl Nudge for Cur {
-	type Scratch = Option<f64>;
-
-	fn stage<'t>(out: Option<f64>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) {
-		*s = match bump {
-			Some(slot) => Flat::nudge(&out, slot, h),
-			None => out,
-		};
-	}
-
-	fn view<'l>(s: &'l Self::Scratch) -> Option<f64> {
-		*s
-	}
-}
+value_nudge!(Cur);
 
 #[derive(Clone, Default)]
 struct Sink;

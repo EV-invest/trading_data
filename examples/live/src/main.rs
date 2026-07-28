@@ -22,8 +22,8 @@ mod nodes;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use exec_viz::Viz;
-use nodes::{Batches, Graph};
-use trading_data::{Batch, Catalog, Feed, LatencyConfig, Live, LiveClock, Replay, Sink, Ts, required_lanes, trades_from_batch};
+use nodes::Graph;
+use trading_data::{Catalog, Feed, LatencyConfig, Live, LiveClock, Replay, Sink, Ts, required_lanes};
 use v_exchanges::prelude::*;
 
 const SECONDS: u64 = 15;
@@ -31,6 +31,8 @@ const SECONDS: u64 = 15;
 /// slot in it, so several can be up at once.
 const ORDINAL: u16 = 2;
 
+/// What a consumer reads off the folded book: epoch, level count, best bid, best ask.
+type BookRead = (u64, usize, Option<(i32, u32)>, Option<(i32, u32)>);
 #[tokio::main]
 async fn main() {
 	v_utils::clientside!();
@@ -86,6 +88,7 @@ async fn main() {
 		live_out.cvd,
 		live_out.book_flow
 	);
+	println!("book: epoch={} levels={} bid={:?} ask={:?}", live_out.book.0, live_out.book.1, live_out.book.2, live_out.book.3);
 	assert!(live_out.n_trades > 0, "no trades arrived — Bybit ws_trades broken or market dead");
 	assert!(live_out.n_deltas > 0, "no book deltas arrived — Bybit ws_book broken");
 
@@ -106,6 +109,8 @@ async fn main() {
 	assert_eq!(live_out.n_deltas, replay_out.n_deltas, "delta count diverged");
 	assert_eq!(live_out.cvd, replay_out.cvd, "cvd diverged");
 	assert_eq!(live_out.book_flow, replay_out.book_flow, "book flow diverged");
+	assert_eq!(live_out.book, replay_out.book, "folded book diverged");
+	assert!(live_out.book.2.is_some(), "the book never synced from our own checkpoints: {:?}", live_out.book);
 
 	println!("live≡replay on {} real events. ok", replay_out.events.len());
 	server.join_all().await; // the recorded run stays browsable until ctrl-c
@@ -118,7 +123,7 @@ fn symbol() -> Symbol {
 	Symbol::new(pair(), Instrument::Perp)
 }
 
-/// One emitted event, in emission order — robust to how the two feeds chunk into batches.
+/// One emitted event, in emission order — robust to how the two feeds chunk into runs.
 #[derive(Debug, PartialEq)]
 enum Ev {
 	Trade(u64),
@@ -132,6 +137,8 @@ struct RunOut {
 	book_flow: f64,
 	n_trades: u64,
 	n_deltas: u64,
+	/// What a consumer reads off the folded book at the end — the shadow layer's acceptance test.
+	book: BookRead,
 }
 
 /// `viz` is `Some` only for the live pass — the replay pass re-derives the same outputs and would
@@ -143,28 +150,19 @@ fn run(feed: &mut impl Feed, graph: &mut Graph, viz: &mut Option<Viz>) -> RunOut
 		book_flow: 0.0,
 		n_trades: 0,
 		n_deltas: 0,
+		book: (0, 0, None, None),
 	};
-	while let Some(b) = feed.next_batch() {
-		let (batches, ts_ns) = match b {
-			Batch::Trades(ts) => {
-				o.n_trades += ts.len() as u64;
-				o.events.extend(ts.iter().map(|t| Ev::Trade(t.monotonic_seq)));
-				(Batches { trades: ts, ..Default::default() }, ts.last().expect("non-empty batch").ts_venue_exec.as_nanos())
-			}
-			Batch::Book(ds) => {
-				o.n_deltas += ds.len() as u64;
-				o.events.extend(ds.iter().map(|d| Ev::Delta(d.monotonic_seq)));
-				(Batches { book: ds, ..Default::default() }, ds.last().expect("non-empty batch").ts_venue_exec.as_nanos())
-			}
-			Batch::BookAnchor(s) => {
-				o.events.push(Ev::Anchor(s.bids.len(), s.asks.len()));
-				continue;
-			}
-			other => panic!("unexpected lane in live replay: {other:?}"),
-		};
+	while let Some(l) = feed.next() {
+		let d = l.deltas.cols();
+		o.n_trades += l.trades.len() as u64;
+		o.n_deltas += d.len() as u64;
+		o.events.extend(l.trades.monotonic_seq.iter().map(|&s| Ev::Trade(s)));
+		o.events.extend(d.monotonic_seq.iter().map(|&s| Ev::Delta(s)));
+		o.events.extend(l.anchors.iter().map(|s| Ev::Anchor(s.bids.len(), s.asks.len())));
+		let ts_ns = l.ts_venue.as_nanos();
 		let out = match viz {
-			Some(v) => graph.tick_obs(batches, v.at(ts_ns)),
-			None => graph.tick(batches),
+			Some(v) => graph.tick_obs(l.into(), v.at(ts_ns)),
+			None => graph.tick(l.into()),
 		};
 		if let Some(&c) = out.cvd.last() {
 			o.cvd = c;
@@ -172,17 +170,17 @@ fn run(feed: &mut impl Feed, graph: &mut Graph, viz: &mut Option<Viz>) -> RunOut
 		if let Some(&f) = out.book_flow.last() {
 			o.book_flow = f;
 		}
+		if let Some(b) = out.book {
+			o.book = (b.epoch(), b.len(), b.best_bid(), b.best_ask());
+		}
 	}
 	o
 }
 
 async fn pump_trades(mut stream: Box<dyn ExchangeStream<Item = BatchTrades>>, sink: Sink) {
-	let mut seq = 0u64;
 	while let Ok(batch) = stream.next().await {
-		for bt in &batch {
-			for row in trades_from_batch(bt, &mut seq) {
-				sink.trade(row);
-			}
+		for bt in batch {
+			sink.trades(bt);
 		}
 	}
 }

@@ -4,7 +4,7 @@ use arrow::{
 	array::RecordBatch,
 	datatypes::{Schema, SchemaRef},
 };
-use trading_data_core::{Aggregate, Asset, BookShape, Exact, ExchangeName, Local, Span, Symbol, Ts, Venue};
+use trading_data_core::{Aggregate, Asset, BookShape, Exact, ExchangeName, Local, PrecisionPriceQty, Span, Symbol, Ts, Venue};
 
 use crate::{
 	catalog::{Catalog, CatalogError, FileEntry, LaneKey},
@@ -21,7 +21,9 @@ fn assert_schema_version(schema: &Schema) {
 	);
 }
 
-/// Snapshots older than this cannot seed a book: too much drift between anchor and range start.
+/// How far back to look for a seeding checkpoint. Checkpoints are ours, written on a cadence well
+/// under this, so it bounds *reading* — not drift: a miss means a gap in our own recording, not a
+/// book that folded too long since the venue last spoke.
 const MAX_ANCHOR_AGE: Duration = Duration::from_secs(15 * 60);
 
 /// Streams one lane's rows in `[start, end]`, one parquet file at a time. No whole-lane
@@ -117,7 +119,7 @@ pub(crate) fn read_book_snapshots(catalog: &Catalog, exchange: ExchangeName, sym
 }
 
 /// A stored snapshot is a resync point, so both epochs are degenerate: `first == last`.
-pub(crate) fn snapshot_shape(row: &BookSnapshot, prec: trading_data_core::PrecisionPriceQty) -> BookShape {
+pub(crate) fn snapshot_shape(row: &BookSnapshot, prec: PrecisionPriceQty) -> BookShape {
 	BookShape {
 		ts: Aggregate {
 			venue_exec: Span::at(row.ts_venue_exec),
@@ -129,11 +131,11 @@ pub(crate) fn snapshot_shape(row: &BookSnapshot, prec: trading_data_core::Precis
 	}
 }
 
-/// Price/qty precision stored in a book lane's files (deltas preferred, else snapshots). `None`
-/// when neither lane has any file yet.
-pub(crate) fn book_prec(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol) -> Result<Option<trading_data_core::PrecisionPriceQty>, CatalogError> {
-	for key in [LaneKey::BookDeltas { exchange, symbol }, LaneKey::BookSnapshots { exchange, symbol }] {
-		if let Some(file) = catalog.list(&key)?.first() {
+/// Price/qty precision stored in a lane's files — raw columns are meaningless without it, and it
+/// is the holder's, not the element's. `None` when none of `keys` has a file yet.
+pub(crate) fn lane_prec(catalog: &Catalog, keys: &[LaneKey]) -> Result<Option<PrecisionPriceQty>, CatalogError> {
+	for key in keys {
+		if let Some(file) = catalog.list(key)?.first() {
 			let (schema, _) = catalog.read(&file.path)?;
 			assert_schema_version(schema.as_ref());
 			return Ok(Some(prec_from_schema(schema.as_ref())));
@@ -189,7 +191,7 @@ pub(crate) fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Sym
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use trading_data_core::{Instrument, PrecisionPriceQty, Side};
+	use trading_data_core::{FrameKind, Instrument, PrecisionPriceQty, Side};
 
 	use super::*;
 	use crate::feather::{Feather, RotationPolicy};
@@ -228,10 +230,10 @@ mod tests {
 			ts_venue_exec: venue(ts),
 			ts_local_recv: Ts::from_nanos(ts),
 			monotonic_seq: mseq,
-			gapped: false,
+			kind: FrameKind::Update,
 			side: Side::Buy,
-			price: 1.0,
-			qty: 0.0,
+			price: 100,
+			qty: 0,
 		});
 		f.flush(cat).unwrap();
 	}
@@ -248,10 +250,9 @@ mod tests {
 			ts_venue_send: None,
 			ts_local_recv: Some(Ts::from_nanos(2000)),
 			monotonic_seq: 1,
-			trade_id: 1,
 			side: Side::Buy,
-			price: 1.0,
-			qty: 1.0,
+			price: 100,
+			qty: 100_000,
 		});
 		f.flush(&cat).unwrap();
 

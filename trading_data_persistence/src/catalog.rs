@@ -173,10 +173,9 @@ mod tests {
 			ts_venue_send: None,
 			ts_local_recv: Some(Ts::from_nanos(ts)),
 			monotonic_seq: 1,
-			trade_id: 1,
 			side: Side::Buy,
-			price: 1.0,
-			qty: 1.0,
+			price: 100,
+			qty: 100_000,
 		});
 		f.flush(cat).unwrap();
 	}
@@ -209,10 +208,9 @@ mod tests {
 			ts_venue_send: None,
 			ts_local_recv: Some(Ts::from_nanos(100)),
 			monotonic_seq: 2,
-			trade_id: 2,
 			side: Side::Sell,
-			price: 1.0,
-			qty: 1.0,
+			price: 100,
+			qty: 100_000,
 		});
 		let err = f.flush(&cat).unwrap_err();
 		assert!(matches!(err, CatalogError::OverlappingInterval { .. }));

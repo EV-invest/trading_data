@@ -1,7 +1,7 @@
 //! `b: B` is listed before its dep `a: A`, so `B` is stepped before `A` is in the frame — the
 //! engine's `Pull`/`Has` bound rejects the wrong topological order.
 
-use trading_data_dag::{Cell, DepOuts, Flat, Glance, Node, Nudge};
+use trading_data_dag::{Bump, Cell, DepOuts, Flat, Glance, Node, slice_nudge, value_nudge};
 use trading_data_macros::graph;
 
 #[derive(Clone, Copy, Debug)]
@@ -13,9 +13,11 @@ impl Flat for Ev {
 		out[0] = 1.0;
 		true
 	}
+}
 
-	fn nudge(&self, _: usize, _: f64) -> Self {
-		*self
+impl Bump for Ev {
+	fn bump(self, _: usize, _: f64) -> (Self, f64) {
+		(self, 0.0)
 	}
 }
 impl Glance for Ev {
@@ -28,18 +30,7 @@ struct Src;
 impl Cell for Src {
 	type Out<'t> = &'t [Ev];
 }
-impl Nudge for Src {
-	type Scratch = Vec<Ev>;
-
-	fn stage<'t>(out: &'t [Ev], s: &mut Vec<Ev>, _: Option<usize>, _: f64) {
-		s.clear();
-		s.extend_from_slice(out);
-	}
-
-	fn view<'l>(s: &'l Vec<Ev>) -> &'l [Ev] {
-		s
-	}
-}
+slice_nudge!(Src, Ev);
 
 #[derive(Clone, Default)]
 struct A;
@@ -53,20 +44,7 @@ impl Node for A {
 		s.len() as f64
 	}
 }
-impl Nudge for A {
-	type Scratch = f64;
-
-	fn stage<'t>(out: f64, s: &mut f64, bump: Option<usize>, h: f64) {
-		*s = match bump {
-			Some(slot) => Flat::nudge(&out, slot, h),
-			None => out,
-		};
-	}
-
-	fn view<'l>(s: &'l f64) -> f64 {
-		*s
-	}
-}
+value_nudge!(A);
 
 #[derive(Clone, Default)]
 struct B;

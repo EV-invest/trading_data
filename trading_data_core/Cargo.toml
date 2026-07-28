@@ -18,6 +18,9 @@ jiff.workspace = true
 serde.workspace = true
 strum.workspace = true
 thiserror.workspace = true
+# Observation traits only (`Flat`/`Glance`): orphan rules put a core out-type's flattening here, and
+# the dag is `no_std` + zero-dep, so the edge carries nothing back the other way.
+trading_data_dag.workspace = true
 v_utils.workspace = true
 
 [dev-dependencies]

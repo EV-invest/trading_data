@@ -8,6 +8,12 @@ pub use batch::*;
 pub mod book;
 pub use book::*;
 
+pub mod cells;
+pub use cells::*;
+
+pub mod cols;
+pub use cols::*;
+
 pub mod exchange;
 pub use exchange::*;
 
