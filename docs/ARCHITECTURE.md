@@ -120,9 +120,11 @@ Structural rules (enforced by the signatures, not convention):
 - **Gateable stateful nodes.** `Book` is the worked example: its out is `Option<&Book>` (hence
   `Latent`, hence gateable) and `HISTORIC = false` is sound because — unlike a recurrence — a book
   **re-warms from a checkpoint**. Gate it off and the frames go by unread; gate it back on and the
-  `monotonic_seq` discontinuity desyncs it until the next checkpoint, so it never folds onto stale
-  state. `Node::When` is fixed on the impl, so the shipped `Book` node is the ungated one; gating it
-  is an eight-line wrapper over the same public `Book::step` fold.
+  `monotonic_seq` discontinuity desyncs it, so it never folds onto stale state. A checkpoint is a
+  standing offer, taken only by a book with no place in the stream — unseeded or desynced; the delta
+  lane is gapless, so a synced book already holds it and ignores it, which leaves `epoch` counting
+  genuine resyncs. `Node::When` is fixed on the impl, so the shipped `Book` node is the ungated one;
+  gating it is an eight-line wrapper over the same public `Book::step` fold.
 - **Latches.** A `Latch` is a `Gate` armed from outside and cut from within (an SCR): an external
   event arms it; when its `Cut` node publishes an `Episode::terminal` out, `graph!` commutates it
   and resets every node gated on it to `Default` at the *next* tick's start (deferred: the frame

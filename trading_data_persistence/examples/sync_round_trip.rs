@@ -43,7 +43,7 @@ type BookRead = (u64, usize, Option<(i32, u32)>, Option<(i32, u32)>);
 struct Step {
 	trades: Vec<(i64, u64, i32, u32)>,
 	deltas: (bool, Vec<(i64, u64, i32, u32)>),
-	anchors: Vec<(i64, usize, usize)>,
+	anchor: Option<(i64, usize, usize)>,
 	oi: Vec<i64>,
 	book: BookRead,
 }
@@ -54,7 +54,7 @@ fn collect(feed: &mut impl Feed) -> Vec<Step> {
 	while let Some(l) = feed.next() {
 		let t = l.trades;
 		let d = l.deltas.cols();
-		let synced = book.step(l.anchors.last(), l.deltas);
+		let synced = book.step(l.anchor, l.deltas);
 		out.push(Step {
 			trades: (0..t.len())
 				.map(|i| (t.ts.recv.expect("recorded").last.as_nanos(), t.monotonic_seq[i], t.price[i], t.qty[i]))
@@ -65,7 +65,7 @@ fn collect(feed: &mut impl Feed) -> Vec<Step> {
 					.map(|i| (d.ts.recv.expect("recorded").last.as_nanos(), d.monotonic_seq[i], d.price[i], d.qty[i]))
 					.collect(),
 			),
-			anchors: l.anchors.iter().map(|s| (s.ts.local_recv.last.as_nanos(), s.bids.len(), s.asks.len())).collect(),
+			anchor: l.anchor.map(|s| (s.ts.local_recv.last.as_nanos(), s.bids.len(), s.asks.len())),
 			oi: l.oi.iter().map(|o| o.ts_local_recv.expect("recorded").as_nanos()).collect(),
 			book: match synced {
 				true => (book.epoch(), book.len(), book.best_bid(), book.best_ask()),
@@ -162,7 +162,7 @@ fn main() {
 		live_summary.iter().any(|s| s.deltas.0),
 		"the gapped delta must reach the consumer as a Correction, in both streams"
 	);
-	assert!(live_summary.iter().any(|s| !s.anchors.is_empty()), "our own checkpoint must weave into both streams");
+	assert!(live_summary.iter().any(|s| s.anchor.is_some()), "our own checkpoint must weave into both streams");
 	assert!(live_summary.iter().filter(|s| !s.trades.is_empty()).count() >= 1, "trades must weave");
 	assert!(live_summary.iter().filter(|s| !s.oi.is_empty()).count() >= 1, "oi must weave");
 
@@ -225,7 +225,7 @@ fn flat(feed: &mut impl Feed) -> Vec<(u8, u64)> {
 	while let Some(l) = feed.next() {
 		out.extend(l.trades.monotonic_seq.iter().map(|&s| (b't', s)));
 		out.extend(l.oi.iter().map(|o| (b'o', o.ts_local_recv.expect("recorded").as_nanos() as u64)));
-		assert!(l.mc.is_empty() && l.anchors.is_empty() && l.deltas.cols().is_empty(), "only the trade and oi lanes are driven");
+		assert!(l.mc.is_empty() && l.anchor.is_none() && l.deltas.cols().is_empty(), "only the trade and oi lanes are driven");
 	}
 	out
 }

@@ -4,6 +4,7 @@ cargo-features = ["codegen-backend"]
 members = [
     "examples/demo",
     "examples/live",
+    "examples/spl",
     "trading_data",
     "trading_data_core",
     "trading_data_dag",
@@ -78,6 +79,7 @@ ui_test = "0.30"
 ureq = "^3"
 v_exchanges = { path = "../../v_exchanges/v_exchanges" }
 v_utils = { version = "^2.15.57", features = ["io", "macros", "cli", "distributions"] }
+zip = "^7"
 
 [patch.crates-io]
 v_utils = { path = "../../v_utils/v_utils" }

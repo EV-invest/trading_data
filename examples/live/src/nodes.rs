@@ -104,7 +104,7 @@ impl<'t> From<Lanes<'t>> for Batches<'t> {
 		Self {
 			trades: l.trades,
 			deltas: l.deltas,
-			anchors: l.anchors.last(),
+			anchors: l.anchor,
 		}
 	}
 }

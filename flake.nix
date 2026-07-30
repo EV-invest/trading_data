@@ -21,7 +21,7 @@
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
         # Base of our port range. Each app that listens claims `PORT + <its ordinal>` — demo 1,
-        # live 2 — so they can all be up at once and the URL says which is which.
+        # live 2, spl 3 — so they can all be up at once and the URL says which is which.
         port_range_base = 59990;
 
         rs = v_flakes.rs {
@@ -46,7 +46,7 @@
         };
         combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
 
-        # `viz <demo|live>` — our example owns the runtime, the graph and the port; exec_viz is a
+        # `viz <demo|live|spl>` — our example owns the runtime, the graph and the port; exec_viz is a
         # library plus a bundle builder, so all we take from it is a directory to serve. It builds
         # from the sibling working tree (path deps span three checkouts), hence the `cd`.
         viz = pkgs.writeShellApplication {
@@ -56,7 +56,8 @@
             case "''${1:-demo}" in
               demo) pkg=trading_data_demo ;;
               live) pkg=trading_data_live_example ;;
-              *) echo "usage: viz <demo|live>" >&2; exit 1 ;;
+              spl) pkg=trading_data_spl ;;
+              *) echo "usage: viz <demo|live|spl>" >&2; exit 1 ;;
             esac
             repo="$(git rev-parse --show-toplevel)"
             EXEC_VIZ_WEB_DIR="$(cd "$repo/../exec_viz" && nix run .)"
@@ -70,6 +71,7 @@
         apps = {
           demo = { type = "app"; program = "${pkgs.writeShellScript "demo" ''exec ${viz}/bin/viz demo''}"; };
           live = { type = "app"; program = "${pkgs.writeShellScript "live" ''exec ${viz}/bin/viz live''}"; };
+          spl = { type = "app"; program = "${pkgs.writeShellScript "spl" ''exec ${viz}/bin/viz spl''}"; };
           help = {
             type = "app";
             program = pkgs.lib.getExe (pkgs.writeShellScriptBin "help" ''
@@ -77,9 +79,10 @@
               nix run .          trading_data CLI
               nix run .#demo     examples/demo — replays a cached day  (port ${toString (port_range_base + 1)})
               nix run .#live     examples/live — 15s of live Bybit     (port ${toString (port_range_base + 2)})
+              nix run .#spl      examples/spl  — 32d scam_pump_liqs    (port ${toString (port_range_base + 3)})
               nix run .#help     this listing
 
-              `nix develop` adds `viz <demo|live>`, the same runner against your working tree.
+              `nix develop` adds `viz <demo|live|spl>`, the same runner against your working tree.
               EOF
             '');
           };

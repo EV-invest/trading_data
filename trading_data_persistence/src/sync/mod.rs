@@ -59,8 +59,9 @@ pub struct Lanes<'a> {
 	pub ts_venue: Ts<Venue>,
 	pub trades: TradeCols<'a>,
 	pub deltas: DeltaFrame<'a>,
-	/// Our checkpoints.
-	pub anchors: &'a [BookShape],
+	/// Our checkpoint. Only the last of a step can matter: an earlier one is state the later one
+	/// already supersedes.
+	pub anchor: Option<&'a BookShape>,
 	pub oi: &'a [Oi],
 	pub mc: &'a [Mc],
 }
@@ -280,7 +281,7 @@ impl Weaver {
 			ts_venue,
 			trades: self.trades.buf.cols(t.0..t.1),
 			deltas: self.deltas.buf.frame(d.0..d.1),
-			anchors: &self.anchors.buf[a.0..a.1],
+			anchor: self.anchors.buf[a.0..a.1].last(),
 			oi: &self.oi.buf[o.0..o.1],
 			mc: &self.mc.buf[m.0..m.1],
 		})

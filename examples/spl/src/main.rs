@@ -1,0 +1,334 @@
+//! Assert-driver over the SPL port. One long-lived `Graph`, one `Replay` per day: 31 trades-only
+//! warmup chunks (SPL's `request_bars(warmup)` + `Screener::trade_start` — nothing may trade yet),
+//! then the measured day over every lane. `Replay` eager-loads its range, so chunking it across
+//! successive feeds is the sanctioned way to cover a month; graph state carries across, only the
+//! per-lane latency seed resets, which is deterministic.
+//!
+//! The asserts below are the integration test — warmup horizon, book shape, screener firing, and
+//! the deprecator's five load-bearing invariants — plus SPL's own `trailing_stop_partial_degradation`
+//! replayed through the ported `TrailingStop`. The measured day is recorded by an attached [`Viz`]
+//! and served afterwards, so the degradation is eyeballable against price. `nix run .#spl` builds
+//! the `exec_viz_web` bundle and runs this against it.
+
+use std::{path::PathBuf, time::Duration};
+
+use exec_viz::{Viz, api_types::BarOut};
+use trading_data::{Feed, LaneKind, LatencyConfig, Replay, Ts, read_mc, read_oi, required_lanes};
+use trading_data_core::{ExchangeName, Side};
+use trading_data_spl::{
+	MEASURED_DAY, asset, day_bounds, days, ensure_book, ensure_mc, ensure_oi, ensure_trades,
+	nodes::{DRAIN_GRACE_NS, DeepSnap, Graph, Intent, TrailingStop},
+	symbol,
+};
+
+/// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a
+/// slot in it, so several can be up at once.
+const ORDINAL: u16 = 3;
+/// Retained ticks. The measured day weaves into far more than this; the ring keeps the tail, which
+/// is what a scrub of the degradation wants.
+const SCROLLBACK: usize = 20_000;
+const LATENCY: LatencyConfig = LatencyConfig {
+	p68: Duration::from_millis(5),
+	p95: Duration::from_millis(20),
+	p997: Duration::from_millis(80),
+	seed: 0,
+};
+
+#[tokio::main]
+async fn main() {
+	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache"));
+	let catalog = ensure_trades(&cache);
+	ensure_book(&cache, &catalog);
+	ensure_oi(&catalog);
+	ensure_mc(&catalog);
+
+	let all = days();
+	let (warmup, measured) = all.split_at(all.len() - 1);
+	let measured = measured[0];
+	assert_eq!(measured.to_string(), MEASURED_DAY, "the last day of the range is the measured one");
+
+	let mut graph = Graph::default();
+
+	// --- warmup: trades only, no viz. This is where the 181st 4h close lands. ---
+	let mut first_momentum_ns = None;
+	let mut bars_4h = 0u64;
+	for d in warmup {
+		let (start, end) = day_bounds(*d);
+		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), start, end, &[LaneKind::Trades], LATENCY);
+		while let Some(lanes) = feed.next() {
+			let out = graph.tick(lanes.into());
+			bars_4h += out.bar_4h.len() as u64;
+			assert_eq!(out.momentum.len(), out.bar_5m.len(), "Momentum/Bars<5> rate mismatch");
+			if first_momentum_ns.is_none()
+				&& let Some(i) = out.momentum.iter().position(Option::is_some)
+			{
+				first_momentum_ns = Some(out.bar_5m[i].ts_open + 5 * 60_000_000_000);
+			}
+			assert!(
+				out.shallow.iter().all(Option::is_none),
+				"shallow built during trades-only warmup: the oi lane cannot be present yet"
+			);
+		}
+	}
+	let first_momentum_ns = first_momentum_ns.expect("Momentum never warmed: the 32-day horizon is short of 181 closed 4h bars");
+	let (range_start, _) = day_bounds(all[0]);
+	// 181 closes ⇒ `lookback` returns; the 181st 4h bar closes exactly here.
+	let expected = range_start.as_nanos() + 181 * 4 * 3600 * 1_000_000_000;
+	println!(
+		"warmup: {} days, {bars_4h} 4h bars, momentum warm at {:?} (expected {:?})",
+		warmup.len(),
+		Ts::<trading_data_core::Venue>::from_nanos(first_momentum_ns),
+		Ts::<trading_data_core::Venue>::from_nanos(expected),
+	);
+	assert!(
+		(first_momentum_ns - expected).abs() <= 4 * 3600 * 1_000_000_000,
+		"momentum warmed more than one 4h bar off the 181st close — the data horizon is wrong"
+	);
+
+	// --- measured day: every lane, recorded. ---
+	let lanes = required_lanes::<Graph>();
+	println!("required lanes: {lanes:?}");
+	let (start, end) = day_bounds(measured);
+	let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), start, end, &lanes, LATENCY);
+	let viz = Viz::new(Some("Bars<1>"), SCROLLBACK, 60_000);
+	let mut recorder = viz.clone();
+	let mut day = Day::default();
+
+	while let Some(lanes) = feed.next() {
+		let ts_ns = lanes.ts_venue.as_nanos();
+		let out = graph.tick_obs(lanes.into(), recorder.at(ts_ns));
+
+		for b in out.bar_1m {
+			viz.bar(BarOut {
+				ts_ms: b.ts_open / 1_000_000,
+				open: b.open,
+				high: b.high,
+				low: b.low,
+				close: b.close,
+				volume: b.vol_base * b.close,
+			});
+		}
+		for s in out.shallow.iter().flatten() {
+			day.shallow += 1;
+			top(&mut day.max_rsi_4h, s.rsi.rsi_4h.actual);
+			top(&mut day.max_change_1d, s.price.change_1d_pct);
+			top(&mut day.max_sharpe_5m, s.momentum.sharpe_5m);
+			if let Some(x) = s.momentum.sharpe_4h {
+				top(&mut day.max_sharpe_4h, x);
+			}
+			if day.first_shallow_ns.is_none() {
+				day.first_shallow_ns = Some(s.ts_ns);
+			}
+		}
+		day.rsi_hits += out.rsi_screener.iter().flatten().count() as u64;
+		day.std_hits += out.std_screener.iter().flatten().count() as u64;
+		day.classifications += out.classify.iter().flatten().count() as u64;
+
+		day.deep_reads += out.deep.len() as u64;
+		for d in out.deep.iter().flatten() {
+			day.check_deep(d);
+		}
+		assert_eq!(out.deprecator.len(), out.deep.len(), "Deprecator/Deep rate mismatch");
+		for i in 0..out.deprecator.len() {
+			day.check_intent(out.deprecator[i], out.deep[i]);
+		}
+	}
+	day.finish();
+
+	println!(
+		"measured {MEASURED_DAY}: shallow={} deep={}/{} rsi_hits={} std_hits={} classifications={} episodes={} intents={}",
+		day.shallow, day.deep, day.deep_reads, day.rsi_hits, day.std_hits, day.classifications, day.episodes, day.intents
+	);
+	println!(
+		"day maxima: rsi_4h={:?} change_1d={:?}% sharpe_4h={:?} sharpe_5m={:?}",
+		day.max_rsi_4h, day.max_change_1d, day.max_sharpe_4h, day.max_sharpe_5m
+	);
+
+	assert!(day.first_shallow_ns.is_some(), "no shallow snapshot on the measured day — an indie never warmed");
+	assert_eq!(day.deep, day.deep_reads, "the book was unsynced on some deep read — our own checkpoints failed to seed it");
+	// ponytail: one read per *woven delta run*, and the weaver merges consecutive 1s emissions when
+	// no trade arrives between them — so this is materially below the 86400 SPL's wall-clock timer
+	// would fire. What is lost is observation cadence, never fold order; the per-bucket assert below
+	// is the invariant that actually holds. Interleave a per-second marker lane if it ever matters.
+	assert!(day.deep > 30_000, "deep read count {} is far below a day of 1s book sampling", day.deep);
+	assert!(
+		day.last_deep_ns - day.first_deep_ns > 23 * 3600 * 1_000_000_000,
+		"the deep stream does not span the day: {} .. {}",
+		day.first_deep_ns,
+		day.last_deep_ns
+	);
+	assert!(
+		day.rsi_hits + day.std_hits > 0,
+		"no screener fired on {MEASURED_DAY} — compare the day maxima printed above against the ported thresholds in `nodes`; \
+		 a genuine miss is a finding about the day, not a bug"
+	);
+	assert!(day.episodes > 0, "the screener fired but no episode opened: entry needs a book tick before the classification");
+	trailing_stop_partial_degradation();
+
+	let oi: Vec<_> = read_oi(&catalog, ExchangeName::Bybit, symbol(), Ts::MIN, Ts::MAX).expect("open oi lane").collect();
+	assert!(oi.windows(2).all(|w| w[0].ts_venue_exec <= w[1].ts_venue_exec), "oi timestamps unordered");
+	let mc: Vec<_> = read_mc(&catalog, asset(), Ts::MIN, Ts::MAX).expect("open mc lane").collect();
+	println!("oi rows={} mc rows={} (mc={:.3e} rank={:?})", oi.len(), mc.len(), mc[0].market_cap, mc[0].rank);
+
+	println!("spl: ok");
+	let base: u16 = std::env::var("PORT").expect("PORT: the devShell sets the base of the port range").parse().expect("PORT is a u16");
+	viz.serve(base + ORDINAL).await;
+}
+
+/// Per-day accumulator and the running assert block over the deep/deprecator streams.
+#[derive(Default)]
+struct Day {
+	shallow: u64,
+	/// Book reads that produced a snapshot, and every read attempted — equal unless the book desyncs.
+	deep: u64,
+	deep_reads: u64,
+	first_deep_ns: i64,
+	last_deep_ns: i64,
+	rsi_hits: u64,
+	std_hits: u64,
+	classifications: u64,
+	intents: u64,
+	episodes: u64,
+	first_shallow_ns: Option<i64>,
+	max_rsi_4h: Option<f64>,
+	max_change_1d: Option<f64>,
+	max_sharpe_4h: Option<f64>,
+	max_sharpe_5m: Option<f64>,
+	last_intent_ns: i64,
+	open: Option<Open>,
+}
+
+/// The episode currently being checked.
+#[derive(Clone, Copy)]
+struct Open {
+	episode: u64,
+	trail_fraction: f64,
+	/// When 100% deprecation first latched the drain clock.
+	first_zero_ns: Option<i64>,
+	prev_ns: i64,
+	last_ns: i64,
+}
+
+impl Day {
+	fn check_deep(&mut self, d: &DeepSnap) {
+		self.deep += 1;
+		if self.first_deep_ns == 0 {
+			self.first_deep_ns = d.ts_ns;
+		}
+		assert!(
+			d.ts_ns.div_euclid(1_000_000_000) > self.last_deep_ns.div_euclid(1_000_000_000),
+			"two book reads inside one second bucket, at {}",
+			d.ts_ns
+		);
+		self.last_deep_ns = d.ts_ns;
+		assert!(d.best_bid < d.best_ask, "crossed book at {}: {} >= {}", d.ts_ns, d.best_bid, d.best_ask);
+		assert!(d.spread_pct.is_finite() && d.spread_pct > 0.0, "degenerate spread at {}: {}", d.ts_ns, d.spread_pct);
+		assert!(d.top20_bid_depth_usd > 0.0 && d.top20_ask_depth_usd > 0.0, "empty top-20 depth at {}", d.ts_ns);
+		assert!((-1.0..=1.0).contains(&d.imbalance), "imbalance out of range at {}: {}", d.ts_ns, d.imbalance);
+	}
+
+	fn check_intent(&mut self, intent: Option<Intent>, deep: Option<DeepSnap>) {
+		let Some(i) = intent else {
+			self.close_episode();
+			return;
+		};
+		let d = deep.expect("an intent is only emitted on a deep tick");
+		self.intents += 1;
+		assert!(i.ts_ns > self.last_intent_ns, "intents not strictly increasing: {} <= {}", i.ts_ns, self.last_intent_ns);
+		self.last_intent_ns = i.ts_ns;
+		assert!(i.side == Side::Buy, "the ported classification stub hardcodes Buy");
+		assert!((0.0..=i.base_q).contains(&i.target_q), "target_q {} outside [0, base_q={}] at {}", i.target_q, i.base_q, i.ts_ns);
+		let inside = d.mid() > i.sl && d.mid() < i.tp;
+		assert_eq!(i.lambda_atr == 0.0, !inside, "lambda_atr disagrees with the ATR envelope at {}", i.ts_ns);
+
+		// Two episodes can be adjacent in the stream, so the id is what separates them, not a gap.
+		if self.open.is_some_and(|o| o.episode != i.episode) {
+			self.close_episode();
+		}
+		let open = self.open.unwrap_or_else(|| {
+			self.episodes += 1;
+			Open {
+				episode: i.episode,
+				trail_fraction: 1.0,
+				first_zero_ns: None,
+				prev_ns: i.ts_ns,
+				last_ns: i.ts_ns,
+			}
+		});
+		assert!(
+			i.trail_fraction <= open.trail_fraction,
+			"trail_fraction rose within an episode ({} > {}) — certainty must ratchet",
+			i.trail_fraction,
+			open.trail_fraction
+		);
+		let first_zero_ns = open.first_zero_ns.or((i.eval == 0.0).then_some(i.ts_ns));
+		assert_eq!(i.draining, first_zero_ns.is_some(), "draining must latch on the first zero eval, at {}", i.ts_ns);
+		if i.draining {
+			assert_eq!(i.target_q, 0.0, "draining tick still carries size at {}", i.ts_ns);
+		}
+		self.open = Some(Open {
+			episode: i.episode,
+			trail_fraction: i.trail_fraction,
+			first_zero_ns,
+			prev_ns: open.last_ns,
+			last_ns: i.ts_ns,
+		});
+	}
+
+	fn close_episode(&mut self) {
+		let Some(o) = self.open.take() else { return };
+		let Some(first_zero_ns) = o.first_zero_ns else {
+			panic!("episode ended at {} without ever reaching zero eval — only the drain deadline may end one", o.last_ns);
+		};
+		// Deep ticks land on the last book message of each second, so they are ~1s apart but not
+		// exactly: the invariant is that the episode ended on the *first* tick at or after the
+		// deadline, not that it ended within any fixed slack of it.
+		let deadline = first_zero_ns + DRAIN_GRACE_NS;
+		assert!(o.last_ns >= deadline, "episode ended {}ns before its drain deadline", deadline - o.last_ns);
+		assert!(o.prev_ns < deadline, "episode outlived its drain deadline by a whole tick, ending at {}", o.last_ns);
+	}
+
+	fn finish(&mut self) {
+		// An episode still open at end-of-day never had to drain; that is not a violation.
+		self.open = None;
+	}
+}
+
+fn top(slot: &mut Option<f64>, v: f64) {
+	*slot = Some(slot.map_or(v, |m| m.max(v)));
+}
+
+/// SPL's own unit test of the trail (`classification/lib.rs:353`), replayed through the port. The
+/// one test carried over: it is a persisted useful payload, not a retrofit.
+fn trailing_stop_partial_degradation() {
+	let check = |side: Side, seq: &[(f64, f64)]| {
+		let mut trail = TrailingStop::new(side, 10.0, 0.33);
+		for (i, &(price, expected)) in seq.iter().enumerate() {
+			let (multiplier, _, _) = trail.step(price);
+			assert_eq!(multiplier, expected, "{side:?} step {i} at price {price}");
+		}
+	};
+	let full = 1.0 - 0.33;
+	check(
+		Side::Buy,
+		&[
+			(100.0, 1.0),              // extreme seeds here, no retrace
+			(95.0, 1.0 - 0.33 * 0.5),  // halfway to cut-off ⇒ half certainty
+			(100.0, 1.0 - 0.33 * 0.5), // recovery to the extreme re-adds nothing
+			(110.0, 1.0 - 0.33 * 0.5), // new extreme ratchets up, certainty holds
+			(100.0, full),             // full `distance` retrace ⇒ capped at severity
+			(50.0, full),              // beyond cut-off stays capped
+		],
+	);
+	check(
+		Side::Sell,
+		&[
+			(100.0, 1.0),
+			(105.0, 1.0 - 0.33 * 0.5),
+			(100.0, 1.0 - 0.33 * 0.5),
+			(90.0, 1.0 - 0.33 * 0.5),
+			(100.0, full),
+			(150.0, full),
+		],
+	);
+}

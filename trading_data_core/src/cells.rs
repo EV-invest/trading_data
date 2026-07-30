@@ -27,8 +27,7 @@ impl Nudge for Trades {
 	}
 }
 
-/// Anchors are [`Book`]'s input, not the graph's — nothing else should name this. Only the last
-/// checkpoint of a step can matter: an earlier one is state the later one already supersedes.
+/// Anchors are [`Book`]'s input, not the graph's — nothing else should name this.
 pub struct BookAnchors;
 impl Cell for BookAnchors {
 	type Out<'t> = Option<&'t BookShape>;

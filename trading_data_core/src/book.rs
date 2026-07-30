@@ -94,9 +94,9 @@ impl Book {
 		self.len() == 0
 	}
 
-	/// One fold step, the whole of it: a checkpoint reseeds (new epoch), a `monotonic_seq`
-	/// discontinuity desyncs, and frames fold only while synced. Returns whether the book is
-	/// readable afterwards.
+	/// One fold step, the whole of it: a `monotonic_seq` discontinuity desyncs, a checkpoint reseeds
+	/// a book that has no place in the stream (new epoch), and frames fold only while synced.
+	/// Returns whether the book is readable afterwards.
 	///
 	/// One entry point rather than four public verbs — a caller that could `apply` without first
 	/// checking `missed` is a caller that can fold onto stale state.
@@ -104,7 +104,13 @@ impl Book {
 		if self.missed(frame.cols().monotonic_seq) {
 			self.synced = false;
 		}
-		if let Some(s) = anchor {
+		// A checkpoint is a seed, not an event. Our own chain is gapless, so while we are synced the
+		// checkpoint is the state we already hold — taking it would clone both maps and bump `epoch`
+		// for nothing. We take one exactly when we have no place in the stream: unseeded, or desynced
+		// by frames that went by while a gate was closed.
+		if !self.synced
+			&& let Some(s) = anchor
+		{
 			self.resync(s);
 		}
 		if self.synced {

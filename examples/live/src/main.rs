@@ -158,7 +158,7 @@ fn run(feed: &mut impl Feed, graph: &mut Graph, viz: &mut Option<Viz>) -> RunOut
 		o.n_deltas += d.len() as u64;
 		o.events.extend(l.trades.monotonic_seq.iter().map(|&s| Ev::Trade(s)));
 		o.events.extend(d.monotonic_seq.iter().map(|&s| Ev::Delta(s)));
-		o.events.extend(l.anchors.iter().map(|s| Ev::Anchor(s.bids.len(), s.asks.len())));
+		o.events.extend(l.anchor.map(|s| Ev::Anchor(s.bids.len(), s.asks.len())));
 		let ts_ns = l.ts_venue.as_nanos();
 		let out = match viz {
 			Some(v) => graph.tick_obs(l.into(), v.at(ts_ns)),
