@@ -36,7 +36,10 @@ const HOUR_NS: i64 = 3600 * 1_000_000_000;
 
 #[tokio::main]
 async fn main() {
-	let cfg = Config::load(&PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
+	// Unset means the checked-in config, which is the documented default rather than a fallback —
+	// SPL's `--config` flag, as the one knob a run needs before it can read any config at all.
+	let path = std::env::var("SPL_CONFIG").map_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")), PathBuf::from);
+	let cfg = Config::load(&path);
 	let situation = &cfg.situation;
 	let warmup_days = cfg.strategy.warmup_days();
 	let all = config::days(situation, warmup_days);
@@ -194,9 +197,7 @@ async fn main() {
 	assert!(
 		warm,
 		"the configured screener's inputs ({needed}) never warmed in the trading window: rsi={} price={} momentum={}",
-		day.rsi_snaps,
-		day.price_snaps,
-		day.momentum_snaps
+		day.rsi_snaps, day.price_snaps, day.momentum_snaps
 	);
 	assert_eq!(day.top, day.top_reads, "the book was unsynced on some read — our own checkpoints failed to seed it");
 	// ponytail: one read per *woven delta run*, and the weaver merges consecutive 1s emissions when no

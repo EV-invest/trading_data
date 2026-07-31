@@ -26,6 +26,7 @@ trading_data_macros                  proc-macro home of `graph!` (emits the `ste
                    ▲
     trading_data_demo (examples/demo)   end-to-end demo; depends ONLY on the facade (facade-sufficiency test)
     trading_data_live_example (examples/live)   real Bybit trades+book recorded then replayed identically
+    trading_data_spl (examples/spl)     a whole strategy (scam_pump_liqs); its bus plumbing becomes graph! field order
 ```
 
 `trading_data_core` sits below both persistence and the external `v_exchanges` bridge, so a live ws
@@ -154,6 +155,10 @@ reception, or a latency-simulation of the venue axis for historic (`None`) rows.
 
 One clock read, one flush check and one send per venue message — a 50-trade frame is one arrival,
 not fifty.
+
+`Replay` is not bounded — it eager-loads its range — so a window wider than memory is *chained*:
+successive `Replay`s over one long-lived graph, which carries its node state across. Only the
+per-lane latency seed resets, deterministically.
 
 ## Polars boundary
 
