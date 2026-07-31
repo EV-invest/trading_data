@@ -202,7 +202,15 @@ async fn main() {
 	// degrader gets to look, which makes its tick rate a function of trade density rather than the
 	// 1Hz timer SPL runs on.
 	let persisted = trading.len() as u64 * 24 * 3600;
-	println!("book cadence: {} reads of ~{persisted} 1s samples ({:.0}%)", day.top, day.top as f64 / persisted as f64 * 100.0);
+	println!(
+		"book cadence: {} reads of ~{persisted} 1s samples ({:.0}%); blind gaps: mean {:.1}s, max {}s, {} over 2s, {} over 10s",
+		day.top,
+		day.top as f64 / persisted as f64 * 100.0,
+		day.blind_total_s as f64 / day.top as f64,
+		day.max_blind_s,
+		day.blind_over_2s,
+		day.blind_over_10s
+	);
 	let seen = |x: Option<f64>| x.map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"));
 	println!(
 		"window maxima: rsi_4h={} change_1d={}% sharpe_4h={} sharpe_5m={}",
@@ -267,6 +275,11 @@ struct Day {
 	first_top_ns: i64,
 	last_top_ns: i64,
 	last_trade_px: Option<f64>,
+	/// Seconds the graph spent between two book evaluations — SPL's timer would have looked every one.
+	max_blind_s: i64,
+	blind_over_2s: u64,
+	blind_over_10s: u64,
+	blind_total_s: i64,
 	max_tape_divergence: Option<f64>,
 	rsi_hits: u64,
 	std_hits: u64,
@@ -310,6 +323,13 @@ impl Day {
 			"two book reads inside one second of the L20@1s delta lane, at {}",
 			d.ts_ns
 		);
+		if self.last_top_ns != 0 {
+			let gap = (d.ts_ns - self.last_top_ns) / 1_000_000_000;
+			self.max_blind_s = self.max_blind_s.max(gap);
+			self.blind_over_2s += u64::from(gap > 2);
+			self.blind_over_10s += u64::from(gap > 10);
+			self.blind_total_s += gap;
+		}
 		self.last_top_ns = d.ts_ns;
 		assert!(d.best_bid < d.best_ask, "crossed book at {}: {} >= {}", d.ts_ns, d.best_bid, d.best_ask);
 		assert!(d.spread_pct.is_finite() && d.spread_pct > 0.0, "degenerate spread at {}: {}", d.ts_ns, d.spread_pct);
