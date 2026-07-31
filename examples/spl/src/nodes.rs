@@ -18,7 +18,7 @@
 use core::fmt;
 
 use trading_data::{
-	Book, BookAnchors, BookDeltas, BookShape, Buffer, Buffering, Bump, Cell, DeltaFrame, DepOuts, Exact, Flat, Glance, Lanes, Mc, McRoot, Node, Oi, OiRoot, Sketch, TradeCols, Trades,
+	Book, BookAnchors, BookDeltas, BookShape, Buffer, Buffering, Bump, Cell, DeltaFrame, DepOuts, Exact, Flat, Glance, Lanes, Mc, McRoot, Node, Oi, OiRoot, Plot, TradeCols, Trades,
 	WilderAtr, WilderRsi, slice_nudge,
 };
 use trading_data_core::Side;
@@ -409,18 +409,6 @@ pub struct Deprecator {
 	last_top: Option<BookTopSnap>,
 	buf: Vec<Option<Intent>>,
 }
-/// The deprecator's three price-denominated levels, on the candle pane. Purely an observation
-/// shape, so an absent trail collapses to [`Flat::flat`]'s `None` ⇒ NaN + unfired here and nowhere else.
-#[derive(Clone, Copy, Debug)]
-pub struct Bounds {
-	pub sl: f64,
-	pub tp: f64,
-	pub trail_stop: f64,
-}
-#[derive(Clone, Default)]
-pub struct Envelope {
-	buf: Vec<Option<Bounds>>,
-}
 /// Advances a slower bar cursor to every bar that has closed by `deadline`, feeding each to `sink`.
 /// Bars of different timeframes reach SPL as independent bus messages; here they arrive in one
 /// batch, so the merge is explicit rather than accidental.
@@ -596,13 +584,13 @@ impl Cell for Rsi {
 impl Node for Rsi {
 	type Deps = (Bars<5>, Bars<15>, Bars<60>, Bars<240>);
 
-	// No threshold guide: the trigger is a `config.nix` value and `Sketch` is a const, so drawing
+	// No threshold guide: the trigger is a `config.nix` value and `Plot` is a const, so drawing
 	// one here would pin a number the config is free to move.
-	const SKETCH: Sketch = Sketch {
+	const PLOTS: &'static [Plot] = &[Plot {
 		range: Some((0.0, 100.0)),
 		labels: &["5m", "5m~", "15m", "15m~", "1h", "1h~", "4h", "4h~"],
-		..Sketch::DEFAULT
-	};
+		..Plot::DEFAULT
+	}];
 
 	fn advance<'t>(&'t mut self, (m5, m15, h1, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
@@ -687,10 +675,10 @@ impl Cell for Momentum {
 impl Node for Momentum {
 	type Deps = (Buffering<Bars<5>, MOM_CAP>, Buffering<Bars<240>, MOM_CAP>);
 
-	const SKETCH: Sketch = Sketch {
+	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &["4h", "5m"],
-		..Sketch::DEFAULT
-	};
+		..Plot::DEFAULT
+	}];
 
 	fn advance<'t>(&'t mut self, (m5, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
@@ -796,10 +784,10 @@ impl Cell for BookTop {
 impl Node for BookTop {
 	type Deps = (Book, BookDeltas);
 
-	const SKETCH: Sketch = Sketch {
+	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &["bid", "ask", "bid_depth$", "ask_depth$", "imbalance", "spread%"],
-		..Sketch::DEFAULT
-	};
+		..Plot::DEFAULT
+	}];
 
 	fn advance<'t>(&'t mut self, (book, frame): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
@@ -935,10 +923,20 @@ slice_nudge!(Classify, Option<Classified>);
 // ─── deprecator ─────────────────────────────────────────────────────────────────────────────────
 
 impl Flat for Intent {
-	const DIMS: &'static [usize] = &[5];
+	const DIMS: &'static [usize] = &[8];
 
 	fn flat(&self, out: &mut [f64]) -> bool {
-		out.copy_from_slice(&[self.target_q, self.base_q, self.eval, self.lambda_atr, self.trail_fraction]);
+		// A fully-retraced trail has no level, which is the empty slot the flattening already spells.
+		out.copy_from_slice(&[
+			self.target_q,
+			self.base_q,
+			self.eval,
+			self.lambda_atr,
+			self.trail_fraction,
+			self.sl,
+			self.tp,
+			self.trail_stop.unwrap_or(f64::NAN),
+		]);
 		true
 	}
 }
@@ -974,10 +972,19 @@ impl Cell for Deprecator {
 impl Node for Deprecator {
 	type Deps = (Classify, Atr, BookTop);
 
-	const SKETCH: Sketch = Sketch {
-		labels: &["target_q", "base_q", "eval", "lambda_atr", "trail_fraction"],
-		..Sketch::DEFAULT
-	};
+	const PLOTS: &'static [Plot] = &[
+		Plot {
+			slots: &[0, 1, 2, 3, 4],
+			labels: &["target_q", "base_q", "eval", "lambda_atr", "trail_fraction"],
+			..Plot::DEFAULT
+		},
+		Plot {
+			slots: &[5, 6, 7],
+			labels: &["sl", "tp", "trail_stop"],
+			overlay: true,
+			..Plot::DEFAULT
+		},
+	];
 
 	fn advance<'t>(&'t mut self, (classify, atr, top): DepOuts<'t, Self>) -> Self::Out<'t> {
 		let liq = &strategy().classification.liquidations;
@@ -1061,40 +1068,6 @@ impl Node for Deprecator {
 }
 slice_nudge!(Deprecator, Option<Intent>);
 
-flat_fields!(Bounds[sl, tp, trail_stop]);
-
-impl Glance for Bounds {
-	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "sl {:.4} tp {:.4}", self.sl, self.tp)
-	}
-}
-
-impl Cell for Envelope {
-	type Out<'t> = &'t [Option<Bounds>];
-}
-impl Node for Envelope {
-	type Deps = (Deprecator,);
-
-	const SKETCH: Sketch = Sketch {
-		overlay: true,
-		labels: &["sl", "tp", "trail_stop"],
-		..Sketch::DEFAULT
-	};
-
-	fn advance<'t>(&'t mut self, (intents,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
-		for i in intents {
-			self.buf.push(i.map(|i| Bounds {
-				sl: i.sl,
-				tp: i.tp,
-				trail_stop: i.trail_stop.unwrap_or(f64::NAN),
-			}));
-		}
-		&self.buf
-	}
-}
-slice_nudge!(Envelope, Option<Bounds>);
-
 // ─── graph ──────────────────────────────────────────────────────────────────────────────────────
 
 trading_data::graph! {
@@ -1125,7 +1098,6 @@ trading_data::graph! {
 	std_screener: StdScreener,
 	classify: Classify,
 	deprecator: Deprecator,
-	envelope: Envelope,
 }
 
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it

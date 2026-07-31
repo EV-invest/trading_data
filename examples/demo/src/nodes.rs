@@ -6,7 +6,7 @@
 use core::fmt;
 
 use trading_data::{
-	Buffer, Buffering, Bump, Cell, DepOuts, Exact, Expr, Flat, Glance, Guide, Ink, Lanes, Node, Oi, OiRoot, Sketch, Symbolic, TradeCols, Trades, Vars, WilderAtr, WilderRsi, constant,
+	Buffer, Buffering, Bump, Cell, DepOuts, Exact, Expr, Flat, Glance, Guide, Ink, Lanes, Node, Oi, OiRoot, Plot, Symbolic, TradeCols, Trades, Vars, WilderAtr, WilderRsi, constant,
 	slice_nudge,
 };
 use trading_data_core::Side;
@@ -212,7 +212,7 @@ impl Cell for Rsi14 {
 impl Node for Rsi14 {
 	type Deps = (Bar1m,);
 
-	const SKETCH: Sketch = Sketch {
+	const PLOTS: &'static [Plot] = &[Plot {
 		range: Some((0.0, 100.0)),
 		guides: &[
 			Guide {
@@ -226,8 +226,8 @@ impl Node for Rsi14 {
 				ink: Ink::FAINT,
 			},
 		],
-		..Sketch::DEFAULT
-	};
+		..Plot::DEFAULT
+	}];
 
 	fn advance<'t>(&'t mut self, (bars,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
@@ -410,10 +410,10 @@ impl Node for Classify {
 	type Deps = (Screener, Momentum);
 
 	// Element order is the [`Dist`] wire order.
-	const SKETCH: Sketch = Sketch {
+	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &["None", "Liquidations", "MmClosing", "Manipulation"],
-		..Sketch::DEFAULT
-	};
+		..Plot::DEFAULT
+	}];
 
 	fn advance<'t>(&'t mut self, (screener, mom): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert_eq!(screener.len(), mom.len(), "Screener/Momentum rate mismatch");
@@ -448,7 +448,7 @@ impl Cell for AtrStop {
 impl Node for AtrStop {
 	type Deps = (Bar1m, Atr14);
 
-	const SKETCH: Sketch = Sketch { overlay: true, ..Sketch::DEFAULT };
+	const PLOTS: &'static [Plot] = &[Plot { overlay: true, ..Plot::DEFAULT }];
 
 	fn advance<'t>(&'t mut self, (bars, atr): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert_eq!(bars.len(), atr.len(), "Bar1m/Atr14 rate mismatch");

@@ -274,30 +274,49 @@ pub struct Guide {
 	pub ink: Ink,
 }
 
-/// Optional drawing hints a node declares about its own output — the renderer owns everything
-/// else (hue above all). Defaults always suffice.
+/// Optional drawing hints a node declares about one group of its [`Flat`] slots — the renderer owns
+/// everything else (hue above all). Defaults always suffice.
+///
+/// A node declares a list of these because scale, not authorship, is what shares an axis: an out
+/// carrying both a quantity and a price is two plots, and splitting it into two *nodes* to say so
+/// would put a step in the topology that computes nothing.
 #[derive(Clone, Copy, Debug)]
-pub struct Sketch {
+pub struct Plot {
+	/// Which [`Flat`] slots of the out this plot draws; `[]` = all of them, which only reads
+	/// unambiguously when the node declares a single plot.
+	pub slots: &'static [usize],
 	/// Fixed y-scale, e.g. RSI (0, 100).
 	pub range: Option<(f64, f64)>,
 	pub guides: &'static [Guide],
-	/// Element names for vector outs; `[]` = indices.
+	/// Names for `slots`, positionally; `[]` = indices.
 	pub labels: &'static [&'static str],
 	/// Per-element; `[]` = [`Ink::MAIN`] for all.
 	pub inks: &'static [Ink],
-	/// Render this node's series on the price pane instead of its own indicator pane;
-	/// price-denominated.
+	/// Draw on the price pane instead of an own indicator pane; price-denominated.
 	pub overlay: bool,
 }
 
-impl Sketch {
-	pub const DEFAULT: Sketch = Sketch {
+impl Plot {
+	pub const DEFAULT: Plot = Plot {
+		slots: &[],
 		range: None,
 		guides: &[],
 		labels: &[],
 		inks: &[],
 		overlay: false,
 	};
+
+	/// `[]` slots means "every slot", which two plots cannot both claim.
+	const fn coherent(plots: &'static [Plot]) -> bool {
+		let mut i = 0;
+		while i < plots.len() {
+			if plots[i].slots.is_empty() && plots.len() > 1 {
+				return false;
+			}
+			i += 1;
+		}
+		true
+	}
 }
 
 pub trait DepSet {
@@ -440,7 +459,7 @@ pub trait Node: Cell {
 	/// Historic nodes must advance every tick to stay warm; only current (`false`) nodes can
 	/// be gated — a gated historic node is a compile error.
 	const HISTORIC: bool = true;
-	const SKETCH: Sketch = Sketch::DEFAULT;
+	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
 }
 
@@ -756,11 +775,7 @@ where
 	}
 
 	fn view<'l>(s: &'l Self::Scratch) -> Hist<'l, C::Item> {
-		Hist {
-			all: &s.0,
-			fresh: s.1,
-			depth: J,
-		}
+		Hist { all: &s.0, fresh: s.1, depth: J }
 	}
 }
 
@@ -955,7 +970,7 @@ pub struct Fire<'a> {
 	/// Compact one-liner for viz cards; `debug` stays the full-detail view (hover/tooltip).
 	pub glance: &'a dyn Glance,
 	pub dims: &'static [usize],
-	pub sketch: &'static Sketch,
+	pub plots: &'static [Plot],
 	/// Elements the node fired this tick: slice len, or 0/1 for scalar/`Option` outs.
 	pub fires: usize,
 	/// Flattened *last* element; `None` = didn't fire.
@@ -1063,6 +1078,7 @@ where
 	for<'x> N::Out<'x>: Flat,
 	N::Out<'t>: core::fmt::Debug + Glance,
 	F: 't, {
+	const { assert!(Plot::coherent(N::PLOTS), "a multi-plot node must name each plot's slots; `[]` claims all of them") }
 	if !O::ACTIVE {
 		let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
 		return Cons { out, tail: frame };
@@ -1079,7 +1095,7 @@ where
 				debug: &out,
 				glance: &out,
 				dims: <N::Out<'t> as Flat>::DIMS,
-				sketch: &N::SKETCH,
+				plots: N::PLOTS,
 				fires: out.fires(),
 				vals: None,
 				dep_dims: <N::Deps as DepFlat>::DIMS,
@@ -1116,7 +1132,7 @@ where
 			debug: &out,
 			glance: &out,
 			dims: <N::Out<'t> as Flat>::DIMS,
-			sketch: &N::SKETCH,
+			plots: N::PLOTS,
 			fires,
 			vals: fired.then_some(out_buf.as_slice()),
 			dep_dims: <N::Deps as DepFlat>::DIMS,
@@ -1180,7 +1196,7 @@ where
 			debug: &out,
 			glance: &out,
 			dims: <N::Out<'t> as Flat>::DIMS,
-			sketch: &N::SKETCH,
+			plots: N::PLOTS,
 			fires,
 			vals: fired.then_some(out_buf.as_slice()),
 			dep_dims: <N::Deps as DepFlat>::DIMS,
@@ -1366,7 +1382,7 @@ where
 			debug: &out,
 			glance: &out,
 			dims: <C::Out<'t> as Flat>::DIMS,
-			sketch: &Sketch::DEFAULT,
+			plots: &[Plot::DEFAULT],
 			fires: out.fires(),
 			vals: fired.then_some(buf.as_slice()),
 			dep_dims: &[],

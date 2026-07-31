@@ -110,6 +110,18 @@ Structural rules (enforced by the signatures, not convention):
   element per driving-dep element, `Option`-valued where it declines (warmup) — same-rate deps
   zip by index (`assert_eq!` on len is the tripwire). A rate-changing node (trades→bars) emits one
   non-optional element per own event. Cross-rate reads take `.last()` as the level view.
+- **Emptiness is per slot, and NaN spells it.** `Flat` flattens an out into a fixed-width
+  `&mut [f64]`; a NaN slot means *no value there*, not a value. Per-slot because a struct's fields
+  warm independently — a momentum out fires the moment its 5m Sharpe exists, hours before its 4h
+  one, so an `Option<[f64]>` could only report the cold field by discarding the warm ones. NaN
+  because the buffer's arithmetic consumer is the finite-difference Jacobian, where absence is
+  the absorbing element: an absent dep leaves its column NaN, and a `Symbolic` body carries absence
+  through its arithmetic — neither spends a branch. The encoding stops at the engine: every
+  boundary a human reads converts each empty slot to a real `None`.
+- **A node is not a pane.** `PLOTS` lets a node name several slot groups of its `Flat` out, each
+  with its own scale, guides, labels and `overlay` — axes partition by *unit*, and one out can mix
+  them (a deprecator's sizes beside its price-denominated stop levels). So drawing never motivates a
+  node: a step that computes nothing, and differentiates to nothing, stays out of the topology.
 - **Node identity = its type.** Two instances of one node type in a frame are ambiguous —
   compile error; distinguish via newtypes/const generics (`Rsi<14>` vs `Rsi<28>`).
 - **Gates operate on scalar cells only.** A `Gate` is a `bool`-out node; nodes naming it in `When`
