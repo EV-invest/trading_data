@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use exec_viz::{Viz, api_types::BarOut};
-use trading_data::{Feed, LaneKind, LatencyConfig, Replay, Ts, read_mc, read_oi, required_lanes};
+use trading_data::{BatchWindow, Exact, Feed, LaneKind, LatencyConfig, Replay, Ts, read_mc, read_oi, required_lanes};
 use trading_data_core::{ExchangeName, Side, Venue};
 use trading_data_spl::{
 	asset,
@@ -38,6 +38,14 @@ const PORT_BASE: u16 = 59990;
 /// what a scrub of the degradation wants.
 const SCROLLBACK: usize = 20_000;
 const HOUR_NS: i64 = 3600 * 1_000_000_000;
+/// The knob the whole measurement turns on: `TrailingStop`'s extremum and the `lambda_atr` crossing
+/// are running readings over *evaluated* states, so how much book one tick may swallow is exactly
+/// how much of the degradation goes unseen.
+const MEASURED_WINDOW_MS: i64 = 100;
+const MEASURED_WINDOW: BatchWindow = BatchWindow::from(Exact::from_nanos(MEASURED_WINDOW_MS * 1_000_000));
+/// Warmup is trades only: bars are fold-order invariant and nothing there evaluates, so grouping an
+/// hour at a time costs nothing. Adding a cadence-sensitive node to warmup means dropping this.
+const WARMUP_WINDOW: BatchWindow = BatchWindow::from(Exact::from_nanos(HOUR_NS));
 #[derive(Parser)]
 #[command(about = "scam_pump_liqs as a trading_data graph", long_about = None)]
 struct Cli {
@@ -80,7 +88,7 @@ async fn main() {
 	let mut warmup_hits = 0u64;
 	for d in warmup {
 		let (start, end) = day_bounds(*d);
-		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &[LaneKind::Trades], latency);
+		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &[LaneKind::Trades], latency, WARMUP_WINDOW);
 		while let Some(lanes) = feed.next() {
 			let out = graph.tick(lanes.into());
 			bars_5m += out.bar_5m.len() as u64;
@@ -135,11 +143,13 @@ async fn main() {
 	let viz = Viz::new(Some("Bars<1>"), SCROLLBACK, 60_000);
 	let mut recorder = viz.clone();
 	let mut day = Day::default();
+	let began = std::time::Instant::now();
 
 	for d in measured {
 		let (start, end) = day_bounds(*d);
-		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency);
+		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency, MEASURED_WINDOW);
 		while let Some(lanes) = feed.next() {
+			day.ticks += 1;
 			let ts_ns = lanes.ts_venue.as_nanos();
 			// The tape is the book's only independent witness: nothing downstream ever compares them.
 			if let Some(&raw) = lanes.trades.price.last() {
@@ -192,22 +202,24 @@ async fn main() {
 		"traded: rsi={} price={} momentum={} top={}/{} rsi_hits={} std_hits={} classifications={} episodes={} intents={}",
 		day.rsi_snaps, day.price_snaps, day.momentum_snaps, day.top, day.top_reads, day.rsi_hits, day.std_hits, day.classifications, day.episodes, day.intents
 	);
+	// What the window bought, and what it cost: the FD observer runs per node per tick, so wall-clock
+	// is the binding constraint on how fine `MEASURED_WINDOW` can go.
+	println!("{} ticks in {:.1}s at a {MEASURED_WINDOW_MS}ms batch window", day.ticks, began.elapsed().as_secs_f64());
 	println!(
 		"tape vs book: max |last_trade - mid| / mid = {}",
 		day.max_tape_divergence.map_or_else(|| "n/a".to_string(), |v| format!("{:.3}%", v * 100.0))
 	);
-	// Two samplings, and only the first is a choice. Ingest keeps SPL's L20@1s and drops the rest;
-	// replay then reads once per *woven* delta run, and the weaver merges consecutive seconds whenever
-	// no trade separates them. The fold is identical either way — what thins out is how often the
-	// degrader gets to look, which makes its tick rate a function of trade density rather than the
-	// 1Hz timer SPL runs on.
-	let persisted = trading.len() as u64 * 24 * 3600;
+	// Ingest persists every change to the top-20 view, so the ceiling is the book itself; what the
+	// batch window then decides is how many of those changes a tick swallows without anyone looking.
+	// SPL's 1Hz timer is the reference, not the target — these gaps should sit well under it.
+	let spl_samples = trading.len() as u64 * 24 * 3600;
 	println!(
-		"book cadence: {} reads of ~{persisted} 1s samples ({:.0}%); blind gaps: mean {:.1}s, max {}s, {} over 2s, {} over 10s",
+		"book cadence: {} reads vs SPL's {spl_samples} 1s samples ({:.1}×); blind gaps: mean {:.0}ms, max {}ms (ending {:?}), {} over 2s, {} over 10s",
 		day.top,
-		day.top as f64 / persisted as f64 * 100.0,
-		day.blind_total_s as f64 / day.top as f64,
-		day.max_blind_s,
+		day.top as f64 / spl_samples as f64,
+		day.blind_total_ms as f64 / day.top as f64,
+		day.max_blind_ms,
+		Ts::<Venue>::from_nanos(day.max_blind_at_ns),
 		day.blind_over_2s,
 		day.blind_over_10s
 	);
@@ -233,11 +245,11 @@ async fn main() {
 		day.rsi_snaps, day.price_snaps, day.momentum_snaps
 	);
 	assert_eq!(day.top, day.top_reads, "the book was unsynced on some read — our own checkpoints failed to seed it");
-	// ponytail: one read per *woven delta run*, and the weaver merges consecutive 1s emissions when no
-	// trade arrives between them — so this sits materially below the 86400/day SPL's wall-clock timer
-	// would fire. What is lost is observation cadence, never fold order. Interleave a per-second marker
-	// lane if it ever matters.
-	assert!(day.top > 10_000 * trading.len() as u64, "book read count {} is far below a day of 1s book sampling", day.top);
+	assert!(
+		day.top > spl_samples,
+		"book read count {} is below SPL's own {spl_samples} 1s reads — the port is meant to be a superset of its cadence",
+		day.top
+	);
 	let span_hours = (day.last_top_ns - day.first_top_ns) / HOUR_NS;
 	assert!(
 		span_hours >= trading.len() as i64 * 24 - 1,
@@ -275,15 +287,18 @@ struct Day {
 	first_top_ns: i64,
 	last_top_ns: i64,
 	last_trade_px: Option<f64>,
-	/// Seconds the graph spent between two book evaluations — SPL's timer would have looked every one.
-	max_blind_s: i64,
+	/// Milliseconds the graph spent between two book evaluations — SPL's timer would have looked
+	/// every second regardless.
+	max_blind_ms: i64,
+	max_blind_at_ns: i64,
 	blind_over_2s: u64,
 	blind_over_10s: u64,
-	blind_total_s: i64,
+	blind_total_ms: i64,
 	max_tape_divergence: Option<f64>,
 	rsi_hits: u64,
 	std_hits: u64,
 	classifications: u64,
+	ticks: u64,
 	intents: u64,
 	episodes: u64,
 	max_rsi_4h: Option<f64>,
@@ -298,9 +313,9 @@ impl Day {
 	fn check_top(&mut self, d: &BookTopSnap) {
 		self.top += 1;
 		// A fold that lost its precision, or that dropped deletes and froze a phantom top, drifts away
-		// from the traded price and nothing else here would notice. Sampling is 1s, so a fast tape
-		// legitimately prints a little off the last book we saw — the bound is for corruption, not for
-		// staleness, and the observed max is printed so the two stay distinguishable.
+		// from the traded price and nothing else here would notice. A tape print can still land between
+		// two book messages, so the bound is for corruption, not for staleness — the observed max is
+		// printed so the two stay distinguishable.
 		if let Some(px) = self.last_trade_px {
 			let divergence = (px - d.mid()).abs() / d.mid();
 			top(&mut self.max_tape_divergence, divergence);
@@ -315,20 +330,18 @@ impl Day {
 		if self.first_top_ns == 0 {
 			self.first_top_ns = d.ts_ns;
 		}
-		// An invariant of the ingested lane, not of the node: `pump_archives` emits the top-20 diff once
-		// per second, and a read is stamped with the last delta in its woven run. Two reads sharing a
-		// second means the ingest bucket changed under us.
-		assert!(
-			d.ts_ns.div_euclid(1_000_000_000) > self.last_top_ns.div_euclid(1_000_000_000),
-			"two book reads inside one second of the L20@1s delta lane, at {}",
-			d.ts_ns
-		);
+		// A read is stamped with the last delta of its woven run and the weaver never reorders, so reads
+		// walk the lane forwards. Equality is legal — two runs can end on messages sharing the archive's
+		// millisecond resolution.
+		assert!(d.ts_ns >= self.last_top_ns, "book reads went backwards at {}, after {}", d.ts_ns, self.last_top_ns);
 		if self.last_top_ns != 0 {
-			let gap = (d.ts_ns - self.last_top_ns) / 1_000_000_000;
-			self.max_blind_s = self.max_blind_s.max(gap);
-			self.blind_over_2s += u64::from(gap > 2);
-			self.blind_over_10s += u64::from(gap > 10);
-			self.blind_total_s += gap;
+			let gap = (d.ts_ns - self.last_top_ns) / 1_000_000;
+			if gap > self.max_blind_ms {
+				(self.max_blind_ms, self.max_blind_at_ns) = (gap, d.ts_ns);
+			}
+			self.blind_over_2s += u64::from(gap > 2_000);
+			self.blind_over_10s += u64::from(gap > 10_000);
+			self.blind_total_ms += gap;
 		}
 		self.last_top_ns = d.ts_ns;
 		assert!(d.best_bid < d.best_ask, "crossed book at {}: {} >= {}", d.ts_ns, d.best_bid, d.best_ask);
@@ -390,9 +403,8 @@ impl Day {
 		let Some(first_zero_ns) = o.first_zero_ns else {
 			panic!("episode ended at {} without ever reaching zero eval — only the drain deadline may end one", o.last_ns);
 		};
-		// Book ticks land on the last book message of each second, so they are ~1s apart but not
-		// exactly: the invariant is that the episode ended on the *first* tick at or after the
-		// deadline, not that it ended within any fixed slack of it.
+		// Book ticks land on the last message of a woven run, at no fixed spacing: the invariant is that
+		// the episode ended on the *first* tick at or after the deadline, not within any slack of it.
 		let deadline = first_zero_ns + config::strategy().classification.drain_grace.duration().as_nanos() as i64;
 		assert!(o.last_ns >= deadline, "episode ended {}ns before its drain deadline", deadline - o.last_ns);
 		assert!(o.prev_ns < deadline, "episode outlived its drain deadline by a whole tick, ending at {}", o.last_ns);

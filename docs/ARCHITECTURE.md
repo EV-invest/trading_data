@@ -143,8 +143,16 @@ lanes that did not arrive empty. There is no routing discriminant: batch-ness ne
 iterates, and an app's whole routing layer is `impl From<Lanes> for Batches`. `Replay`
 feeds from the catalog; `Live` feeds from push handles and *tees* every event into the same Feather
 lanes a backtest later reads — so a live recording replays into the identical *event* stream (the
-round-trip is the invariant test; batching never alters fold order, so batch boundaries are
-incidental). Node code is identical across the two.
+round-trip is the invariant test; batching never alters fold order). Node code is identical across
+the two.
+
+Batch boundaries are **declared, not emergent**. Every feed states a `BatchWindow`: the most
+arrival-time one batch may group, measured from the previous batch's end so an idle stretch adds no
+latency. A venue message never splits, so `ZERO` means one message per tick — maximum fidelity is
+the degenerate case, not a special path. Without it, how much of a lane lands in one tick would be
+decided by when an *unrelated* lane happened to tick, which silently starves anything reading a
+running extremum or a threshold crossing over *evaluated* states. Fold order is untouched either
+way; what the window buys is how often nodes get to look.
 
 `Live` is **streaming and memory-bounded**: `next` drains what's currently available, stamps
 each *message*'s arrival at ingest (a single point on the consumer thread → strictly monotonic, so

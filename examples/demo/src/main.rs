@@ -10,7 +10,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use exec_viz::{Viz, api_types::BarOut};
-use trading_data::{Feed, Fire, LatencyConfig, Mc, Observer, Oi, Replay, Ts, read_mc, read_oi, required_lanes};
+use trading_data::{BatchWindow, Exact, Feed, Fire, LatencyConfig, Mc, Observer, Oi, Replay, Ts, read_mc, read_oi, required_lanes};
 use trading_data_core::ExchangeName;
 use trading_data_demo::{
 	asset, day_bounds, ensure_catalog, ensure_mc, ensure_oi,
@@ -21,9 +21,12 @@ use trading_data_demo::{
 /// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a
 /// slot in it, so several can be up at once.
 const ORDINAL: u16 = 1;
-/// Retained ticks. `Replay` weaves the day into ~600 batches, so the whole run fits comfortably;
-/// the cap is only there so nothing unbounded rides on a feed's batching.
+/// Retained ticks. A minute-batched day is well under this; the cap is only there so nothing
+/// unbounded rides on a feed's batching.
 const SCROLLBACK: usize = 20_000;
+/// Coarse on purpose: nothing here is cadence-sensitive, and the FD observer runs per node per
+/// tick — this demo's cost driver is how often it looks, not how finely.
+const WINDOW: BatchWindow = BatchWindow::from(Exact::from_nanos(60_000_000_000));
 
 #[tokio::main]
 async fn main() {
@@ -41,7 +44,7 @@ async fn main() {
 		seed: 0,
 	};
 	let (day_start, day_end) = day_bounds();
-	let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), day_start, day_end, &lanes, latency);
+	let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), day_start, day_end, &lanes, latency, WINDOW);
 
 	let mut graph = Graph::default();
 	let viz = Viz::new(Some("Bar1m"), SCROLLBACK, 60_000);

@@ -23,13 +23,16 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use exec_viz::Viz;
 use nodes::Graph;
-use trading_data::{Catalog, Feed, LatencyConfig, Live, LiveClock, Replay, Sink, Ts, required_lanes};
+use trading_data::{BatchWindow, Catalog, Exact, Feed, LatencyConfig, Live, LiveClock, Replay, Sink, Ts, required_lanes};
 use v_exchanges::prelude::*;
 
 const SECONDS: u64 = 15;
 /// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a
 /// slot in it, so several can be up at once.
 const ORDINAL: u16 = 2;
+/// Small: this example asserts the live≡replay event stream, and short runs weave across lanes more
+/// often — more boundaries is more of the invariant exercised.
+const WINDOW: BatchWindow = BatchWindow::from(Exact::from_nanos(10_000_000));
 
 /// What a consumer reads off the folded book: epoch, level count, best bid, best ask.
 type BookRead = (u64, usize, Option<(Price, Qty)>, Option<(Price, Qty)>);
@@ -50,7 +53,7 @@ async fn main() {
 	};
 
 	// --- live: stream 15s of real trades + book through the graph concurrently with the pumps ---
-	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(), prec, true, Arc::new(LiveClock));
+	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(), prec, true, Arc::new(LiveClock), WINDOW);
 	let trades_stream = bybit.ws_trades(&[pair()], Instrument::Perp).await.expect("open ws_trades");
 	let book_stream = bybit.ws_book(&[pair()], Instrument::Perp).await.expect("open ws_book");
 
@@ -100,7 +103,7 @@ async fn main() {
 		p997: Duration::from_millis(90),
 		seed: 0,
 	};
-	let mut replay = Replay::new(&catalog, ExchangeName::Bybit, symbol(), Ts::MIN, Ts::MAX, &lanes, latency);
+	let mut replay = Replay::new(&catalog, ExchangeName::Bybit, symbol(), Ts::MIN, Ts::MAX, &lanes, latency, WINDOW);
 	let mut graph = Graph::default();
 	let replay_out = run(&mut replay, &mut graph, &mut None);
 

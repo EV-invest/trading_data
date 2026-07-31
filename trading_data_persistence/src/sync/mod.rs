@@ -20,7 +20,7 @@ use std::sync::{
 };
 
 use trading_data_core::{
-	Arrival, Asset, BatchTrades, BookShape, BookUpdate, DeltaBuf, DeltaFrame, Exact, ExchangeName, Local, PrecisionPriceQty, ShadowBook, Symbol, TradeBuf, TradeCols, Ts, Venue,
+	Arrival, Asset, BatchTrades, BatchWindow, BookShape, BookUpdate, DeltaBuf, DeltaFrame, Exact, ExchangeName, Local, PrecisionPriceQty, ShadowBook, Symbol, TradeBuf, TradeCols, Ts, Venue,
 };
 use v_utils::distributions::LatencyConfig;
 
@@ -222,9 +222,14 @@ struct Weaver {
 	/// carried into the range sorts before everything), so an epoch-defaulted watermark would read
 	/// the very first emission as out-of-order.
 	prev_emit: Arrival = Arrival::MIN,
+	window: BatchWindow,
 }
 
 impl Weaver {
+	fn new(window: BatchWindow) -> Self {
+		Self { window, ..Self::default() }
+	}
+
 	fn is_empty(&self) -> bool {
 		self.trades.is_empty() && self.deltas.is_empty() && self.anchors.is_empty() && self.oi.is_empty() && self.mc.is_empty()
 	}
@@ -243,6 +248,13 @@ impl Weaver {
 		let win_ts = heads[winner].expect("winner has a head");
 		let bound = (0..heads.len()).filter(|&i| i != winner).filter_map(|i| heads[i]).min().unwrap_or(Arrival::from_nanos(i64::MAX));
 		assert!(win_ts >= self.prev_emit, "weaver emitted out of arrival order: {win_ts:?} < {:?}", self.prev_emit);
+
+		// The window is measured from `prev_emit` — when we started looking — not from the first
+		// element found, so an idle stretch does not add latency to what ends it.
+		// `max(win_ts)`: a venue message is atomic — its rows share one arrival and must not split, even
+		// when the window has already elapsed. `bound >= win_ts` holds (the winner has the minimum head),
+		// so the cap never falls below the run's own first element.
+		let bound = bound.min((self.prev_emit + self.window).max(win_ts));
 
 		// Claim the winning run first, so the borrows below are all shared and disjoint.
 		let (mut t, mut d, mut a, mut o, mut m) = ((0, 0), (0, 0), (0, 0), (0, 0), (0, 0));
@@ -318,8 +330,11 @@ pub struct Replay {
 }
 
 impl Replay {
-	pub fn new(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: Ts<Venue>, end: Ts<Venue>, lanes: &[LaneKind], latency: LatencyConfig) -> Self {
-		let mut weaver = Weaver::default();
+	/// Each parameter is a distinct thing the caller has to state; a config struct would only rename
+	/// the same eight.
+	#[allow(clippy::too_many_arguments)]
+	pub fn new(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: Ts<Venue>, end: Ts<Venue>, lanes: &[LaneKind], latency: LatencyConfig, window: BatchWindow) -> Self {
+		let mut weaver = Weaver::new(window);
 		let sampler = |lane: LaneKind| Some(latency.sampler(&format!("{lane:?}:{symbol}")));
 		// No file under any of `keys` leaves the lane's precision unknown, and a default would scale
 		// every raw price and qty by 1 — wrong by whole orders of magnitude, on output that still
@@ -477,7 +492,7 @@ pub struct Live {
 }
 
 impl Live {
-	pub fn new(catalog: Catalog, exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, record: bool, clock: Arc<dyn Clock>) -> Self {
+	pub fn new(catalog: Catalog, exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, record: bool, clock: Arc<dyn Clock>, window: BatchWindow) -> Self {
 		let (tx, rx) = channel();
 		let record = record.then(|| {
 			let asset = Asset::new(symbol.pair.base().to_string());
@@ -490,7 +505,7 @@ impl Live {
 				catalog,
 			}
 		});
-		let mut weaver = Weaver::default();
+		let mut weaver = Weaver::new(window);
 		weaver.trades.buf.prec = prec;
 		weaver.deltas.buf.prec = prec;
 		Self {
