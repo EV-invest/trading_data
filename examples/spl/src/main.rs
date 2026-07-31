@@ -378,7 +378,14 @@ impl Day {
 		flag!(self, i.ts_ns > self.last_intent_ns, "intents not strictly increasing: {} <= {}", i.ts_ns, self.last_intent_ns);
 		self.last_intent_ns = i.ts_ns;
 		flag!(self, i.side == Side::Buy, "the ported classification stub hardcodes Buy, got {:?} at {}", i.side, i.ts_ns);
-		flag!(self, (0.0..=i.base_q).contains(&i.target_q), "target_q {} outside [0, base_q={}] at {}", i.target_q, i.base_q, i.ts_ns);
+		flag!(
+			self,
+			(0.0..=i.base_q).contains(&i.target_q),
+			"target_q {} outside [0, base_q={}] at {}",
+			i.target_q,
+			i.base_q,
+			i.ts_ns
+		);
 		let inside = d.mid() > i.sl && d.mid() < i.tp;
 		flag!(
 			self,
@@ -413,7 +420,13 @@ impl Day {
 			open.trail_fraction
 		);
 		let first_zero_ns = open.first_zero_ns.or((i.eval == 0.0).then_some(i.ts_ns));
-		flag!(self, i.draining == first_zero_ns.is_some(), "draining ({}) must latch on the first zero eval, at {}", i.draining, i.ts_ns);
+		flag!(
+			self,
+			i.draining == first_zero_ns.is_some(),
+			"draining ({}) must latch on the first zero eval, at {}",
+			i.draining,
+			i.ts_ns
+		);
 		if i.draining {
 			flag!(self, i.target_q == 0.0, "draining tick still carries size {} at {}", i.target_q, i.ts_ns);
 		}
@@ -429,7 +442,12 @@ impl Day {
 	fn close_episode(&mut self) {
 		let Some(o) = self.open.take() else { return };
 		let Some(first_zero_ns) = o.first_zero_ns else {
-			flag!(self, false, "episode ended at {} without ever reaching zero eval — only the drain deadline may end one", o.last_ns);
+			flag!(
+				self,
+				false,
+				"episode ended at {} without ever reaching zero eval — only the drain deadline may end one",
+				o.last_ns
+			);
 			return;
 		};
 		// Book ticks land on the last message of a woven run, at no fixed spacing: the invariant is that
