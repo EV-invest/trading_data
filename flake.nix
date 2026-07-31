@@ -79,7 +79,7 @@
               nix run .          trading_data CLI
               nix run .#demo     examples/demo — replays a cached day  (port ${toString (port_range_base + 1)})
               nix run .#live     examples/live — 15s of live Bybit     (port ${toString (port_range_base + 2)})
-              nix run .#spl      examples/spl  — 32d scam_pump_liqs    (port ${toString (port_range_base + 3)})
+              nix run .#spl      examples/spl  — scam_pump_liqs port   (port ${toString (port_range_base + 3)})
               nix run .#help     this listing
 
               `nix develop` adds `viz <demo|live|spl>`, the same runner against your working tree.

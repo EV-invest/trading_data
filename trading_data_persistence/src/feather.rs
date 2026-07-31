@@ -182,7 +182,7 @@ impl<T: Row> Feather<T> {
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use trading_data_core::{FrameKind, Instrument, Local, Side, Venue};
+	use trading_data_core::{FrameKind, Instrument, Local, Precision, Side, Venue};
 
 	use super::*;
 
@@ -191,7 +191,10 @@ mod tests {
 	}
 
 	fn prec() -> PrecisionPriceQty {
-		PrecisionPriceQty { price: 2, qty: 5 }
+		PrecisionPriceQty {
+			price: Precision(2),
+			qty: Precision(5),
+		}
 	}
 
 	fn venue(ns: i64) -> Ts<Venue> {

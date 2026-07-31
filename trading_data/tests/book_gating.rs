@@ -9,9 +9,14 @@
 //! (3) is why gating a book is sound where gating a recurrence is not: it re-warms from a
 //! checkpoint instead of from a warmup it can never recover.
 
-use trading_data::{Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaBuf, DeltaFrame, DepOuts, FrameKind, Gate, Node, Nudge, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades, Ts};
+use trading_data::{
+	Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaBuf, DeltaFrame, DepOuts, FrameKind, Gate, Node, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades, Ts,
+};
 
-const PREC: PrecisionPriceQty = PrecisionPriceQty { price: 2, qty: 4 };
+const PREC: PrecisionPriceQty = PrecisionPriceQty {
+	price: Precision(2),
+	qty: Precision(4),
+};
 
 /// `Node::When` is fixed on the impl, so the shipped `Book` node is the ungated one; gating it is
 /// this eight-line wrapper over the same public `Book::step` fold. The two cannot drift.
@@ -74,7 +79,7 @@ impl Node for Mid {
 	fn advance<'t>(&'t mut self, (book,): DepOuts<'t, Self>) -> Option<f64> {
 		let b = book?;
 		let (bid, ask) = (b.best_bid()?, b.best_ask()?);
-		Some((bid.0 + ask.0) as f64 / 2.0 / b.prec().price_scale())
+		Some((bid.0 + ask.0) as f64 / 2.0 / b.prec().price.scale())
 	}
 }
 

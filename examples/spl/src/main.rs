@@ -1,63 +1,75 @@
-//! Assert-driver over the SPL port. One long-lived `Graph`, one `Replay` per day: 31 trades-only
+//! Assert-driver over the SPL port. One long-lived `Graph`, one `Replay` per day: trades-only
 //! warmup chunks (SPL's `request_bars(warmup)` + `Screener::trade_start` — nothing may trade yet),
-//! then the measured day over every lane. `Replay` eager-loads its range, so chunking it across
-//! successive feeds is the sanctioned way to cover a month; graph state carries across, only the
-//! per-lane latency seed resets, which is deterministic.
+//! then the situation's trading days over every lane. `Replay` eager-loads its range, so chunking it
+//! across successive feeds is the sanctioned way to cover a window; graph state carries across, only
+//! the per-lane latency seed resets, which is deterministic.
+//!
+//! Which instrument, which window and every strategy knob come from `config.nix` — the same file
+//! scam_pump_liqs configures itself with, pointed at its `examples/situations.nix` MOCK target.
 //!
 //! The asserts below are the integration test — warmup horizon, book shape, screener firing, and
 //! the deprecator's five load-bearing invariants — plus SPL's own `trailing_stop_partial_degradation`
-//! replayed through the ported `TrailingStop`. The measured day is recorded by an attached [`Viz`]
-//! and served afterwards, so the degradation is eyeballable against price. `nix run .#spl` builds
-//! the `exec_viz_web` bundle and runs this against it.
+//! replayed through the ported `TrailingStop`. The run is recorded by an attached [`Viz`] and served
+//! afterwards, so the degradation is eyeballable against price. `nix run .#spl` builds the
+//! `exec_viz_web` bundle and runs this against it.
 
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 
 use exec_viz::{Viz, api_types::BarOut};
 use trading_data::{Feed, LaneKind, LatencyConfig, Replay, Ts, read_mc, read_oi, required_lanes};
-use trading_data_core::{ExchangeName, Side};
+use trading_data_core::{ExchangeName, Side, Venue};
 use trading_data_spl::{
-	MEASURED_DAY, asset, day_bounds, days, ensure_book, ensure_mc, ensure_oi, ensure_trades,
-	nodes::{DRAIN_GRACE_NS, DeepSnap, Graph, Intent, TrailingStop},
-	symbol,
+	asset,
+	config::{self, Config},
+	day_bounds, ensure_book, ensure_mc, ensure_oi, ensure_trades,
+	nodes::{DeepSnap, Graph, Intent, TrailingStop},
+	symbol, trading_days,
 };
 
 /// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a
 /// slot in it, so several can be up at once.
 const ORDINAL: u16 = 3;
-/// Retained ticks. The measured day weaves into far more than this; the ring keeps the tail, which
-/// is what a scrub of the degradation wants.
+/// Retained ticks. A trading day weaves into far more than this; the ring keeps the tail, which is
+/// what a scrub of the degradation wants.
 const SCROLLBACK: usize = 20_000;
-const LATENCY: LatencyConfig = LatencyConfig {
-	p68: Duration::from_millis(5),
-	p95: Duration::from_millis(20),
-	p997: Duration::from_millis(80),
-	seed: 0,
-};
+const HOUR_NS: i64 = 3600 * 1_000_000_000;
 
 #[tokio::main]
 async fn main() {
-	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache"));
-	let catalog = ensure_trades(&cache);
-	ensure_book(&cache, &catalog);
-	ensure_oi(&catalog);
-	ensure_mc(&catalog);
+	let cfg = Config::load(&PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
+	let situation = &cfg.situation;
+	let warmup_days = cfg.strategy.warmup_days();
+	let all = config::days(situation, warmup_days);
+	let trading = trading_days(situation);
+	let (warmup, measured) = all.split_at(all.len() - trading.len());
+	println!(
+		"{} {} .. {} ({} trading days, {warmup_days} warmup), screen {:?}",
+		situation.pair,
+		situation.start,
+		situation.end,
+		trading.len(),
+		cfg.strategy.screen
+	);
 
-	let all = days();
-	let (warmup, measured) = all.split_at(all.len() - 1);
-	let measured = measured[0];
-	assert_eq!(measured.to_string(), MEASURED_DAY, "the last day of the range is the measured one");
+	// Per-symbol so switching the situation's pair cannot read another one's catalog.
+	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(&situation.bybit_symbol);
+	let catalog = ensure_trades(&cache, situation, &all);
+	ensure_book(&cache, &catalog, situation);
+	ensure_oi(&catalog, situation);
+	ensure_mc(&catalog, situation);
 
+	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
 	let mut graph = Graph::default();
 
-	// --- warmup: trades only, no viz. This is where the 181st 4h close lands. ---
+	// --- warmup: trades only, no viz. Nothing may fire on it. ---
 	let mut first_momentum_ns = None;
-	let mut bars_4h = 0u64;
+	let mut bars_5m = 0u64;
 	for d in warmup {
 		let (start, end) = day_bounds(*d);
-		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), start, end, &[LaneKind::Trades], LATENCY);
+		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &[LaneKind::Trades], latency);
 		while let Some(lanes) = feed.next() {
 			let out = graph.tick(lanes.into());
-			bars_4h += out.bar_4h.len() as u64;
+			bars_5m += out.bar_5m.len() as u64;
 			assert_eq!(out.momentum.len(), out.bar_5m.len(), "Momentum/Bars<5> rate mismatch");
 			if first_momentum_ns.is_none()
 				&& let Some(i) = out.momentum.iter().position(Option::is_some)
@@ -66,112 +78,134 @@ async fn main() {
 			}
 			assert!(
 				out.shallow.iter().all(Option::is_none),
-				"shallow built during trades-only warmup: the oi lane cannot be present yet"
+				"shallow built during trades-only warmup: the oi and mc lanes cannot be present yet"
 			);
 		}
 	}
-	let first_momentum_ns = first_momentum_ns.expect("Momentum never warmed: the 32-day horizon is short of 181 closed 4h bars");
+	let first_momentum_ns = first_momentum_ns.expect("Momentum never warmed inside the warmup window — the horizon is short");
 	let (range_start, _) = day_bounds(all[0]);
-	// 181 closes ⇒ `lookback` returns; the 181st 4h bar closes exactly here.
-	let expected = range_start.as_nanos() + 181 * 4 * 3600 * 1_000_000_000;
+	let (trade_start, _) = day_bounds(measured[0]);
+	// Bars are aggregated from trades, so a bucket with no trade emits none: on a thin instrument the
+	// `lookback + 1`-th *emitted* bar lands strictly later than `lookback + 1` bar-widths in. `earliest`
+	// is therefore a floor, never the expected value.
+	let momentum = cfg.strategy.indies.momentum;
+	let widest_min = if momentum.use_4h { 240 } else { 5 };
+	let earliest = range_start.as_nanos() + (momentum.lookback as i64 + 1) * widest_min * 60_000_000_000;
+	let possible = warmup.len() as u64 * 24 * 12;
 	println!(
-		"warmup: {} days, {bars_4h} 4h bars, momentum warm at {:?} (expected {:?})",
+		"warmup: {} days, {bars_5m}/{possible} 5m bars ({} buckets had no trade), momentum warm at {:?}, {:.1}h before trading opens",
 		warmup.len(),
-		Ts::<trading_data_core::Venue>::from_nanos(first_momentum_ns),
-		Ts::<trading_data_core::Venue>::from_nanos(expected),
+		possible - bars_5m,
+		Ts::<Venue>::from_nanos(first_momentum_ns),
+		(trade_start.as_nanos() - first_momentum_ns) as f64 / HOUR_NS as f64,
 	);
 	assert!(
-		(first_momentum_ns - expected).abs() <= 4 * 3600 * 1_000_000_000,
-		"momentum warmed more than one 4h bar off the 181st close — the data horizon is wrong"
+		first_momentum_ns >= earliest,
+		"momentum warmed at {:?}, before its window could possibly have filled ({:?})",
+		Ts::<Venue>::from_nanos(first_momentum_ns),
+		Ts::<Venue>::from_nanos(earliest)
+	);
+	assert!(
+		first_momentum_ns < trade_start.as_nanos(),
+		"momentum only warmed at {:?}, after trading opens at {:?} — the warmup window is short",
+		Ts::<Venue>::from_nanos(first_momentum_ns),
+		trade_start
 	);
 
-	// --- measured day: every lane, recorded. ---
+	// --- trading days: every lane, recorded. ---
 	let lanes = required_lanes::<Graph>();
 	println!("required lanes: {lanes:?}");
-	let (start, end) = day_bounds(measured);
-	let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), start, end, &lanes, LATENCY);
 	let viz = Viz::new(Some("Bars<1>"), SCROLLBACK, 60_000);
 	let mut recorder = viz.clone();
 	let mut day = Day::default();
 
-	while let Some(lanes) = feed.next() {
-		let ts_ns = lanes.ts_venue.as_nanos();
-		let out = graph.tick_obs(lanes.into(), recorder.at(ts_ns));
+	for d in measured {
+		let (start, end) = day_bounds(*d);
+		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency);
+		while let Some(lanes) = feed.next() {
+			let ts_ns = lanes.ts_venue.as_nanos();
+			let out = graph.tick_obs(lanes.into(), recorder.at(ts_ns));
 
-		for b in out.bar_1m {
-			viz.bar(BarOut {
-				ts_ms: b.ts_open / 1_000_000,
-				open: b.open,
-				high: b.high,
-				low: b.low,
-				close: b.close,
-				volume: b.vol_base * b.close,
-			});
-		}
-		for s in out.shallow.iter().flatten() {
-			day.shallow += 1;
-			top(&mut day.max_rsi_4h, s.rsi.rsi_4h.actual);
-			top(&mut day.max_change_1d, s.price.change_1d_pct);
-			top(&mut day.max_sharpe_5m, s.momentum.sharpe_5m);
-			if let Some(x) = s.momentum.sharpe_4h {
-				top(&mut day.max_sharpe_4h, x);
+			for b in out.bar_1m {
+				viz.bar(BarOut {
+					ts_ms: b.ts_open / 1_000_000,
+					open: b.open,
+					high: b.high,
+					low: b.low,
+					close: b.close,
+					volume: b.vol_base * b.close,
+				});
 			}
-			if day.first_shallow_ns.is_none() {
-				day.first_shallow_ns = Some(s.ts_ns);
+			for s in out.shallow.iter().flatten() {
+				day.shallow += 1;
+				if let Some(r) = s.rsi {
+					top(&mut day.max_rsi_4h, r.rsi_4h.actual);
+				}
+				if let Some(m) = s.momentum {
+					top(&mut day.max_sharpe_5m, m.sharpe_5m);
+					if let Some(x) = m.sharpe_4h {
+						top(&mut day.max_sharpe_4h, x);
+					}
+				}
+				top(&mut day.max_change_1d, s.price.change_1d_pct);
+				if day.first_shallow_ns.is_none() {
+					day.first_shallow_ns = Some(s.ts_ns);
+				}
 			}
-		}
-		day.rsi_hits += out.rsi_screener.iter().flatten().count() as u64;
-		day.std_hits += out.std_screener.iter().flatten().count() as u64;
-		day.classifications += out.classify.iter().flatten().count() as u64;
+			day.rsi_hits += out.rsi_screener.iter().flatten().count() as u64;
+			day.std_hits += out.std_screener.iter().flatten().count() as u64;
+			day.classifications += out.classify.iter().flatten().count() as u64;
 
-		day.deep_reads += out.deep.len() as u64;
-		for d in out.deep.iter().flatten() {
-			day.check_deep(d);
-		}
-		assert_eq!(out.deprecator.len(), out.deep.len(), "Deprecator/Deep rate mismatch");
-		for i in 0..out.deprecator.len() {
-			day.check_intent(out.deprecator[i], out.deep[i]);
+			day.deep_reads += out.deep.len() as u64;
+			for x in out.deep.iter().flatten() {
+				day.check_deep(x);
+			}
+			assert_eq!(out.deprecator.len(), out.deep.len(), "Deprecator/Deep rate mismatch");
+			for i in 0..out.deprecator.len() {
+				day.check_intent(out.deprecator[i], out.deep[i]);
+			}
 		}
 	}
 
 	println!(
-		"measured {MEASURED_DAY}: shallow={} deep={}/{} rsi_hits={} std_hits={} classifications={} episodes={} intents={}",
+		"traded: shallow={} deep={}/{} rsi_hits={} std_hits={} classifications={} episodes={} intents={}",
 		day.shallow, day.deep, day.deep_reads, day.rsi_hits, day.std_hits, day.classifications, day.episodes, day.intents
 	);
 	let seen = |x: Option<f64>| x.map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"));
 	println!(
-		"day maxima: rsi_4h={} change_1d={}% sharpe_4h={} sharpe_5m={}",
+		"window maxima: rsi_4h={} change_1d={}% sharpe_4h={} sharpe_5m={}",
 		seen(day.max_rsi_4h),
 		seen(day.max_change_1d),
 		seen(day.max_sharpe_4h),
 		seen(day.max_sharpe_5m)
 	);
 
-	assert!(day.first_shallow_ns.is_some(), "no shallow snapshot on the measured day — an indie never warmed");
+	assert!(day.first_shallow_ns.is_some(), "no shallow snapshot in the trading window — an indie never warmed");
 	assert_eq!(day.deep, day.deep_reads, "the book was unsynced on some deep read — our own checkpoints failed to seed it");
 	// ponytail: one read per *woven delta run*, and the weaver merges consecutive 1s emissions when
-	// no trade arrives between them — so this is materially below the 86400 SPL's wall-clock timer
-	// would fire. What is lost is observation cadence, never fold order; the per-bucket assert below
-	// is the invariant that actually holds. Interleave a per-second marker lane if it ever matters.
-	assert!(day.deep > 30_000, "deep read count {} is far below a day of 1s book sampling", day.deep);
+	// no trade arrives between them — so this is materially below the 86400/day SPL's wall-clock timer
+	// would fire. What is lost is observation cadence, never fold order; the per-bucket assert in
+	// `check_deep` is the invariant that actually holds. Interleave a per-second marker lane if it
+	// ever matters.
+	assert!(day.deep > 10_000 * trading.len() as u64, "deep read count {} is far below a day of 1s book sampling", day.deep);
+	let span_hours = (day.last_deep_ns - day.first_deep_ns) / HOUR_NS;
 	assert!(
-		day.last_deep_ns - day.first_deep_ns > 23 * 3600 * 1_000_000_000,
-		"the deep stream does not span the day: {} .. {}",
-		day.first_deep_ns,
-		day.last_deep_ns
+		span_hours >= trading.len() as i64 * 24 - 1,
+		"the deep stream spans {span_hours}h, short of the {} trading days",
+		trading.len()
 	);
 	assert!(
 		day.rsi_hits + day.std_hits > 0,
-		"no screener fired on {MEASURED_DAY} — compare the day maxima printed above against the ported thresholds in `nodes`; \
-		 a genuine miss is a finding about the day, not a bug"
+		"no screener fired over the situation window — compare the maxima printed above against the thresholds in config.nix; \
+		 a genuine miss is a finding about the window, not a bug"
 	);
 	assert!(day.episodes > 0, "the screener fired but no episode opened: entry needs a book tick before the classification");
 	trailing_stop_partial_degradation();
 
-	let oi: Vec<_> = read_oi(&catalog, ExchangeName::Bybit, symbol(), Ts::MIN, Ts::MAX).expect("open oi lane").collect();
+	let oi: Vec<_> = read_oi(&catalog, ExchangeName::Bybit, symbol(situation), Ts::MIN, Ts::MAX).expect("open oi lane").collect();
 	assert!(oi.windows(2).all(|w| w[0].ts_venue_exec <= w[1].ts_venue_exec), "oi timestamps unordered");
-	let mc: Vec<_> = read_mc(&catalog, asset(), Ts::MIN, Ts::MAX).expect("open mc lane").collect();
-	println!("oi rows={} mc rows={} (mc={:.3e} rank={:?})", oi.len(), mc.len(), mc[0].market_cap, mc[0].rank);
+	let mc: Vec<_> = read_mc(&catalog, asset(situation), Ts::MIN, Ts::MAX).expect("open mc lane").collect();
+	println!("oi rows={} mc rows={} (mc={:.3e})", oi.len(), mc.len(), mc[0].market_cap);
 
 	println!("spl: ok");
 	let base: u16 = std::env::var("PORT").expect("PORT: the devShell sets the base of the port range").parse().expect("PORT is a u16");
@@ -275,7 +309,7 @@ impl Day {
 		// Deep ticks land on the last book message of each second, so they are ~1s apart but not
 		// exactly: the invariant is that the episode ended on the *first* tick at or after the
 		// deadline, not that it ended within any fixed slack of it.
-		let deadline = first_zero_ns + DRAIN_GRACE_NS;
+		let deadline = first_zero_ns + config::strategy().classification.drain_grace.duration().as_nanos() as i64;
 		assert!(o.last_ns >= deadline, "episode ended {}ns before its drain deadline", deadline - o.last_ns);
 		assert!(o.prev_ns < deadline, "episode outlived its drain deadline by a whole tick, ending at {}", o.last_ns);
 	}

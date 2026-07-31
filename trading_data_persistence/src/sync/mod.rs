@@ -218,7 +218,10 @@ struct Weaver {
 	anchors: Lane<Vec<BookShape>>,
 	oi: Lane<Vec<Oi>>,
 	mc: Lane<Vec<Mc>>,
-	prev_emit: Arrival,
+	/// Not the epoch: a pre-start book checkpoint is keyed at [`Arrival::MIN`] on purpose (state
+	/// carried into the range sorts before everything), so an epoch-defaulted watermark would read
+	/// the very first emission as out-of-order.
+	prev_emit: Arrival = Arrival::MIN,
 }
 
 impl Weaver {

@@ -238,13 +238,13 @@ impl TradeBuf {
 		let Some(i) = self.len().checked_sub(1) else { return 0.0 };
 		match slot {
 			0 => {
-				let scale = self.prec.price_scale();
+				let scale = self.prec.price.scale();
 				let ticks = ((h * scale).round() as i32).max(1);
 				self.price[i] += ticks;
 				ticks as f64 / scale
 			}
 			1 => {
-				let scale = self.prec.qty_scale();
+				let scale = self.prec.qty.scale();
 				let ticks = ((h * scale).round() as u32).max(1);
 				self.qty[i] += ticks;
 				ticks as f64 / scale
@@ -356,13 +356,13 @@ impl DeltaBuf {
 		let Some(i) = self.len().checked_sub(1) else { return 0.0 };
 		match slot {
 			0 => {
-				let scale = self.prec.price_scale();
+				let scale = self.prec.price.scale();
 				let ticks = ((h * scale).round() as i32).max(1);
 				self.price[i] += ticks;
 				ticks as f64 / scale
 			}
 			1 => {
-				let scale = self.prec.qty_scale();
+				let scale = self.prec.qty.scale();
 				let ticks = ((h * scale).round() as u32).max(1);
 				self.qty[i] += ticks;
 				ticks as f64 / scale
@@ -386,7 +386,7 @@ fn recv_span(recv: &[Option<Ts<Local>>], r: Range<usize>) -> Option<Span<Local>>
 fn last_level(prec: PrecisionPriceQty, price: &[i32], qty: &[u32], out: &mut [f64]) -> bool {
 	match price.len().checked_sub(1) {
 		Some(i) => {
-			out.copy_from_slice(&[price[i] as f64 / prec.price_scale(), qty[i] as f64 / prec.qty_scale()]);
+			out.copy_from_slice(&[price[i] as f64 / prec.price.scale(), qty[i] as f64 / prec.qty.scale()]);
 			true
 		}
 		None => {
@@ -415,8 +415,8 @@ impl Glance for TradeCols<'_> {
 				f,
 				"{} {}@{}",
 				self.side[i],
-				self.qty[i] as f64 / self.prec.qty_scale(),
-				self.price[i] as f64 / self.prec.price_scale()
+				self.qty[i] as f64 / self.prec.qty.scale(),
+				self.price[i] as f64 / self.prec.price.scale()
 			),
 			None => f.write_str("[]"),
 		}
@@ -445,8 +445,8 @@ impl Glance for DeltaFrame<'_> {
 				"{:?} {} {}@{}",
 				self.kind(),
 				c.side[i],
-				c.qty[i] as f64 / c.prec.qty_scale(),
-				c.price[i] as f64 / c.prec.price_scale()
+				c.qty[i] as f64 / c.prec.qty.scale(),
+				c.price[i] as f64 / c.prec.price.scale()
 			),
 			None => f.write_str("[]"),
 		}

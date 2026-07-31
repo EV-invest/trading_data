@@ -15,7 +15,7 @@ use std::sync::{
 };
 
 use tempfile::tempdir;
-use trading_data_core::{Aggregate, ExchangeName, InnerTrade, Instrument, Local, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
+use trading_data_core::{Aggregate, ExchangeName, InnerTrade, Instrument, Local, Precision, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
 use trading_data_persistence::{BatchTrades, Book, BookShape, BookUpdate, Catalog, Clock, DeltaFrame, Feed, LaneKind, LatencyConfig, Live, Oi, Replay};
 
 /// Monotonic synthetic clock: each read advances 1ms, so live arrival stamps are strictly
@@ -27,7 +27,10 @@ impl Clock for EventClock {
 	}
 }
 
-const PREC: PrecisionPriceQty = PrecisionPriceQty { price: 2, qty: 4 };
+const PREC: PrecisionPriceQty = PrecisionPriceQty {
+	price: Precision(2),
+	qty: Precision(4),
+};
 const LANES: &[LaneKind] = &[LaneKind::Trades, LaneKind::BookDeltas, LaneKind::BookAnchors, LaneKind::Oi];
 
 fn symbol() -> Symbol {

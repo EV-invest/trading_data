@@ -287,7 +287,7 @@ impl Flat for &BookShape {
 	const DIMS: &'static [usize] = &[2];
 
 	fn flat(&self, out: &mut [f64]) -> bool {
-		let s = self.prec.price_scale();
+		let s = self.prec.price.scale();
 		out.copy_from_slice(&[
 			self.bids.keys().next_back().map_or(f64::NAN, |&p| p as f64 / s),
 			self.asks.keys().next().map_or(f64::NAN, |&p| p as f64 / s),
@@ -307,7 +307,7 @@ impl Flat for &Book {
 	const DIMS: &'static [usize] = &[2];
 
 	fn flat(&self, out: &mut [f64]) -> bool {
-		let s = self.prec().price_scale();
+		let s = self.prec().price.scale();
 		let px = |l: Option<(i32, u32)>| l.map_or(f64::NAN, |(p, _)| p as f64 / s);
 		out.copy_from_slice(&[px(self.best_bid()), px(self.best_ask())]);
 		true
@@ -316,7 +316,7 @@ impl Flat for &Book {
 
 impl Glance for &Book {
 	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		let s = self.prec().price_scale();
+		let s = self.prec().price.scale();
 		match (self.best_bid(), self.best_ask()) {
 			(Some((b, _)), Some((a, _))) => write!(f, "{}/{} ({} lvls)", b as f64 / s, a as f64 / s, self.len()),
 			_ => write!(f, "empty ({} lvls)", self.len()),
@@ -328,7 +328,10 @@ impl Glance for &Book {
 mod tests {
 	use super::*;
 
-	const PREC: PrecisionPriceQty = PrecisionPriceQty { price: 2, qty: 3 };
+	const PREC: PrecisionPriceQty = PrecisionPriceQty {
+		price: Precision(2),
+		qty: Precision(3),
+	};
 	const CADENCE: Exact = Exact::from_nanos(60_000_000_000);
 
 	fn shape(bids: &[(i32, u32)], asks: &[(i32, u32)], ns: i64) -> BookShape {

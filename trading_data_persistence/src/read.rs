@@ -191,7 +191,7 @@ pub(crate) fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Sym
 #[cfg(test)]
 mod tests {
 	use tempfile::tempdir;
-	use trading_data_core::{FrameKind, Instrument, PrecisionPriceQty, Side};
+	use trading_data_core::{FrameKind, Instrument, Precision, PrecisionPriceQty, Side};
 
 	use super::*;
 	use crate::feather::{Feather, RotationPolicy};
@@ -201,7 +201,10 @@ mod tests {
 	}
 
 	fn prec() -> PrecisionPriceQty {
-		PrecisionPriceQty { price: 2, qty: 5 }
+		PrecisionPriceQty {
+			price: Precision(2),
+			qty: Precision(5),
+		}
 	}
 
 	const FOREVER: RotationPolicy = RotationPolicy { max_bytes: None, max_age: None };

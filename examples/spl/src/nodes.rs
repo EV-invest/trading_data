@@ -13,47 +13,29 @@ use core::fmt;
 use std::collections::VecDeque;
 
 use trading_data::{
-	Book, BookAnchors, BookDeltas, BookShape, Bump, Cell, DeltaFrame, DepOuts, Exact, Flat, Glance, Guide, Ink, Lanes, Mc, McRoot, Node, Oi, OiRoot, Sketch, TradeCols, Trades, WilderAtr,
-	WilderRsi, slice_nudge,
+	Book, BookAnchors, BookDeltas, BookShape, Bump, Cell, DeltaFrame, DepOuts, Exact, Flat, Glance, Lanes, Mc, McRoot, Node, Oi, OiRoot, Sketch, TradeCols, Trades, WilderAtr, WilderRsi,
+	slice_nudge,
 };
 use trading_data_core::Side;
+
+use crate::config::{Screen, strategy};
 
 const MIN_NS: i64 = 60_000_000_000;
 
 // ─── ported constants ───────────────────────────────────────────────────────────────────────────
+//
+// Everything SPL exposes in `config.nix` is read from [`crate::config::strategy`] instead; what
+// stays here is what SPL also hardcodes.
 
 /// Pine's `* 365`, kept verbatim regardless of bar timeframe — which is why the 4h and 5m Sharpe
 /// scales differ and each gets its own threshold.
 const PINE_PERIODS_PER_YEAR: f64 = 365.0;
-const RISK_FREE_RATE: f64 = 0.04;
-const LOOKBACK: usize = 180;
-/// `MomentumConfig::use_4h`. False drops the 4h slot entirely and makes its screener leg vacuous.
-const USE_4H: bool = true;
-
-const RSI_LEN: usize = 14;
-const RSI_SMOOTH_LEN: usize = 14;
-const ATR_LEN: usize = 14;
 /// Closed 1h bars behind `change_1d_pct`.
 const BARS_1D: usize = 24;
 /// Closed 1m bars behind `change_3m_pct` — offsets 0,1,2 span exactly three minutes.
 const BARS_3M: usize = 3;
-
-const RSI_THRESHOLD: f64 = 65.0;
-/// SPL's `RsiScreenerConfig::price_percent`. `change_1d_pct` is whole percent (the indie multiplies
-/// by 100) while this reads as a fraction — SPL's own unit mismatch, ported verbatim: the trigger is
-/// a 0.2% daily gain, not 20%.
-const PRICE_PERCENT: f64 = 0.20;
-const OVERVALUED_4H: f64 = 5.0;
-const OVERVALUED_5M: f64 = 5.0;
-
+/// SPL's `execution::RISK_FRACTION`: fraction of equity committed per entry.
 const RISK_FRACTION: f64 = 0.03;
-/// SPL sizes off live portfolio equity; there is no portfolio here, so the base is a named constant.
-const EQUITY_USDT: f64 = 100_000.0;
-const ATR_SL_X: f64 = 2.5;
-const ATR_TP_X: f64 = 5.0;
-const TRAIL_PCT: f64 = 0.02;
-const TRAIL_SEVERITY: f64 = 0.33;
-pub const DRAIN_GRACE_NS: i64 = 60_000_000_000;
 /// SPL's `OrderBookActor::DEPTH` and `SNAPSHOT_INTERVAL_NS`.
 const DEPTH: usize = 20;
 const DEEP_BUCKET_NS: i64 = 1_000_000_000;
@@ -143,7 +125,7 @@ impl<const M: u64> Node for Bars<M> {
 	fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		// precision is the run's, so the two scales are hoisted once instead of read per trade.
-		let (ps, qs) = (trades.prec.price_scale(), trades.prec.qty_scale());
+		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
 		let step = Exact::from_nanos(M as i64 * MIN_NS);
 		for (i, exec) in trades.exec().iter().enumerate() {
 			let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
@@ -290,8 +272,10 @@ pub struct ShallowSnap {
 	pub ts_ns: i64,
 	pub price: PriceSnap,
 	pub volume: VolSnap,
-	pub rsi: RsiSnap,
-	pub momentum: MomSnap,
+	/// `None` when the indie is not registered for the configured screener — SPL's own model, and
+	/// honest rather than fabricated. The screener that needs one asserts on it.
+	pub rsi: Option<RsiSnap>,
+	pub momentum: Option<MomSnap>,
 	pub oi: OiSnap,
 	pub atr: f64,
 	pub mc: McSnap,
@@ -611,8 +595,8 @@ struct RsiSlot {
 impl RsiSlot {
 	fn new() -> Self {
 		Self {
-			base: WilderRsi::new(RSI_LEN),
-			smooth: Ema::new(RSI_SMOOTH_LEN),
+			base: WilderRsi::new(strategy().indies.rsi.base_len),
+			smooth: Ema::new(strategy().indies.rsi.smooth_len),
 			last: None,
 		}
 	}
@@ -645,14 +629,11 @@ impl Cell for Rsi {
 impl Node for Rsi {
 	type Deps = (Bars<5>, Bars<15>, Bars<60>, Bars<240>);
 
+	// No threshold guide: the trigger is a `config.nix` value and `Sketch` is a const, so drawing
+	// one here would pin a number the config is free to move.
 	const SKETCH: Sketch = Sketch {
 		range: Some((0.0, 100.0)),
 		labels: &["5m", "5m~", "15m", "15m~", "1h", "1h~", "4h", "4h~"],
-		guides: &[Guide {
-			label: "65",
-			value: RSI_THRESHOLD,
-			ink: Ink::FAINT,
-		}],
 		..Sketch::DEFAULT
 	};
 
@@ -678,7 +659,7 @@ slice_nudge!(Rsi, Option<RsiSnap>);
 impl Default for Atr {
 	fn default() -> Self {
 		Self {
-			atr: WilderAtr::new(ATR_LEN),
+			atr: WilderAtr::new(strategy().indies.atr.period),
 			buf: Vec::new(),
 		}
 	}
@@ -715,13 +696,13 @@ impl Glance for MomSnap {
 	}
 }
 
-/// Sharpe over a window of `LOOKBACK + 1` closes, per `bullmart_sri.pine`. `None` until the window
+/// Sharpe over a window of `lookback + 1` closes, per `bullmart_sri.pine`. `None` until the window
 /// is full or when stdev is zero — all returns identical is degenerate, not corrupt.
 fn sharpe(closes: &VecDeque<f64>) -> Option<f64> {
-	if closes.len() < LOOKBACK + 1 {
+	let n = strategy().indies.momentum.lookback;
+	if closes.len() < n + 1 {
 		return None;
 	}
-	let n = LOOKBACK;
 	let mut prev = closes[0];
 	assert!(prev > 0.0, "non-positive close at window head");
 	let mut returns = Vec::with_capacity(n);
@@ -737,12 +718,12 @@ fn sharpe(closes: &VecDeque<f64>) -> Option<f64> {
 	if stdev_ann == 0.0 {
 		return None;
 	}
-	Some((mean * PINE_PERIODS_PER_YEAR - RISK_FREE_RATE) / stdev_ann)
+	Some((mean * PINE_PERIODS_PER_YEAR - strategy().indies.momentum.risk_free_rate) / stdev_ann)
 }
 
 fn push_close(closes: &mut VecDeque<f64>, close: f64) {
 	closes.push_back(close);
-	while closes.len() > LOOKBACK + 1 {
+	while closes.len() > strategy().indies.momentum.lookback + 1 {
 		closes.pop_front();
 	}
 }
@@ -755,11 +736,6 @@ impl Node for Momentum {
 
 	const SKETCH: Sketch = Sketch {
 		labels: &["4h", "5m"],
-		guides: &[Guide {
-			label: "overvalued",
-			value: OVERVALUED_5M,
-			ink: Ink::FAINT,
-		}],
 		..Sketch::DEFAULT
 	};
 
@@ -771,7 +747,7 @@ impl Node for Momentum {
 			drain_upto(h4, 240, &mut cursor, b.close_ns(5), |x| push_close(closes_4h, x.close));
 			push_close(&mut self.closes_5m, b.close);
 			// A degenerate (zero-stdev) window skips the publish rather than fabricating a Sharpe.
-			self.buf.push(match (sharpe(&self.closes_5m), USE_4H.then(|| sharpe(&self.closes_4h))) {
+			self.buf.push(match (sharpe(&self.closes_5m), use_4h().then(|| sharpe(&self.closes_4h))) {
 				(Some(sharpe_5m), Some(Some(sharpe_4h))) => Some(MomSnap {
 					sharpe_4h: Some(sharpe_4h),
 					sharpe_5m,
@@ -865,9 +841,9 @@ impl Flat for ShallowSnap {
 		out.copy_from_slice(&[
 			self.price.current,
 			self.price.change_1d_pct,
-			self.rsi.rsi_4h.actual,
-			self.momentum.sharpe_4h.unwrap_or(f64::NAN),
-			self.momentum.sharpe_5m,
+			self.rsi.map_or(f64::NAN, |r| r.rsi_4h.actual),
+			self.momentum.and_then(|m| m.sharpe_4h).unwrap_or(f64::NAN),
+			self.momentum.map_or(f64::NAN, |m| m.sharpe_5m),
 			self.atr,
 		]);
 		true
@@ -877,7 +853,10 @@ structural_bump!(ShallowSnap);
 
 impl Glance for ShallowSnap {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "rsi4h {:.1} 1d {:+.2}%", self.rsi.rsi_4h.actual, self.price.change_1d_pct)
+		match self.rsi {
+			Some(r) => write!(f, "rsi4h {:.1} 1d {:+.2}%", r.rsi_4h.actual, self.price.change_1d_pct),
+			None => write!(f, "1d {:+.2}%", self.price.change_1d_pct),
+		}
 	}
 }
 
@@ -910,14 +889,20 @@ impl Node for Shallow {
 		latest(&mut self.mc, mc);
 		latest(&mut self.atr, atr);
 
+		// SPL's `ShallowPartial::try_build(required)`: the universal set, plus the configured screener's
+		// own indie. An unregistered field passes through as `None`; a required one gates the build.
+		let signal_warm = match strategy().screen {
+			Screen::Rsi(_) => self.rsi.is_some(),
+			Screen::Std(_) => self.momentum.is_some(),
+		};
 		for b in bars {
-			self.buf.push(match (self.price, self.volume, self.rsi, self.momentum, self.oi, self.atr, self.mc) {
-				(Some(price), Some(volume), Some(rsi), Some(momentum), Some(oi), Some(atr), Some(mc)) => Some(ShallowSnap {
+			self.buf.push(match (self.price, self.volume, self.oi, self.atr, self.mc) {
+				(Some(price), Some(volume), Some(oi), Some(atr), Some(mc)) if signal_warm => Some(ShallowSnap {
 					ts_ns: b.close_ns(1),
 					price,
 					volume,
-					rsi,
-					momentum,
+					rsi: matches!(strategy().screen, Screen::Rsi(_)).then_some(self.rsi).flatten(),
+					momentum: matches!(strategy().screen, Screen::Std(_)).then_some(self.momentum).flatten(),
 					oi,
 					atr,
 					mc,
@@ -960,7 +945,7 @@ impl Node for Deep {
 		}
 		self.last_bucket = Some(bucket);
 		self.buf.push(book.and_then(|b| {
-			let (ps, qs) = (b.prec().price_scale(), b.prec().qty_scale());
+			let (ps, qs) = (b.prec().price.scale(), b.prec().qty.scale());
 			let (bid, ask) = (b.best_bid()?, b.best_ask()?);
 			let usd = |(p, q): (&i32, &u32)| (*p as f64 / ps) * (*q as f64 / qs);
 			let top20_bid_depth_usd: f64 = b.bids().iter().rev().take(DEPTH).map(usd).sum();
@@ -1004,9 +989,17 @@ impl Node for RsiScreener {
 
 	fn advance<'t>(&'t mut self, (shallow,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
+		// Inert unless configured, but still rate-preserving: `Classify` zips the two screeners by
+		// index, so an empty slice here would read as a rate mismatch rather than as "no hits".
+		let Screen::Rsi(c) = strategy().screen else {
+			self.buf.resize(shallow.len(), None);
+			return &self.buf;
+		};
 		for s in shallow {
-			self.buf
-				.push(s.and_then(|s| screened(&s, s.rsi.rsi_4h.actual > RSI_THRESHOLD && s.price.change_1d_pct > PRICE_PERCENT)));
+			self.buf.push(s.and_then(|s| {
+				let rsi = s.rsi.expect("rsi is registered whenever the rsi screener is the configured one");
+				screened(&s, rsi.rsi_4h.actual > c.rsi_threshold && s.price.change_1d_pct > *c.price_percent)
+			}));
 		}
 		&self.buf
 	}
@@ -1021,14 +1014,21 @@ impl Node for StdScreener {
 
 	fn advance<'t>(&'t mut self, (shallow,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
+		// Inert unless configured, but still rate-preserving: `Classify` zips the two screeners by
+		// index, so an empty slice here would read as a rate mismatch rather than as "no hits".
+		let Screen::Std(c) = strategy().screen else {
+			self.buf.resize(shallow.len(), None);
+			return &self.buf;
+		};
 		for s in shallow {
 			self.buf.push(s.and_then(|s| {
-				// The vacuous 4h leg must come from the config and nothing else: `Momentum` declines to
+				let m = s.momentum.expect("momentum is registered whenever the std screener is the configured one");
+				// The vacuous 4h leg must come from `use_4h` and nothing else: `Momentum` declines to
 				// publish at all when 4h is enabled but degenerate, so an absent Sharpe here would
 				// otherwise let a wiring bug read as an unconditional hit.
-				assert_eq!(s.momentum.sharpe_4h.is_some(), USE_4H, "sharpe_4h presence disagrees with USE_4H");
-				let trigger_4h = s.momentum.sharpe_4h.is_none_or(|x| x > OVERVALUED_4H);
-				screened(&s, trigger_4h && s.momentum.sharpe_5m > OVERVALUED_5M)
+				assert_eq!(m.sharpe_4h.is_some(), use_4h(), "sharpe_4h presence disagrees with indies.momentum.use_4h");
+				let trigger_4h = m.sharpe_4h.is_none_or(|x| x > c.overvalued_threshold_4h);
+				screened(&s, trigger_4h && m.sharpe_5m > c.overvalued_threshold_5m)
 			}));
 		}
 		&self.buf
@@ -1116,6 +1116,7 @@ impl Node for Deprecator {
 	};
 
 	fn advance<'t>(&'t mut self, (classify, shallow, deep): DepOuts<'t, Self>) -> Self::Out<'t> {
+		let liq = &strategy().classification.liquidations;
 		self.buf.clear();
 		if let Some(Some(s)) = shallow.last() {
 			self.last_shallow = Some(*s);
@@ -1136,9 +1137,9 @@ impl Node for Deprecator {
 				episode: self.episodes,
 				side,
 				//TODO: scale RISK_FRACTION by certainty × quality via a historic-returns lookup.
-				base_q: RISK_FRACTION * EQUITY_USDT / entry_price,
+				base_q: RISK_FRACTION * equity_usdt() / entry_price,
 				entry_price,
-				trail: TrailingStop::new(side, entry_price * TRAIL_PCT, TRAIL_SEVERITY),
+				trail: TrailingStop::new(side, entry_price * *liq.trail_pct, *liq.trail_severity),
 				drain_deadline_ns: None,
 			});
 		}
@@ -1160,8 +1161,8 @@ impl Node for Deprecator {
 			let (trail_mult, trail_fraction, trail_stop) = a.trail.step(mid);
 			let atr = shallow.atr;
 			let (sl, tp) = match a.side {
-				Side::Buy => (a.entry_price - atr * ATR_SL_X, a.entry_price + atr * ATR_TP_X),
-				Side::Sell => (a.entry_price + atr * ATR_SL_X, a.entry_price - atr * ATR_TP_X),
+				Side::Buy => (a.entry_price - atr * liq.atr_sl_x, a.entry_price + atr * liq.atr_tp_x),
+				Side::Sell => (a.entry_price + atr * liq.atr_sl_x, a.entry_price - atr * liq.atr_tp_x),
 			};
 			let inside = match a.side {
 				Side::Buy => mid > sl && mid < tp,
@@ -1174,7 +1175,7 @@ impl Node for Deprecator {
 			// 100% deprecation starts the drain clock; SPL keeps the reduce-side limit working the
 			// book until it expires, which is the part that lives past `target_q`.
 			if eval == 0.0 && a.drain_deadline_ns.is_none() {
-				a.drain_deadline_ns = Some(d.ts_ns + DRAIN_GRACE_NS);
+				a.drain_deadline_ns = Some(d.ts_ns + drain_grace_ns());
 			}
 			let draining = a.drain_deadline_ns.is_some();
 			self.buf.push(Some(Intent {
@@ -1275,4 +1276,17 @@ impl<'t> From<Lanes<'t>> for Batches<'t> {
 			mc: l.mc,
 		}
 	}
+}
+
+fn use_4h() -> bool {
+	strategy().indies.momentum.use_4h
+}
+
+/// SPL sizes off live portfolio equity; the simulated venue's seed is the honest stand-in.
+fn equity_usdt() -> f64 {
+	crate::config::config().backtest.starting_balance
+}
+
+fn drain_grace_ns() -> i64 {
+	strategy().classification.drain_grace.duration().as_nanos() as i64
 }

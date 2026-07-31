@@ -13,11 +13,14 @@ use std::{
 };
 
 use trading_data::{Catalog, Feather, Mc, Oi, Row as _, Trade, TradeBuf, read_mc, read_oi, read_trades};
-use trading_data_core::{Asset, ExchangeName, Instrument, Local, Pair, PrecisionPriceQty, Side, Symbol, Ts, Venue};
+use trading_data_core::{Asset, ExchangeName, Instrument, Local, Pair, Precision, PrecisionPriceQty, Side, Symbol, Ts, Venue};
 
 const DAY: &str = "2025-01-03";
 const BYBIT_SYMBOL: &str = "TAOUSDT";
-const PREC: PrecisionPriceQty = PrecisionPriceQty { price: 4, qty: 3 };
+const PREC: PrecisionPriceQty = PrecisionPriceQty {
+	price: Precision(4),
+	qty: Precision(3),
+};
 
 pub fn symbol() -> Symbol {
 	Symbol::new(Pair::from_str("TAO-USDT").expect("static pair"), Instrument::Perp)
@@ -179,40 +182,17 @@ fn ingest(gz: &Path, catalog: &Catalog) {
 		let ts_sec: f64 = col().parse().unwrap_or_else(|e| panic!("bad ts on line {i}: {e}"));
 		assert_eq!(col(), BYBIT_SYMBOL, "foreign symbol on line {i}");
 		let side: Side = col().parse().unwrap_or_else(|e| panic!("bad side on line {i}: {e}"));
-		let qty_raw = decimal_raw(col(), PREC.qty, i);
-		let price_raw = decimal_raw(col(), PREC.price, i);
+		let qty_raw = PREC.qty.parse_u32(col());
+		let price_raw = PREC.price.parse_i32(col());
 
 		let ts = (ts_sec * 1e9).round() as i64;
 		assert!(ts >= prev_ts, "trades not time-ordered at line {i}: {prev_ts} > {ts}");
 		prev_ts = ts;
 
 		// Historic ingest: no wire time, and we were not there to receive it.
-		day.push(
-			Ts::from_nanos(ts),
-			None,
-			None,
-			i as u64,
-			side,
-			price_raw.try_into().unwrap_or_else(|_| panic!("price out of i32 range on line {i}")),
-			qty_raw.try_into().unwrap_or_else(|_| panic!("qty out of u32 range on line {i}")),
-		);
+		day.push(Ts::from_nanos(ts), None, None, i as u64, side, price_raw, qty_raw);
 	}
 	feather.extend(day.cols(0..day.len()));
 	let path = feather.flush(catalog).expect("flush day of trades").expect("non-empty day");
 	println!("ingested to {}", path.display());
-}
-
-/// Exact scaled-integer parse: no float round-trip, so precision violations panic instead of
-/// silently truncating.
-fn decimal_raw(s: &str, prec: u8, line: usize) -> i64 {
-	let (int, frac) = s.split_once('.').unwrap_or((s, ""));
-	assert!(frac.len() <= prec as usize, "more than {prec} decimals on line {line}: {s}");
-	let int: i64 = int.parse().unwrap_or_else(|e| panic!("bad decimal {s:?} on line {line}: {e}"));
-	let frac_val: i64 = if frac.is_empty() {
-		0
-	} else {
-		frac.parse().unwrap_or_else(|e| panic!("bad decimal {s:?} on line {line}: {e}"))
-	};
-	let scale = 10i64.pow(prec as u32);
-	int * scale + frac_val * 10i64.pow(prec as u32 - frac.len() as u32)
 }

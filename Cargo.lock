@@ -4607,6 +4607,7 @@ dependencies = [
  "exec_viz",
  "flate2",
  "jiff",
+ "serde",
  "serde_json",
  "tokio",
  "trading_data",
@@ -4908,15 +4909,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "v_exchanges_core"
-version = "0.3.2"
-dependencies = [
- "ahash",
- "derive-new",
- "jiff",
-]
-
-[[package]]
 name = "v_exchanges_methods"
 version = "0.2.2"
 dependencies = [
@@ -4944,7 +4936,6 @@ dependencies = [
  "trading_data_core",
  "uuid",
  "v_exchanges_adapters",
- "v_exchanges_core",
  "v_utils",
 ]
 

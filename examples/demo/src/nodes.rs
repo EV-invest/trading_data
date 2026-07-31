@@ -134,7 +134,7 @@ impl Node for Bar1m {
 	fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		// precision is the run's, so the two scales are hoisted once instead of read per trade.
-		let (ps, qs) = (trades.prec.price_scale(), trades.prec.qty_scale());
+		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
 		for (i, exec) in trades.exec().iter().enumerate() {
 			let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
 			let ts_open = exec.floor(MINUTE).as_nanos();
@@ -181,7 +181,7 @@ impl Node for Cvd {
 
 	fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		let (ps, qs) = (trades.prec.price_scale(), trades.prec.qty_scale());
+		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
 		for i in 0..trades.len() {
 			self.sum += signed(trades.side[i], (trades.price[i] as f64 / ps) * (trades.qty[i] as f64 / qs));
 			self.buf.push(self.sum);

@@ -19,7 +19,7 @@ impl Node for Cvd {
 
 	fn advance<'t>(&'t mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		let (ps, qs) = (t.prec.price_scale(), t.prec.qty_scale());
+		let (ps, qs) = (t.prec.price.scale(), t.prec.qty.scale());
 		for i in 0..t.len() {
 			let notional = (t.price[i] as f64 / ps) * (t.qty[i] as f64 / qs);
 			self.sum += match t.side[i] {
@@ -51,7 +51,7 @@ impl Node for BookFlow {
 		// A correction is a dropped websocket packet, not market activity: folding one into flow
 		// fabricates signal. The enum is what makes ignoring that impossible to do by accident.
 		let DeltaFrame::Update(d) = frame else { return &self.buf };
-		let qs = d.prec.qty_scale();
+		let qs = d.prec.qty.scale();
 		for i in 0..d.len() {
 			let q = d.qty[i] as f64 / qs;
 			self.sum += match d.side[i] {
@@ -79,7 +79,7 @@ impl Node for Spread {
 	fn advance<'t>(&'t mut self, (book,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		self.buf.push(book.and_then(|b| {
-			let s = b.prec().price_scale();
+			let s = b.prec().price.scale();
 			let (bid, ask) = (b.best_bid()?, b.best_ask()?);
 			Some((ask.0 - bid.0) as f64 / s)
 		}));

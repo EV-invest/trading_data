@@ -2,7 +2,7 @@ use std::{hint::black_box, sync::Arc};
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use tempfile::TempDir;
-use trading_data_core::{Aggregate, ExchangeName, Instrument, Local, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
+use trading_data_core::{Aggregate, ExchangeName, Instrument, Local, Precision, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
 use trading_data_persistence::{BookShape, BookUpdate, Catalog, Feather, Feed, Live, LiveClock, RotationPolicy, Trade, TradeBuf};
 
 const N_TRADES: u64 = 100_000;
@@ -14,7 +14,10 @@ fn test_symbol() -> Symbol {
 }
 
 fn prec() -> PrecisionPriceQty {
-	PrecisionPriceQty { price: 2, qty: 5 }
+	PrecisionPriceQty {
+		price: Precision(2),
+		qty: Precision(5),
+	}
 }
 
 #[library_benchmark]
