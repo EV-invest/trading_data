@@ -24,7 +24,7 @@ use trading_data_spl::{
 	config::{self, Config, Screen},
 	day_bounds, ensure_lanes,
 	nodes::{BookTopSnap, Graph, Intent, TrailingStop},
-	symbol, trading_days,
+	symbol, trading_days, ui,
 };
 
 /// This app's slot in the port range. The base is the devShell's and the flake's; the port is
@@ -38,6 +38,7 @@ const PORT_BASE: u16 = 59990;
 /// what a scrub of the degradation wants.
 const SCROLLBACK: usize = 20_000;
 const HOUR_NS: i64 = 3600 * 1_000_000_000;
+const DAY_NS: i64 = 24 * HOUR_NS;
 /// The knob the whole measurement turns on: `TrailingStop`'s extremum and the `lambda_atr` crossing
 /// are running readings over *evaluated* states, so how much book one tick may swallow is exactly
 /// how much of the degradation goes unseen.
@@ -83,10 +84,13 @@ async fn main() {
 	let mut first_momentum_ns = None;
 	let mut bars_5m = 0u64;
 	let mut warmup_hits = 0u64;
+	let (range_start, _) = day_bounds(all[0]);
+	let pb = ui::run("warmup", warmup.len() as i64 * DAY_NS);
 	for d in warmup {
 		let (start, end) = day_bounds(*d);
 		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &[LaneKind::Trades], latency, WARMUP_WINDOW);
 		while let Some(lanes) = feed.next() {
+			pb.set_position((lanes.ts_venue.as_nanos() - range_start.as_nanos()) as u64);
 			let out = graph.tick(lanes.into());
 			bars_5m += out.bar_5m.len() as u64;
 			assert_eq!(out.momentum.len(), out.bar_5m.len(), "Momentum/Bars<5> rate mismatch");
@@ -103,10 +107,11 @@ async fn main() {
 				out.deprecator.iter().all(Option::is_none),
 				"an intent was produced during trades-only warmup, with no book lane to price an entry against"
 			);
+			pb.set_message(format!("{bars_5m} 5m bars, {warmup_hits} screener hits"));
 		}
 	}
+	ui::finish_run(&pb, format!("{bars_5m} 5m bars, {warmup_hits} screener hits"));
 	let first_momentum_ns = first_momentum_ns.expect("Momentum never warmed inside the warmup window — the horizon is short");
-	let (range_start, _) = day_bounds(all[0]);
 	let (trade_start, _) = day_bounds(measured[0]);
 	// Bars are aggregated from trades, so a bucket with no trade emits none: on a thin instrument the
 	// `lookback + 1`-th *emitted* bar lands strictly later than `lookback + 1` bar-widths in. `earliest`
@@ -141,6 +146,7 @@ async fn main() {
 	let mut recorder = viz.clone();
 	let mut day = Day::default();
 	let began = std::time::Instant::now();
+	let pb = ui::run("replay", measured.len() as i64 * DAY_NS);
 
 	for d in measured {
 		let (start, end) = day_bounds(*d);
@@ -148,6 +154,11 @@ async fn main() {
 		while let Some(lanes) = feed.next() {
 			day.ticks += 1;
 			let ts_ns = lanes.ts_venue.as_nanos();
+			// Ticks land ~2k/s, and both calls take the draw lock. Every 1024th is still twice a second.
+			if day.ticks % 1024 == 0 {
+				pb.set_position((ts_ns - trade_start.as_nanos()) as u64);
+				pb.set_message(format!("{} book reads, {} episodes, {} intents", day.top, day.episodes, day.intents));
+			}
 			// The tape is the book's only independent witness: nothing downstream ever compares them.
 			if let Some(&raw) = lanes.trades.price.last() {
 				day.last_trade_px = Some(raw as f64 / lanes.trades.prec.price.scale());
@@ -194,6 +205,7 @@ async fn main() {
 			}
 		}
 	}
+	ui::finish_run(&pb, format!("{} ticks, {} book reads, {} episodes", day.ticks, day.top, day.episodes));
 
 	println!(
 		"traded: rsi={} price={} momentum={} top={}/{} rsi_hits={} std_hits={} classifications={} episodes={} intents={}",

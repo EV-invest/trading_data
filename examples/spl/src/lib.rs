@@ -8,7 +8,7 @@
 
 pub mod config;
 pub mod nodes;
-mod ui;
+pub mod ui;
 
 use std::{
 	collections::BTreeMap,

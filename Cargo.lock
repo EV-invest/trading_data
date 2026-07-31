@@ -4850,14 +4850,14 @@ dependencies = [
 
 [[package]]
 name = "v_exchanges"
-version = "0.19.2"
+version = "0.19.3"
 dependencies = [
  "v_exchanges_methods",
 ]
 
 [[package]]
 name = "v_exchanges_adapters"
-version = "0.19.2"
+version = "0.19.3"
 dependencies = [
  "ahash",
  "base64 0.23.0",
@@ -4884,7 +4884,7 @@ dependencies = [
 
 [[package]]
 name = "v_exchanges_api_generics"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -4914,7 +4914,7 @@ dependencies = [
 
 [[package]]
 name = "v_exchanges_methods"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "ahash",
  "arrayvec",
