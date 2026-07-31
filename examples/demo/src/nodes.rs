@@ -6,8 +6,8 @@
 use core::fmt;
 
 use trading_data::{
-	Buffer, Buffering, Bump, Cell, DepOuts, Exact, Expr, Flat, Glance, Guide, Ink, Lanes, Node, Oi, OiRoot, Plot, Symbolic, TradeCols, Trades, Vars, WilderAtr, WilderRsi, constant,
-	slice_nudge,
+	Buffer, Buffering, Bump, Cell, DepOuts, Exact, Expr, Flat, Glance, Guide, Ink, Lanes, Node, Oi, OiRoot, Plot, Symbolic, TradeCols, Trades, Vars, WilderAtr, WilderAvgGainLoss, constant,
+	rsi, slice_nudge,
 };
 use trading_data_core::Side;
 
@@ -195,13 +195,13 @@ slice_nudge!(Cvd, f64);
 // The 14-period constants are part of these nodes' identity, so Default is honest.
 #[derive(Clone)]
 pub struct Rsi14 {
-	rsi: WilderRsi,
+	rsi: WilderAvgGainLoss,
 	buf: Vec<Option<f64>>,
 }
 impl Default for Rsi14 {
 	fn default() -> Self {
 		Self {
-			rsi: WilderRsi::new(14),
+			rsi: WilderAvgGainLoss::new(14),
 			buf: Vec::new(),
 		}
 	}
@@ -232,7 +232,7 @@ impl Node for Rsi14 {
 	fn advance<'t>(&'t mut self, (bars,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for b in bars {
-			self.buf.push(self.rsi.update(b.close));
+			self.buf.push(self.rsi.update(b.close).map(|(g, l)| rsi(g, l)));
 		}
 		&self.buf
 	}

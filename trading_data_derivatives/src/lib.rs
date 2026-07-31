@@ -5,71 +5,74 @@
 //! `(prev*(n-1)+x)/n`; `None` until warm.
 
 #[derive(Clone)]
-pub struct WilderRsi {
+struct Wilder {
 	period: usize,
-	prev_close: Option<f64>,
-	avg_gain: f64,
-	avg_loss: f64,
+	value: f64,
 	warmed: usize,
 }
 
-impl WilderRsi {
-	pub fn new(period: usize) -> Self {
+impl Wilder {
+	fn new(period: usize) -> Self {
 		assert!(period > 0);
-		Self {
-			period,
-			prev_close: None,
-			avg_gain: 0.0,
-			avg_loss: 0.0,
-			warmed: 0,
-		}
+		Self { period, value: 0.0, warmed: 0 }
 	}
 
-	pub fn update(&mut self, close: f64) -> Option<f64> {
-		let prev = match self.prev_close.replace(close) {
-			Some(p) => p,
-			None => return None,
-		};
-		let delta = close - prev;
-		let (gain, loss) = if delta >= 0.0 { (delta, 0.0) } else { (0.0, -delta) };
+	fn update(&mut self, x: f64) -> Option<f64> {
 		let n = self.period as f64;
 		if self.warmed < self.period {
-			self.avg_gain += gain;
-			self.avg_loss += loss;
+			self.value += x;
 			self.warmed += 1;
 			if self.warmed < self.period {
 				return None;
 			}
-			self.avg_gain /= n;
-			self.avg_loss /= n;
+			self.value /= n;
 		} else {
-			self.avg_gain = (self.avg_gain * (n - 1.0) + gain) / n;
-			self.avg_loss = (self.avg_loss * (n - 1.0) + loss) / n;
+			self.value = (self.value * (n - 1.0) + x) / n;
 		}
-		Some(if self.avg_loss == 0.0 {
-			100.0
-		} else {
-			100.0 - 100.0 / (1.0 + self.avg_gain / self.avg_loss)
-		})
+		Some(self.value)
 	}
+}
+
+/// The two averages RSI is a ratio of; [`rsi`] is that ratio.
+#[derive(Clone)]
+pub struct WilderAvgGainLoss {
+	prev_close: Option<f64>,
+	gain: Wilder,
+	loss: Wilder,
+}
+
+impl WilderAvgGainLoss {
+	pub fn new(period: usize) -> Self {
+		Self {
+			prev_close: None,
+			gain: Wilder::new(period),
+			loss: Wilder::new(period),
+		}
+	}
+
+	pub fn update(&mut self, close: f64) -> Option<(f64, f64)> {
+		let prev = self.prev_close.replace(close)?;
+		let delta = close - prev;
+		let (gain, loss) = if delta >= 0.0 { (delta, 0.0) } else { (0.0, -delta) };
+		self.gain.update(gain).zip(self.loss.update(loss))
+	}
+}
+
+pub fn rsi(avg_gain: f64, avg_loss: f64) -> f64 {
+	if avg_loss == 0.0 { 100.0 } else { 100.0 - 100.0 / (1.0 + avg_gain / avg_loss) }
 }
 
 #[derive(Clone)]
 pub struct WilderAtr {
-	period: usize,
 	prev_close: Option<f64>,
-	atr: f64,
-	warmed: usize,
+	atr: Wilder,
 }
 
 impl WilderAtr {
 	pub fn new(period: usize) -> Self {
-		assert!(period > 0);
 		Self {
-			period,
 			prev_close: None,
-			atr: 0.0,
-			warmed: 0,
+			atr: Wilder::new(period),
 		}
 	}
 
@@ -78,18 +81,7 @@ impl WilderAtr {
 			Some(pc) => (high - low).max((high - pc).abs()).max((low - pc).abs()),
 			None => high - low,
 		};
-		let n = self.period as f64;
-		if self.warmed < self.period {
-			self.atr += tr;
-			self.warmed += 1;
-			if self.warmed < self.period {
-				return None;
-			}
-			self.atr /= n;
-		} else {
-			self.atr = (self.atr * (n - 1.0) + tr) / n;
-		}
-		Some(self.atr)
+		self.atr.update(tr)
 	}
 }
 
@@ -108,8 +100,8 @@ mod tests {
 		let golden = [
 			70.5328, 66.3186, 66.5498, 69.4063, 66.3552, 57.9749, 62.9296, 63.2571, 56.0593, 62.3771, 54.7076, 50.4228, 39.9898, 41.4605, 41.8689, 45.4632, 37.3040, 33.0795, 37.7730,
 		];
-		let mut rsi = WilderRsi::new(14);
-		let outs: Vec<_> = closes.iter().map(|&c| rsi.update(c)).collect();
+		let mut avgs = WilderAvgGainLoss::new(14);
+		let outs: Vec<_> = closes.iter().map(|&c| avgs.update(c).map(|(g, l)| rsi(g, l))).collect();
 		assert!(outs[..14].iter().all(Option::is_none), "warm only after period deltas");
 		for (got, want) in outs[14..].iter().zip(golden) {
 			let got = got.expect("warm from the 15th close on");

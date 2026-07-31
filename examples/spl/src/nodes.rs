@@ -19,7 +19,7 @@ use core::fmt;
 
 use trading_data::{
 	Book, BookAnchors, BookDeltas, BookShape, Buffer, Buffering, Bump, Cell, DeltaFrame, DepOuts, Exact, Flat, Gate, Glance, Lanes, Mc, McRoot, Node, Oi, OiRoot, Plot, TradeCols, Trades,
-	WilderAtr, WilderRsi, slice_nudge, value_nudge,
+	WilderAtr, WilderAvgGainLoss, rsi, slice_nudge, value_nudge,
 };
 use trading_data_core::Side;
 use v_utils::{Timeframe, TimeframeDesignator};
@@ -198,15 +198,28 @@ pub struct Volume {
 	buf: Vec<Option<VolSnap>>,
 }
 #[derive(Clone, Copy, Debug)]
+pub struct AvgGainLoss {
+	pub gain: f64,
+	pub loss: f64,
+}
+/// The two Wilder averages RSI is a ratio of, clocked by `indies.rsi.timeframe`. Every wired bar
+/// series is a candidate input, which is why they are all deps; the config picks which one is read.
+#[derive(Clone)]
+pub struct RsiAverages {
+	avgs: WilderAvgGainLoss,
+	buf: Vec<Option<AvgGainLoss>>,
+}
+#[derive(Clone, Copy, Debug)]
 pub struct RsiValues {
 	pub actual: f64,
 	pub smooth: f64,
 }
-/// Wilder RSI, EMA-smoothed, on the one timeframe `indies.rsi.timeframe` names. Every wired bar
-/// series is a candidate input, which is why they are all deps; the config picks which one is read.
+/// Wilder RSI, EMA-smoothed. Warmth is `base_len + smooth_len` closed bars, which is exactly when
+/// both stages are warm: the averages need `base_len` deltas, and only then does the EMA start
+/// seeing values.
 #[derive(Clone)]
 pub struct Rsi {
-	slot: RsiSlot,
+	smooth: Ema,
 	buf: Vec<Option<RsiValues>>,
 }
 /// Wilder ATR(14) on 1m bars. An indie in its own right rather than an execution-owned indicator:
@@ -492,6 +505,14 @@ impl Node for Volume {
 }
 slice_nudge!(Volume, Option<VolSnap>);
 
+flat_fields!(AvgGainLoss[gain, loss]);
+
+impl Glance for AvgGainLoss {
+	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "+{:.4} -{:.4}", self.gain, self.loss)
+	}
+}
+
 flat_fields!(RsiValues[actual, smooth]);
 
 impl Glance for RsiValues {
@@ -521,51 +542,23 @@ impl Ema {
 	}
 }
 
-#[derive(Clone)]
-struct RsiSlot {
-	base: WilderRsi,
-	smooth: Ema,
-	last: Option<RsiValues>,
-}
-impl RsiSlot {
-	fn new() -> Self {
-		Self {
-			base: WilderRsi::new(strategy().indies.rsi.base_len),
-			smooth: Ema::new(strategy().indies.rsi.smooth_len),
-			last: None,
-		}
-	}
-
-	/// Warmth is `base_len + smooth_len` closed bars, which is exactly when both stages are warm:
-	/// the Wilder base needs `base_len` deltas, and only then does the EMA start seeing values.
-	fn update(&mut self, close: f64) {
-		if let Some(actual) = self.base.update(close)
-			&& let Some(smooth) = self.smooth.update(actual)
-		{
-			self.last = Some(RsiValues { actual, smooth });
-		}
-	}
-}
-
-impl Default for Rsi {
+impl Default for RsiAverages {
 	fn default() -> Self {
 		Self {
-			slot: RsiSlot::new(),
+			avgs: WilderAvgGainLoss::new(strategy().indies.rsi.base_len),
 			buf: Vec::new(),
 		}
 	}
 }
-impl Cell for Rsi {
-	type Out<'t> = &'t [Option<RsiValues>];
+impl Cell for RsiAverages {
+	type Out<'t> = &'t [Option<AvgGainLoss>];
 }
-impl Node for Rsi {
+impl Node for RsiAverages {
 	type Deps = (Bars<5>, Bars<15>, Bars<60>, Bars<240>);
 
-	// No threshold guide: the trigger is a `config.nix` value and `Plot` is a const, so drawing
-	// one here would pin a number the config is free to move.
+	// Price units, so no range.
 	const PLOTS: &'static [Plot] = &[Plot {
-		range: Some((0.0, 100.0)),
-		labels: &["actual", "smooth"],
+		labels: &["avg gain", "avg loss"],
 		..Plot::DEFAULT
 	}];
 
@@ -586,8 +579,42 @@ impl Node for Rsi {
 			),
 		};
 		for b in bars {
-			self.slot.update(b.close);
-			self.buf.push(self.slot.last);
+			self.buf.push(self.avgs.update(b.close).map(|(gain, loss)| AvgGainLoss { gain, loss }));
+		}
+		&self.buf
+	}
+}
+slice_nudge!(RsiAverages, Option<AvgGainLoss>);
+
+impl Default for Rsi {
+	fn default() -> Self {
+		Self {
+			smooth: Ema::new(strategy().indies.rsi.smooth_len),
+			buf: Vec::new(),
+		}
+	}
+}
+impl Cell for Rsi {
+	type Out<'t> = &'t [Option<RsiValues>];
+}
+impl Node for Rsi {
+	type Deps = (RsiAverages,);
+
+	// No threshold guide: the trigger is a `config.nix` value and `Plot` is a const, so drawing
+	// one here would pin a number the config is free to move.
+	const PLOTS: &'static [Plot] = &[Plot {
+		range: Some((0.0, 100.0)),
+		labels: &["actual", "smooth"],
+		..Plot::DEFAULT
+	}];
+
+	fn advance<'t>(&'t mut self, (avgs,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		self.buf.clear();
+		for a in avgs {
+			self.buf.push(a.and_then(|a| {
+				let actual = rsi(a.gain, a.loss);
+				self.smooth.update(actual).map(|smooth| RsiValues { actual, smooth })
+			}));
 		}
 		&self.buf
 	}
@@ -1106,6 +1133,7 @@ trading_data::graph! {
 	oi_hist: Buffer<OiRoot, 4>,
 	price: Price,
 	volume: Volume,
+	rsi_averages: RsiAverages,
 	rsi: Rsi,
 	atr: Atr,
 	momentum: Momentum,
