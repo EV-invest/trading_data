@@ -113,18 +113,17 @@ pub struct Bar {
 	/// Base-denominated. SPL's volume indie reads `volume * close` — the close standing in for vwap.
 	pub vol_base: f64,
 }
+impl Bar {
+	fn close_ns(&self, minutes: u64) -> i64 {
+		self.ts_open + minutes as i64 * MIN_NS
+	}
+}
 
 flat_fields!(Bar[open, high, low, close, vol_base]);
 
 impl Glance for Bar {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "close {}", self.close)
-	}
-}
-
-impl Bar {
-	fn close_ns(&self, minutes: u64) -> i64 {
-		self.ts_open + minutes as i64 * MIN_NS
 	}
 }
 
@@ -180,6 +179,303 @@ slice_nudge!(Bars<15>, Bar);
 slice_nudge!(Bars<60>, Bar);
 slice_nudge!(Bars<240>, Bar);
 
+#[derive(Clone, Copy, Debug)]
+pub struct PriceSnap {
+	pub current: f64,
+	pub change_3m_pct: f64,
+	pub change_1d_pct: f64,
+}
+/// SPL backtest mode: the 3m delta comes off the last three closed 1m bars (the live Trades window
+/// is a live-only fidelity choice), the 1d delta off 24 closed 1h closes.
+#[derive(Clone, Default)]
+pub struct Price {
+	bars_3m: VecDeque<(f64, f64)>,
+	closes_1h: VecDeque<f64>,
+	buf: Vec<Option<PriceSnap>>,
+}
+impl Price {
+	fn snap(&self, current: f64) -> Option<PriceSnap> {
+		if self.bars_3m.len() < BARS_3M || self.closes_1h.len() < BARS_1D {
+			return None;
+		}
+		let (base_open, _) = *self.bars_3m.front().expect("checked full");
+		let oldest_1h = *self.closes_1h.front().expect("checked full");
+		if base_open <= 0.0 || oldest_1h == 0.0 {
+			return None;
+		}
+		Some(PriceSnap {
+			current,
+			change_3m_pct: (current - base_open) / base_open * 100.0,
+			change_1d_pct: (current - oldest_1h) / oldest_1h * 100.0,
+		})
+	}
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct VolSnap {
+	pub volume_1m_usd: f64,
+	pub volume_1h_usd: f64,
+	pub volume_4h_usd: f64,
+}
+/// Latest closed bar per timeframe, notional as `volume * close`.
+#[derive(Clone, Default)]
+pub struct Volume {
+	last_1h: Option<f64>,
+	last_4h: Option<f64>,
+	buf: Vec<Option<VolSnap>>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct RsiValues {
+	pub actual: f64,
+	pub smooth: f64,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct RsiSnap {
+	pub rsi_5m: RsiValues,
+	pub rsi_15m: RsiValues,
+	pub rsi_1h: RsiValues,
+	pub rsi_4h: RsiValues,
+}
+/// Wilder RSI(14) per timeframe, each EMA(14)-smoothed. Emits per 5m bar — every 15m/1h/4h boundary
+/// is also a 5m one, so nothing is missed by anchoring there.
+#[derive(Clone)]
+pub struct Rsi {
+	m5: RsiSlot,
+	m15: RsiSlot,
+	h1: RsiSlot,
+	h4: RsiSlot,
+	buf: Vec<Option<RsiSnap>>,
+}
+/// Wilder ATR(14) on 1m bars. A shallow indie rather than an execution-owned indicator: that is what
+/// removed SPL's per-situation bar subscribe/unsubscribe flicker.
+#[derive(Clone)]
+pub struct Atr {
+	atr: WilderAtr,
+	buf: Vec<Option<f64>>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct MomSnap {
+	/// `None` when 4h is disabled: the slot is never created, so there is no window to compute from.
+	pub sharpe_4h: Option<f64>,
+	pub sharpe_5m: f64,
+}
+#[derive(Clone, Default)]
+pub struct Momentum {
+	closes_5m: VecDeque<f64>,
+	closes_4h: VecDeque<f64>,
+	buf: Vec<Option<MomSnap>>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct OiSnap {
+	pub oi_delta_5m_pct: f64,
+	pub oi_delta_15m_pct: f64,
+}
+/// Bybit 5min open interest read 1-back and 3-back — 5 and 15 minutes.
+#[derive(Clone, Default)]
+pub struct OiDelta {
+	window: VecDeque<f64>,
+	buf: Vec<Option<OiSnap>>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct McSnap {
+	pub market_cap: f64,
+	pub rank: Option<u32>,
+}
+#[derive(Clone, Default)]
+pub struct MarketCap {
+	buf: Vec<Option<McSnap>>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct ShallowSnap {
+	pub ts_ns: i64,
+	pub price: PriceSnap,
+	pub volume: VolSnap,
+	pub rsi: RsiSnap,
+	pub momentum: MomSnap,
+	pub oi: OiSnap,
+	pub atr: f64,
+	pub mc: McSnap,
+}
+/// SPL's `ShallowPartial::try_build(required)`: each indie's latest publish is cached as a level and
+/// the snapshot only builds once every required field is warm. Absence stays honest — no defaults.
+#[derive(Clone, Default)]
+pub struct Shallow {
+	price: Option<PriceSnap>,
+	volume: Option<VolSnap>,
+	rsi: Option<RsiSnap>,
+	momentum: Option<MomSnap>,
+	oi: Option<OiSnap>,
+	mc: Option<McSnap>,
+	atr: Option<f64>,
+	buf: Vec<Option<ShallowSnap>>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct DeepSnap {
+	pub ts_ns: i64,
+	pub best_bid: f64,
+	pub best_ask: f64,
+	pub top20_bid_depth_usd: f64,
+	pub top20_ask_depth_usd: f64,
+	pub imbalance: f64,
+	pub spread_pct: f64,
+}
+impl DeepSnap {
+	pub fn mid(&self) -> f64 {
+		(self.best_bid + self.best_ask) / 2.0
+	}
+}
+
+/// The folded book, read once per second — SPL's `SNAPSHOT_INTERVAL_NS` timer. A book still filling
+/// from its first deltas has one side empty; that is warmup, not corruption, so the tick is skipped
+/// and the deprecator simply doesn't enter yet.
+#[derive(Clone, Default)]
+pub struct Deep {
+	last_bucket: Option<i64>,
+	buf: Vec<Option<DeepSnap>>,
+}
+/// A screener hit. Short-only and binary: certainty is `-1.0` on a hit, and a miss emits nothing at
+/// all (SPL's `Screened` contract to the classifier). A graded certainty is a later refinement.
+#[derive(Clone, Copy, Debug)]
+pub struct Screened {
+	pub ts_ns: i64,
+	pub certainty: f64,
+}
+/// Top-gainer short: overbought on 4h while up on the day.
+#[derive(Clone, Default)]
+pub struct RsiScreener {
+	buf: Vec<Option<Screened>>,
+}
+/// Pine's overvalued zone at both timeframes. The 4h leg is vacuously satisfied when 4h is disabled.
+#[derive(Clone, Default)]
+pub struct StdScreener {
+	buf: Vec<Option<Screened>>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Category {
+	None,
+	Liquidations,
+	MmClosing,
+	Manipulation,
+}
+/// Size scales exactly exponentially.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Quality {
+	A,
+	B,
+	C,
+	D,
+	E,
+}
+/// SPL's `ClassificationActor::classify` is still a stub returning one outcome at 100%; ported as
+/// it stands rather than invented over.
+#[derive(Clone, Copy, Debug)]
+pub struct Classified {
+	pub ts_ns: i64,
+	pub probability: f64,
+	pub category: Category,
+	pub quality: Quality,
+}
+/// SPL runs exactly one screener per config; both are wired here, so a hit on either classifies.
+#[derive(Clone, Default)]
+pub struct Classify {
+	buf: Vec<Option<Classified>>,
+}
+/// Deep-tick trailing term: ratchets the favourable extreme and degrades linearly with the retrace
+/// from it — certainty 0.0 at the extreme, 1.0 at `distance`. Certainty itself ratchets, so
+/// proximity recovering re-adds no size, and its impact caps at `severity`.
+///
+/// The extreme seeds from the first update price, not the entry price: at entry the only cached
+/// price can lag the book by whole percents on thin instruments, and a phantom extreme above the
+/// market fires the stop on its first tick.
+#[derive(Clone)]
+pub struct TrailingStop {
+	side: Side,
+	distance: f64,
+	severity: f64,
+	extreme: Option<f64>,
+	certainty: f64,
+}
+impl TrailingStop {
+	pub fn new(side: Side, distance: f64, severity: f64) -> Self {
+		assert!(distance > 0.0, "non-positive trail distance would be full certainty from the first tick");
+		Self {
+			side,
+			distance,
+			severity,
+			extreme: None,
+			certainty: 0.0,
+		}
+	}
+
+	/// Ratchet on `price` and read the tick off in one act: the `1 - severity * certainty` multiplier
+	/// the degrader applies, the surviving fraction `1 - certainty`, and the price level where the
+	/// trail fires. The stop is `None` once fully retraced — at full certainty the term has deprecated
+	/// all the size it controls, so it stops drawing.
+	pub fn step(&mut self, price: f64) -> (f64, f64, Option<f64>) {
+		let extreme = self.extreme.get_or_insert(price);
+		let retrace = match self.side {
+			Side::Buy => {
+				*extreme = extreme.max(price);
+				*extreme - price
+			}
+			Side::Sell => {
+				*extreme = extreme.min(price);
+				price - *extreme
+			}
+		};
+		self.certainty = self.certainty.max((retrace / self.distance).clamp(0.0, 1.0));
+		let stop = match (self.certainty >= 1.0, self.side) {
+			(true, _) => None,
+			(false, Side::Buy) => Some(*extreme - self.distance),
+			(false, Side::Sell) => Some(*extreme + self.distance),
+		};
+		(1.0 - self.severity * self.certainty, 1.0 - self.certainty, stop)
+	}
+}
+
+/// One deep tick of an open episode — the persisted intent stream, minus the execution fields.
+#[derive(Clone, Copy, Debug)]
+pub struct Intent {
+	pub ts_ns: i64,
+	/// Which Idle→Active episode this tick belongs to — SPL's per-`Degrader` `Uuid`, as a counter.
+	/// Two episodes can be adjacent in the intent stream (a classification can land between two deep
+	/// ticks), so this is the only thing that separates them.
+	pub episode: u64,
+	pub side: Side,
+	pub base_q: f64,
+	pub target_q: f64,
+	pub eval: f64,
+	pub lambda_atr: f64,
+	pub trail_fraction: f64,
+	pub sl: f64,
+	pub tp: f64,
+	/// The level where the trail fires; `None` once fully retraced, when it stops drawing.
+	pub trail_stop: Option<f64>,
+	pub draining: bool,
+}
+/// SPL's `ExecutorState` + `Degrader`, one for one. Entry mid-prices off the book (not the last
+/// trade — on thin instruments that lags by whole percents and centres the envelope on a phantom);
+/// every deep tick then reduces one weighted ATR-envelope lambda against the trailing term.
+#[derive(Clone, Default)]
+pub struct Deprecator {
+	state: State,
+	episodes: u64,
+	last_shallow: Option<ShallowSnap>,
+	last_deep: Option<DeepSnap>,
+	buf: Vec<Option<Intent>>,
+}
+/// The deprecator's three price-denominated levels, on the candle pane. Purely an observation
+/// shape, so an absent trail collapses to [`Flat::flat`]'s `None` ⇒ NaN + unfired here and nowhere else.
+#[derive(Clone, Copy, Debug)]
+pub struct Bounds {
+	pub sl: f64,
+	pub tp: f64,
+	pub trail_stop: f64,
+}
+#[derive(Clone, Default)]
+pub struct Envelope {
+	buf: Vec<Option<Bounds>>,
+}
 /// Advances a slower bar cursor to every bar that has closed by `deadline`, feeding each to `sink`.
 /// Bars of different timeframes reach SPL as independent bus messages; here they arrive in one
 /// batch, so the merge is explicit rather than accidental.
@@ -192,12 +488,6 @@ fn drain_upto(bars: &[Bar], minutes: u64, cursor: &mut usize, deadline: i64, mut
 
 // ─── shallow indies ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, Debug)]
-pub struct PriceSnap {
-	pub current: f64,
-	pub change_3m_pct: f64,
-	pub change_1d_pct: f64,
-}
 flat_fields!(PriceSnap[current, change_3m_pct, change_1d_pct]);
 
 impl Glance for PriceSnap {
@@ -206,14 +496,6 @@ impl Glance for PriceSnap {
 	}
 }
 
-/// SPL backtest mode: the 3m delta comes off the last three closed 1m bars (the live Trades window
-/// is a live-only fidelity choice), the 1d delta off 24 closed 1h closes.
-#[derive(Clone, Default)]
-pub struct Price {
-	bars_3m: VecDeque<(f64, f64)>,
-	closes_1h: VecDeque<f64>,
-	buf: Vec<Option<PriceSnap>>,
-}
 impl Cell for Price {
 	type Out<'t> = &'t [Option<PriceSnap>];
 }
@@ -247,31 +529,8 @@ impl Node for Price {
 		&self.buf
 	}
 }
-impl Price {
-	fn snap(&self, current: f64) -> Option<PriceSnap> {
-		if self.bars_3m.len() < BARS_3M || self.closes_1h.len() < BARS_1D {
-			return None;
-		}
-		let (base_open, _) = *self.bars_3m.front().expect("checked full");
-		let oldest_1h = *self.closes_1h.front().expect("checked full");
-		if base_open <= 0.0 || oldest_1h == 0.0 {
-			return None;
-		}
-		Some(PriceSnap {
-			current,
-			change_3m_pct: (current - base_open) / base_open * 100.0,
-			change_1d_pct: (current - oldest_1h) / oldest_1h * 100.0,
-		})
-	}
-}
 slice_nudge!(Price, Option<PriceSnap>);
 
-#[derive(Clone, Copy, Debug)]
-pub struct VolSnap {
-	pub volume_1m_usd: f64,
-	pub volume_1h_usd: f64,
-	pub volume_4h_usd: f64,
-}
 flat_fields!(VolSnap[volume_1m_usd, volume_1h_usd, volume_4h_usd]);
 
 impl Glance for VolSnap {
@@ -280,13 +539,6 @@ impl Glance for VolSnap {
 	}
 }
 
-/// Latest closed bar per timeframe, notional as `volume * close`.
-#[derive(Clone, Default)]
-pub struct Volume {
-	last_1h: Option<f64>,
-	last_4h: Option<f64>,
-	buf: Vec<Option<VolSnap>>,
-}
 impl Cell for Volume {
 	type Out<'t> = &'t [Option<VolSnap>];
 }
@@ -311,19 +563,6 @@ impl Node for Volume {
 }
 slice_nudge!(Volume, Option<VolSnap>);
 
-#[derive(Clone, Copy, Debug)]
-pub struct RsiValues {
-	pub actual: f64,
-	pub smooth: f64,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct RsiSnap {
-	pub rsi_5m: RsiValues,
-	pub rsi_15m: RsiValues,
-	pub rsi_1h: RsiValues,
-	pub rsi_4h: RsiValues,
-}
 impl Flat for RsiSnap {
 	const DIMS: &'static [usize] = &[8];
 
@@ -389,16 +628,6 @@ impl RsiSlot {
 	}
 }
 
-/// Wilder RSI(14) per timeframe, each EMA(14)-smoothed. Emits per 5m bar — every 15m/1h/4h boundary
-/// is also a 5m one, so nothing is missed by anchoring there.
-#[derive(Clone)]
-pub struct Rsi {
-	m5: RsiSlot,
-	m15: RsiSlot,
-	h1: RsiSlot,
-	h4: RsiSlot,
-	buf: Vec<Option<RsiSnap>>,
-}
 impl Default for Rsi {
 	fn default() -> Self {
 		Self {
@@ -446,13 +675,6 @@ impl Node for Rsi {
 }
 slice_nudge!(Rsi, Option<RsiSnap>);
 
-/// Wilder ATR(14) on 1m bars. A shallow indie rather than an execution-owned indicator: that is what
-/// removed SPL's per-situation bar subscribe/unsubscribe flicker.
-#[derive(Clone)]
-pub struct Atr {
-	atr: WilderAtr,
-	buf: Vec<Option<f64>>,
-}
 impl Default for Atr {
 	fn default() -> Self {
 		Self {
@@ -477,12 +699,6 @@ impl Node for Atr {
 }
 slice_nudge!(Atr, Option<f64>);
 
-#[derive(Clone, Copy, Debug)]
-pub struct MomSnap {
-	/// `None` when 4h is disabled: the slot is never created, so there is no window to compute from.
-	pub sharpe_4h: Option<f64>,
-	pub sharpe_5m: f64,
-}
 impl Flat for MomSnap {
 	const DIMS: &'static [usize] = &[2];
 
@@ -531,12 +747,6 @@ fn push_close(closes: &mut VecDeque<f64>, close: f64) {
 	}
 }
 
-#[derive(Clone, Default)]
-pub struct Momentum {
-	closes_5m: VecDeque<f64>,
-	closes_4h: VecDeque<f64>,
-	buf: Vec<Option<MomSnap>>,
-}
 impl Cell for Momentum {
 	type Out<'t> = &'t [Option<MomSnap>];
 }
@@ -575,11 +785,6 @@ impl Node for Momentum {
 }
 slice_nudge!(Momentum, Option<MomSnap>);
 
-#[derive(Clone, Copy, Debug)]
-pub struct OiSnap {
-	pub oi_delta_5m_pct: f64,
-	pub oi_delta_15m_pct: f64,
-}
 flat_fields!(OiSnap[oi_delta_5m_pct, oi_delta_15m_pct]);
 
 impl Glance for OiSnap {
@@ -588,12 +793,6 @@ impl Glance for OiSnap {
 	}
 }
 
-/// Bybit 5min open interest read 1-back and 3-back — 5 and 15 minutes.
-#[derive(Clone, Default)]
-pub struct OiDelta {
-	window: VecDeque<f64>,
-	buf: Vec<Option<OiSnap>>,
-}
 impl Cell for OiDelta {
 	type Out<'t> = &'t [Option<OiSnap>];
 }
@@ -622,11 +821,6 @@ impl Node for OiDelta {
 }
 slice_nudge!(OiDelta, Option<OiSnap>);
 
-#[derive(Clone, Copy, Debug)]
-pub struct McSnap {
-	pub market_cap: f64,
-	pub rank: Option<u32>,
-}
 impl Flat for McSnap {
 	const DIMS: &'static [usize] = &[2];
 
@@ -643,10 +837,6 @@ impl Glance for McSnap {
 	}
 }
 
-#[derive(Clone, Default)]
-pub struct MarketCap {
-	buf: Vec<Option<McSnap>>,
-}
 impl Cell for MarketCap {
 	type Out<'t> = &'t [Option<McSnap>];
 }
@@ -668,19 +858,6 @@ slice_nudge!(MarketCap, Option<McSnap>);
 
 // ─── shallow snapshot ───────────────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, Debug)]
-pub struct ShallowSnap {
-	pub ts_ns: i64,
-	pub price: PriceSnap,
-	pub volume: VolSnap,
-	pub rsi: RsiSnap,
-	pub momentum: MomSnap,
-	pub oi: OiSnap,
-	pub atr: f64,
-	/// Not in the required set — see `ensure_mc`: the free CoinGecko tier can't reach the measured
-	/// day, so this lane carries today's reading and never weaves in. Kept for wiring parity.
-	pub mc: Option<McSnap>,
-}
 impl Flat for ShallowSnap {
 	const DIMS: &'static [usize] = &[6];
 
@@ -712,19 +889,6 @@ fn latest<T: Copy>(slot: &mut Option<T>, dep: &[Option<T>]) {
 	}
 }
 
-/// SPL's `ShallowPartial::try_build(required)`: each indie's latest publish is cached as a level and
-/// the snapshot only builds once every required field is warm. Absence stays honest — no defaults.
-#[derive(Clone, Default)]
-pub struct Shallow {
-	price: Option<PriceSnap>,
-	volume: Option<VolSnap>,
-	rsi: Option<RsiSnap>,
-	momentum: Option<MomSnap>,
-	oi: Option<OiSnap>,
-	mc: Option<McSnap>,
-	atr: Option<f64>,
-	buf: Vec<Option<ShallowSnap>>,
-}
 impl Cell for Shallow {
 	type Out<'t> = &'t [Option<ShallowSnap>];
 }
@@ -747,8 +911,8 @@ impl Node for Shallow {
 		latest(&mut self.atr, atr);
 
 		for b in bars {
-			self.buf.push(match (self.price, self.volume, self.rsi, self.momentum, self.oi, self.atr) {
-				(Some(price), Some(volume), Some(rsi), Some(momentum), Some(oi), Some(atr)) => Some(ShallowSnap {
+			self.buf.push(match (self.price, self.volume, self.rsi, self.momentum, self.oi, self.atr, self.mc) {
+				(Some(price), Some(volume), Some(rsi), Some(momentum), Some(oi), Some(atr), Some(mc)) => Some(ShallowSnap {
 					ts_ns: b.close_ns(1),
 					price,
 					volume,
@@ -756,7 +920,7 @@ impl Node for Shallow {
 					momentum,
 					oi,
 					atr,
-					mc: self.mc,
+					mc,
 				}),
 				_ => None,
 			});
@@ -768,16 +932,6 @@ slice_nudge!(Shallow, Option<ShallowSnap>);
 
 // ─── deep snapshot ──────────────────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, Debug)]
-pub struct DeepSnap {
-	pub ts_ns: i64,
-	pub best_bid: f64,
-	pub best_ask: f64,
-	pub top20_bid_depth_usd: f64,
-	pub top20_ask_depth_usd: f64,
-	pub imbalance: f64,
-	pub spread_pct: f64,
-}
 flat_fields!(DeepSnap[best_bid, best_ask, top20_bid_depth_usd, top20_ask_depth_usd, imbalance, spread_pct]);
 
 impl Glance for DeepSnap {
@@ -786,20 +940,6 @@ impl Glance for DeepSnap {
 	}
 }
 
-impl DeepSnap {
-	pub fn mid(&self) -> f64 {
-		(self.best_bid + self.best_ask) / 2.0
-	}
-}
-
-/// The folded book, read once per second — SPL's `SNAPSHOT_INTERVAL_NS` timer. A book still filling
-/// from its first deltas has one side empty; that is warmup, not corruption, so the tick is skipped
-/// and the deprecator simply doesn't enter yet.
-#[derive(Clone, Default)]
-pub struct Deep {
-	last_bucket: Option<i64>,
-	buf: Vec<Option<DeepSnap>>,
-}
 impl Cell for Deep {
 	type Out<'t> = &'t [Option<DeepSnap>];
 }
@@ -844,13 +984,6 @@ slice_nudge!(Deep, Option<DeepSnap>);
 
 // ─── screeners ──────────────────────────────────────────────────────────────────────────────────
 
-/// A screener hit. Short-only and binary: certainty is `-1.0` on a hit, and a miss emits nothing at
-/// all (SPL's `Screened` contract to the classifier). A graded certainty is a later refinement.
-#[derive(Clone, Copy, Debug)]
-pub struct Screened {
-	pub ts_ns: i64,
-	pub certainty: f64,
-}
 flat_fields!(Screened[certainty]);
 
 impl Glance for Screened {
@@ -863,11 +996,6 @@ fn screened(snap: &ShallowSnap, hit: bool) -> Option<Screened> {
 	hit.then_some(Screened { ts_ns: snap.ts_ns, certainty: -1.0 })
 }
 
-/// Top-gainer short: overbought on 4h while up on the day.
-#[derive(Clone, Default)]
-pub struct RsiScreener {
-	buf: Vec<Option<Screened>>,
-}
 impl Cell for RsiScreener {
 	type Out<'t> = &'t [Option<Screened>];
 }
@@ -885,11 +1013,6 @@ impl Node for RsiScreener {
 }
 slice_nudge!(RsiScreener, Option<Screened>);
 
-/// Pine's overvalued zone at both timeframes. The 4h leg is vacuously satisfied when 4h is disabled.
-#[derive(Clone, Default)]
-pub struct StdScreener {
-	buf: Vec<Option<Screened>>,
-}
 impl Cell for StdScreener {
 	type Out<'t> = &'t [Option<Screened>];
 }
@@ -900,6 +1023,10 @@ impl Node for StdScreener {
 		self.buf.clear();
 		for s in shallow {
 			self.buf.push(s.and_then(|s| {
+				// The vacuous 4h leg must come from the config and nothing else: `Momentum` declines to
+				// publish at all when 4h is enabled but degenerate, so an absent Sharpe here would
+				// otherwise let a wiring bug read as an unconditional hit.
+				assert_eq!(s.momentum.sharpe_4h.is_some(), USE_4H, "sharpe_4h presence disagrees with USE_4H");
 				let trigger_4h = s.momentum.sharpe_4h.is_none_or(|x| x > OVERVALUED_4H);
 				screened(&s, trigger_4h && s.momentum.sharpe_5m > OVERVALUED_5M)
 			}));
@@ -911,33 +1038,6 @@ slice_nudge!(StdScreener, Option<Screened>);
 
 // ─── classification ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Category {
-	None,
-	Liquidations,
-	MmClosing,
-	Manipulation,
-}
-
-/// Size scales exactly exponentially.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Quality {
-	A,
-	B,
-	C,
-	D,
-	E,
-}
-
-/// SPL's `ClassificationActor::classify` is still a stub returning one outcome at 100%; ported as
-/// it stands rather than invented over.
-#[derive(Clone, Copy, Debug)]
-pub struct Classified {
-	pub ts_ns: i64,
-	pub probability: f64,
-	pub category: Category,
-	pub quality: Quality,
-}
 flat_fields!(Classified[probability]);
 
 impl Glance for Classified {
@@ -946,11 +1046,6 @@ impl Glance for Classified {
 	}
 }
 
-/// SPL runs exactly one screener per config; both are wired here, so a hit on either classifies.
-#[derive(Clone, Default)]
-pub struct Classify {
-	buf: Vec<Option<Classified>>,
-}
 impl Cell for Classify {
 	type Out<'t> = &'t [Option<Classified>];
 }
@@ -975,79 +1070,6 @@ slice_nudge!(Classify, Option<Classified>);
 
 // ─── deprecator ─────────────────────────────────────────────────────────────────────────────────
 
-/// Deep-tick trailing term: ratchets the favourable extreme and degrades linearly with the retrace
-/// from it — certainty 0.0 at the extreme, 1.0 at `distance`. Certainty itself ratchets, so
-/// proximity recovering re-adds no size, and its impact caps at `severity`.
-///
-/// The extreme seeds from the first update price, not the entry price: at entry the only cached
-/// price can lag the book by whole percents on thin instruments, and a phantom extreme above the
-/// market fires the stop on its first tick.
-#[derive(Clone)]
-pub struct TrailingStop {
-	side: Side,
-	distance: f64,
-	severity: f64,
-	extreme: Option<f64>,
-	certainty: f64,
-}
-impl TrailingStop {
-	pub fn new(side: Side, distance: f64, severity: f64) -> Self {
-		assert!(distance > 0.0, "non-positive trail distance would be full certainty from the first tick");
-		Self {
-			side,
-			distance,
-			severity,
-			extreme: None,
-			certainty: 0.0,
-		}
-	}
-
-	/// Ratchet on `price` and read the tick off in one act: the `1 - severity * certainty` multiplier
-	/// the degrader applies, the surviving fraction `1 - certainty`, and the price level where the
-	/// trail fires. The stop is `NaN` before the extreme seeds and once fully retraced — at full
-	/// certainty the term has deprecated all the size it controls, so it stops drawing.
-	pub fn step(&mut self, price: f64) -> (f64, f64, f64) {
-		let extreme = self.extreme.get_or_insert(price);
-		let retrace = match self.side {
-			Side::Buy => {
-				*extreme = extreme.max(price);
-				*extreme - price
-			}
-			Side::Sell => {
-				*extreme = extreme.min(price);
-				price - *extreme
-			}
-		};
-		self.certainty = self.certainty.max((retrace / self.distance).clamp(0.0, 1.0));
-		let stop = match (self.certainty >= 1.0, self.side) {
-			(true, _) => f64::NAN,
-			(false, Side::Buy) => *extreme - self.distance,
-			(false, Side::Sell) => *extreme + self.distance,
-		};
-		(1.0 - self.severity * self.certainty, 1.0 - self.certainty, stop)
-	}
-}
-
-/// One deep tick of an open episode — the persisted intent stream, minus the execution fields.
-#[derive(Clone, Copy, Debug)]
-pub struct Intent {
-	pub ts_ns: i64,
-	/// Which Idle→Active episode this tick belongs to — SPL's per-`Degrader` `Uuid`, as a counter.
-	/// Two episodes can be adjacent in the intent stream (a classification can land between two deep
-	/// ticks), so this is the only thing that separates them.
-	pub episode: u64,
-	pub side: Side,
-	pub base_q: f64,
-	pub target_q: f64,
-	pub eval: f64,
-	pub lambda_atr: f64,
-	pub trail_fraction: f64,
-	pub sl: f64,
-	pub tp: f64,
-	/// `NaN` while the trail draws nothing.
-	pub trail_stop: f64,
-	pub draining: bool,
-}
 impl Flat for Intent {
 	const DIMS: &'static [usize] = &[5];
 
@@ -1082,17 +1104,6 @@ enum State {
 	Active(Active),
 }
 
-/// SPL's `ExecutorState` + `Degrader`, one for one. Entry mid-prices off the book (not the last
-/// trade — on thin instruments that lags by whole percents and centres the envelope on a phantom);
-/// every deep tick then reduces one weighted ATR-envelope lambda against the trailing term.
-#[derive(Clone, Default)]
-pub struct Deprecator {
-	state: State,
-	episodes: u64,
-	last_shallow: Option<ShallowSnap>,
-	last_deep: Option<DeepSnap>,
-	buf: Vec<Option<Intent>>,
-}
 impl Cell for Deprecator {
 	type Out<'t> = &'t [Option<Intent>];
 }
@@ -1189,13 +1200,6 @@ impl Node for Deprecator {
 }
 slice_nudge!(Deprecator, Option<Intent>);
 
-/// The deprecator's three price-denominated levels, on the candle pane.
-#[derive(Clone, Copy, Debug)]
-pub struct Bounds {
-	pub sl: f64,
-	pub tp: f64,
-	pub trail_stop: f64,
-}
 flat_fields!(Bounds[sl, tp, trail_stop]);
 
 impl Glance for Bounds {
@@ -1204,10 +1208,6 @@ impl Glance for Bounds {
 	}
 }
 
-#[derive(Clone, Default)]
-pub struct Envelope {
-	buf: Vec<Option<Bounds>>,
-}
 impl Cell for Envelope {
 	type Out<'t> = &'t [Option<Bounds>];
 }
@@ -1226,7 +1226,7 @@ impl Node for Envelope {
 			self.buf.push(i.map(|i| Bounds {
 				sl: i.sl,
 				tp: i.tp,
-				trail_stop: i.trail_stop,
+				trail_stop: i.trail_stop.unwrap_or(f64::NAN),
 			}));
 		}
 		&self.buf

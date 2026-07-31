@@ -318,7 +318,14 @@ impl Replay {
 	pub fn new(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: Ts<Venue>, end: Ts<Venue>, lanes: &[LaneKind], latency: LatencyConfig) -> Self {
 		let mut weaver = Weaver::default();
 		let sampler = |lane: LaneKind| Some(latency.sampler(&format!("{lane:?}:{symbol}")));
-		let prec = |keys: &[LaneKey]| lane_prec(catalog, keys).expect("read lane precision").unwrap_or_default();
+		// No file under any of `keys` leaves the lane's precision unknown, and a default would scale
+		// every raw price and qty by 1 — wrong by whole orders of magnitude, on output that still
+		// looks like data. It means the catalog is missing a lane the caller asked to replay.
+		let prec = |keys: &[LaneKey]| {
+			lane_prec(catalog, keys)
+				.expect("read lane precision")
+				.unwrap_or_else(|| panic!("replay of {symbol} on {exchange} needs {keys:?}, and the catalog holds no file for any of them"))
+		};
 
 		// A graph naming both book roots would otherwise load each lane twice.
 		let mut seen = Vec::new();
@@ -408,19 +415,27 @@ impl Sink {
 	/// A whole venue message, whole: one clock read, one flush check and one send for the batch,
 	/// instead of one of each per trade.
 	pub fn trades(&self, b: BatchTrades) {
-		self.tx.send(LiveEvt::Trades(b)).ok();
+		self.push(LiveEvt::Trades(b));
 	}
 
 	pub fn oi(&self, o: Oi) {
-		self.tx.send(LiveEvt::Oi(o)).ok();
+		self.push(LiveEvt::Oi(o));
 	}
 
 	pub fn mc(&self, m: Mc) {
-		self.tx.send(LiveEvt::Mc(m)).ok();
+		self.push(LiveEvt::Mc(m));
 	}
 
 	pub fn book(&self, u: BookUpdate) {
-		self.tx.send(LiveEvt::Book(u)).ok();
+		self.push(LiveEvt::Book(u));
+	}
+
+	/// The receiver is gone only if [`Live`] was dropped while a sink is still held: the session is
+	/// over and every further event is being taken off the wire into nothing. A pump that keeps
+	/// running there costs bandwidth and silently records nothing, so it comes down with the feed.
+	/// Orderly shutdown is to drop the sinks first — that is what disconnects the channel.
+	fn push(&self, e: LiveEvt) {
+		assert!(self.tx.send(e).is_ok(), "Live was dropped while a Sink is still live; drop the sinks first");
 	}
 }
 

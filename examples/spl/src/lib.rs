@@ -1,3 +1,4 @@
+#![feature(default_field_values)]
 //! Idempotent SPL data layer: 32 days of real Bybit TAO-USDT trades (the Sharpe(180) 4h horizon),
 //! the measured day's L20 book off the historic ob500 archive, and the measured day's OI/MC.
 //! Each step is skipped if its artifact exists; any failure is a loud panic — no fallbacks.
@@ -59,10 +60,6 @@ pub fn day_bounds(d: jiff::civil::Date) -> (Ts<Venue>, Ts<Venue>) {
 	(Ts::from_nanos(start), Ts::from_nanos(start + 24 * 3600 * 1_000_000_000))
 }
 
-fn date(s: &str) -> jiff::civil::Date {
-	jiff::civil::Date::from_str(s).expect("static date")
-}
-
 /// Idempotent per day: downloads each day's archive and ingests it into a parquet catalog under
 /// `cache`, skipping any day already present.
 pub fn ensure_trades(cache: &Path) -> Catalog {
@@ -81,7 +78,6 @@ pub fn ensure_trades(cache: &Path) -> Catalog {
 	}
 	catalog
 }
-
 /// Idempotent: folds the measured day's ob500 archive into the catalog's book lanes through
 /// [`Live`]'s recording tee — the same delta+checkpoint pair a live session writes, so `Replay`
 /// reads it back on the path `examples/live` asserts is identical.
@@ -116,7 +112,6 @@ pub fn ensure_book(cache: &Path, catalog: &Catalog) {
 	fs::write(&sentinel, format!("{emissions} emissions, {levels} levels\n")).expect("write book sentinel");
 	println!("book ingested: {emissions} 1s emissions, {levels} level rows");
 }
-
 /// Idempotent: fetches the measured day's Bybit open interest (5min ⇒ 288 rows ⇒ 2 pages) into the
 /// oi lane. Historic ingest, so there is no local reading.
 pub fn ensure_oi(catalog: &Catalog) {
@@ -152,18 +147,18 @@ pub fn ensure_oi(catalog: &Catalog) {
 				oi,
 			});
 		}
-		cursor = v["result"]["nextPageCursor"].as_str().unwrap_or("").to_string();
+		// An absent cursor would end pagination early and leave a silently short day.
+		cursor = v["result"]["nextPageCursor"].as_str().expect("bybit paginated responses always carry nextPageCursor").to_string();
 		if cursor.is_empty() || list.is_empty() {
 			break;
 		}
 	}
-	assert!(
-		!rows.is_empty(),
-		"Bybit returned no open interest inside {MEASURED_DAY} — its 5min OI retention likely doesn't reach that day. \
-		 Surface this: the decision (not code) is either picking a recent day or dropping the Oi root."
-	);
 	rows.sort_by_key(|r| r.ts_venue_exec);
 	rows.dedup_by_key(|r| r.ts_venue_exec);
+	// A UTC day is exactly 288 five-minute buckets. Anything less is a hole in the input — most
+	// likely Bybit's 5min OI retention no longer reaching {MEASURED_DAY}. The decision is data, not
+	// code: pick a recent day, or drop the Oi root from the graph.
+	assert_eq!(rows.len(), 288, "Bybit returned {} of 288 five-minute OI readings inside {MEASURED_DAY}", rows.len());
 
 	let mut feather = Feather::<Oi>::new(ExchangeName::Bybit, symbol(), Oi::POLICY);
 	for row in rows {
@@ -172,37 +167,46 @@ pub fn ensure_oi(catalog: &Catalog) {
 	let path = feather.flush(catalog).expect("flush oi").expect("non-empty oi batch");
 	println!("oi ingested to {}", path.display());
 }
-
-/// Idempotent: fetches current CoinGecko market cap into the mc lane.
-///
-/// Known gap, surfaced rather than papered over: CoinGecko's free tier refuses history older than
-/// 365 days, so this is *today's* reading on today's axis — it cannot weave into the measured day,
-/// and `MarketCap` therefore never fires there. That is why `mc` is not in `ShallowSnap`'s required
-/// set (see `nodes::Shallow`). Stamping today's cap with the measured day's time would be a
-/// fabrication, not a fix.
+/// Idempotent: fetches [`MEASURED_DAY`]'s CoinGecko market cap into the mc lane. `Mc` is part of
+/// SPL's universal shallow set, so a missing reading is missing input, not a degraded mode — this
+/// panics with the vendor's own error and the decisions available.
 pub fn ensure_mc(catalog: &Catalog) {
 	if read_mc(catalog, asset(), Ts::MIN, Ts::MAX).expect("open mc lane").next().is_some() {
 		println!("mc lane already populated, skipping fetch");
 		return;
 	}
-	let url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bittensor";
+	let day = date(MEASURED_DAY);
+	let url = format!("https://api.coingecko.com/api/v3/coins/bittensor/history?date={day}&localization=false");
 	println!("fetching {url}");
-	let body = http_get(url);
+	let (status, body) = http_try(&url);
 	let v: serde_json::Value = serde_json::from_slice(&body).expect("coingecko json");
-	let coin = v.as_array().and_then(|a| a.first()).expect("coingecko returned no coins");
-	let market_cap = coin["market_cap"].as_f64().expect("market_cap f64");
-	let rank = coin["market_cap_rank"].as_u64().map(|r| u32::try_from(r).expect("rank fits u32"));
+	let market_cap = v["market_data"]["market_cap"]["usd"].as_f64().unwrap_or_else(|| {
+		panic!(
+			"CoinGecko has no market cap for {MEASURED_DAY} (HTTP {status}): {}\n  \
+			 `Mc` is a required shallow field — SPL's universal indie set — so the graph cannot warm without it, \
+			 and nothing downstream of `Shallow` will ever fire. Fix the data, not this code: supply a CoinGecko \
+			 Pro key (the free tier serves only the last 365 days), move `MEASURED_DAY` inside that window, or \
+			 drop the `Mc` root from the graph and `mc` from `ShallowSnap`.",
+			v["error"]["status"]["error_message"]
+				.as_str()
+				.or_else(|| v["status"]["error_message"].as_str())
+				.unwrap_or("200 with no market_data.market_cap.usd in it")
+		)
+	});
 
-	// CoinGecko reports no event time, so the only reading here is our own.
-	let now: Ts<Local> = jiff::Timestamp::now().into();
+	// The history endpoint attests the 00:00 UTC snapshot of the requested date, and reports no rank.
+	let (start, _) = day_bounds(day);
 	let mut feather = Feather::<Mc>::new(asset(), Mc::POLICY);
 	feather.push(Mc {
-		ts_local_exec: now,
+		ts_local_exec: Ts::from_nanos(start.as_nanos()),
 		market_cap,
-		rank,
+		rank: None,
 	});
 	let path = feather.flush(catalog).expect("flush mc").expect("non-empty mc batch");
 	println!("mc ingested to {}", path.display());
+}
+fn date(s: &str) -> jiff::civil::Date {
+	jiff::civil::Date::from_str(s).expect("static date")
 }
 
 /// The pump's cursor over archive time, read by [`Live`] on the consuming thread.
@@ -323,11 +327,25 @@ fn emit(sink: &Sink, clock: &ArchiveClock, bids: &BTreeMap<i32, u32>, asks: &BTr
 }
 
 fn http_get(url: &str) -> Vec<u8> {
-	let mut resp = ureq::get(url).header("user-agent", UA).call().unwrap_or_else(|e| panic!("GET {url}: {e}"));
-	assert_eq!(resp.status(), 200, "GET {url} returned {}", resp.status());
+	let (status, body) = http_try(url);
+	assert_eq!(status, 200, "GET {url} returned {status}");
+	body
+}
+
+/// The status alongside the body, for the one caller whose failure message is the vendor's own
+/// error text rather than the status line — which needs the 4xx body, not a status-as-error.
+fn http_try(url: &str) -> (u16, Vec<u8>) {
+	let mut resp = ureq::get(url)
+		.config()
+		.http_status_as_error(false)
+		.build()
+		.header("user-agent", UA)
+		.call()
+		.unwrap_or_else(|e| panic!("GET {url}: {e}"));
+	let status = resp.status().as_u16();
 	let mut body = Vec::new();
 	resp.body_mut().as_reader().read_to_end(&mut body).expect("read body");
-	body
+	(status, body)
 }
 
 fn download(to: &PathBuf, url: &str) {

@@ -133,15 +133,18 @@ async fn main() {
 			day.check_intent(out.deprecator[i], out.deep[i]);
 		}
 	}
-	day.finish();
 
 	println!(
 		"measured {MEASURED_DAY}: shallow={} deep={}/{} rsi_hits={} std_hits={} classifications={} episodes={} intents={}",
 		day.shallow, day.deep, day.deep_reads, day.rsi_hits, day.std_hits, day.classifications, day.episodes, day.intents
 	);
+	let seen = |x: Option<f64>| x.map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"));
 	println!(
-		"day maxima: rsi_4h={:?} change_1d={:?}% sharpe_4h={:?} sharpe_5m={:?}",
-		day.max_rsi_4h, day.max_change_1d, day.max_sharpe_4h, day.max_sharpe_5m
+		"day maxima: rsi_4h={} change_1d={}% sharpe_4h={} sharpe_5m={}",
+		seen(day.max_rsi_4h),
+		seen(day.max_change_1d),
+		seen(day.max_sharpe_4h),
+		seen(day.max_sharpe_5m)
 	);
 
 	assert!(day.first_shallow_ns.is_some(), "no shallow snapshot on the measured day — an indie never warmed");
@@ -195,20 +198,9 @@ struct Day {
 	max_sharpe_4h: Option<f64>,
 	max_sharpe_5m: Option<f64>,
 	last_intent_ns: i64,
+	/// Dropped rather than closed at end of day: an episode still open then never had to drain.
 	open: Option<Open>,
 }
-
-/// The episode currently being checked.
-#[derive(Clone, Copy)]
-struct Open {
-	episode: u64,
-	trail_fraction: f64,
-	/// When 100% deprecation first latched the drain clock.
-	first_zero_ns: Option<i64>,
-	prev_ns: i64,
-	last_ns: i64,
-}
-
 impl Day {
 	fn check_deep(&mut self, d: &DeepSnap) {
 		self.deep += 1;
@@ -287,11 +279,17 @@ impl Day {
 		assert!(o.last_ns >= deadline, "episode ended {}ns before its drain deadline", deadline - o.last_ns);
 		assert!(o.prev_ns < deadline, "episode outlived its drain deadline by a whole tick, ending at {}", o.last_ns);
 	}
+}
 
-	fn finish(&mut self) {
-		// An episode still open at end-of-day never had to drain; that is not a violation.
-		self.open = None;
-	}
+/// The episode currently being checked.
+#[derive(Clone, Copy)]
+struct Open {
+	episode: u64,
+	trail_fraction: f64,
+	/// When 100% deprecation first latched the drain clock.
+	first_zero_ns: Option<i64>,
+	prev_ns: i64,
+	last_ns: i64,
 }
 
 fn top(slot: &mut Option<f64>, v: f64) {
