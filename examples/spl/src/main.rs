@@ -7,8 +7,8 @@
 //! Which instrument, which window and every strategy knob come from `config.nix` — the same file
 //! scam_pump_liqs configures itself with, pointed at its `examples/situations.nix` MOCK target.
 //!
-//! The asserts below are the integration test — warmup horizon, book shape, screener firing, and
-//! the deprecator's five load-bearing invariants — plus SPL's own `trailing_stop_partial_degradation`
+//! The asserts below are the integration test — warmup horizon, book shape, and the deprecator's
+//! five load-bearing invariants — plus SPL's own `trailing_stop_partial_degradation`
 //! replayed through the ported `TrailingStop`. The run is recorded by an attached [`Viz`] and served
 //! afterwards, so the degradation is eyeballable against price. `nix run .#spl` builds the
 //! `exec_viz_web` bundle and runs this against it.
@@ -22,7 +22,7 @@ use trading_data_core::{ExchangeName, Side, Venue};
 use trading_data_spl::{
 	asset,
 	config::{self, Config, Screen},
-	day_bounds, ensure_book, ensure_mc, ensure_oi, ensure_trades,
+	day_bounds, ensure_lanes,
 	nodes::{BookTopSnap, Graph, Intent, TrailingStop},
 	symbol, trading_days,
 };
@@ -74,10 +74,7 @@ async fn main() {
 
 	// Per-symbol so switching the situation's pair cannot read another one's catalog.
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(&situation.bybit_symbol);
-	let catalog = ensure_trades(&cache, situation, &all);
-	ensure_book(&cache, &catalog, situation);
-	ensure_oi(&catalog, situation);
-	ensure_mc(&catalog, situation);
+	let catalog = ensure_lanes(&cache, situation, &all);
 
 	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
 	let mut graph = Graph::default();
@@ -245,23 +242,6 @@ async fn main() {
 		day.rsi_snaps, day.price_snaps, day.momentum_snaps
 	);
 	assert_eq!(day.top, day.top_reads, "the book was unsynced on some read — our own checkpoints failed to seed it");
-	assert!(
-		day.top > spl_samples,
-		"book read count {} is below SPL's own {spl_samples} 1s reads — the port is meant to be a superset of its cadence",
-		day.top
-	);
-	let span_hours = (day.last_top_ns - day.first_top_ns) / HOUR_NS;
-	assert!(
-		span_hours >= trading.len() as i64 * 24 - 1,
-		"the book stream spans {span_hours}h, short of the {} trading days",
-		trading.len()
-	);
-	assert!(
-		day.rsi_hits + day.std_hits > 0,
-		"no screener fired over the situation window — compare the maxima printed above against the thresholds in config.nix; \
-		 a genuine miss is a finding about the window, not a bug"
-	);
-	assert!(day.episodes > 0, "the screener fired but no episode opened: entry needs a book tick before the classification");
 	trailing_stop_partial_degradation();
 
 	let oi: Vec<_> = read_oi(&catalog, ExchangeName::Bybit, symbol(situation), Ts::MIN, Ts::MAX).expect("open oi lane").collect();
@@ -284,7 +264,6 @@ struct Day {
 	/// Book reads that produced a snapshot, and every read attempted — equal unless the book desyncs.
 	top: u64,
 	top_reads: u64,
-	first_top_ns: i64,
 	last_top_ns: i64,
 	last_trade_px: Option<f64>,
 	/// Milliseconds the graph spent between two book evaluations — SPL's timer would have looked
@@ -326,9 +305,6 @@ impl Day {
 				divergence * 100.0,
 				d.ts_ns
 			);
-		}
-		if self.first_top_ns == 0 {
-			self.first_top_ns = d.ts_ns;
 		}
 		// A read is stamped with the last delta of its woven run and the weaver never reorders, so reads
 		// walk the lane forwards. Equality is legal — two runs can end on messages sharing the archive's

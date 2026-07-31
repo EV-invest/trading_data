@@ -54,6 +54,7 @@ exec_viz = { path = "../exec_viz/exec_viz" }
 eyre = "^0.6"
 flate2 = "^1"
 iai-callgrind = "0.16"
+indicatif = "^0.18"
 insta = "^1"
 jiff = { version = "^0.2", features = ["serde"] }
 miette = { version = "^7.6.0", features = ["fancy", "serde", "syntect-highlighter"] }

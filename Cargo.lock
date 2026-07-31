@@ -4609,6 +4609,7 @@ dependencies = [
  "clap",
  "exec_viz",
  "flate2",
+ "indicatif",
  "jiff",
  "serde",
  "serde_json",
