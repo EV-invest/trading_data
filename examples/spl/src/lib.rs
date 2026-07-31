@@ -21,7 +21,9 @@ use std::{
 	},
 };
 
-use trading_data::{Aggregate, BookShape, BookUpdate, Catalog, Clock, Feather, Feed as _, Live, Mc, Oi, Row as _, Sink, Span, Trade, TradeBuf, read_mc, read_oi, read_trades};
+use trading_data::{
+	Aggregate, BatchWindow, BookShape, BookUpdate, Catalog, Clock, Exact, Feather, Feed as _, Live, Mc, Oi, Row as _, Sink, Span, Trade, TradeBuf, read_mc, read_oi, read_trades,
+};
 use trading_data_core::{Asset, ExchangeName, Instrument, Local, Pair, PrecisionPriceQty, Side, Symbol, Ts, Venue};
 
 use crate::config::Situation;
@@ -35,6 +37,9 @@ const OI_PER_DAY: usize = 288;
 const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
 const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 
+/// How far the pump may lead the consumer, in archive time. It is the stamping error the leash
+/// permits, so it belongs at or below the finest batch window anything replays this lane with.
+const PUMP_LEAD_NS: i64 = 100_000_000;
 pub fn symbol(s: &Situation) -> Symbol {
 	Symbol::new(Pair::from_str(&s.pair).unwrap_or_else(|e| panic!("situation.pair `{}`: {e}", s.pair)), Instrument::Perp)
 }
@@ -99,7 +104,8 @@ pub fn ensure_trades(cache: &Path, s: &Situation, days: &[jiff::civil::Date]) ->
 pub fn ensure_book(cache: &Path, catalog: &Catalog, s: &Situation) {
 	let sentinel = cache.join(format!(".book_ingested_{}_{}", s.start, s.end));
 	if sentinel.exists() {
-		println!("book lane already populated, skipping ingest");
+		let what = fs::read_to_string(&sentinel).expect("read book sentinel");
+		println!("book lane already populated ({}), skipping ingest", what.trim());
 		return;
 	}
 	let sym = &s.bybit_symbol;
@@ -116,18 +122,27 @@ pub fn ensure_book(cache: &Path, catalog: &Catalog, s: &Situation) {
 
 	// The archives' own timestamps are the only clock this session has; `Live` stamps arrivals off
 	// it, and the recorded reception it writes is what `Replay` weaves on.
-	let clock = Arc::new(ArchiveClock(AtomicI64::new(0)));
+	let clock = Arc::new(ArchiveClock {
+		pump: AtomicI64::new(0),
+		consumed: AtomicI64::new(0),
+	});
 	let prec = s.precision;
-	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(s), prec, true, clock.clone());
+	// The tee writes per ingest, not per weave, so nothing recorded depends on how this session
+	// groups — the coarse window just spares the drain loop an iteration per message.
+	let window = BatchWindow::from(Exact::from_nanos(60_000_000_000));
+	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(s), prec, true, clock.clone(), window);
 	let sink = live.sink();
 	let pump = {
 		let clock = clock.clone();
 		std::thread::spawn(move || pump_archives(&zips, &sink, &clock, prec))
 	};
-	while live.next().is_some() {}
+	// Reporting what we consumed is what lets the pump be held to us — see `PUMP_LEAD_NS`.
+	while let Some(l) = live.next() {
+		clock.consumed.store(l.ts_venue.as_nanos(), Ordering::Relaxed);
+	}
 	let (emissions, levels) = pump.join().expect("archive pump panicked");
 	fs::write(&sentinel, format!("{emissions} emissions, {levels} levels\n")).expect("write book sentinel");
-	println!("book ingested: {emissions} 1s emissions, {levels} level rows");
+	println!("book ingested: {emissions} top-{DEPTH} changes, {levels} level rows");
 }
 /// Idempotent: fetches the trading days' Bybit open interest (5min ⇒ 288 rows/day ⇒ 2 pages) into
 /// the oi lane. Historic ingest, so there is no local reading.
@@ -233,31 +248,37 @@ pub fn ensure_mc(catalog: &Catalog, s: &Situation) {
 	println!("mc ingested to {}", path.display());
 }
 
-/// The pump's cursor over archive time, read by [`Live`] on the consuming thread.
+/// The pump's cursor over archive time, read by [`Live`] on the consuming thread, plus the
+/// consumer's own cursor so the pump can be held to it.
 ///
 /// ponytail: the two threads are unsynchronised, so a fast pump can leave the clock a few emissions
 /// ahead of the event being stamped. Harmless — replay reorders on the *recorded* reception, which
 /// is the stamp itself, so live≡replay holds regardless; the lead only jitters the 60s checkpoint
 /// cadence. Rendezvous the two if that ever needs to be exact.
-struct ArchiveClock(AtomicI64);
+//REVIEW: it needs to be exact. The lead is not a few emissions — the pump runs the archive to its
+// end while the consumer is still minutes behind, and every backlogged event is then stamped with
+// the same final reading. Arrivals stop being archive time and become thread scheduling, which is
+// exactly what a declared `BatchWindow` cannot be applied to. Hence `PUMP_LEAD_NS`.
+struct ArchiveClock {
+	pump: AtomicI64,
+	consumed: AtomicI64,
+}
 
 impl Clock for ArchiveClock {
 	fn now_ns(&self) -> i64 {
-		self.0.load(Ordering::Relaxed)
+		self.pump.load(Ordering::Relaxed)
 	}
 }
 
-/// Folds the whole ob200 stream into a local book and emits, once per second, the diff of the
-/// top-`DEPTH`-per-side view against the last emitted one — levels dropping out of it as `qty = 0`
-/// deletes. The book and the emitted view carry across archive files, so the day boundary is just
-/// another second. Returns `(emissions, level rows)`.
-///
-/// ponytail: L20 @ 1s is exactly what SPL's `OrderBookActor` consumes, and it is also the ceiling —
-/// a node needing sub-second or deeper book raises `DEPTH` or the bucket here, at a linear cost in
-/// delta-lane rows (the full 200-level stream is ~10× this and blows `Replay`'s eager buffer).
+/// Folds the whole ob200 stream into a local book and emits, on every message that moves it, the
+/// diff of the top-`DEPTH`-per-side view against the last emitted one — levels dropping out of it as
+/// `qty = 0` deletes. A message touching only depth 21+ changes nothing the strategy can read and
+/// emits nothing, so the lane carries changes in *what is read* and no more. The book and the
+/// emitted view carry across archive files, so the day boundary is just another message. Returns
+/// `(emissions, level rows)`.
 fn pump_archives(zips: &[PathBuf], sink: &Sink, clock: &ArchiveClock, prec: PrecisionPriceQty) -> (u64, u64) {
 	let (mut book, mut emitted) = (Levels::default(), Levels::default());
-	let (mut cur_sec, mut last_ns) = (None, 0i64);
+	let mut last_ns = 0i64;
 	let (mut emissions, mut levels) = (0u64, 0u64);
 
 	for zip in zips {
@@ -271,13 +292,7 @@ fn pump_archives(zips: &[PathBuf], sink: &Sink, clock: &ArchiveClock, prec: Prec
 			let v: serde_json::Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("malformed line {i} of {}: {e}", zip.display()));
 			let ts_ns = v["ts"].as_i64().unwrap_or_else(|| panic!("no ts on line {i} of {}", zip.display())) * 1_000_000;
 			assert!(ts_ns >= last_ns, "archives out of order at line {i} of {}: {ts_ns} < {last_ns}", zip.display());
-			let sec = ts_ns.div_euclid(1_000_000_000);
-			if cur_sec.is_some_and(|c| sec > c) {
-				let n = emit(sink, clock, prec, &book, &mut emitted, last_ns);
-				emissions += u64::from(n > 0);
-				levels += n;
-			}
-			cur_sec = Some(sec);
+			last_ns = ts_ns;
 
 			let kind = v["type"].as_str().unwrap_or_else(|| panic!("no type on line {i} of {}", zip.display()));
 			match kind {
@@ -290,13 +305,11 @@ fn pump_archives(zips: &[PathBuf], sink: &Sink, clock: &ArchiveClock, prec: Prec
 			}
 			apply(&mut book.bids, &v["data"]["b"], prec, i);
 			apply(&mut book.asks, &v["data"]["a"], prec, i);
-			last_ns = ts_ns;
+
+			let n = emit(sink, clock, prec, &book, &mut emitted, ts_ns);
+			emissions += u64::from(n > 0);
+			levels += n;
 		}
-	}
-	if cur_sec.is_some() {
-		let n = emit(sink, clock, prec, &book, &mut emitted, last_ns);
-		emissions += u64::from(n > 0);
-		levels += n;
 	}
 	(emissions, levels)
 }
@@ -323,8 +336,8 @@ fn apply(side: &mut BTreeMap<i32, u32>, levels: &serde_json::Value, prec: Precis
 	}
 }
 
-/// The top-`DEPTH` diff for one second. Returns the level rows emitted; `0` = the view is unchanged
-/// and there is nothing to say.
+/// The top-`DEPTH` diff against the last emitted view. Returns the level rows emitted; `0` = the
+/// view is unchanged and there is nothing to say.
 fn emit(sink: &Sink, clock: &ArchiveClock, prec: PrecisionPriceQty, book: &Levels, emitted: &mut Levels, ts_ns: i64) -> u64 {
 	let (bids, asks) = (&book.bids, &book.asks);
 	let (top_bids, top_asks) = (&mut emitted.bids, &mut emitted.asks);
@@ -343,6 +356,12 @@ fn emit(sink: &Sink, clock: &ArchiveClock, prec: PrecisionPriceQty, book: &Level
 	*top_bids = next_bids;
 	*top_asks = next_asks;
 
+	// The leash. Compared against what we last *pushed*, not against `ts_ns`: a quiet stretch emits
+	// nothing, and waiting on it would block for an event only this call can supply.
+	while clock.pump.load(Ordering::Relaxed) - clock.consumed.load(Ordering::Relaxed) > PUMP_LEAD_NS {
+		std::thread::sleep(std::time::Duration::from_micros(100));
+	}
+
 	// `local_recv` here is a placeholder: `Live` overwrites reception with its own ingest stamp.
 	let ts = Ts::<Venue>::from_nanos(ts_ns);
 	let shape = BookShape {
@@ -354,7 +373,7 @@ fn emit(sink: &Sink, clock: &ArchiveClock, prec: PrecisionPriceQty, book: &Level
 		bids: d_bids,
 		asks: d_asks,
 	};
-	clock.0.store(ts_ns, Ordering::Relaxed);
+	clock.pump.store(ts_ns, Ordering::Relaxed);
 	// Our own fold, so there is no venue sequence to have broken.
 	sink.book(BookUpdate::BatchDelta { shape, gapped: false });
 	n

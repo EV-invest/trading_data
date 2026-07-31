@@ -119,6 +119,31 @@ impl Arrival {
 	}
 }
 
+/// The most arrival-time one batch may group. Always set — grouping is a property a feed declares,
+/// not one that falls out of which other lane happened to tick.
+///
+/// A newtype rather than a bare [`Exact`] so that offsetting an [`Arrival`] forward by a declared
+/// window is the *only* arithmetic an arrival admits.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub struct BatchWindow(Exact);
+
+impl BatchWindow {
+	/// One venue message per batch: the degenerate case, not a special path.
+	pub const ZERO: Self = Self(Exact(0));
+
+	pub const fn from(e: Exact) -> Self {
+		Self(e)
+	}
+}
+
+impl Add<BatchWindow> for Arrival {
+	type Output = Self;
+
+	fn add(self, rhs: BatchWindow) -> Self {
+		Self(self.0.saturating_add(rhs.0.0))
+	}
+}
+
 /// Same-actor difference: one clock read twice, so no skew term.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Exact(i64);

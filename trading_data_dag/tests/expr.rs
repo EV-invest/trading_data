@@ -46,7 +46,7 @@ fn symbolic_derivative_matches_grad_on_random_envs() {
 	let e = kernel();
 	let ast = e.lower();
 	// deterministic LCG; x0 kept clear of the |·| kink at 1.
-	let mut s: u64 = 0x9E37_79B9_7F4A_7C15;
+	let mut s: u64 = 0x9e37_79b9_7f4a_7c15;
 	let mut rng = || {
 		s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
 		(s >> 33) as f64 / (1u64 << 31) as f64
@@ -66,10 +66,7 @@ fn symbolic_derivative_matches_grad_on_random_envs() {
 fn latex_and_infix_render() {
 	let ast = kernel().lower();
 	assert_eq!(ast.to_string(), "((x0 + x1)^2 + |(x0 - 1)|)");
-	assert_eq!(
-		ast.latex(&["x", "y"]),
-		"\\left(\\left(x + y\\right)^{2} + \\left|\\left(x - 1\\right)\\right|\\right)"
-	);
+	assert_eq!(ast.latex(&["x", "y"]), "\\left(\\left(x + y\\right)^{2} + \\left|\\left(x - 1\\right)\\right|\\right)");
 }
 
 #[test]
