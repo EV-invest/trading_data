@@ -4,7 +4,7 @@ use arrow::{
 	array::{Array, ArrayRef, Float64Array, Float64Builder, Int32Array, Int64Array, ListArray, RecordBatch, UInt8Array, UInt32Array, UInt64Array},
 	datatypes::{DataType, Field, Schema, SchemaRef},
 };
-use trading_data_core::{FrameKind, Local, PrecisionPriceQty, Side, Ts, Venue};
+use trading_data_core::{FrameKind, Local, Precision, PrecisionPriceQty, Side, Ts, Venue};
 use trading_data_dag::{Bump, Cell, Flat, Glance, slice_nudge};
 
 use crate::feather::RotationPolicy;
@@ -207,8 +207,8 @@ pub(crate) fn prec_from_schema(schema: &Schema) -> PrecisionPriceQty {
 			.metadata()
 			.get(k)
 			.unwrap_or_else(|| panic!("file metadata missing {k}"))
-			.parse::<u8>()
-			.unwrap_or_else(|e| panic!("file metadata {k} not a u8: {e}"))
+			.parse::<Precision>()
+			.unwrap_or_else(|e| panic!("file metadata {k} not a precision: {e}"))
 	};
 	PrecisionPriceQty {
 		price: get("price_precision"),

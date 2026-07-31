@@ -327,6 +327,7 @@ impl Glance for &Book {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::Precision;
 
 	const PREC: PrecisionPriceQty = PrecisionPriceQty {
 		price: Precision(2),

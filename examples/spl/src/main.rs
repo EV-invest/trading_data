@@ -107,9 +107,8 @@ async fn main() {
 	);
 	assert!(
 		first_momentum_ns < trade_start.as_nanos(),
-		"momentum only warmed at {:?}, after trading opens at {:?} — the warmup window is short",
-		Ts::<Venue>::from_nanos(first_momentum_ns),
-		trade_start
+		"momentum only warmed at {:?}, after trading opens at {trade_start:?} — the warmup window is short",
+		Ts::<Venue>::from_nanos(first_momentum_ns)
 	);
 
 	// --- trading days: every lane, recorded. ---

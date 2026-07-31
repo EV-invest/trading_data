@@ -13,26 +13,21 @@ use trading_data::LatencyConfig;
 use trading_data_core::PrecisionPriceQty;
 use v_utils::{Timeframe, percent::PercentU};
 
-static CONFIG: OnceLock<Config> = OnceLock::new();
-
 /// Panics if read before [`Config::load`] — a node running without its configuration is a wiring
 /// bug, not a case for defaults.
 pub fn config() -> &'static Config {
 	CONFIG.get().expect("Config::load must run before the graph ticks")
 }
-
 /// The strategy knobs, for the nodes.
 pub fn strategy() -> &'static Strategy {
 	&config().strategy
 }
-
 #[derive(Debug, Deserialize)]
 pub struct Config {
 	pub situation: Situation,
 	pub strategy: Strategy,
 	pub backtest: Backtest,
 }
-
 impl Config {
 	/// Evaluates `config.nix` and publishes it to [`config`].
 	pub fn load(path: &Path) -> &'static Self {
@@ -63,101 +58,12 @@ pub struct Situation {
 	#[serde(with = "utc_date")]
 	pub end: jiff::civil::Date,
 }
-
 #[derive(Debug, Deserialize)]
 pub struct Strategy {
 	pub indies: Indies,
 	pub screen: Screen,
 	pub classification: Classification,
 }
-
-#[derive(Debug, Deserialize)]
-pub struct Indies {
-	pub rsi: Rsi,
-	pub momentum: Momentum,
-	pub atr: Atr,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct Rsi {
-	pub base_len: usize,
-	pub smooth_len: usize,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct Momentum {
-	pub lookback: usize,
-	pub risk_free_rate: f64,
-	/// `false` drops the 4h slot entirely — never tracked, never warmed, and the screener's 4h leg
-	/// is then vacuous.
-	pub use_4h: bool,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct Atr {
-	pub period: usize,
-}
-
-/// Exactly one screener is configured; the other node stays inert. Which one also decides whose
-/// indie joins the universal set in `ShallowSnap`'s required fields.
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub enum Screen {
-	Rsi(RsiScreen),
-	Std(StdScreen),
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct RsiScreen {
-	pub rsi_threshold: f64,
-	pub price_percent: PercentU,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct StdScreen {
-	pub overvalued_threshold_4h: f64,
-	pub overvalued_threshold_5m: f64,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct Classification {
-	pub drain_grace: Timeframe,
-	pub liquidations: Liquidations,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct Liquidations {
-	pub atr_sl_x: f64,
-	pub atr_tp_x: f64,
-	pub trail_pct: PercentU,
-	pub trail_severity: PercentU,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct Backtest {
-	/// Equity the position sizes off. SPL reads live portfolio equity; the simulated venue's seed is
-	/// the honest stand-in.
-	pub starting_balance: f64,
-	pub arrival_latency: ArrivalLatency,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub struct ArrivalLatency {
-	pub p68: Timeframe,
-	pub p95: Timeframe,
-	pub p997: Timeframe,
-}
-
-impl From<ArrivalLatency> for LatencyConfig {
-	fn from(l: ArrivalLatency) -> Self {
-		Self {
-			p68: l.p68.duration(),
-			p95: l.p95.duration(),
-			p997: l.p997.duration(),
-			seed: 0,
-		}
-	}
-}
-
 impl Strategy {
 	/// Closed bars of each timeframe the required indies need, as `(minutes, count)` — SPL's
 	/// `merge_warmup_requirements` over `screen.shallow_topics()`. The universal set is always
@@ -188,6 +94,94 @@ impl Strategy {
 	}
 }
 
+#[derive(Debug, Deserialize)]
+pub struct Indies {
+	pub rsi: Rsi,
+	pub momentum: Momentum,
+	pub atr: Atr,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct Rsi {
+	pub base_len: usize,
+	pub smooth_len: usize,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct Momentum {
+	pub lookback: usize,
+	pub risk_free_rate: f64,
+	/// `false` drops the 4h slot entirely — never tracked, never warmed, and the screener's 4h leg
+	/// is then vacuous.
+	pub use_4h: bool,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct Atr {
+	pub period: usize,
+}
+/// Exactly one screener is configured; the other node stays inert. Which one also decides whose
+/// indie joins the universal set in `ShallowSnap`'s required fields.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub enum Screen {
+	Rsi(RsiScreen),
+	Std(StdScreen),
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct RsiScreen {
+	pub rsi_threshold: f64,
+	pub price_percent: PercentU,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct StdScreen {
+	pub overvalued_threshold_4h: f64,
+	pub overvalued_threshold_5m: f64,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct Classification {
+	pub drain_grace: Timeframe,
+	pub liquidations: Liquidations,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct Liquidations {
+	pub atr_sl_x: f64,
+	pub atr_tp_x: f64,
+	pub trail_pct: PercentU,
+	pub trail_severity: PercentU,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct Backtest {
+	/// Equity the position sizes off. SPL reads live portfolio equity; the simulated venue's seed is
+	/// the honest stand-in.
+	pub starting_balance: f64,
+	pub arrival_latency: ArrivalLatency,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct ArrivalLatency {
+	pub p68: Timeframe,
+	pub p95: Timeframe,
+	pub p997: Timeframe,
+}
+/// Days the run covers, warmup first: `[start - warmup_days, end)`.
+pub fn days(situation: &Situation, warmup_days: i64) -> Vec<jiff::civil::Date> {
+	let mut d = situation.start.checked_sub(jiff::Span::new().days(warmup_days)).expect("date in range");
+	let mut out = Vec::new();
+	while d < situation.end {
+		out.push(d);
+		d = d.tomorrow().expect("date in range");
+	}
+	out
+}
+static CONFIG: OnceLock<Config> = OnceLock::new();
+
+impl From<ArrivalLatency> for LatencyConfig {
+	fn from(l: ArrivalLatency) -> Self {
+		Self {
+			p68: l.p68.duration(),
+			p95: l.p95.duration(),
+			p997: l.p997.duration(),
+			seed: 0,
+		}
+	}
+}
+
 /// `"YYYY-MM-DD"`, the same form SPL's situations file accepts.
 mod utc_date {
 	use std::str::FromStr as _;
@@ -198,15 +192,4 @@ mod utc_date {
 		let s = String::deserialize(d)?;
 		jiff::civil::Date::from_str(&s).map_err(serde::de::Error::custom)
 	}
-}
-
-/// Days the run covers, warmup first: `[start - warmup_days, end)`.
-pub fn days(situation: &Situation, warmup_days: i64) -> Vec<jiff::civil::Date> {
-	let mut d = situation.start.checked_sub(jiff::Span::new().days(warmup_days)).expect("date in range");
-	let mut out = Vec::new();
-	while d < situation.end {
-		out.push(d);
-		d = d.tomorrow().expect("date in range");
-	}
-	out
 }

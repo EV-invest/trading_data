@@ -23,6 +23,9 @@ pub use klines::*;
 pub mod pair;
 pub use pair::*;
 
+pub mod precision;
+pub use precision::*;
+
 pub mod side;
 pub use side::*;
 
