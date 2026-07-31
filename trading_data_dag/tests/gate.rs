@@ -1,8 +1,8 @@
 //! Gate semantics at the engine boundary: a closed gate skips the gated node's `advance`
-//! entirely, while its historic deps keep warming. Plus the [`graph!`] completeness rule
+//! entirely, while its unbounded deps keep warming. Plus the [`graph!`] completeness rule
 //! ([`shadowed`]) over hand-built metas.
 
-use trading_data_dag::{Cell, Cons, DepOuts, Gate, Nil, Node, NodeMeta, shadowed, step};
+use trading_data_dag::{Cell, Cons, DepOuts, Gate, Horizon, Nil, Node, NodeMeta, shadowed, step};
 
 struct Feed;
 impl Cell for Feed {
@@ -50,7 +50,7 @@ impl Node for Gated {
 	type Deps = (Hist,);
 	type When = (Hot,);
 
-	const HISTORIC: bool = false;
+	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.calls += 1;
@@ -68,7 +68,7 @@ fn tick(feed: f64, hist: &mut Hist, gated: &mut Gated) -> Option<f64> {
 }
 
 #[test]
-fn closed_gate_skips_gated_node_but_not_its_historic_dep() {
+fn closed_gate_skips_gated_node_but_not_its_unbounded_dep() {
 	let (mut hist, mut gated) = (Hist::default(), Gated::default());
 
 	assert_eq!(tick(-1.0, &mut hist, &mut gated), None);
@@ -85,55 +85,55 @@ fn closed_gate_skips_gated_node_but_not_its_historic_dep() {
 const LEAF: NodeMeta = NodeMeta {
 	name: "leaf",
 	deps: &[],
-	historic: false,
+	horizon: Horizon::Unit,
 	gates: &[],
 };
 const _: () = assert!(!shadowed("leaf", &[LEAF]));
 
 #[test]
-fn shadowed_flags_exactly_the_current_ungated_all_consumers_one_gate_case() {
+fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 	let nodes = &[
 		NodeMeta {
 			name: "hist",
 			deps: &["root"],
-			historic: true,
+			horizon: Horizon::Unbounded,
 			gates: &[],
 		},
 		NodeMeta {
 			name: "gate",
 			deps: &["hist"],
-			historic: true,
+			horizon: Horizon::Unbounded,
 			gates: &[],
 		},
 		NodeMeta {
 			name: "cur",
 			deps: &["root"],
-			historic: false,
+			horizon: Horizon::Unit,
 			gates: &[],
 		},
 		NodeMeta {
 			name: "mixed",
 			deps: &["root"],
-			historic: false,
+			horizon: Horizon::Unit,
 			gates: &[],
 		},
 		NodeMeta {
 			name: "cls",
 			deps: &["cur", "hist", "mixed"],
-			historic: false,
+			horizon: Horizon::Unit,
 			gates: &["gate"],
 		},
 		NodeMeta {
 			name: "sink",
 			deps: &["mixed"],
-			historic: false,
+			horizon: Horizon::Unit,
 			gates: &[],
 		},
 	];
 	let check = |name, expect| assert_eq!(shadowed(name, nodes), expect, "{name}");
 
-	check("cur", true); // current, ungated, only consumer sits behind "gate"
-	check("hist", false); // historic: must stay warm regardless
+	check("cur", true); // bounded, ungated, only consumer sits behind "gate"
+	check("hist", false); // unbounded: must stay warm regardless
 	check("cls", false); // gated itself (and a leaf)
 	check("gate", false); // leaf: graph output
 	check("mixed", false); // one consumer gated, one not — sampling is not wasted
@@ -144,13 +144,13 @@ fn shadowed_flags_exactly_the_current_ungated_all_consumers_one_gate_case() {
 		NodeMeta {
 			name: "g",
 			deps: &["root"],
-			historic: false,
+			horizon: Horizon::Unit,
 			gates: &[],
 		},
 		NodeMeta {
 			name: "c",
 			deps: &["g"],
-			historic: false,
+			horizon: Horizon::Unit,
 			gates: &["g"],
 		},
 	];
@@ -161,19 +161,19 @@ fn shadowed_flags_exactly_the_current_ungated_all_consumers_one_gate_case() {
 		NodeMeta {
 			name: "x",
 			deps: &["root"],
-			historic: false,
+			horizon: Horizon::Unit,
 			gates: &[],
 		},
 		NodeMeta {
 			name: "a",
 			deps: &["x"],
-			historic: false,
+			horizon: Horizon::Unit,
 			gates: &["g1"],
 		},
 		NodeMeta {
 			name: "b",
 			deps: &["x"],
-			historic: false,
+			horizon: Horizon::Unit,
 			gates: &["g2"],
 		},
 	];
@@ -184,19 +184,19 @@ fn shadowed_flags_exactly_the_current_ungated_all_consumers_one_gate_case() {
 		NodeMeta {
 			name: "x",
 			deps: &["root"],
-			historic: false,
+			horizon: Horizon::Unit,
 			gates: &[],
 		},
 		NodeMeta {
 			name: "a",
 			deps: &["x"],
-			historic: false,
+			horizon: Horizon::Unit,
 			gates: &["g1", "g2"],
 		},
 		NodeMeta {
 			name: "b",
 			deps: &["x"],
-			historic: false,
+			horizon: Horizon::Unit,
 			gates: &["g2"],
 		},
 	];

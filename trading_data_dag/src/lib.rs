@@ -30,9 +30,10 @@
 //!   [`Node::When`] are not advanced while it is false. Batch-out nodes cannot be gates or gated
 //!   (tick-level gating on a batch is lossy, and a self-borrowing batch out can't be reset
 //!   post-sweep) — this is a load-bearing invariant, see [`graph!`].
-//! - **Historic vs current.** Stateful derives (RSI, momentum) are *historic*: they must advance
-//!   every tick to stay warm, so gating one is a compile error. Only [`Node::HISTORIC`]` = false`
-//!   nodes can be gated.
+//! - **Horizon.** Every node declares how far back its own state reaches ([`Node::HORIZON`]), and
+//!   every buffered dep how far back it reads ([`Buffering`]). A [`Horizon::Unbounded`] node — a
+//!   recurrence (Wilder RSI) or a running sum (CVD) — must advance every tick to stay warm, so
+//!   gating one is a compile error; a bounded horizon is state its inputs can reconstitute.
 //! - **Latches.** A [`Latch`] is a [`Gate`] armed externally and cut from within: when its `Cut`
 //!   node's out reads [`Episode::terminal`], [`graph!`] commutates it and resets every node gated
 //!   on it to `Default` — deferred to the *next* tick's start (the frame still borrows batch
@@ -66,6 +67,7 @@
 //! assert_eq!(f.head(), 42.0);
 //! ```
 #![no_std]
+#![feature(adt_const_params)]
 #![feature(associated_type_defaults)]
 #![feature(const_type_name)]
 
@@ -75,6 +77,48 @@ use core::any::TypeId;
 
 mod expr;
 pub use expr::{Abs, Add, Ast, Const, Div, Ex, Expr, Mul, Neg, Square, Sub, Sum, Trace, Var, Vars, abs, constant, square, sum};
+
+/// How far back something reaches: a node's own state ([`Node::HORIZON`]), or a dep's retained
+/// history ([`Buffering`]). One vocabulary for both, so the reach a node reads and the reach it
+/// holds are stated the same way — and a `const` of it drops straight into const-generic position.
+#[derive(Clone, core::marker::ConstParamTy, Copy, Debug, Eq, PartialEq)]
+pub enum Horizon {
+	/// The current value only — no history at all.
+	Unit,
+	Elems(usize),
+	/// Wall-clock milliseconds — `Timeframe`'s own unit, so `Timeframe::from_naive(..).0` is the
+	/// literal you write.
+	Span(u64),
+	/// Reaches to the start of the run: a recurrence (Wilder RSI) or a running sum (CVD). Nothing
+	/// recovers such a node, so it must advance every tick.
+	Unbounded,
+}
+
+impl Horizon {
+	/// Whether history retained at `self` serves a read at `req`. A span serves any count — what it
+	/// dropped is strictly older than anything it kept, so `n` elements ending at a retained one are
+	/// either all present or the read declines. A count cannot promise a span.
+	pub const fn serves(self, req: Horizon) -> bool {
+		match (self, req) {
+			(Horizon::Elems(k), Horizon::Elems(j)) => k >= j,
+			(Horizon::Span(k), Horizon::Span(j)) => k >= j,
+			(Horizon::Span(_), Horizon::Elems(_)) => true,
+			_ => false,
+		}
+	}
+
+	/// Only a [`Horizon::Span`] has one; the caller has already matched the variant.
+	const fn ns(ms: u64) -> i64 {
+		(ms * 1_000_000) as i64
+	}
+}
+
+/// A retained item's own event time. Required of every [`Buffer`]ed item — a history you cannot
+/// index by time is one you can only read at an assumed cadence, which is the bug [`Horizon::Span`]
+/// replaces.
+pub trait Stamped {
+	fn ts_ns(&self) -> i64;
+}
 
 /// A value slot in the frame. `Out<'t>: Copy` — references are `Copy`, so a batch out enters the
 /// frame as `&'t [T]` and heavy root/node state is lent as `&'t State`.
@@ -456,9 +500,10 @@ impl<A: Gate, B: Gate> GateSet for (A, B) {
 pub trait Node: Cell {
 	type Deps: DepSet;
 	type When: GateSet = ();
-	/// Historic nodes must advance every tick to stay warm; only current (`false`) nodes can
-	/// be gated — a gated historic node is a compile error.
-	const HISTORIC: bool = true;
+	/// How far back this node's own state reaches. [`Horizon::Unbounded`] cannot be gated — nothing
+	/// re-warms it. Anything else can: [`Horizon::Unit`] holds no state at all, and a bounded horizon
+	/// is state the node's inputs can reconstitute.
+	const HORIZON: Horizon = Horizon::Unbounded;
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
 }
@@ -618,14 +663,16 @@ where
 }
 
 /// A [`Buffering`] dep's out: `all = past ++ fresh`, where `fresh` is byte-identical to the
-/// unbuffered series out and `past` is what stood behind this tick's batch. `depth` is the
-/// *consumer's* declared `J`, so a request wider than it stated trips regardless of how deep the
-/// frame's buffer happens to run.
+/// unbuffered series out and `past` is what stood behind this tick's batch. `horizon` is the
+/// *consumer's* declared one, so a window wider than it stated trips regardless of how far the
+/// frame's buffer happens to reach.
 #[derive(Debug)]
 pub struct Hist<'t, T> {
 	all: &'t [T],
 	fresh: usize,
-	depth: usize,
+	horizon: Horizon,
+	/// The retaining buffer's highest dropped `ts_ns` — see [`Buffer::watermark`].
+	watermark: i64,
 }
 
 impl<T> Clone for Hist<'_, T> {
@@ -651,18 +698,38 @@ impl<'t, T> Hist<'t, T> {
 	pub fn all(self) -> &'t [T] {
 		self.all
 	}
+}
 
-	/// The `n` elements ending at `fresh()[i]`; `None` while the history is still shorter than `n`.
-	pub fn trailing_at(self, i: usize, n: usize) -> Option<&'t [T]> {
-		assert!(n >= 1 && n <= self.depth, "trailing({n}) exceeds the declared depth {}", self.depth);
+impl<'t, T: Stamped> Hist<'t, T> {
+	/// The window ending at `fresh()[i]`, per the declared [`Horizon`]; `None` when it is incomplete
+	/// — fewer than `Elems(n)` retained, or a `Span` reaching past what the buffer has dropped.
+	pub fn trailing_at(self, i: usize) -> Option<&'t [T]> {
 		let end = self.all.len() - self.fresh + i + 1;
 		assert!(end <= self.all.len(), "trailing_at: {i} past this tick's {} fresh elements", self.fresh);
-		(end >= n).then(|| &self.all[end - n..end])
+		match self.horizon {
+			Horizon::Elems(n) => {
+				assert!(n >= 1, "a window includes the current element, so Elems(n >= 1)");
+				(end >= n).then(|| &self.all[end - n..end])
+			}
+			// exclusive: the window is the last `ms` of wall clock, the same predicate the buffer trims
+			// on — so what it retains and what a consumer reads are one statement.
+			Horizon::Span(ms) => {
+				let cut = self.all[end - 1].ts_ns() - Horizon::ns(ms);
+				(cut >= self.watermark).then(|| &self.all[self.all[..end].partition_point(|x| x.ts_ns() <= cut)..end])
+			}
+			h => unreachable!("a Buffering is const-asserted bounded, and `narrowed` re-asserts it: {h:?}"),
+		}
 	}
 
 	/// One window per fresh element — rate preservation for free.
-	pub fn trailing(self, n: usize) -> impl Iterator<Item = Option<&'t [T]>> {
-		(0..self.fresh).map(move |i| self.trailing_at(i, n))
+	pub fn trailing(self) -> impl Iterator<Item = Option<&'t [T]>> {
+		(0..self.fresh).map(move |i| self.trailing_at(i))
+	}
+
+	/// A view at a shallower horizon, for a window whose size is a runtime knob.
+	pub fn narrowed(self, h: Horizon) -> Self {
+		assert!(self.horizon.serves(h), "history retained at {:?} does not serve a read at {h:?}", self.horizon);
+		Self { horizon: h, ..self }
 	}
 }
 
@@ -686,84 +753,131 @@ impl<T: Glance> Glance for Hist<'_, T> {
 	}
 }
 
-/// Engine-owned retention over a [`Series`] — an ordinary node (`Deps = (C,)`, ungated, historic)
-/// sitting *next to* its source in the frame, not over it. It advances every tick regardless of what
-/// is dark downstream, because being warm is its whole job: a consumer switched off and revived
-/// reads a full window on its first tick back, where a client-owned window would come back cold.
+/// Engine-owned retention over a [`Series`] — an ordinary node (`Deps = (C,)`, ungated,
+/// [`Horizon::Unbounded`]) sitting *next to* its source in the frame, not over it. It advances every
+/// tick regardless of what is dark downstream, because being warm is its whole job: a consumer
+/// switched off and revived reads a full window on its first tick back, where a client-owned window
+/// would come back cold.
 ///
-/// `K` is the window length *inclusive of the current element*, so `Buffer<C, 14>` serves exactly a
-/// 14-long indicator. The retention invariant is: **at most `K` elements from before this tick's
-/// batch, plus the whole batch**. `K - 1` would also satisfy every [`Hist::trailing`] read, but a
-/// *cross-rate* consumer — one clocked by a faster series, searching [`Hist::all`] for the run
-/// standing at its own deadline — needs a whole `K` on a tick where this series emitted nothing.
+/// `H` is the reach *inclusive of the current element*, so `Buffer<C, {Horizon::Elems(14)}>` serves
+/// exactly a 14-long indicator. The retention invariant is: **whatever `H` reaches back over from
+/// before this tick's batch, plus the whole batch** — trimmed against the pre-batch newest, because
+/// a *cross-rate* consumer (one clocked by a faster series, searching [`Hist::all`] for the run
+/// standing at its own deadline) needs the whole reach on a tick where this series emitted nothing.
 ///
 /// One `Buffer<C, _>` per series per frame — two make every `Buffering<C, _>` ambiguous, the same
 /// failure as two instances of one node type.
-pub struct Buffer<C: Series, const K: usize> {
+pub struct Buffer<C: Series, const H: Horizon> {
 	buf: alloc::vec::Vec<C::Item>,
+	/// The highest `ts_ns` this buffer cannot speak for: the last one dropped, or — before the first
+	/// drop — the first one ever seen, since nothing proves the run reached back past it. A
+	/// [`Horizon::Span`] window is complete iff it begins strictly after this, which is exact where
+	/// "have I been running long enough" is a guess.
+	watermark: i64,
 }
 
 // hand-written: `derive` would demand `C: Default` / `C: Clone`, which the source node need not be.
-impl<C: Series, const K: usize> Default for Buffer<C, K> {
+impl<C: Series, const H: Horizon> Default for Buffer<C, H> {
 	fn default() -> Self {
-		Self { buf: alloc::vec::Vec::new() }
+		Self {
+			buf: alloc::vec::Vec::new(),
+			watermark: i64::MIN,
+		}
 	}
 }
-impl<C: Series, const K: usize> Clone for Buffer<C, K> {
+impl<C: Series, const H: Horizon> Clone for Buffer<C, H> {
 	fn clone(&self) -> Self {
-		Self { buf: self.buf.clone() }
+		Self {
+			buf: self.buf.clone(),
+			watermark: self.watermark,
+		}
 	}
 }
 
-impl<C: Series, const K: usize> Cell for Buffer<C, K> {
+impl<C: Series, const H: Horizon> Cell for Buffer<C, H> {
 	type Out<'t> = Hist<'t, C::Item>;
 }
 
-impl<C: Series, const K: usize> Node for Buffer<C, K> {
+impl<C: Series, const H: Horizon> Node for Buffer<C, H>
+where
+	C::Item: Stamped,
+{
 	type Deps = (C,);
 
 	fn advance<'t>(&'t mut self, (fresh,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		const { assert!(K >= 1, "a buffer's window includes the current element, so K >= 1") }
+		const {
+			assert!(
+				match H {
+					Horizon::Elems(k) => k >= 1,
+					Horizon::Span(ms) => ms > 0,
+					_ => false,
+				},
+				"a buffer retains a bounded reach: Horizon::Elems(k >= 1) or Horizon::Span(ms > 0)"
+			)
+		}
 		// Trim *before* the append: `past` must be what stood behind this tick's batch, or an
 		// intra-batch cursor walking several elements reads a window already trimmed by its own tail.
-		if self.buf.len() > K {
-			self.buf.drain(..self.buf.len() - K);
+		let drop = match H {
+			Horizon::Elems(k) => self.buf.len().saturating_sub(k),
+			Horizon::Span(ms) => match self.buf.last() {
+				Some(newest) => {
+					let cut = newest.ts_ns() - Horizon::ns(ms);
+					self.buf.partition_point(|x| x.ts_ns() <= cut)
+				}
+				None => 0,
+			},
+			_ => unreachable!(),
+		};
+		if drop > 0 {
+			self.watermark = self.watermark.max(self.buf[drop - 1].ts_ns());
+			self.buf.drain(..drop);
+		}
+		if self.watermark == i64::MIN
+			&& let Some(first) = fresh.first()
+		{
+			self.watermark = first.ts_ns();
 		}
 		self.buf.extend_from_slice(fresh);
 		Hist {
 			all: &self.buf,
 			fresh: fresh.len(),
-			depth: K,
+			horizon: H,
+			watermark: self.watermark,
 		}
 	}
 }
 
-/// Dep position only, never a frame field: "this series, retained at least `J` deep". Resolves
+/// Dep position only, never a frame field: "this series, retained at least `H` back". Resolves
 /// against the frame's [`Buffer<C, K>`] through the [`Has`] impl below, whose const-assert proves
-/// the declared depth dominates the request.
-pub struct Buffering<C: Series, const J: usize>(core::marker::PhantomData<C>);
+/// the declared reach [`serves`](Horizon::serves) the request.
+pub struct Buffering<C: Series, const H: Horizon>(core::marker::PhantomData<C>);
 
-impl<C: Series, const J: usize> Cell for Buffering<C, J> {
+impl<C: Series, const H: Horizon> Cell for Buffering<C, H> {
 	type Out<'t> = Hist<'t, C::Item>;
 }
 
-impl<'t, C: Series, const K: usize, const J: usize, T> Has<'t, Buffering<C, J>, Here> for Cons<'t, Buffer<C, K>, T> {
+impl<'t, C: Series, const K: Horizon, const H: Horizon, T> Has<'t, Buffering<C, H>, Here> for Cons<'t, Buffer<C, K>, T> {
 	fn get(&self) -> Hist<'t, C::Item> {
-		const { assert!(K >= J, "the frame's Buffer<C, K> is shallower than this Buffering<C, J> asks for") }
-		Hist { depth: J, ..self.out }
+		const {
+			assert!(!matches!(H, Horizon::Unit), "Buffering at Unit is the bare dep C — drop the wrapper");
+			assert!(!matches!(H, Horizon::Unbounded), "a buffer is a bounded thing; Unbounded names no window");
+			assert!(K.serves(H), "the frame's Buffer<C, K> does not reach as far back as this Buffering<C, H> asks for");
+		}
+		Hist { horizon: H, ..self.out }
 	}
 }
 
-impl<C: Series, const J: usize> Nudge for Buffering<C, J>
+impl<C: Series, const H: Horizon> Nudge for Buffering<C, H>
 where
 	C::Item: Bump,
 {
-	type Scratch = (alloc::vec::Vec<C::Item>, usize);
+	type Scratch = (alloc::vec::Vec<C::Item>, usize, i64);
 
 	fn stage<'t>(out: Hist<'t, C::Item>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
 		s.0.clear();
 		s.0.extend_from_slice(out.all);
 		s.1 = out.fresh;
+		s.2 = out.watermark;
 		match (bump, s.0.last_mut()) {
 			(Some(slot), Some(last)) => {
 				let (e, dh) = Bump::bump(*last, slot, h);
@@ -775,7 +889,12 @@ where
 	}
 
 	fn view<'l>(s: &'l Self::Scratch) -> Hist<'l, C::Item> {
-		Hist { all: &s.0, fresh: s.1, depth: J }
+		Hist {
+			all: &s.0,
+			fresh: s.1,
+			horizon: H,
+			watermark: s.2,
+		}
 	}
 }
 
@@ -917,7 +1036,12 @@ where
 	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't, {
-		const { assert!(!N::HISTORIC, "historic node cannot be gated; declare `const HISTORIC: bool = false` or drop `When`") }
+		const {
+			assert!(
+				!matches!(N::HORIZON, Horizon::Unbounded),
+				"an unbounded node cannot be gated: nothing re-warms it — declare a bounded `HORIZON` or drop `When`"
+			)
+		}
 		if !<Self as Drive<'t, N, F, I, (Ia,)>>::open(f) {
 			return Latent::latent();
 		}
@@ -943,7 +1067,12 @@ where
 	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't, {
-		const { assert!(!N::HISTORIC, "historic node cannot be gated; declare `const HISTORIC: bool = false` or drop `When`") }
+		const {
+			assert!(
+				!matches!(N::HORIZON, Horizon::Unbounded),
+				"an unbounded node cannot be gated: nothing re-warms it — declare a bounded `HORIZON` or drop `When`"
+			)
+		}
 		if !<Self as Drive<'t, N, F, I, (Ia, Ib)>>::open(f) {
 			return Latent::latent();
 		}
@@ -1259,7 +1388,7 @@ pub use alloc::vec::Vec as MacroVec;
 pub struct NodeMeta {
 	pub name: &'static str,
 	pub deps: &'static [&'static str],
-	pub historic: bool,
+	pub horizon: Horizon,
 	pub gates: &'static [&'static str],
 }
 
@@ -1290,10 +1419,10 @@ pub const fn contains(set: &[&str], name: &str) -> bool {
 	false
 }
 
-/// [`graph!`]'s completeness check: true when `name` is current, ungated, has in-graph
+/// [`graph!`]'s completeness check: true when `name` is bounded-horizon, ungated, has in-graph
 /// consumers, and all of them sit behind one common gate (other than `name` itself) — sampling
-/// it while that gate is closed is pure waste, so it must be gated too or marked historic.
-/// Leaves (no in-graph consumers) are graph outputs — exempt.
+/// it while that gate is closed is pure waste, so it must be gated too or declare
+/// [`Horizon::Unbounded`]. Leaves (no in-graph consumers) are graph outputs — exempt.
 #[doc(hidden)]
 pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 	let mut me = 0;
@@ -1301,7 +1430,7 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 		me += 1;
 	}
 	assert!(me < nodes.len(), "shadowed: name must be one of nodes");
-	if nodes[me].historic || !nodes[me].gates.is_empty() {
+	if matches!(nodes[me].horizon, Horizon::Unbounded) || !nodes[me].gates.is_empty() {
 		return false;
 	}
 	let mut fc = 0;

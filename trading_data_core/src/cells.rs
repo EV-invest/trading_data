@@ -3,7 +3,7 @@
 //! `Cell`/`Node` are the dag's and these types are ours, so orphan rules make this the only crate
 //! that may write these impls. Nothing else here knows the dag exists.
 
-use trading_data_dag::{Cell, DepOuts, Node, Nudge};
+use trading_data_dag::{Cell, DepOuts, Horizon, Node, Nudge};
 
 use crate::{Book, BookShape, DeltaBuf, DeltaFrame, TradeBuf, TradeCols};
 
@@ -67,9 +67,7 @@ impl Nudge for BookDeltas {
 }
 
 /// `Option<&Book>` is `Latent`, so the book **can be gated** — and a closed gate returns `None`
-/// without pulling deps, so no checkpoint and no frame is even read. `HISTORIC = false` is sound
-/// precisely because, unlike a recurrence, a book re-warms from a checkpoint: gating it off and
-/// back on costs one desync and one resync, not a warmup it can never recover.
+/// without pulling deps, so no checkpoint and no frame is even read.
 impl Cell for Book {
 	type Out<'t> = Option<&'t Book>;
 }
@@ -77,7 +75,10 @@ impl Cell for Book {
 impl Node for Book {
 	type Deps = (BookAnchors, BookDeltas);
 
-	const HISTORIC: bool = false;
+	/// A book re-warms from a checkpoint: its state reaches back exactly one checkpoint interval, so
+	/// gating it off and back on costs one desync and one resync, not a warmup it can never recover.
+	/// `trading_data_persistence` reads its anchor-age bound off this.
+	const HORIZON: Horizon = Horizon::Span(15 * 60 * 1_000);
 
 	fn advance<'t>(&'t mut self, (anchor, deltas): DepOuts<'t, Self>) -> Option<&'t Book> {
 		self.step(anchor, deltas).then_some(&*self)

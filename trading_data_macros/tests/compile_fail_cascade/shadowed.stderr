@@ -1,4 +1,4 @@
-error[E0080]: evaluation panicked: Cur is only consumed under a gate: gate it too, or mark it historic
+error[E0080]: evaluation panicked: cur is only consumed under a gate: gate it too, or declare `HORIZON = Horizon::Unbounded`
   --> $DIR/trading_data_macros/tests/compile_fail_cascade/shadowed.rs:LL:CC
   |
 LL | / graph! {

@@ -39,14 +39,14 @@ impl Config {
 			.unwrap_or_else(|e| panic!("failed to run `nix eval` (is nix installed?): {e}"));
 		assert!(out.status.success(), "nix evaluation of '{}' failed:\n{}", path.display(), String::from_utf8_lossy(&out.stderr));
 		let parsed: Self = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("config '{}' does not match the expected shape: {e}", path.display()));
-		// A buffer's depth is a const capacity, the lookback a runtime knob. Failing here names the
+		// A buffer's reach is a const capacity, the lookback a runtime knob. Failing here names the
 		// key; failing at the window would only look like one that silently never warms.
 		let lookback = parsed.strategy.indies.momentum.lookback;
 		assert!(
-			lookback + 1 <= crate::nodes::MOM_CAP,
-			"indies.momentum.lookback = {lookback} wants a {}-bar window, over the graph's MOM_CAP of {}",
+			lookback as u64 + 1 <= crate::nodes::MOM_PERIODS,
+			"indies.momentum.lookback = {lookback} wants a {}-bar window, over the {} periods the graph retains",
 			lookback + 1,
-			crate::nodes::MOM_CAP
+			crate::nodes::MOM_PERIODS
 		);
 		assert!(CONFIG.set(parsed).is_ok(), "Config::load runs once");
 		config()

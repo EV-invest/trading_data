@@ -6,8 +6,8 @@
 use core::fmt;
 
 use trading_data::{
-	Buffer, Buffering, Bump, Cell, DepOuts, Exact, Expr, Flat, Glance, Guide, Ink, Lanes, Node, Oi, OiRoot, Plot, Symbolic, TradeCols, Trades, Vars, WilderAtr, WilderAvgGainLoss, constant,
-	rsi, slice_nudge,
+	Buffer, Buffering, Bump, Cell, DepOuts, Exact, Expr, Flat, Glance, Guide, Horizon, Ink, Lanes, Node, Oi, OiRoot, Plot, Stamped, Symbolic, TradeCols, Trades, Vars, WilderAtr,
+	WilderAvgGainLoss, constant, rsi, slice_nudge,
 };
 use trading_data_core::Side;
 
@@ -72,6 +72,12 @@ impl Bump for Bar {
 impl Glance for Bar {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "close {}", self.close)
+	}
+}
+
+impl Stamped for Bar {
+	fn ts_ns(&self) -> i64 {
+		self.ts_open
 	}
 }
 
@@ -278,11 +284,11 @@ impl Cell for Momentum {
 	type Out<'t> = &'t [Option<f64>];
 }
 impl Node for Momentum {
-	type Deps = (Buffering<Bar1m, { MOM_WINDOW + 1 }>,);
+	type Deps = (Buffering<Bar1m, { Horizon::Elems(MOM_WINDOW + 1) }>,);
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		self.buf.extend(hist.trailing(MOM_WINDOW + 1).map(|w| w.map(sharpe)));
+		self.buf.extend(hist.trailing().map(|w| w.map(sharpe)));
 		&self.buf
 	}
 }
@@ -305,11 +311,11 @@ impl Cell for VolUsd1h {
 	type Out<'t> = &'t [Option<f64>];
 }
 impl Node for VolUsd1h {
-	type Deps = (Buffering<Bar1m, 60>,);
+	type Deps = (Buffering<Bar1m, { Horizon::Elems(60) }>,);
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		self.buf.extend(hist.trailing(60).map(|w| w.map(|w| w.iter().map(|b| b.vol_quote).sum())));
+		self.buf.extend(hist.trailing().map(|w| w.map(|w| w.iter().map(|b| b.vol_quote).sum())));
 		&self.buf
 	}
 }
@@ -325,11 +331,11 @@ impl Cell for Lambda1m {
 	type Out<'t> = &'t [Option<f64>];
 }
 impl Node for Lambda1m {
-	type Deps = (Buffering<Bar1m, { LAMBDA_WINDOW + 1 }>,);
+	type Deps = (Buffering<Bar1m, { Horizon::Elems(LAMBDA_WINDOW + 1) }>,);
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		self.buf.extend(hist.trailing(LAMBDA_WINDOW + 1).map(|w| w.map(kyle_lambda)));
+		self.buf.extend(hist.trailing().map(|w| w.map(kyle_lambda)));
 		&self.buf
 	}
 }
@@ -487,7 +493,7 @@ trading_data::graph! {
 	diff { signal: Signal }
 	bar: Bar1m,
 	// 61 = the deepest request (Momentum/Lambda1m's `window + 1`); VolUsd1h's 60 rides along.
-	bar_hist: Buffer<Bar1m, 61>,
+	bar_hist: Buffer<Bar1m, { Horizon::Elems(61) }>,
 	cvd: Cvd,
 	rsi: Rsi14,
 	atr: Atr14,

@@ -18,8 +18,8 @@
 use core::fmt;
 
 use trading_data::{
-	Book, BookAnchors, BookDeltas, BookShape, Buffer, Buffering, Bump, Cell, DeltaFrame, DepOuts, Exact, Flat, Gate, Glance, Lanes, Mc, McRoot, Node, Oi, OiRoot, Plot, TradeCols, Trades,
-	WilderAtr, WilderAvgGainLoss, rsi, slice_nudge, value_nudge,
+	Book, BookAnchors, BookDeltas, BookShape, Buffer, Buffering, Bump, Cell, DeltaFrame, DepOuts, Exact, Flat, Gate, Glance, Horizon, Lanes, Mc, McRoot, Node, Oi, OiRoot, Plot, Stamped,
+	TradeCols, Trades, WilderAtr, WilderAvgGainLoss, rsi, slice_nudge, value_nudge,
 };
 use trading_data_core::Side;
 use v_utils::{Timeframe, TimeframeDesignator};
@@ -34,18 +34,30 @@ use crate::config::{Screen, strategy};
 /// Pine's `* 365`, kept verbatim regardless of bar timeframe — which is why the 4h and 5m Sharpe
 /// scales differ and each gets its own threshold.
 const PINE_PERIODS_PER_YEAR: f64 = 365.0;
-/// Closed 1h bars behind `change_1d_pct`.
-const BARS_1D: usize = 24;
-/// Closed 1m bars behind `change_3m_pct` — offsets 0,1,2 span exactly three minutes.
-const BARS_3M: usize = 3;
+/// Reach behind `change_1d_pct` — a day of wall clock, not "24 bars": an hour nothing traded emits
+/// no bar, and SPL's own name for the window is the day.
+const SPAN_1D: Timeframe = Timeframe::from_naive(1, TimeframeDesignator::Days);
+/// What the 1h series must retain to answer it: the day, plus one period of cross-rate slack — the
+/// 1m bar whose close asks the question stands up to a whole 1h period past the newest 1h bar.
+const REACH_1D: Horizon = Horizon::Span(SPAN_1D.0 + Bars::<60>::TF.0);
+/// Reach behind `change_3m_pct` — three minutes, spanned by the opens of the 1m bars inside it.
+const SPAN_3M: Timeframe = Timeframe::from_naive(3, TimeframeDesignator::Minutes);
+/// Bybit's open-interest publish cadence: the deltas read the publish standing a whole number of
+/// these back, so the retained reach is one past the longer leg.
+const OI_STEP: Timeframe = Timeframe::from_naive(5, TimeframeDesignator::Minutes);
+const OI_REACH: Horizon = Horizon::Span(4 * OI_STEP.0);
 /// SPL's `execution::RISK_FRACTION`: fraction of equity committed per entry.
 const RISK_FRACTION: f64 = 0.03;
 /// SPL's `OrderBookActor::DEPTH`.
 const DEPTH: usize = 20;
-/// Retained bars behind `indies.momentum.lookback`, which is a runtime knob where a buffer's depth
-/// is a const — so this is a *capacity*, checked against the configured lookback in
-/// [`crate::config::Config::load`]. Raising it costs `2 * (MOM_CAP - lookback)` retained bars.
-pub const MOM_CAP: usize = 256;
+/// Periods retained behind `indies.momentum.lookback`, which is a runtime knob where a buffer's
+/// reach is a const — so this is a *capacity*, checked against the configured lookback in
+/// [`crate::config::Config::load`]. Raising it costs `2 * (MOM_PERIODS - lookback)` retained bars.
+pub const MOM_PERIODS: u64 = 256;
+/// That capacity as the reach it is: `MOM_PERIODS` of the series' own periods.
+pub const fn mom_cap(tf: Timeframe) -> Horizon {
+	Horizon::Span(MOM_PERIODS * tf.0)
+}
 
 // ─── flattening ─────────────────────────────────────────────────────────────────────────────────
 
@@ -116,6 +128,14 @@ impl Glance for Bar {
 	}
 }
 
+/// The open: a bar is retained and windowed by the period it *covers*, and its close is that plus
+/// the series' own timeframe, which a bare `Bar` does not know.
+impl Stamped for Bar {
+	fn ts_ns(&self) -> i64 {
+		self.ts_open
+	}
+}
+
 /// Trades → `M`-minute OHLCV bars. Rate-changing: one non-optional bar per boundary crossed, so a
 /// batch spanning two periods emits two; a partial period emits none (its bar stays in `acc`).
 #[derive(Clone, Default)]
@@ -133,6 +153,9 @@ impl<const M: u64> Cell for Bars<M> {
 }
 impl<const M: u64> Node for Bars<M> {
 	type Deps = (Trades,);
+
+	/// Only the partial bar is held, so the state reaches back exactly one period.
+	const HORIZON: Horizon = Horizon::Span(Self::TF.0);
 
 	fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
@@ -247,7 +270,7 @@ pub struct OiSnap {
 	pub oi_delta_5m_pct: f64,
 	pub oi_delta_15m_pct: f64,
 }
-/// Bybit 5min open interest read 1-back and 3-back — 5 and 15 minutes.
+/// Bybit open interest against the publish standing 5 and 15 minutes back.
 #[derive(Clone, Default)]
 pub struct OiDelta {
 	buf: Vec<Option<OiSnap>>,
@@ -450,15 +473,20 @@ impl Cell for Price {
 	type Out<'t> = &'t [Option<PriceSnap>];
 }
 impl Node for Price {
-	type Deps = (Buffering<Bars<1>, BARS_3M>, Buffering<Bars<60>, BARS_1D>);
+	type Deps = (Buffering<Bars<1>, { Horizon::Span(SPAN_3M.0) }>, Buffering<Bars<60>, REACH_1D>);
 
 	fn advance<'t>(&'t mut self, (m1, h1): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		for (b, w3) in m1.fresh().iter().zip(m1.trailing(BARS_3M)) {
-			let closed_1h = closed_by(h1.all(), Bars::<60>::TF, b.close_ns(Bars::<1>::TF));
-			self.buf.push(match (w3, closed_1h.len() >= BARS_1D) {
-				(Some(w3), true) => {
-					let (base_open, oldest_1h) = (w3[0].open, closed_1h[closed_1h.len() - BARS_1D].close);
+		for (b, w3) in m1.fresh().iter().zip(m1.trailing()) {
+			let deadline = b.close_ns(Bars::<1>::TF);
+			let closed_1h = closed_by(h1.all(), Bars::<60>::TF, deadline);
+			let day_ago = deadline - SPAN_1D.duration().as_nanos() as i64;
+			// The close standing a day back is the first one after `day_ago`; index 0 means the retained
+			// run does not reach behind it, so there is nothing a day old to compare against yet.
+			let oldest_1h = closed_1h.iter().position(|h| h.close_ns(Bars::<60>::TF) > day_ago).filter(|&i| i > 0).map(|i| closed_1h[i].close);
+			self.buf.push(match (w3, oldest_1h) {
+				(Some(w3), Some(oldest_1h)) => {
+					let base_open = w3[0].open;
 					(base_open > 0.0 && oldest_1h != 0.0).then(|| PriceSnap {
 						current: b.close,
 						change_3m_pct: (b.close - base_open) / base_open * 100.0,
@@ -485,9 +513,9 @@ impl Cell for Volume {
 	type Out<'t> = &'t [Option<VolSnap>];
 }
 impl Node for Volume {
-	// Depth 1: the level standing at each 1m bar's close, retained across the ticks where the slower
-	// series emits nothing.
-	type Deps = (Bars<1>, Buffering<Bars<60>, 1>, Buffering<Bars<240>, 1>);
+	// One element: the level standing at each 1m bar's close, retained across the ticks where the
+	// slower series emits nothing.
+	type Deps = (Bars<1>, Buffering<Bars<60>, { Horizon::Elems(1) }>, Buffering<Bars<240>, { Horizon::Elems(1) }>);
 
 	fn advance<'t>(&'t mut self, (m1, h1, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
@@ -689,7 +717,7 @@ impl Cell for Momentum {
 	type Out<'t> = &'t [Option<MomSnap>];
 }
 impl Node for Momentum {
-	type Deps = (Buffering<Bars<5>, MOM_CAP>, Buffering<Bars<240>, MOM_CAP>);
+	type Deps = (Buffering<Bars<5>, { mom_cap(Bars::<5>::TF) }>, Buffering<Bars<240>, { mom_cap(Bars::<240>::TF) }>);
 
 	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &["fast", "slow"],
@@ -706,14 +734,15 @@ impl Node for Momentum {
 			Bars::<5>::TF => m5,
 			Bars::<240>::TF => h4,
 			_ => panic!(
-				"indies.momentum names {tf}, which nothing retains {n} deep — the graph buffers {} and {}",
+				"indies.momentum names {tf}, over which no {n}-bar window is retained — the graph buffers {} and {}",
 				Bars::<5>::TF,
 				Bars::<240>::TF
 			),
 		};
-		let fast = series(cfg.fast);
+		// the lookback is a runtime knob, so the window is narrowed off the retained reach here.
+		let fast = series(cfg.fast).narrowed(Horizon::Elems(n));
 		let slow = cfg.slow.map(|tf| (tf, series(tf)));
-		for (b, w) in fast.fresh().iter().zip(fast.trailing(n)) {
+		for (b, w) in fast.fresh().iter().zip(fast.trailing()) {
 			let slow = slow.map(|(tf, s)| {
 				let closed = closed_by(s.all(), tf, b.close_ns(cfg.fast));
 				(closed.len() >= n).then(|| &closed[closed.len() - n..]).and_then(sharpe)
@@ -742,21 +771,30 @@ impl Cell for OiDelta {
 	type Out<'t> = &'t [Option<OiSnap>];
 }
 impl Node for OiDelta {
-	type Deps = (Buffering<OiRoot, 4>,);
+	type Deps = (Buffering<OiRoot, OI_REACH>,);
+
+	/// Every input is read at a declared reach and nothing is accumulated, so this can be gated.
+	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		self.buf.extend(hist.trailing(4).map(|w| {
-			w.map(|w| {
-				let (current, ago_5m, ago_15m) = (w[3].oi, w[2].oi, w[0].oi);
-				// SPL's own zero guard: an OI of exactly zero is a dead contract, reported as no change.
-				let pct = |ago: f64| if ago != 0.0 { (current - ago) / ago * 100.0 } else { 0.0 };
-				OiSnap {
-					oi_delta_5m_pct: pct(ago_5m),
-					oi_delta_15m_pct: pct(ago_15m),
-				}
-			})
-		}));
+		let step_ns = OI_STEP.duration().as_nanos() as i64;
+		for (i, cur) in hist.fresh().iter().enumerate() {
+			self.buf.push(hist.trailing_at(i).and_then(|w| {
+				// The publish standing `back` before this one. A gap that leaves none within a publish
+				// interval of that instant declines, rather than passing a shorter delta off as this one.
+				let ago = |back: i64| {
+					let target = cur.ts_ns() - back;
+					let o = w.iter().rev().find(|o| o.ts_ns() <= target)?;
+					// SPL's own zero guard: an OI of exactly zero is a dead contract, reported as no change.
+					(target - o.ts_ns() < step_ns).then(|| if o.oi != 0.0 { (cur.oi - o.oi) / o.oi * 100.0 } else { 0.0 })
+				};
+				Some(OiSnap {
+					oi_delta_5m_pct: ago(step_ns)?,
+					oi_delta_15m_pct: ago(3 * step_ns)?,
+				})
+			}));
+		}
 		&self.buf
 	}
 }
@@ -935,6 +973,8 @@ impl Cell for ScreenHit {
 impl Node for ScreenHit {
 	type Deps = (RsiScreener, StdScreener);
 
+	const HORIZON: Horizon = Horizon::Unit;
+
 	fn advance<'t>(&'t mut self, (rsi, std): DepOuts<'t, Self>) -> bool {
 		assert_eq!(rsi.len(), std.len(), "RsiScreener/StdScreener rate mismatch");
 		rsi.iter().chain(std).any(Option::is_some)
@@ -950,7 +990,7 @@ impl Node for Classify {
 	type Deps = (RsiScreener, StdScreener);
 	type When = (ScreenHit,);
 
-	const HISTORIC: bool = false;
+	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, (rsi, std): DepOuts<'t, Self>) -> Self::Out<'t> {
 		// A batch spanning several bar closes can carry more than one hit; the latest is the one an
@@ -1126,11 +1166,11 @@ trading_data::graph! {
 	bar_15m: Bars<15>,
 	bar_1h: Bars<60>,
 	bar_4h: Bars<240>,
-	bar_1m_hist: Buffer<Bars<1>, BARS_3M>,
-	bar_5m_hist: Buffer<Bars<5>, MOM_CAP>,
-	bar_1h_hist: Buffer<Bars<60>, BARS_1D>,
-	bar_4h_hist: Buffer<Bars<240>, MOM_CAP>,
-	oi_hist: Buffer<OiRoot, 4>,
+	bar_1m_hist: Buffer<Bars<1>, { Horizon::Span(SPAN_3M.0) }>,
+	bar_5m_hist: Buffer<Bars<5>, { mom_cap(Bars::<5>::TF) }>,
+	bar_1h_hist: Buffer<Bars<60>, REACH_1D>,
+	bar_4h_hist: Buffer<Bars<240>, { mom_cap(Bars::<240>::TF) }>,
+	oi_hist: Buffer<OiRoot, OI_REACH>,
 	price: Price,
 	volume: Volume,
 	rsi_averages: RsiAverages,

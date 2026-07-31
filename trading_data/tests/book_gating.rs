@@ -10,7 +10,7 @@
 //! checkpoint instead of from a warmup it can never recover.
 
 use trading_data::{
-	Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaBuf, DeltaFrame, DepOuts, FrameKind, Gate, Node, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades, Ts,
+	Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaBuf, DeltaFrame, DepOuts, FrameKind, Gate, Horizon, Node, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades, Ts,
 };
 
 const PREC: PrecisionPriceQty = PrecisionPriceQty {
@@ -41,7 +41,7 @@ impl Node for GatedBook {
 	type Deps = (BookAnchors, BookDeltas);
 	type When = (Hot,);
 
-	const HISTORIC: bool = false;
+	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, (a, d): DepOuts<'t, Self>) -> Option<&'t Book> {
 		self.0.step(a, d).then_some(&self.0)
@@ -74,7 +74,7 @@ impl Node for Mid {
 	type Deps = (GatedBook,);
 	type When = (Hot,);
 
-	const HISTORIC: bool = false;
+	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, (book,): DepOuts<'t, Self>) -> Option<f64> {
 		let b = book?;

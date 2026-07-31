@@ -229,13 +229,15 @@ pub fn graph(input: TokenStream) -> TokenStream {
 				#dag::NodeMeta {
 					name: #dag::node_name::<#node_tys>(),
 					deps: <<#node_tys as #dag::Node>::Deps as #dag::DepSet>::NAMES,
-					historic: <#node_tys as #dag::Node>::HISTORIC,
+					horizon: <#node_tys as #dag::Node>::HORIZON,
 					gates: <<#node_tys as #dag::Node>::When as #dag::GateSet>::NAMES,
 				},
 			)*];
+			// the *field*, not the type: a const-generic type name carries braces, and `assert!` reads
+			// its message as a format string.
 			#(assert!(
 				!#dag::shadowed(#dag::node_name::<#node_tys>(), METAS),
-				concat!(stringify!(#node_tys), " is only consumed under a gate: gate it too, or mark it historic")
+				concat!(stringify!(#fields), " is only consumed under a gate: gate it too, or declare `HORIZON = Horizon::Unbounded`")
 			);)*
 		};
 

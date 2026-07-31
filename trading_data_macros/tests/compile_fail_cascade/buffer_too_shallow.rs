@@ -1,24 +1,50 @@
-//! The declared depth must dominate every request: `Buffering<Src, 5>` against a `Buffer<Src, 3>`.
-//! The assert is a monomorphization-time one, so the graph has to be ticked for it to bite — which
-//! every real graph does.
-use trading_data_dag::{Buffer, Buffering, Cell, DepOuts, Node, slice_nudge};
+//! The declared reach must serve every request: `Buffering<Src, Elems(5)>` against a
+//! `Buffer<Src, Elems(3)>`. The assert is a monomorphization-time one, so the graph has to be ticked
+//! for it to bite — which every real graph does.
+use trading_data_dag::{Buffer, Buffering, Bump, Cell, DepOuts, Flat, Glance, Horizon, Node, Stamped, slice_nudge};
 use trading_data_macros::graph;
+
+#[derive(Clone, Copy, Debug)]
+struct Tick(i64);
+impl Stamped for Tick {
+	fn ts_ns(&self) -> i64 {
+		self.0
+	}
+}
+impl Bump for Tick {
+	fn bump(self, _: usize, _: f64) -> (Self, f64) {
+		(self, 0.0)
+	}
+}
+impl Flat for Tick {
+	const DIMS: &'static [usize] = &[];
+
+	fn flat(&self, out: &mut [f64]) -> bool {
+		out[0] = self.0 as f64;
+		true
+	}
+}
+impl Glance for Tick {
+	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		write!(f, "{self:?}")
+	}
+}
 
 struct Src;
 impl Cell for Src {
-	type Out<'t> = &'t [f64];
+	type Out<'t> = &'t [Tick];
 }
-slice_nudge!(Src, f64);
+slice_nudge!(Src, Tick);
 
 #[derive(Clone, Default)]
 struct Deep {
-	buf: Vec<f64>,
+	buf: Vec<Tick>,
 }
 impl Cell for Deep {
-	type Out<'t> = &'t [f64];
+	type Out<'t> = &'t [Tick];
 }
 impl Node for Deep {
-	type Deps = (Buffering<Src, 5>,);
+	type Deps = (Buffering<Src, { Horizon::Elems(5) }>,);
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
@@ -26,18 +52,18 @@ impl Node for Deep {
 		&self.buf
 	}
 }
-slice_nudge!(Deep, f64);
+slice_nudge!(Deep, Tick);
 
 graph! {
 	struct G;
 	batches Batches;
-	roots { src: Src[f64] };
+	roots { src: Src[Tick] };
 	out GOut;
-	hist: Buffer<Src, 3>,
+	hist: Buffer<Src, { Horizon::Elems(3) }>,
 	deep: Deep,
 }
 
 fn main() {
 	let mut g = G::default();
-	let _ = g.tick(Batches { src: &[1.0] });
+	let _ = g.tick(Batches { src: &[Tick(0)] });
 }

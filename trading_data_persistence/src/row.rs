@@ -5,7 +5,7 @@ use arrow::{
 	datatypes::{DataType, Field, Schema, SchemaRef},
 };
 use trading_data_core::{FrameKind, Local, Precision, PrecisionPriceQty, Side, Ts, Venue};
-use trading_data_dag::{Bump, Cell, Flat, Glance, slice_nudge};
+use trading_data_dag::{Bump, Cell, Flat, Glance, Stamped, slice_nudge};
 
 use crate::feather::RotationPolicy;
 
@@ -706,6 +706,18 @@ impl Bump for Mc {
 impl Glance for Mc {
 	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		write!(f, "mc {:.3e}", self.market_cap)
+	}
+}
+
+impl Stamped for Oi {
+	fn ts_ns(&self) -> i64 {
+		self.ts_venue_exec.as_nanos()
+	}
+}
+
+impl Stamped for Mc {
+	fn ts_ns(&self) -> i64 {
+		self.ts_local_exec.as_nanos()
 	}
 }
 

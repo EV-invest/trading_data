@@ -2,7 +2,7 @@
 //! while `Hot` is closed is pure waste, so the macro's `shadowed` completeness assert must reject
 //! the graph.
 
-use trading_data_dag::{Bump, Cell, DepOuts, Flat, Gate, Glance, Node, slice_nudge, value_nudge};
+use trading_data_dag::{Bump, Cell, DepOuts, Flat, Gate, Glance, Horizon, Node, slice_nudge, value_nudge};
 use trading_data_macros::graph;
 
 #[derive(Clone, Copy, Debug)]
@@ -55,7 +55,7 @@ impl Cell for Cur {
 impl Node for Cur {
 	type Deps = (Src,);
 
-	const HISTORIC: bool = false;
+	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, (s,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		Some(s.len() as f64)
@@ -72,7 +72,7 @@ impl Node for Sink {
 	type Deps = (Cur,);
 	type When = (Hot,);
 
-	const HISTORIC: bool = false;
+	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, (c,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		c

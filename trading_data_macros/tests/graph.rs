@@ -5,7 +5,7 @@
 
 use core::any::TypeId;
 
-use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Glance, Latch, Node, Roots, slice_nudge};
+use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Glance, Horizon, Latch, Node, Roots, slice_nudge};
 use trading_data_macros::graph;
 
 #[derive(Clone, Copy, Debug)]
@@ -103,7 +103,7 @@ impl Node for Deprec {
 	type Deps = (Trig,);
 	type When = (Live,);
 
-	const HISTORIC: bool = false;
+	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, _: DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.t += 1;

@@ -36,5 +36,7 @@ fn base_config(dir: PathBuf, root: &Path) -> ui_test::Config {
 	config.stderr_filter(r"\.rs:\d+:\d+", ".rs:LL:CC");
 	config.stderr_filter(r"(?m)^ *\d+( *\|)", "LL$1");
 	config.stderr_filter(r"(?m)^ *(\||-->)", "  $1");
+	// rustc spills an over-long type to a side file whose name carries a per-run hash.
+	config.stderr_filter(r"long-type-\d+\.txt", "long-type.txt");
 	config
 }

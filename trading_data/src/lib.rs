@@ -4,8 +4,9 @@
 use std::any::TypeId;
 
 pub use trading_data_dag::{
-	Abs, Add, Ast, Buffer, Buffering, Bump, Cell, Cons, Const, DepOuts, Diff, Div, Episode, Ex, Expr, Fire, Flat, Gate, Glance, Guide, Hist, Ink, Latch, Mul, Neg, Nil, Node, Nudge,
-	Observer, Plot, Roots, Series, Square, Sub, Sum, Symbolic, Trace, Var, Vars, abs, constant, graph, observe_root, slice_nudge, square, step, step_exact, step_obs, sum, value_nudge,
+	Abs, Add, Ast, Buffer, Buffering, Bump, Cell, Cons, Const, DepOuts, Diff, Div, Episode, Ex, Expr, Fire, Flat, Gate, Glance, Guide, Hist, Horizon, Ink, Latch, Mul, Neg, Nil, Node, Nudge,
+	Observer, Plot, Roots, Series, Square, Stamped, Sub, Sum, Symbolic, Trace, Var, Vars, abs, constant, graph, observe_root, slice_nudge, square, step, step_exact, step_obs, sum,
+	value_nudge,
 };
 pub use trading_data_derivatives::{WilderAtr, WilderAvgGainLoss, rsi};
 pub use trading_data_persistence::{
