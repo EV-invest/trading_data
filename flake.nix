@@ -128,6 +128,8 @@
               openssl
               pkg-config
               rust
+              # iai-callgrind, the bench harness, shells out to it
+              valgrind
               viz
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 

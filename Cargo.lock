@@ -4519,6 +4519,7 @@ dependencies = [
  "derive-new",
  "derive_more",
  "eyre",
+ "iai-callgrind",
  "insta",
  "jiff",
  "serde",

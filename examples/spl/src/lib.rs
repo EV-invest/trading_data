@@ -347,8 +347,8 @@ fn pump_archives(zips: &[PathBuf], sink: &Sink, clock: &ArchiveClock, prec: Prec
 				"delta" => {}
 				other => panic!("unknown archive record type `{other}` on line {i} of {}", zip.display()),
 			}
-			apply(&mut book.bids, &v["data"]["b"], prec, i);
-			apply(&mut book.asks, &v["data"]["a"], prec, i);
+			apply(&mut book.bids, Side::Buy, &v["data"]["b"], prec, i);
+			apply(&mut book.asks, Side::Sell, &v["data"]["a"], prec, i);
 
 			let n = emit(sink, clock, prec, &book, &mut emitted, ts_ns);
 			emissions += u64::from(n > 0);
@@ -364,24 +364,33 @@ fn pump_archives(zips: &[PathBuf], sink: &Sink, clock: &ArchiveClock, prec: Prec
 	(emissions, levels)
 }
 
-/// One side each of a book view, keyed by raw price.
+/// One side each of a book view, sorted best-first — bids descending, asks ascending — so the
+/// top-`DEPTH` view is a prefix slice rather than a fresh map per message.
 #[derive(Default)]
 struct Levels {
-	bids: BTreeMap<i32, u32>,
-	asks: BTreeMap<i32, u32>,
+	bids: Vec<(i32, u32)>,
+	asks: Vec<(i32, u32)>,
 }
 
-fn apply(side: &mut BTreeMap<i32, u32>, levels: &serde_json::Value, prec: PrecisionPriceQty, line: usize) {
-	for l in levels.as_array().unwrap_or_else(|| panic!("book side is not an array on line {line}")) {
+/// Where `price` sits in a side held best-first.
+fn seek(levels: &[(i32, u32)], side: Side, price: i32) -> Result<usize, usize> {
+	match side {
+		Side::Buy => levels.binary_search_by(|&(p, _)| price.cmp(&p)),
+		Side::Sell => levels.binary_search_by(|&(p, _)| p.cmp(&price)),
+	}
+}
+
+fn apply(levels: &mut Vec<(i32, u32)>, side: Side, raw: &serde_json::Value, prec: PrecisionPriceQty, line: usize) {
+	for l in raw.as_array().unwrap_or_else(|| panic!("book side is not an array on line {line}")) {
 		let price = prec.price.parse_i32(l[0].as_str().unwrap_or_else(|| panic!("price is not a string on line {line}")));
 		let qty = prec.qty.parse_u32(l[1].as_str().unwrap_or_else(|| panic!("qty is not a string on line {line}")));
-		match qty {
-			0 => {
-				side.remove(&price);
+		match (seek(levels, side, price), qty) {
+			(Ok(j), 0) => {
+				levels.remove(j);
 			}
-			q => {
-				side.insert(price, q);
-			}
+			(Ok(j), q) => levels[j].1 = q,
+			(Err(_), 0) => (),
+			(Err(j), q) => levels.insert(j, (price, q)),
 		}
 	}
 }
@@ -389,22 +398,26 @@ fn apply(side: &mut BTreeMap<i32, u32>, levels: &serde_json::Value, prec: Precis
 /// The top-`DEPTH` diff against the last emitted view. Returns the level rows emitted; `0` = the
 /// view is unchanged and there is nothing to say.
 fn emit(sink: &Sink, clock: &ArchiveClock, prec: PrecisionPriceQty, book: &Levels, emitted: &mut Levels, ts_ns: i64) -> u64 {
-	let (bids, asks) = (&book.bids, &book.asks);
-	let (top_bids, top_asks) = (&mut emitted.bids, &mut emitted.asks);
-	let next_bids: BTreeMap<i32, u32> = bids.iter().rev().take(DEPTH).map(|(&p, &q)| (p, q)).collect();
-	let next_asks: BTreeMap<i32, u32> = asks.iter().take(DEPTH).map(|(&p, &q)| (p, q)).collect();
-	let diff = |old: &BTreeMap<i32, u32>, new: &BTreeMap<i32, u32>| {
-		let mut out: BTreeMap<i32, u32> = new.iter().filter(|(p, q)| old.get(p) != Some(q)).map(|(&p, &q)| (p, q)).collect();
-		out.extend(old.keys().filter(|p| !new.contains_key(p)).map(|&p| (p, 0)));
+	fn top(side: &[(i32, u32)]) -> &[(i32, u32)] {
+		&side[..DEPTH.min(side.len())]
+	}
+	let (next_bids, next_asks) = (top(&book.bids), top(&book.asks));
+	// The wire wants a `BTreeMap`, so these two are the only maps the fold still builds — and only
+	// on a message that moves the view.
+	let diff = |old: &[(i32, u32)], new: &[(i32, u32)], side: Side| {
+		let mut out: BTreeMap<i32, u32> = new.iter().filter(|&&(p, q)| seek(old, side, p).map(|j| old[j].1) != Ok(q)).copied().collect();
+		out.extend(old.iter().filter(|&&(p, _)| seek(new, side, p).is_err()).map(|&(p, _)| (p, 0)));
 		out
 	};
-	let (d_bids, d_asks) = (diff(top_bids, &next_bids), diff(top_asks, &next_asks));
+	let (d_bids, d_asks) = (diff(&emitted.bids, next_bids, Side::Buy), diff(&emitted.asks, next_asks, Side::Sell));
 	let n = (d_bids.len() + d_asks.len()) as u64;
 	if n == 0 {
 		return 0;
 	}
-	*top_bids = next_bids;
-	*top_asks = next_asks;
+	emitted.bids.clear();
+	emitted.bids.extend_from_slice(next_bids);
+	emitted.asks.clear();
+	emitted.asks.extend_from_slice(next_asks);
 
 	// The leash. Compared against what we last *pushed*, not against `ts_ns`: a quiet stretch emits
 	// nothing, and waiting on it would block for an event only this call can supply.

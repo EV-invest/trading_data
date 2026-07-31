@@ -797,8 +797,8 @@ impl Node for BookTop {
 		self.buf.push(book.and_then(|b| {
 			let (ps, qs) = (b.prec().price.scale(), b.prec().qty.scale());
 			let (bid, ask) = (b.best_bid()?, b.best_ask()?);
-			let usd = |(p, q): (&i32, &u32)| (*p as f64 / ps) * (*q as f64 / qs);
-			let top20_bid_depth_usd: f64 = b.bids().iter().rev().take(DEPTH).map(usd).sum();
+			let usd = |&(p, q): &(i32, u32)| (p as f64 / ps) * (q as f64 / qs);
+			let top20_bid_depth_usd: f64 = b.bids().iter().take(DEPTH).map(usd).sum();
 			let top20_ask_depth_usd: f64 = b.asks().iter().take(DEPTH).map(usd).sum();
 			let total = top20_bid_depth_usd + top20_ask_depth_usd;
 			let (best_bid, best_ask) = (bid.0.as_f64(), ask.0.as_f64());

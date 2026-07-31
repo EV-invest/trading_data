@@ -5,7 +5,7 @@ use trading_data_dag::{Flat, Glance};
 use crate::{Aggregate, DeltaBuf, DeltaFrame, Exact, FrameKind, Local, PrecisionPriceQty, Price, Qty, Side, Span, Timestamped, Timestamps, Ts, Venue};
 
 /// (price, qty) levels for both sides of an orderbook, keyed by raw price.
-/// Both BTreeMaps are ascending; consumers reverse `bids` for best-bid.
+/// The wire/persist shape. Both BTreeMaps are ascending; [`Book`] holds the same levels best-first.
 #[derive(Clone, Debug, Default)]
 pub struct BookShape {
 	/// Both `first`s are the start of the **current accumulation epoch**: they reset on snapshot
@@ -49,11 +49,14 @@ impl BookUpdate {
 /// The book fold. Domain-only — it knows nothing of `Cell`/`Node`; the graph node wraps *this*
 /// through [`Book::step`], and [`ShadowBook`] wraps the same instance, so the persisted stream and
 /// the replayed one cannot drift.
+///
+/// Both sides are sorted **best-first** — bids descending, asks ascending — in contiguous storage:
+/// at the depth a lane carries, the memmove of an insert costs less than a B-tree's descent.
 #[derive(Clone, Debug, Default)]
 pub struct Book {
 	prec: PrecisionPriceQty,
-	bids: BTreeMap<i32, u32>,
-	asks: BTreeMap<i32, u32>,
+	bids: Vec<(i32, u32)>,
+	asks: Vec<(i32, u32)>,
 	/// Bumped by every resync: a consumer can tell "same book, more levels" from "a different book".
 	epoch: u64,
 	synced: bool,
@@ -63,22 +66,22 @@ pub struct Book {
 
 impl Book {
 	pub fn best_bid(&self) -> Option<(Price, Qty)> {
-		self.bids.iter().next_back().map(|(&p, &q)| self.level(p, q))
+		self.bids.first().map(|&(p, q)| self.level(p, q))
 	}
 
 	pub fn best_ask(&self) -> Option<(Price, Qty)> {
-		self.asks.iter().next().map(|(&p, &q)| self.level(p, q))
+		self.asks.first().map(|&(p, q)| self.level(p, q))
 	}
 
 	fn level(&self, price: i32, qty: u32) -> (Price, Qty) {
 		(Price::new(price, self.prec.price), Qty::new(qty, self.prec.qty))
 	}
 
-	pub fn bids(&self) -> &BTreeMap<i32, u32> {
+	pub fn bids(&self) -> &[(i32, u32)] {
 		&self.bids
 	}
 
-	pub fn asks(&self) -> &BTreeMap<i32, u32> {
+	pub fn asks(&self) -> &[(i32, u32)] {
 		&self.asks
 	}
 
@@ -125,8 +128,10 @@ impl Book {
 
 	fn resync(&mut self, s: &BookShape) {
 		self.prec = s.prec;
-		self.bids.clone_from(&s.bids);
-		self.asks.clone_from(&s.asks);
+		self.bids.clear();
+		self.bids.extend(s.bids.iter().rev().map(|(&p, &q)| (p, q)));
+		self.asks.clear();
+		self.asks.extend(s.asks.iter().map(|(&p, &q)| (p, q)));
 		self.span = s.ts.venue_exec;
 		self.epoch += 1;
 		self.synced = true;
@@ -150,17 +155,21 @@ impl Book {
 		}
 		assert_eq!(self.prec, cols.prec, "book folded a frame at a different precision");
 		for i in 0..cols.len() {
-			let side = match cols.side[i] {
+			let side = cols.side[i];
+			let levels = match side {
 				Side::Buy => &mut self.bids,
 				Side::Sell => &mut self.asks,
 			};
-			match cols.qty[i] {
-				0 => {
-					side.remove(&cols.price[i]);
+			// ponytail: sorted Vec wins to ~1k levels; past that, go back to a map.
+			debug_assert!(levels.len() <= 1024, "a full-depth feed would make the memmove the wrong trade");
+			match (seek(levels, side, cols.price[i]), cols.qty[i]) {
+				(Ok(j), 0) => {
+					levels.remove(j);
 				}
-				q => {
-					side.insert(cols.price[i], q);
-				}
+				(Ok(j), q) => levels[j].1 = q,
+				// a delete of a level below our window
+				(Err(_), 0) => (),
+				(Err(j), q) => levels.insert(j, (cols.price[i], q)),
 			}
 		}
 		let exec = cols.exec();
@@ -171,13 +180,13 @@ impl Book {
 	/// The levels that would carry `self` onto `other`, as raw (price, qty) pairs per side.
 	fn diff(&self, other: &BookShape) -> Vec<(Side, i32, u32)> {
 		let mut out = Vec::new();
-		let mut one = |side: Side, ours: &BTreeMap<i32, u32>, theirs: &BTreeMap<i32, u32>| {
+		let mut one = |side: Side, ours: &[(i32, u32)], theirs: &BTreeMap<i32, u32>| {
 			for (&p, &q) in theirs {
-				if ours.get(&p) != Some(&q) {
+				if seek(ours, side, p).map(|j| ours[j].1) != Ok(q) {
 					out.push((side, p, q));
 				}
 			}
-			for &p in ours.keys() {
+			for &(p, _) in ours {
 				if !theirs.contains_key(&p) {
 					out.push((side, p, 0));
 				}
@@ -195,9 +204,17 @@ impl Book {
 				local_recv: Span::new(epoch_start, recv),
 			},
 			prec: self.prec,
-			bids: self.bids.clone(),
-			asks: self.asks.clone(),
+			bids: self.bids.iter().copied().collect(),
+			asks: self.asks.iter().copied().collect(),
 		}
+	}
+}
+
+/// Where `price` sits in a side held best-first: bids descending, asks ascending.
+fn seek(levels: &[(i32, u32)], side: Side, price: i32) -> Result<usize, usize> {
+	match side {
+		Side::Buy => levels.binary_search_by(|&(p, _)| price.cmp(&p)),
+		Side::Sell => levels.binary_search_by(|&(p, _)| p.cmp(&price)),
 	}
 }
 
@@ -395,8 +412,9 @@ mod tests {
 			[FrameKind::Update, FrameKind::Update, FrameKind::Correction, FrameKind::Correction, FrameKind::Update],
 			"a gap and a snapshot disagreement must each surface as a Correction"
 		);
-		assert_eq!(sb.book.bids().get(&98), None, "the correction must have dropped the gapped level the snapshot denies");
-		assert_eq!(sb.book.bids().get(&99), Some(&9), "the correction must have carried the snapshot's own value");
+		let level = |b: &Book, p: i32| b.bids().iter().find(|l| l.0 == p).map(|l| l.1);
+		assert_eq!(level(&sb.book, 98), None, "the correction must have dropped the gapped level the snapshot denies");
+		assert_eq!(level(&sb.book, 99), Some(9), "the correction must have carried the snapshot's own value");
 
 		let agreeing = BookUpdate::Snapshot(sb.book.shape(local(7), local(1)));
 		assert!(sb.ingest(&agreeing, local(7)).is_none(), "an agreeing snapshot emits nothing");
@@ -429,12 +447,12 @@ mod tests {
 		buf.clear();
 		buf.push(Ts::from_nanos(3), None, 3, FrameKind::Update, Side::Buy, 98, 1);
 		assert!(!b.step(None, buf.frame(0..1)), "a seq discontinuity must desync");
-		assert!(!b.bids().contains_key(&98), "a desynced book must not fold");
+		assert!(!b.bids().iter().any(|l| l.0 == 98), "a desynced book must not fold");
 
 		// the next checkpoint re-arms it, from the checkpoint's state — not the stale one
 		let epoch = b.epoch();
 		assert!(b.step(Some(&anchor), buf.frame(0..1)));
 		assert_eq!(b.epoch(), epoch + 1);
-		assert_eq!(b.bids().get(&99), None, "re-sync must not carry stale levels");
+		assert!(!b.bids().iter().any(|l| l.0 == 99), "re-sync must not carry stale levels");
 	}
 }

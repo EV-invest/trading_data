@@ -24,8 +24,13 @@ trading_data_dag.workspace = true
 v_utils.workspace = true
 
 [dev-dependencies]
+iai-callgrind.workspace = true
 insta.workspace = true
 snapshot_fonts.workspace = true
+
+[[bench]]
+name = "book_fold"
+harness = false
 
 [lints]
 workspace = true
