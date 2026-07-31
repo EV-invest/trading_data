@@ -44,7 +44,7 @@ unused_features = "allow"
 
 [workspace.dependencies]
 arrow = "59"
-clap = { version = "^4.6.2", features = ["derive"] }
+clap = { version = "^4.6.2", features = ["derive", "env"] }
 color-eyre = "^0.6.5"
 derive-new = "^0"
 derive_more = { version = "^2.1", features = ["full"] }

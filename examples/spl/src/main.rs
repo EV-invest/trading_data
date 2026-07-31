@@ -15,6 +15,7 @@
 
 use std::path::PathBuf;
 
+use clap::Parser;
 use exec_viz::{Viz, api_types::BarOut};
 use trading_data::{Feed, LaneKind, LatencyConfig, Replay, Ts, read_mc, read_oi, required_lanes};
 use trading_data_core::{ExchangeName, Side, Venue};
@@ -26,9 +27,20 @@ use trading_data_spl::{
 	symbol, trading_days,
 };
 
-/// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a
-/// slot in it, so several can be up at once.
+/// This app's slot in the port range. The base is the devShell's and the flake's; the port is
+/// derived, not chosen, so several apps can be up at once and the URL says which is which.
 const ORDINAL: u16 = 3;
+/// Same number as `flake.nix`'s `port_range_base`, so a bare `cargo r` outside the devShell serves
+/// on the slot the flake would have given it.
+const PORT_BASE: u16 = 59990;
+
+#[derive(Parser)]
+#[command(about = "scam_pump_liqs as a trading_data graph", long_about = None)]
+struct Cli {
+	/// Strategy + situation config; the flag wins over the env. Mirrors scam_pump_liqs' `--config`.
+	#[arg(long, env = "SPL_CONFIG", default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix"))]
+	config: PathBuf,
+}
 /// Retained ticks. A trading day weaves into far more than this; the ring keeps the tail, which is
 /// what a scrub of the degradation wants.
 const SCROLLBACK: usize = 20_000;
@@ -36,10 +48,8 @@ const HOUR_NS: i64 = 3600 * 1_000_000_000;
 
 #[tokio::main]
 async fn main() {
-	// Unset means the checked-in config, which is the documented default rather than a fallback —
-	// SPL's `--config` flag, as the one knob a run needs before it can read any config at all.
-	let path = std::env::var("SPL_CONFIG").map_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")), PathBuf::from);
-	let cfg = Config::load(&path);
+	let cli = Cli::parse();
+	let cfg = Config::load(&cli.config);
 	let situation = &cfg.situation;
 	let warmup_days = cfg.strategy.warmup_days();
 	let all = config::days(situation, warmup_days);
@@ -225,8 +235,9 @@ async fn main() {
 	println!("oi rows={} mc rows={} (mc={:.3e})", oi.len(), mc.len(), mc[0].market_cap);
 
 	println!("spl: ok");
-	let base: u16 = std::env::var("PORT").expect("PORT: the devShell sets the base of the port range").parse().expect("PORT is a u16");
-	viz.serve(base + ORDINAL).await;
+	let port = std::env::var("PORT").map_or(PORT_BASE, |p| p.parse().expect("PORT is a u16")) + ORDINAL;
+	println!("serving on http://localhost:{port}");
+	viz.serve(port).await;
 }
 
 /// Per-day accumulator and the running assert block over the book/deprecator streams.

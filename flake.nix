@@ -57,21 +57,23 @@
               demo) pkg=trading_data_demo ;;
               live) pkg=trading_data_live_example ;;
               spl) pkg=trading_data_spl ;;
-              *) echo "usage: viz <demo|live|spl>" >&2; exit 1 ;;
+              *) echo "usage: viz <demo|live|spl> [-- <app args>]" >&2; exit 1 ;;
             esac
+            shift || true
             repo="$(git rev-parse --show-toplevel)"
             EXEC_VIZ_WEB_DIR="$(cd "$repo/../exec_viz" && nix run .)"
             export EXEC_VIZ_WEB_DIR
+            # The range base every app claims its ordinal in; an app's own flag overrides it.
             export PORT=${toString port_range_base}
-            exec cargo run --manifest-path "$repo/Cargo.toml" -p "$pkg"
+            exec cargo run --manifest-path "$repo/Cargo.toml" -p "$pkg" -- "$@"
           '';
         };
       in
       {
         apps = {
-          demo = { type = "app"; program = "${pkgs.writeShellScript "demo" ''exec ${viz}/bin/viz demo''}"; };
-          live = { type = "app"; program = "${pkgs.writeShellScript "live" ''exec ${viz}/bin/viz live''}"; };
-          spl = { type = "app"; program = "${pkgs.writeShellScript "spl" ''exec ${viz}/bin/viz spl''}"; };
+          demo = { type = "app"; program = "${pkgs.writeShellScript "demo" ''exec ${viz}/bin/viz demo "$@"''}"; };
+          live = { type = "app"; program = "${pkgs.writeShellScript "live" ''exec ${viz}/bin/viz live "$@"''}"; };
+          spl = { type = "app"; program = "${pkgs.writeShellScript "spl" ''exec ${viz}/bin/viz spl "$@"''}"; };
           help = {
             type = "app";
             program = pkgs.lib.getExe (pkgs.writeShellScriptBin "help" ''
@@ -83,6 +85,7 @@
               nix run .#help     this listing
 
               `nix develop` adds `viz <demo|live|spl>`, the same runner against your working tree.
+              Args after `--` reach the app: `nix run .#spl -- --config other.nix`.
               EOF
             '');
           };

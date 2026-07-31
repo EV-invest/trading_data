@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// Decimal exponent: `raw = value × 10^precision`. Signed, so a million-dollar index tick and a
 /// satoshi tick both fit the same 32-bit raw column.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, derive_more::Display, derive_more::From, derive_more::FromStr, derive_more::Into, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, derive_more::Display, Eq, derive_more::From, derive_more::FromStr, Hash, derive_more::Into, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct Precision(pub i8);
 

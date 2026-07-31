@@ -12,6 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+clap.workspace = true
 exec_viz.workspace = true
 flate2.workspace = true
 jiff.workspace = true

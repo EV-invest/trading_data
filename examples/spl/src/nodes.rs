@@ -296,14 +296,14 @@ impl BookTopSnap {
 pub struct BookTop {
 	buf: Vec<Option<BookTopSnap>>,
 }
-/// A screener hit. Short-only and binary: certainty is `-1.0` on a hit, and a miss emits nothing at
+/// A screener hit. Binary: certainty is signed and saturated on a hit, and a miss emits nothing at
 /// all (SPL's `Screened` contract to the classifier). A graded certainty is a later refinement.
 #[derive(Clone, Copy, Debug)]
 pub struct Screened {
 	pub ts_ns: i64,
 	pub certainty: f64,
 }
-/// Top-gainer short: overbought on 4h while up on the day. [`Bars<1>`] is the screening clock, so a
+/// Top gainer: overbought on 4h while up on the day. [`Bars<1>`] is the screening clock, so a
 /// verdict is reached once a minute exactly as in SPL — the rate comes from this node's own inputs.
 #[derive(Clone, Default)]
 pub struct RsiScreener {
@@ -879,6 +879,8 @@ impl Glance for Screened {
 	}
 }
 
+/// The sign is the direction the screener votes for, its magnitude the confidence; both screeners
+/// currently saturate, so a hit is the full vote.
 fn screened(ts_ns: i64, hit: bool) -> Option<Screened> {
 	hit.then_some(Screened { ts_ns, certainty: -1.0 })
 }
@@ -1031,8 +1033,7 @@ impl Node for Deprecator {
 		{
 			let entry_price = book.mid();
 			//TODO: real selection over the full distribution; derive the side from the classification
-			// context (e.g. cascade direction). `Buy` contradicts the short-only screeners — SPL's own
-			// open inconsistency, carried across rather than silently fixed.
+			// context (e.g. cascade direction) rather than pinning it here.
 			let side = Side::Buy;
 			self.episodes += 1;
 			self.state = State::Active(Active {
