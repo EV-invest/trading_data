@@ -288,9 +288,9 @@ impl Node for Momentum {
 }
 fn sharpe(closes: &[Bar]) -> f64 {
 	let n = MOM_WINDOW as f64;
-	let returns: Vec<f64> = closes.windows(2).map(|w| w[1].close / w[0].close - 1.0).collect();
-	let mean = returns.iter().sum::<f64>() / n;
-	let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n;
+	let ret = |w: &[Bar]| w[1].close / w[0].close - 1.0;
+	let mean = closes.windows(2).map(ret).sum::<f64>() / n;
+	let var = closes.windows(2).map(|w| (ret(w) - mean).powi(2)).sum::<f64>() / n;
 	if var == 0.0 { 0.0 } else { mean / var.sqrt() * n.sqrt() }
 }
 slice_nudge!(Momentum, Option<f64>);

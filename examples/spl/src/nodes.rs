@@ -667,15 +667,12 @@ impl Glance for MomSnap {
 /// zero — all returns identical is degenerate, not corrupt.
 fn sharpe(window: &[Bar]) -> Option<f64> {
 	let n = window.len() - 1;
-	let returns: Vec<f64> = window
-		.windows(2)
-		.map(|w| {
-			assert!(w[0].close > 0.0, "non-positive close inside window");
-			(w[1].close - w[0].close) / w[0].close
-		})
-		.collect();
-	let mean = returns.iter().sum::<f64>() / n as f64;
-	let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n as f64;
+	let ret = |w: &[Bar]| {
+		assert!(w[0].close > 0.0, "non-positive close inside window");
+		(w[1].close - w[0].close) / w[0].close
+	};
+	let mean = window.windows(2).map(ret).sum::<f64>() / n as f64;
+	let var = window.windows(2).map(|w| (ret(w) - mean).powi(2)).sum::<f64>() / n as f64;
 	// Pine: `stdev * sqrt(lookback)` — non-standard, kept verbatim.
 	let stdev_ann = var.sqrt() * (n as f64).sqrt();
 	if stdev_ann == 0.0 {
