@@ -6,7 +6,8 @@
 use core::fmt;
 
 use trading_data::{
-	Bump, Cell, DepOuts, Exact, Expr, Flat, Glance, Guide, Ink, Lanes, Node, Oi, OiRoot, Sketch, Symbolic, TradeCols, Trades, Vars, WilderAtr, WilderRsi, constant, slice_nudge,
+	Buffer, Buffering, Bump, Cell, DepOuts, Exact, Expr, Flat, Glance, Guide, Ink, Lanes, Node, Oi, OiRoot, Sketch, Symbolic, TradeCols, Trades, Vars, WilderAtr, WilderRsi, constant,
+	slice_nudge,
 };
 use trading_data_core::Side;
 
@@ -267,123 +268,77 @@ impl Node for Atr14 {
 }
 slice_nudge!(Atr14, Option<f64>);
 
+/// Sharpe-like `mean/stdev * √n` of the `MOM_WINDOW` returns spanned by a `MOM_WINDOW + 1` close
+/// window. A degenerate (zero-variance) window is flat, not corrupt.
 #[derive(Clone, Default)]
 pub struct Momentum {
-	prev_close: Option<f64> = None,
-	returns: [f64; MOM_WINDOW] = [0.0; MOM_WINDOW],
-	idx: usize = 0,
-	filled: usize = 0,
-	buf: Vec<Option<f64>> = Vec::new(),
+	buf: Vec<Option<f64>>,
 }
 impl Cell for Momentum {
 	type Out<'t> = &'t [Option<f64>];
 }
 impl Node for Momentum {
-	type Deps = (Bar1m,);
+	type Deps = (Buffering<Bar1m, { MOM_WINDOW + 1 }>,);
 
-	fn advance<'t>(&'t mut self, (bars,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		for b in bars {
-			let m = self.step(b.close);
-			self.buf.push(m);
-		}
+		self.buf.extend(hist.trailing(MOM_WINDOW + 1).map(|w| w.map(sharpe)));
 		&self.buf
 	}
 }
-impl Momentum {
-	fn step(&mut self, close: f64) -> Option<f64> {
-		let prev = self.prev_close.replace(close)?;
-		self.returns[self.idx] = close / prev - 1.0;
-		self.idx = (self.idx + 1) % MOM_WINDOW;
-		self.filled = (self.filled + 1).min(MOM_WINDOW);
-		if self.filled < MOM_WINDOW {
-			return None;
-		}
-		let n = MOM_WINDOW as f64;
-		let mean = self.returns.iter().sum::<f64>() / n;
-		let var = self.returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n;
-		if var == 0.0 {
-			return Some(0.0);
-		}
-		Some(mean / var.sqrt() * n.sqrt())
-	}
+fn sharpe(closes: &[Bar]) -> f64 {
+	let n = MOM_WINDOW as f64;
+	let returns: Vec<f64> = closes.windows(2).map(|w| w[1].close / w[0].close - 1.0).collect();
+	let mean = returns.iter().sum::<f64>() / n;
+	let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n;
+	if var == 0.0 { 0.0 } else { mean / var.sqrt() * n.sqrt() }
 }
 slice_nudge!(Momentum, Option<f64>);
 
-#[derive(Clone)]
+/// Rolling 60-bar quote volume. `None` until the hour is whole — a partial sum compared against a
+/// threshold is a lie, not a warmup.
+#[derive(Clone, Default)]
 pub struct VolUsd1h {
-	ring: [f64; 60],
-	idx: usize,
-	buf: Vec<f64>,
-}
-impl Default for VolUsd1h {
-	fn default() -> Self {
-		Self {
-			ring: [0.0; 60],
-			idx: 0,
-			buf: Vec::new(),
-		}
-	}
+	buf: Vec<Option<f64>>,
 }
 impl Cell for VolUsd1h {
-	type Out<'t> = &'t [f64];
+	type Out<'t> = &'t [Option<f64>];
 }
 impl Node for VolUsd1h {
-	type Deps = (Bar1m,);
+	type Deps = (Buffering<Bar1m, 60>,);
 
-	fn advance<'t>(&'t mut self, (bars,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		for b in bars {
-			self.ring[self.idx] = b.vol_quote;
-			self.idx = (self.idx + 1) % self.ring.len();
-			self.buf.push(self.ring.iter().sum());
-		}
+		self.buf.extend(hist.trailing(60).map(|w| w.map(|w| w.iter().map(|b| b.vol_quote).sum())));
 		&self.buf
 	}
 }
-slice_nudge!(VolUsd1h, f64);
+slice_nudge!(VolUsd1h, Option<f64>);
 
-/// Kyle's λ: through-origin OLS of per-bar Δclose on signed flow, `λ = Σ(Δp·f) / Σ(f²)`.
+/// Kyle's λ: through-origin OLS of per-bar Δclose on signed flow, `λ = Σ(Δp·f) / Σ(f²)`, over the
+/// `LAMBDA_WINDOW` deltas spanned by a `LAMBDA_WINDOW + 1` bar window.
 #[derive(Clone, Default)]
 pub struct Lambda1m {
-	prev_close: Option<f64> = None,
-	d_close: [f64; LAMBDA_WINDOW] = [0.0; LAMBDA_WINDOW],
-	flow: [f64; LAMBDA_WINDOW] = [0.0; LAMBDA_WINDOW],
-	idx: usize = 0,
-	filled: usize = 0,
-	buf: Vec<Option<f64>> = Vec::new(),
+	buf: Vec<Option<f64>>,
 }
 impl Cell for Lambda1m {
 	type Out<'t> = &'t [Option<f64>];
 }
 impl Node for Lambda1m {
-	type Deps = (Bar1m,);
+	type Deps = (Buffering<Bar1m, { LAMBDA_WINDOW + 1 }>,);
 
-	fn advance<'t>(&'t mut self, (bars,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		for b in bars {
-			let l = self.step(b.close, b.flow_quote);
-			self.buf.push(l);
-		}
+		self.buf.extend(hist.trailing(LAMBDA_WINDOW + 1).map(|w| w.map(kyle_lambda)));
 		&self.buf
 	}
 }
-impl Lambda1m {
-	fn step(&mut self, close: f64, flow: f64) -> Option<f64> {
-		let prev = self.prev_close.replace(close)?;
-		self.d_close[self.idx] = close - prev;
-		self.flow[self.idx] = flow;
-		self.idx = (self.idx + 1) % LAMBDA_WINDOW;
-		self.filled = (self.filled + 1).min(LAMBDA_WINDOW);
-		if self.filled < LAMBDA_WINDOW {
-			return None;
-		}
-		let denom = self.flow.iter().map(|f| f * f).sum::<f64>();
-		if denom == 0.0 {
-			return Some(0.0);
-		}
-		Some(self.d_close.iter().zip(&self.flow).map(|(dp, f)| dp * f).sum::<f64>() / denom)
+fn kyle_lambda(bars: &[Bar]) -> f64 {
+	let denom: f64 = bars[1..].iter().map(|b| b.flow_quote * b.flow_quote).sum();
+	if denom == 0.0 {
+		return 0.0;
 	}
+	bars.windows(2).map(|w| (w[1].close - w[0].close) * w[1].flow_quote).sum::<f64>() / denom
 }
 slice_nudge!(Lambda1m, Option<f64>);
 
@@ -429,11 +384,11 @@ impl Node for Screener {
 		self.buf.clear();
 		for i in 0..mom.len() {
 			// not-warm = closed; streak preserved across not-warm bars.
-			let Some((m, r)) = mom[i].zip(rsi[i]) else {
+			let Some(((m, r), v)) = mom[i].zip(rsi[i]).zip(vol[i]) else {
 				self.buf.push(false);
 				continue;
 			};
-			let hit = m.abs() > MOM_TH && !(RSI_LO..=RSI_HI).contains(&r) && vol[i] > VOL_TH;
+			let hit = m.abs() > MOM_TH && !(RSI_LO..=RSI_HI).contains(&r) && v > VOL_TH;
 			self.streak = if hit { self.streak + 1 } else { 0 };
 			self.buf.push(self.streak >= STREAK_N);
 		}
@@ -531,6 +486,8 @@ trading_data::graph! {
 	out TickOut;
 	diff { signal: Signal }
 	bar: Bar1m,
+	// 61 = the deepest request (Momentum/Lambda1m's `window + 1`); VolUsd1h's 60 rides along.
+	bar_hist: Buffer<Bar1m, 61>,
 	cvd: Cvd,
 	rsi: Rsi14,
 	atr: Atr14,

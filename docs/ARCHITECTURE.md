@@ -130,6 +130,20 @@ Structural rules (enforced by the signatures, not convention):
   event arms it; when its `Cut` node publishes an `Episode::terminal` out, `graph!` commutates it
   and resets every node gated on it to `Default` at the *next* tick's start (deferred: the frame
   still borrows batch fields at end-of-tick). One episode at a time; triggers during one are absorbed.
+- **Buffering.** History over a series belongs to the producer's edge, never to the consumer.
+  `Buffer<C, K>` is an ordinary node (`Deps = (C,)`, ungated, historic) sitting *next to* `C` in the
+  frame; consumers name `Buffering<C, J>` in `Deps` and read a `Hist` — `past ++ fresh`, where
+  `fresh` is byte-identical to `C`'s own out. This is what makes switching a consumer **off** cheap:
+  a client-owned window comes back cold and must re-warm, an engine-owned one is warm on its first
+  tick back. So a buffer advances every tick regardless of what is dark downstream — being ready is
+  its whole job. Four invariants, all by construction: it is never gated (`Hist` isn't `Latent`, and
+  `HISTORIC` makes gating one a compile error); never latch-reset (`When = ()`, so the window
+  outlives the episode); never lets its own upstream be shadowed (it is an ungated in-graph
+  consumer); and there is one per series per frame (two make every `Buffering<C, _>` ambiguous, as
+  with any duplicated node type). `K` is declared once by the graph author and const-checked to
+  dominate every consumer's `J`. A buffer replaces a **window**. A *recurrence* (Wilder RSI/ATR,
+  EMA) and a *fold* (a running sum, a partial bar) stay stateful: they must see every element
+  exactly once, which a window does not promise.
 - **Universe/cross-sectional ops** are graph composition, not an execution tier: per-symbol graphs
   are values; a universe-level graph ticks at bar cadence, its roots seeded from theirs.
 - **Parallelism is across symbols (live) / episodes (backtest) only** — one graph per unit, rayon

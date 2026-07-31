@@ -340,10 +340,15 @@ pub trait Nudge: Cell {
 }
 
 /// A slice-out cell's finite-difference witness: copy the batch into `Vec<$E>` scratch, bump the
-/// last element when asked, view it back at the borrow's own lifetime.
+/// last element when asked, view it back at the borrow's own lifetime. Also the cell's [`Series`]
+/// declaration — "this out is a run of `$E`" is exactly what both traits need to know.
 #[macro_export]
 macro_rules! slice_nudge {
 	($C:ty, $E:ty) => {
+		impl $crate::Series for $C {
+			type Item = $E;
+		}
+
 		impl $crate::Nudge for $C {
 			type Scratch = $crate::MacroVec<$E>;
 
@@ -579,6 +584,183 @@ where
 {
 	fn get(&self) -> N::Out<'t> {
 		self.tail.get()
+	}
+}
+
+/// A cell whose out is a run of `Item`s — the bufferable shape. The associated `Item` is what keeps
+/// the [`Buffering`] `Has` impl below free of an unconstrained element parameter (E0207).
+/// [`slice_nudge!`] declares it.
+pub trait Series
+where
+	for<'x> Self: Cell<Out<'x> = &'x [Self::Item]>, {
+	/// `'static` because [`Cell::Out`] carries no where-clause an impl could widen: an element that
+	/// itself borrows the tick could never satisfy `Hist<'t, Item>`.
+	type Item: Copy + 'static;
+}
+
+/// A [`Buffering`] dep's out: `all = past ++ fresh`, where `fresh` is byte-identical to the
+/// unbuffered series out and `past` is what stood behind this tick's batch. `depth` is the
+/// *consumer's* declared `J`, so a request wider than it stated trips regardless of how deep the
+/// frame's buffer happens to run.
+#[derive(Debug)]
+pub struct Hist<'t, T> {
+	all: &'t [T],
+	fresh: usize,
+	depth: usize,
+}
+
+impl<T> Clone for Hist<'_, T> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+impl<T> Copy for Hist<'_, T> {}
+
+impl<'t, T> Hist<'t, T> {
+	/// This tick's emissions — identical to the unbuffered series out.
+	pub fn fresh(self) -> &'t [T] {
+		&self.all[self.all.len() - self.fresh..]
+	}
+
+	/// What stood behind this tick's batch.
+	pub fn past(self) -> &'t [T] {
+		&self.all[..self.all.len() - self.fresh]
+	}
+
+	/// The whole retained run, `past ++ fresh` — the cross-rate view, for a consumer clocked by some
+	/// faster series that must find the run standing at its own deadline.
+	pub fn all(self) -> &'t [T] {
+		self.all
+	}
+
+	/// The `n` elements ending at `fresh()[i]`; `None` while the history is still shorter than `n`.
+	pub fn trailing_at(self, i: usize, n: usize) -> Option<&'t [T]> {
+		assert!(n >= 1 && n <= self.depth, "trailing({n}) exceeds the declared depth {}", self.depth);
+		let end = self.all.len() - self.fresh + i + 1;
+		assert!(end <= self.all.len(), "trailing_at: {i} past this tick's {} fresh elements", self.fresh);
+		(end >= n).then(|| &self.all[end - n..end])
+	}
+
+	/// One window per fresh element — rate preservation for free.
+	pub fn trailing(self, n: usize) -> impl Iterator<Item = Option<&'t [T]>> {
+		(0..self.fresh).map(move |i| self.trailing_at(i, n))
+	}
+}
+
+/// Reads `fresh` only: a buffer adds no signal, so its [`Fire`] is indistinguishable from the
+/// series it retains.
+impl<T: Flat> Flat for Hist<'_, T> {
+	const DIMS: &'static [usize] = T::DIMS;
+
+	fn flat(&self, out: &mut [f64]) -> bool {
+		self.fresh().flat(out)
+	}
+
+	fn fires(&self) -> usize {
+		self.fresh
+	}
+}
+
+impl<T: Glance> Glance for Hist<'_, T> {
+	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		self.fresh().glance(f)
+	}
+}
+
+/// Engine-owned retention over a [`Series`] — an ordinary node (`Deps = (C,)`, ungated, historic)
+/// sitting *next to* its source in the frame, not over it. It advances every tick regardless of what
+/// is dark downstream, because being warm is its whole job: a consumer switched off and revived
+/// reads a full window on its first tick back, where a client-owned window would come back cold.
+///
+/// `K` is the window length *inclusive of the current element*, so `Buffer<C, 14>` serves exactly a
+/// 14-long indicator. The retention invariant is: **at most `K` elements from before this tick's
+/// batch, plus the whole batch**. `K - 1` would also satisfy every [`Hist::trailing`] read, but a
+/// *cross-rate* consumer — one clocked by a faster series, searching [`Hist::all`] for the run
+/// standing at its own deadline — needs a whole `K` on a tick where this series emitted nothing.
+///
+/// One `Buffer<C, _>` per series per frame — two make every `Buffering<C, _>` ambiguous, the same
+/// failure as two instances of one node type.
+pub struct Buffer<C: Series, const K: usize> {
+	buf: alloc::vec::Vec<C::Item>,
+}
+
+// hand-written: `derive` would demand `C: Default` / `C: Clone`, which the source node need not be.
+impl<C: Series, const K: usize> Default for Buffer<C, K> {
+	fn default() -> Self {
+		Self { buf: alloc::vec::Vec::new() }
+	}
+}
+impl<C: Series, const K: usize> Clone for Buffer<C, K> {
+	fn clone(&self) -> Self {
+		Self { buf: self.buf.clone() }
+	}
+}
+
+impl<C: Series, const K: usize> Cell for Buffer<C, K> {
+	type Out<'t> = Hist<'t, C::Item>;
+}
+
+impl<C: Series, const K: usize> Node for Buffer<C, K> {
+	type Deps = (C,);
+
+	fn advance<'t>(&'t mut self, (fresh,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		const { assert!(K >= 1, "a buffer's window includes the current element, so K >= 1") }
+		// Trim *before* the append: `past` must be what stood behind this tick's batch, or an
+		// intra-batch cursor walking several elements reads a window already trimmed by its own tail.
+		if self.buf.len() > K {
+			self.buf.drain(..self.buf.len() - K);
+		}
+		self.buf.extend_from_slice(fresh);
+		Hist {
+			all: &self.buf,
+			fresh: fresh.len(),
+			depth: K,
+		}
+	}
+}
+
+/// Dep position only, never a frame field: "this series, retained at least `J` deep". Resolves
+/// against the frame's [`Buffer<C, K>`] through the [`Has`] impl below, whose const-assert proves
+/// the declared depth dominates the request.
+pub struct Buffering<C: Series, const J: usize>(core::marker::PhantomData<C>);
+
+impl<C: Series, const J: usize> Cell for Buffering<C, J> {
+	type Out<'t> = Hist<'t, C::Item>;
+}
+
+impl<'t, C: Series, const K: usize, const J: usize, T> Has<'t, Buffering<C, J>, Here> for Cons<'t, Buffer<C, K>, T> {
+	fn get(&self) -> Hist<'t, C::Item> {
+		const { assert!(K >= J, "the frame's Buffer<C, K> is shallower than this Buffering<C, J> asks for") }
+		Hist { depth: J, ..self.out }
+	}
+}
+
+impl<C: Series, const J: usize> Nudge for Buffering<C, J>
+where
+	C::Item: Bump,
+{
+	type Scratch = (alloc::vec::Vec<C::Item>, usize);
+
+	fn stage<'t>(out: Hist<'t, C::Item>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
+		s.0.clear();
+		s.0.extend_from_slice(out.all);
+		s.1 = out.fresh;
+		match (bump, s.0.last_mut()) {
+			(Some(slot), Some(last)) => {
+				let (e, dh) = Bump::bump(*last, slot, h);
+				*last = e;
+				dh
+			}
+			_ => 0.0,
+		}
+	}
+
+	fn view<'l>(s: &'l Self::Scratch) -> Hist<'l, C::Item> {
+		Hist {
+			all: &s.0,
+			fresh: s.1,
+			depth: J,
+		}
 	}
 }
 

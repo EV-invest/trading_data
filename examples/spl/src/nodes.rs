@@ -16,11 +16,10 @@
 //! decides is *which screener runs*, not which indie is registered to be readable.
 
 use core::fmt;
-use std::collections::VecDeque;
 
 use trading_data::{
-	Book, BookAnchors, BookDeltas, BookShape, Bump, Cell, DeltaFrame, DepOuts, Exact, Flat, Glance, Lanes, Mc, McRoot, Node, Oi, OiRoot, Sketch, TradeCols, Trades, WilderAtr, WilderRsi,
-	slice_nudge,
+	Book, BookAnchors, BookDeltas, BookShape, Buffer, Buffering, Bump, Cell, DeltaFrame, DepOuts, Exact, Flat, Glance, Lanes, Mc, McRoot, Node, Oi, OiRoot, Sketch, TradeCols, Trades,
+	WilderAtr, WilderRsi, slice_nudge,
 };
 use trading_data_core::Side;
 
@@ -44,6 +43,10 @@ const BARS_3M: usize = 3;
 const RISK_FRACTION: f64 = 0.03;
 /// SPL's `OrderBookActor::DEPTH`.
 const DEPTH: usize = 20;
+/// Retained bars behind `indies.momentum.lookback`, which is a runtime knob where a buffer's depth
+/// is a const — so this is a *capacity*, checked against the configured lookback in
+/// [`crate::config::Config::load`]. Raising it costs `2 * (MOM_CAP - lookback)` retained bars.
+pub const MOM_CAP: usize = 256;
 
 // ─── flattening ─────────────────────────────────────────────────────────────────────────────────
 
@@ -176,26 +179,7 @@ pub struct PriceSnap {
 /// is a live-only fidelity choice), the 1d delta off 24 closed 1h closes.
 #[derive(Clone, Default)]
 pub struct Price {
-	bars_3m: VecDeque<(f64, f64)>,
-	closes_1h: VecDeque<f64>,
 	buf: Vec<Option<PriceSnap>>,
-}
-impl Price {
-	fn snap(&self, current: f64) -> Option<PriceSnap> {
-		if self.bars_3m.len() < BARS_3M || self.closes_1h.len() < BARS_1D {
-			return None;
-		}
-		let (base_open, _) = *self.bars_3m.front().expect("checked full");
-		let oldest_1h = *self.closes_1h.front().expect("checked full");
-		if base_open <= 0.0 || oldest_1h == 0.0 {
-			return None;
-		}
-		Some(PriceSnap {
-			current,
-			change_3m_pct: (current - base_open) / base_open * 100.0,
-			change_1d_pct: (current - oldest_1h) / oldest_1h * 100.0,
-		})
-	}
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -207,8 +191,6 @@ pub struct VolSnap {
 /// Latest closed bar per timeframe, notional as `volume * close`.
 #[derive(Clone, Default)]
 pub struct Volume {
-	last_1h: Option<f64>,
-	last_4h: Option<f64>,
 	buf: Vec<Option<VolSnap>>,
 }
 #[derive(Clone, Copy, Debug)]
@@ -248,8 +230,6 @@ pub struct MomSnap {
 }
 #[derive(Clone, Default)]
 pub struct Momentum {
-	closes_5m: VecDeque<f64>,
-	closes_4h: VecDeque<f64>,
 	buf: Vec<Option<MomSnap>>,
 }
 #[derive(Clone, Copy, Debug)]
@@ -260,7 +240,6 @@ pub struct OiSnap {
 /// Bybit 5min open interest read 1-back and 3-back — 5 and 15 minutes.
 #[derive(Clone, Default)]
 pub struct OiDelta {
-	window: VecDeque<f64>,
 	buf: Vec<Option<OiSnap>>,
 }
 #[derive(Clone, Copy, Debug)]
@@ -452,6 +431,13 @@ fn drain_upto(bars: &[Bar], minutes: u64, cursor: &mut usize, deadline: i64, mut
 	}
 }
 
+/// The prefix of a slower series that has *closed* by `deadline` — the cross-rate read a node
+/// clocked by a faster series makes against a [`Buffering`] dep, and the level-view sibling of
+/// [`drain_upto`]'s cursor walk.
+fn closed_by(bars: &[Bar], minutes: u64, deadline: i64) -> &[Bar] {
+	&bars[..bars.partition_point(|b| b.close_ns(minutes) <= deadline)]
+}
+
 /// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that
 /// declined this tick (`None`) is not a publish, so the cached level stands.
 fn latest<T: Copy>(slot: &mut Option<T>, dep: &[Option<T>]) {
@@ -474,32 +460,24 @@ impl Cell for Price {
 	type Out<'t> = &'t [Option<PriceSnap>];
 }
 impl Node for Price {
-	type Deps = (Bars<1>, Bars<60>);
+	type Deps = (Buffering<Bars<1>, BARS_3M>, Buffering<Bars<60>, BARS_1D>);
 
 	fn advance<'t>(&'t mut self, (m1, h1): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		let mut cursor = 0;
-		for b in m1 {
-			let closes_1h = &mut self.closes_1h;
-			drain_upto(h1, 60, &mut cursor, b.close_ns(1), |h| {
-				closes_1h.push_back(h.close);
-				while closes_1h.len() > BARS_1D {
-					closes_1h.pop_front();
+		for (b, w3) in m1.fresh().iter().zip(m1.trailing(BARS_3M)) {
+			let closed_1h = closed_by(h1.all(), 60, b.close_ns(1));
+			self.buf.push(match (w3, closed_1h.len() >= BARS_1D) {
+				(Some(w3), true) => {
+					let (base_open, oldest_1h) = (w3[0].open, closed_1h[closed_1h.len() - BARS_1D].close);
+					(base_open > 0.0 && oldest_1h != 0.0).then(|| PriceSnap {
+						current: b.close,
+						change_3m_pct: (b.close - base_open) / base_open * 100.0,
+						change_1d_pct: (b.close - oldest_1h) / oldest_1h * 100.0,
+					})
 				}
+				_ => None,
 			});
-			self.bars_3m.push_back((b.open, b.close));
-			while self.bars_3m.len() > BARS_3M {
-				self.bars_3m.pop_front();
-			}
-			self.buf.push(self.snap(b.close));
 		}
-		let closes_1h = &mut self.closes_1h;
-		drain_upto(h1, 60, &mut cursor, i64::MAX, |h| {
-			closes_1h.push_back(h.close);
-			while closes_1h.len() > BARS_1D {
-				closes_1h.pop_front();
-			}
-		});
 		&self.buf
 	}
 }
@@ -517,16 +495,15 @@ impl Cell for Volume {
 	type Out<'t> = &'t [Option<VolSnap>];
 }
 impl Node for Volume {
-	type Deps = (Bars<1>, Bars<60>, Bars<240>);
+	// Depth 1: the level standing at each 1m bar's close, retained across the ticks where the slower
+	// series emits nothing.
+	type Deps = (Bars<1>, Buffering<Bars<60>, 1>, Buffering<Bars<240>, 1>);
 
 	fn advance<'t>(&'t mut self, (m1, h1, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		let (mut c1, mut c4) = (0, 0);
 		for b in m1 {
-			let (last_1h, last_4h) = (&mut self.last_1h, &mut self.last_4h);
-			drain_upto(h1, 60, &mut c1, b.close_ns(1), |h| *last_1h = Some(h.vol_base * h.close));
-			drain_upto(h4, 240, &mut c4, b.close_ns(1), |h| *last_4h = Some(h.vol_base * h.close));
-			self.buf.push(last_1h.zip(*last_4h).map(|(volume_1h_usd, volume_4h_usd)| VolSnap {
+			let usd = |bars: &[Bar], minutes: u64| closed_by(bars, minutes, b.close_ns(1)).last().map(|h| h.vol_base * h.close);
+			self.buf.push(usd(h1.all(), 60).zip(usd(h4.all(), 240)).map(|(volume_1h_usd, volume_4h_usd)| VolSnap {
 				volume_1m_usd: b.vol_base * b.close,
 				volume_1h_usd,
 				volume_4h_usd,
@@ -686,21 +663,17 @@ impl Glance for MomSnap {
 	}
 }
 
-/// Sharpe over a window of `lookback + 1` closes, per `bullmart_sri.pine`. `None` until the window
-/// is full or when stdev is zero — all returns identical is degenerate, not corrupt.
-fn sharpe(closes: &VecDeque<f64>) -> Option<f64> {
-	let n = strategy().indies.momentum.lookback;
-	if closes.len() < n + 1 {
-		return None;
-	}
-	let mut prev = closes[0];
-	assert!(prev > 0.0, "non-positive close at window head");
-	let mut returns = Vec::with_capacity(n);
-	for &c in closes.iter().skip(1) {
-		assert!(prev > 0.0, "non-positive close inside window");
-		returns.push((c - prev) / prev);
-		prev = c;
-	}
+/// Sharpe over a window of `lookback + 1` closes, per `bullmart_sri.pine`. `None` when stdev is
+/// zero — all returns identical is degenerate, not corrupt.
+fn sharpe(window: &[Bar]) -> Option<f64> {
+	let n = window.len() - 1;
+	let returns: Vec<f64> = window
+		.windows(2)
+		.map(|w| {
+			assert!(w[0].close > 0.0, "non-positive close inside window");
+			(w[1].close - w[0].close) / w[0].close
+		})
+		.collect();
 	let mean = returns.iter().sum::<f64>() / n as f64;
 	let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n as f64;
 	// Pine: `stdev * sqrt(lookback)` — non-standard, kept verbatim.
@@ -711,18 +684,11 @@ fn sharpe(closes: &VecDeque<f64>) -> Option<f64> {
 	Some((mean * PINE_PERIODS_PER_YEAR - strategy().indies.momentum.risk_free_rate) / stdev_ann)
 }
 
-fn push_close(closes: &mut VecDeque<f64>, close: f64) {
-	closes.push_back(close);
-	while closes.len() > strategy().indies.momentum.lookback + 1 {
-		closes.pop_front();
-	}
-}
-
 impl Cell for Momentum {
 	type Out<'t> = &'t [Option<MomSnap>];
 }
 impl Node for Momentum {
-	type Deps = (Bars<5>, Bars<240>);
+	type Deps = (Buffering<Bars<5>, MOM_CAP>, Buffering<Bars<240>, MOM_CAP>);
 
 	const SKETCH: Sketch = Sketch {
 		labels: &["4h", "5m"],
@@ -731,13 +697,12 @@ impl Node for Momentum {
 
 	fn advance<'t>(&'t mut self, (m5, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		let mut cursor = 0;
-		for b in m5 {
-			let closes_4h = &mut self.closes_4h;
-			drain_upto(h4, 240, &mut cursor, b.close_ns(5), |x| push_close(closes_4h, x.close));
-			push_close(&mut self.closes_5m, b.close);
+		let n = strategy().indies.momentum.lookback + 1;
+		for (b, w5) in m5.fresh().iter().zip(m5.trailing(n)) {
+			let closed_4h = closed_by(h4.all(), 240, b.close_ns(5));
+			let w4 = (closed_4h.len() >= n).then(|| &closed_4h[closed_4h.len() - n..]);
 			// A degenerate (zero-stdev) window skips the publish rather than fabricating a Sharpe.
-			self.buf.push(match (sharpe(&self.closes_5m), use_4h().then(|| sharpe(&self.closes_4h))) {
+			self.buf.push(match (w5.and_then(sharpe), use_4h().then(|| w4.and_then(sharpe))) {
 				(Some(sharpe_5m), Some(Some(sharpe_4h))) => Some(MomSnap {
 					sharpe_4h: Some(sharpe_4h),
 					sharpe_5m,
@@ -763,25 +728,21 @@ impl Cell for OiDelta {
 	type Out<'t> = &'t [Option<OiSnap>];
 }
 impl Node for OiDelta {
-	type Deps = (OiRoot,);
+	type Deps = (Buffering<OiRoot, 4>,);
 
-	fn advance<'t>(&'t mut self, (ois,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		for o in ois {
-			self.window.push_back(o.oi);
-			while self.window.len() > 4 {
-				self.window.pop_front();
-			}
-			self.buf.push((self.window.len() == 4).then(|| {
-				let (current, ago_5m, ago_15m) = (self.window[3], self.window[2], self.window[0]);
+		self.buf.extend(hist.trailing(4).map(|w| {
+			w.map(|w| {
+				let (current, ago_5m, ago_15m) = (w[3].oi, w[2].oi, w[0].oi);
 				// SPL's own zero guard: an OI of exactly zero is a dead contract, reported as no change.
 				let pct = |ago: f64| if ago != 0.0 { (current - ago) / ago * 100.0 } else { 0.0 };
 				OiSnap {
 					oi_delta_5m_pct: pct(ago_5m),
 					oi_delta_15m_pct: pct(ago_15m),
 				}
-			}));
-		}
+			})
+		}));
 		&self.buf
 	}
 }
@@ -1149,6 +1110,11 @@ trading_data::graph! {
 	bar_15m: Bars<15>,
 	bar_1h: Bars<60>,
 	bar_4h: Bars<240>,
+	bar_1m_hist: Buffer<Bars<1>, BARS_3M>,
+	bar_5m_hist: Buffer<Bars<5>, MOM_CAP>,
+	bar_1h_hist: Buffer<Bars<60>, BARS_1D>,
+	bar_4h_hist: Buffer<Bars<240>, MOM_CAP>,
+	oi_hist: Buffer<OiRoot, 4>,
 	price: Price,
 	volume: Volume,
 	rsi: Rsi,

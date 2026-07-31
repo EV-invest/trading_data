@@ -77,7 +77,7 @@ async fn main() {
 		if let Some(&c) = out.cvd.last() {
 			cvd = c;
 		}
-		if let Some(&v) = out.vol_usd_1h.last() {
+		if let Some(&Some(v)) = out.vol_usd_1h.last() {
 			vol1h = v;
 		}
 		if let Some(&a) = out.atr.last() {
@@ -106,7 +106,7 @@ async fn main() {
 				out.momentum[i].expect("warm"),
 				out.rsi[i].expect("warm"),
 				out.atr[i].expect("warm"),
-				out.vol_usd_1h[i],
+				out.vol_usd_1h[i].expect("warm"),
 				bar.flow_quote,
 				out.lambda[i].expect("warm"),
 			);

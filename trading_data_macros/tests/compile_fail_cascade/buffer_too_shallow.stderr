@@ -1,0 +1,30 @@
+error[E0080]: evaluation panicked: the frame's Buffer<C, K> is shallower than this Buffering<C, J> asks for
+  --> /rustc/13f1859f2faf97a15664e655624baa7417fdc100/library/core/src/panic.rs:LL:CC
+  |
+    = note: evaluation of `<trading_data_dag::Cons<'_, trading_data_dag::Buffer<Src, 3>, trading_data_dag::Cons<'_, Src, trading_data_dag::Nil>> as trading_data_dag::Has<'_, trading_data_dag::Buffering<Src, 5>, trading_data_dag::Here>>::get::{constant#0}` failed here
+  |
+   ::: $DIR/trading_data_dag/src/lib.rs:LL:CC
+  |
+LL |         const { assert!(K >= J, "the frame's Buffer<C, K> is shallower than this Buffering<C, J> asks for") }
+  |                 ------------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+  --> $DIR/trading_data_dag/src/lib.rs:LL:CC
+  |
+LL |         const { assert!(K >= J, "the frame's Buffer<C, K> is shallower than this Buffering<C, J> asks for") }
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn <Cons<'_, Buffer<Src, 3>, Cons<'_, Src, Nil>> as Has<'_, Buffering<Src, 5>, Here>>::get`
+  --> $DIR/trading_data_dag/src/lib.rs:LL:CC
+  |
+LL |                 ($(Has::<'t, $T, $I>::get(f),)+)
+  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+LL | impl_arity!(A Ia a sa);
+  | ---------------------- in this macro invocation
+  |
+    = note: this note originates in the macro `impl_arity` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0080`.
