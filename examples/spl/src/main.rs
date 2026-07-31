@@ -34,6 +34,10 @@ const ORDINAL: u16 = 3;
 /// on the slot the flake would have given it.
 const PORT_BASE: u16 = 59990;
 
+/// Retained ticks. A trading day weaves into far more than this; the ring keeps the tail, which is
+/// what a scrub of the degradation wants.
+const SCROLLBACK: usize = 20_000;
+const HOUR_NS: i64 = 3600 * 1_000_000_000;
 #[derive(Parser)]
 #[command(about = "scam_pump_liqs as a trading_data graph", long_about = None)]
 struct Cli {
@@ -41,10 +45,6 @@ struct Cli {
 	#[arg(long, env = "SPL_CONFIG", default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix"))]
 	config: PathBuf,
 }
-/// Retained ticks. A trading day weaves into far more than this; the ring keeps the tail, which is
-/// what a scrub of the degradation wants.
-const SCROLLBACK: usize = 20_000;
-const HOUR_NS: i64 = 3600 * 1_000_000_000;
 
 #[tokio::main]
 async fn main() {
@@ -141,6 +141,10 @@ async fn main() {
 		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency);
 		while let Some(lanes) = feed.next() {
 			let ts_ns = lanes.ts_venue.as_nanos();
+			// The tape is the book's only independent witness: nothing downstream ever compares them.
+			if let Some(&raw) = lanes.trades.price.last() {
+				day.last_trade_px = Some(raw as f64 / lanes.trades.prec.price.scale());
+			}
 			let out = graph.tick_obs(lanes.into(), recorder.at(ts_ns));
 
 			for b in out.bar_1m {
@@ -188,6 +192,17 @@ async fn main() {
 		"traded: rsi={} price={} momentum={} top={}/{} rsi_hits={} std_hits={} classifications={} episodes={} intents={}",
 		day.rsi_snaps, day.price_snaps, day.momentum_snaps, day.top, day.top_reads, day.rsi_hits, day.std_hits, day.classifications, day.episodes, day.intents
 	);
+	println!(
+		"tape vs book: max |last_trade - mid| / mid = {}",
+		day.max_tape_divergence.map_or_else(|| "n/a".to_string(), |v| format!("{:.3}%", v * 100.0))
+	);
+	// Two samplings, and only the first is a choice. Ingest keeps SPL's L20@1s and drops the rest;
+	// replay then reads once per *woven* delta run, and the weaver merges consecutive seconds whenever
+	// no trade separates them. The fold is identical either way — what thins out is how often the
+	// degrader gets to look, which makes its tick rate a function of trade density rather than the
+	// 1Hz timer SPL runs on.
+	let persisted = trading.len() as u64 * 24 * 3600;
+	println!("book cadence: {} reads of ~{persisted} 1s samples ({:.0}%)", day.top, day.top as f64 / persisted as f64 * 100.0);
 	let seen = |x: Option<f64>| x.map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"));
 	println!(
 		"window maxima: rsi_4h={} change_1d={}% sharpe_4h={} sharpe_5m={}",
@@ -251,6 +266,8 @@ struct Day {
 	top_reads: u64,
 	first_top_ns: i64,
 	last_top_ns: i64,
+	last_trade_px: Option<f64>,
+	max_tape_divergence: Option<f64>,
 	rsi_hits: u64,
 	std_hits: u64,
 	classifications: u64,
@@ -267,6 +284,21 @@ struct Day {
 impl Day {
 	fn check_top(&mut self, d: &BookTopSnap) {
 		self.top += 1;
+		// A fold that lost its precision, or that dropped deletes and froze a phantom top, drifts away
+		// from the traded price and nothing else here would notice. Sampling is 1s, so a fast tape
+		// legitimately prints a little off the last book we saw — the bound is for corruption, not for
+		// staleness, and the observed max is printed so the two stay distinguishable.
+		if let Some(px) = self.last_trade_px {
+			let divergence = (px - d.mid()).abs() / d.mid();
+			top(&mut self.max_tape_divergence, divergence);
+			assert!(
+				divergence < 0.1,
+				"book mid {} is {:.1}% away from the last trade at {px} — the fold has lost the market, at {}",
+				d.mid(),
+				divergence * 100.0,
+				d.ts_ns
+			);
+		}
 		if self.first_top_ns == 0 {
 			self.first_top_ns = d.ts_ns;
 		}

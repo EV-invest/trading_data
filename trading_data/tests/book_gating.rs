@@ -79,7 +79,7 @@ impl Node for Mid {
 	fn advance<'t>(&'t mut self, (book,): DepOuts<'t, Self>) -> Option<f64> {
 		let b = book?;
 		let (bid, ask) = (b.best_bid()?, b.best_ask()?);
-		Some((bid.0 + ask.0) as f64 / 2.0 / b.prec().price.scale())
+		Some((bid.0.as_f64() + ask.0.as_f64()) / 2.0)
 	}
 }
 

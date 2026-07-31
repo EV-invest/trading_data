@@ -79,9 +79,8 @@ impl Node for Spread {
 	fn advance<'t>(&'t mut self, (book,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		self.buf.push(book.and_then(|b| {
-			let s = b.prec().price.scale();
 			let (bid, ask) = (b.best_bid()?, b.best_ask()?);
-			Some((ask.0 - bid.0) as f64 / s)
+			Some((ask.0 - bid.0).as_f64())
 		}));
 		&self.buf
 	}

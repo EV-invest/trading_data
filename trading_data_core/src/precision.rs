@@ -61,91 +61,199 @@ pub struct PrecisionPriceQty {
 	pub qty: Precision,
 }
 
-/// Fixed-point quantity. Non-negative.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, derive_new::new)]
-pub struct Qty {
-	pub raw: u32,
-	pub precision: Precision,
-}
-
-impl Qty {
-	pub fn from_f64(value: f64, precision: Precision) -> Self {
-		Self {
-			raw: (value * precision.scale()).round() as u32,
-			precision,
+/// Re-scale `raw` from one tick onto another. Upscaling is exact or overflows; downscaling is only
+/// defined when the digits it drops are zero — anything else is the same feed/config mismatch
+/// [`digits`] rejects.
+fn realign(raw: i64, from: Precision, to: Precision) -> i64 {
+	let gap = to.0 as i32 - from.0 as i32;
+	let pow = 10i64.checked_pow(gap.unsigned_abs()).expect("precision gap fits i64");
+	match gap >= 0 {
+		true => raw.checked_mul(pow).expect("upscaled raw fits i64"),
+		false => {
+			assert_eq!(raw % pow, 0, "{raw}@10^{} carries digits below the 10^{} tick", from.0, to.0);
+			raw / pow
 		}
 	}
-
-	pub fn as_f64(self) -> f64 {
-		self.raw as f64 / self.precision.scale()
-	}
-
-	pub fn is_zero(self) -> bool {
-		self.raw == 0
-	}
 }
 
-/// Fixed-point price. Signed to support spreads and options.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, derive_new::new)]
-pub struct Price {
-	pub raw: i32,
-	pub precision: Precision,
-}
-
-impl Price {
-	pub fn from_f64(value: f64, precision: Precision) -> Self {
-		Self {
-			raw: (value * precision.scale()).round() as i32,
-			precision,
+/// A raw integer plus the tick it was scaled by. Arithmetic realigns the RHS onto the LHS and keeps
+/// the LHS's precision; a realignment or range failure is corrupt state, so it panics.
+macro_rules! precise {
+	($name:ident, $raw:ty) => {
+		#[allow(non_camel_case_types)]
+		#[derive(Clone, Copy, Debug, Default, Eq, derive_new::new)]
+		pub struct $name {
+			raw: $raw,
+			prec: Precision,
 		}
-	}
 
-	pub fn as_f64(self) -> f64 {
-		self.raw as f64 / self.precision.scale()
-	}
+		impl $name {
+			pub fn as_f64(self) -> f64 {
+				self.raw as f64 / self.prec.scale()
+			}
 
-	pub fn is_zero(self) -> bool {
-		self.raw == 0
-	}
+			fn combine(self, rhs: Self, op: fn(i64, i64) -> Option<i64>) -> Self {
+				let rhs = realign(rhs.raw as i64, rhs.prec, self.prec);
+				let raw = op(self.raw as i64, rhs).expect("no i64 overflow between two 32-bit raws");
+				Self {
+					raw: <$raw>::try_from(raw).expect(concat!("result fits ", stringify!($raw))),
+					prec: self.prec,
+				}
+			}
+		}
 
-	pub fn max(precision: Precision) -> Self {
-		Self { raw: i32::MAX, precision }
-	}
+		impl std::ops::Add for $name {
+			type Output = Self;
 
-	pub fn min(precision: Precision) -> Self {
-		Self { raw: i32::MIN, precision }
+			fn add(self, rhs: Self) -> Self {
+				self.combine(rhs, i64::checked_add)
+			}
+		}
+
+		impl std::ops::Sub for $name {
+			type Output = Self;
+
+			fn sub(self, rhs: Self) -> Self {
+				self.combine(rhs, i64::checked_sub)
+			}
+		}
+
+		impl std::ops::AddAssign for $name {
+			fn add_assign(&mut self, rhs: Self) {
+				*self = *self + rhs;
+			}
+		}
+
+		impl std::ops::SubAssign for $name {
+			fn sub_assign(&mut self, rhs: Self) {
+				*self = *self - rhs;
+			}
+		}
+
+		/// Over the *value*, not the `(raw, precision)` tuple: `1.00` and `1` are one number.
+		impl Ord for $name {
+			fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+				let to = Precision(self.prec.0.max(other.prec.0));
+				realign(self.raw as i64, self.prec, to).cmp(&realign(other.raw as i64, other.prec, to))
+			}
+		}
+
+		impl PartialOrd for $name {
+			fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+				Some(self.cmp(other))
+			}
+		}
+
+		impl PartialEq for $name {
+			fn eq(&self, other: &Self) -> bool {
+				self.cmp(other).is_eq()
+			}
+		}
+
+		impl std::fmt::Display for $name {
+			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+				write!(f, "{:.prec$}", self.as_f64(), prec = self.prec.0.max(0) as usize)
+			}
+		}
+	};
+}
+
+precise!(pi32, i32);
+precise!(pu32, u32);
+
+impl std::ops::Neg for pi32 {
+	type Output = Self;
+
+	fn neg(self) -> Self {
+		Self { raw: -self.raw, prec: self.prec }
 	}
 }
 
-impl From<Price> for f64 {
-	fn from(p: Price) -> f64 {
-		p.as_f64()
+/// The shared half of a money type: construction, decode, and text. What differs is which ops it
+/// admits — a price is a point on a scale, a quantity is a magnitude.
+macro_rules! money {
+	($(#[$doc:meta])* $name:ident, $inner:ident, $raw:ty) => {
+		$(#[$doc])*
+		#[derive(Clone, Copy, Debug, Default, derive_more::Display, Eq, Ord, PartialEq, PartialOrd)]
+		pub struct $name($inner);
+
+		impl $name {
+			pub fn new(raw: $raw, precision: Precision) -> Self {
+				Self($inner::new(raw, precision))
+			}
+
+			pub fn as_f64(self) -> f64 {
+				self.0.as_f64()
+			}
+		}
+
+		impl From<$name> for f64 {
+			fn from(v: $name) -> f64 {
+				v.as_f64()
+			}
+		}
+
+		/// Precision is inferred from the literal's own decimals — a venue-supplied precision goes
+		/// through [`Precision::parse_i32`] instead.
+		impl std::str::FromStr for $name {
+			type Err = std::num::ParseIntError;
+
+			fn from_str(s: &str) -> Result<Self, Self::Err> {
+				let (precision, raw_str) = split_decimal(s);
+				Ok(Self::new(raw_str.parse()?, precision))
+			}
+		}
+	};
+}
+
+money!(
+	/// Fixed-point price. Signed to support options and index ticks below zero.
+	Price,
+	pi32,
+	i32
+);
+money!(
+	/// Fixed-point quantity. Non-negative.
+	Qty,
+	pu32,
+	u32
+);
+
+/// A price plus a price is not a price — only the difference of two is a value, and it is a
+/// [`pi32`] delta, not a `Price`.
+impl std::ops::Sub for Price {
+	type Output = pi32;
+
+	fn sub(self, rhs: Self) -> pi32 {
+		self.0 - rhs.0
 	}
 }
 
-impl From<Qty> for f64 {
-	fn from(q: Qty) -> f64 {
-		q.as_f64()
+impl std::ops::Add for Qty {
+	type Output = Self;
+
+	fn add(self, rhs: Self) -> Self {
+		Self(self.0 + rhs.0)
 	}
 }
 
-/// Precision is inferred from the literal's own decimals — a venue-supplied precision goes through
-/// [`Precision::parse_i32`] instead.
-impl std::str::FromStr for Price {
-	type Err = std::num::ParseIntError;
+impl std::ops::Sub for Qty {
+	type Output = Self;
 
-	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let (precision, raw_str) = split_decimal(s);
-		Ok(Self { raw: raw_str.parse()?, precision })
+	fn sub(self, rhs: Self) -> Self {
+		Self(self.0 - rhs.0)
 	}
 }
 
-impl std::str::FromStr for Qty {
-	type Err = std::num::ParseIntError;
+impl std::ops::AddAssign for Qty {
+	fn add_assign(&mut self, rhs: Self) {
+		self.0 += rhs.0;
+	}
+}
 
-	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let (precision, raw_str) = split_decimal(s);
-		Ok(Self { raw: raw_str.parse()?, precision })
+impl std::ops::SubAssign for Qty {
+	fn sub_assign(&mut self, rhs: Self) {
+		self.0 -= rhs.0;
 	}
 }
 
@@ -156,32 +264,46 @@ fn split_decimal(s: &str) -> (Precision, String) {
 	}
 }
 
-impl std::fmt::Display for Price {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:.prec$}", self.as_f64(), prec = self.precision.0.max(0) as usize)
-	}
-}
-
-impl std::fmt::Display for Qty {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:.prec$}", self.as_f64(), prec = self.precision.0.max(0) as usize)
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
 
 	#[test]
-	fn round_trips() {
-		assert_eq!(Price::from_f64(42000.50, Precision(2)).as_f64(), 42000.50);
-		assert_eq!(Qty::from_f64(1.234, Precision(3)).as_f64(), 1.234);
-		assert!(Qty::from_f64(0.0, Precision(2)).is_zero());
-		// raw integer addition is exact where f64 fails for 0.1 + 0.2
-		assert_eq!(
-			Price::from_f64(0.1, Precision(1)).raw + Price::from_f64(0.2, Precision(1)).raw,
-			Price::from_f64(0.3, Precision(1)).raw
-		);
+	fn compares_by_value_not_by_representation() {
+		assert_eq!(Price::new(100, Precision(2)), Price::new(1, Precision(0)));
+		assert!(Price::new(100, Precision(2)) < Price::new(5, Precision(0)));
+		assert!(Qty::new(1234, Precision(3)) > Qty::new(1, Precision(0)));
+	}
+
+	#[test]
+	fn arithmetic_lands_on_the_lhs_precision() {
+		let spread = Price::new(4200075, Precision(2)) - Price::new(420005, Precision(1));
+		assert_eq!(spread, pi32::new(25, Precision(2)));
+		assert_eq!(spread.as_f64(), 0.25);
+
+		let mut q = Qty::new(1500, Precision(3));
+		q += Qty::new(2, Precision(0));
+		assert_eq!(q, Qty::new(3500, Precision(3)));
+		// exact where f64 fails for 0.1 + 0.2
+		assert_eq!(Qty::new(1, Precision(1)) + Qty::new(2, Precision(1)), Qty::new(3, Precision(1)));
+	}
+
+	#[test]
+	#[should_panic(expected = "carries digits below")]
+	fn lossy_downscale_panics() {
+		let _ = Price::new(1, Precision(0)) - Price::new(125, Precision(2));
+	}
+
+	#[test]
+	#[should_panic(expected = "fits i32")]
+	fn price_overflow_panics() {
+		let _ = Price::new(i32::MIN, Precision(0)) - Price::new(1, Precision(0));
+	}
+
+	#[test]
+	#[should_panic(expected = "fits u32")]
+	fn qty_underflow_panics() {
+		let _ = Qty::new(1, Precision(0)) - Qty::new(2, Precision(0));
 	}
 
 	#[test]

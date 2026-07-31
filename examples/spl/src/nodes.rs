@@ -853,7 +853,7 @@ impl Node for BookTop {
 			let top20_bid_depth_usd: f64 = b.bids().iter().rev().take(DEPTH).map(usd).sum();
 			let top20_ask_depth_usd: f64 = b.asks().iter().take(DEPTH).map(usd).sum();
 			let total = top20_bid_depth_usd + top20_ask_depth_usd;
-			let (best_bid, best_ask) = (bid.0 as f64 / ps, ask.0 as f64 / ps);
+			let (best_bid, best_ask) = (bid.0.as_f64(), ask.0.as_f64());
 			Some(BookTopSnap {
 				ts_ns: ts.as_nanos(),
 				best_bid,

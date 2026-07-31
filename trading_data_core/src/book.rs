@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use trading_data_dag::{Flat, Glance};
 
-use crate::{Aggregate, DeltaBuf, DeltaFrame, Exact, FrameKind, Local, PrecisionPriceQty, Side, Span, Timestamped, Timestamps, Ts, Venue};
+use crate::{Aggregate, DeltaBuf, DeltaFrame, Exact, FrameKind, Local, PrecisionPriceQty, Price, Qty, Side, Span, Timestamped, Timestamps, Ts, Venue};
 
 /// (price, qty) levels for both sides of an orderbook, keyed by raw price.
 /// Both BTreeMaps are ascending; consumers reverse `bids` for best-bid.
@@ -62,12 +62,16 @@ pub struct Book {
 }
 
 impl Book {
-	pub fn best_bid(&self) -> Option<(i32, u32)> {
-		self.bids.iter().next_back().map(|(&p, &q)| (p, q))
+	pub fn best_bid(&self) -> Option<(Price, Qty)> {
+		self.bids.iter().next_back().map(|(&p, &q)| self.level(p, q))
 	}
 
-	pub fn best_ask(&self) -> Option<(i32, u32)> {
-		self.asks.iter().next().map(|(&p, &q)| (p, q))
+	pub fn best_ask(&self) -> Option<(Price, Qty)> {
+		self.asks.iter().next().map(|(&p, &q)| self.level(p, q))
+	}
+
+	fn level(&self, price: i32, qty: u32) -> (Price, Qty) {
+		(Price::new(price, self.prec.price), Qty::new(qty, self.prec.qty))
 	}
 
 	pub fn bids(&self) -> &BTreeMap<i32, u32> {
@@ -307,8 +311,7 @@ impl Flat for &Book {
 	const DIMS: &'static [usize] = &[2];
 
 	fn flat(&self, out: &mut [f64]) -> bool {
-		let s = self.prec().price.scale();
-		let px = |l: Option<(i32, u32)>| l.map_or(f64::NAN, |(p, _)| p as f64 / s);
+		let px = |l: Option<(Price, Qty)>| l.map_or(f64::NAN, |(p, _)| p.as_f64());
 		out.copy_from_slice(&[px(self.best_bid()), px(self.best_ask())]);
 		true
 	}
@@ -316,9 +319,8 @@ impl Flat for &Book {
 
 impl Glance for &Book {
 	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		let s = self.prec().price.scale();
 		match (self.best_bid(), self.best_ask()) {
-			(Some((b, _)), Some((a, _))) => write!(f, "{}/{} ({} lvls)", b as f64 / s, a as f64 / s, self.len()),
+			(Some((b, _)), Some((a, _))) => write!(f, "{b}/{a} ({} lvls)", self.len()),
 			_ => write!(f, "empty ({} lvls)", self.len()),
 		}
 	}

@@ -9,16 +9,12 @@ repository = "https://github.com/EV-invest/trading_data"
 documentation = "https://docs.rs/trading_data"
 readme = "../README.md"
 keywords = ["trading", "finance", "market-data"]
-categories = ["command-line-utilities"]
+categories = ["finance"]
 
 [dependencies]
-clap.workspace = true
-color-eyre.workspace = true
-miette.workspace = true
 trading_data_dag.workspace = true
 trading_data_derivatives.workspace = true
 trading_data_persistence.workspace = true
-v_utils.workspace = true
 
 [lints]
 workspace = true

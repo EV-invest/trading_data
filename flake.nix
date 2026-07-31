@@ -24,12 +24,7 @@
         # live 2, spl 3 — so they can all be up at once and the URL says which is which.
         port_range_base = 59990;
 
-        rs = v_flakes.rs {
-          inherit pkgs rust;
-          build.workspace = {
-            "./trading_data/" = [ "git_version" "log_directives" ];
-          };
-        };
+        rs = v_flakes.rs { inherit pkgs rust; };
         github = v_flakes.github {
           inherit pkgs pname rs;
           enable = true;
@@ -68,27 +63,29 @@
             exec cargo run --manifest-path "$repo/Cargo.toml" -p "$pkg" -- "$@"
           '';
         };
+        # `trading_data` is a library — there is no default binary — so a bare `nix run .` lands here.
+        help = {
+          type = "app";
+          program = pkgs.lib.getExe (pkgs.writeShellScriptBin "help" ''
+            cat <<'EOF'
+            nix run .          this listing
+            nix run .#demo     examples/demo — replays a cached day  (port ${toString (port_range_base + 1)})
+            nix run .#live     examples/live — 15s of live Bybit     (port ${toString (port_range_base + 2)})
+            nix run .#spl      examples/spl  — scam_pump_liqs port   (port ${toString (port_range_base + 3)})
+
+            `nix develop` adds `viz <demo|live|spl>`, the same runner against your working tree.
+            Args after `--` reach the app: `nix run .#spl -- --config other.nix`.
+            EOF
+          '');
+        };
       in
       {
         apps = {
+          default = help;
+          inherit help;
           demo = { type = "app"; program = "${pkgs.writeShellScript "demo" ''exec ${viz}/bin/viz demo "$@"''}"; };
           live = { type = "app"; program = "${pkgs.writeShellScript "live" ''exec ${viz}/bin/viz live "$@"''}"; };
           spl = { type = "app"; program = "${pkgs.writeShellScript "spl" ''exec ${viz}/bin/viz spl "$@"''}"; };
-          help = {
-            type = "app";
-            program = pkgs.lib.getExe (pkgs.writeShellScriptBin "help" ''
-              cat <<'EOF'
-              nix run .          trading_data CLI
-              nix run .#demo     examples/demo — replays a cached day  (port ${toString (port_range_base + 1)})
-              nix run .#live     examples/live — 15s of live Bybit     (port ${toString (port_range_base + 2)})
-              nix run .#spl      examples/spl  — scam_pump_liqs port   (port ${toString (port_range_base + 3)})
-              nix run .#help     this listing
-
-              `nix develop` adds `viz <demo|live|spl>`, the same runner against your working tree.
-              Args after `--` reach the app: `nix run .#spl -- --config other.nix`.
-              EOF
-            '');
-          };
         };
 
         packages =

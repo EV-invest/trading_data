@@ -32,7 +32,7 @@ const SECONDS: u64 = 15;
 const ORDINAL: u16 = 2;
 
 /// What a consumer reads off the folded book: epoch, level count, best bid, best ask.
-type BookRead = (u64, usize, Option<(i32, u32)>, Option<(i32, u32)>);
+type BookRead = (u64, usize, Option<(Price, Qty)>, Option<(Price, Qty)>);
 #[tokio::main]
 async fn main() {
 	v_utils::clientside!();

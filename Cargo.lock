@@ -4507,13 +4507,9 @@ dependencies = [
 name = "trading_data"
 version = "0.3.0"
 dependencies = [
- "clap",
- "color-eyre",
- "miette",
  "trading_data_dag",
  "trading_data_derivatives",
  "trading_data_persistence",
- "v_utils",
 ]
 
 [[package]]

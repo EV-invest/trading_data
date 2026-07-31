@@ -15,7 +15,7 @@ use std::sync::{
 };
 
 use tempfile::tempdir;
-use trading_data_core::{Aggregate, ExchangeName, InnerTrade, Instrument, Local, Precision, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
+use trading_data_core::{Aggregate, ExchangeName, InnerTrade, Instrument, Local, Precision, PrecisionPriceQty, Price, Qty, Side, Span, Symbol, Ts, Venue};
 use trading_data_persistence::{BatchTrades, Book, BookShape, BookUpdate, Catalog, Clock, DeltaFrame, Feed, LaneKind, LatencyConfig, Live, Oi, Replay};
 
 /// Monotonic synthetic clock: each read advances 1ms, so live arrival stamps are strictly
@@ -40,7 +40,7 @@ fn symbol() -> Symbol {
 /// Owned, comparable projection of one woven step: every lane's contents, plus what a consumer's
 /// book reads after folding it. Enough to catch any weave, content or reconciliation drift.
 /// What a consumer reads off the folded book: epoch, level count, best bid, best ask.
-type BookRead = (u64, usize, Option<(i32, u32)>, Option<(i32, u32)>);
+type BookRead = (u64, usize, Option<(Price, Qty)>, Option<(Price, Qty)>);
 
 #[derive(Debug, PartialEq)]
 struct Step {
