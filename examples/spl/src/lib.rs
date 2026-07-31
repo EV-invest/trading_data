@@ -192,9 +192,10 @@ pub fn ensure_oi(catalog: &Catalog, s: &Situation) {
 	let path = feather.flush(catalog).expect("flush oi").expect("non-empty oi batch");
 	println!("oi ingested to {}", path.display());
 }
-/// Idempotent: one CoinGecko market cap per trading day into the mc lane. `Mc` is part of SPL's
-/// universal shallow set, so a missing reading is missing input, not a degraded mode — this panics
-/// with the vendor's own error and the decisions available.
+/// Idempotent: one CoinGecko market cap per trading day into the mc lane. No node reads it — SPL has
+/// no screener that reads market cap either — but the `Mc` root is declared, so `required_lanes` asks
+/// `Replay` for the lane and a missing reading is missing input rather than a degraded mode. This
+/// panics with the vendor's own error and the decisions available.
 pub fn ensure_mc(catalog: &Catalog, s: &Situation) {
 	if read_mc(catalog, asset(s), Ts::MIN, Ts::MAX).expect("open mc lane").next().is_some() {
 		println!("mc lane already populated, skipping fetch");
@@ -210,10 +211,10 @@ pub fn ensure_mc(catalog: &Catalog, s: &Situation) {
 		let market_cap = v["market_data"]["market_cap"]["usd"].as_f64().unwrap_or_else(|| {
 			panic!(
 				"CoinGecko has no market cap for {id} on {d} (HTTP {status}): {}\n  \
-				 `Mc` is a required shallow field — SPL's universal indie set — so the graph cannot warm without it, \
-				 and nothing downstream of `Shallow` will ever fire. Fix the data, not this code: supply a CoinGecko \
-				 Pro key (the free tier serves only the last 365 days), move the situation window inside that window, \
-				 or drop the `Mc` root from the graph and `mc` from `ShallowSnap`.",
+				 The `Mc` root is declared, so `required_lanes` demands the lane and `Replay` cannot open the \
+				 window without it. Fix the data, not this code: supply a CoinGecko Pro key (the free tier serves \
+				 only the last 365 days), move the situation window inside that window, or drop the `Mc` root \
+				 from the graph.",
 				v["error"]["status"]["error_message"]
 					.as_str()
 					.or_else(|| v["status"]["error_message"].as_str())

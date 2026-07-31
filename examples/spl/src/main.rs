@@ -20,9 +20,9 @@ use trading_data::{Feed, LaneKind, LatencyConfig, Replay, Ts, read_mc, read_oi, 
 use trading_data_core::{ExchangeName, Side, Venue};
 use trading_data_spl::{
 	asset,
-	config::{self, Config},
+	config::{self, Config, Screen},
 	day_bounds, ensure_book, ensure_mc, ensure_oi, ensure_trades,
-	nodes::{DeepSnap, Graph, Intent, TrailingStop},
+	nodes::{BookTopSnap, Graph, Intent, TrailingStop},
 	symbol, trading_days,
 };
 
@@ -64,6 +64,7 @@ async fn main() {
 	// --- warmup: trades only, no viz. Nothing may fire on it. ---
 	let mut first_momentum_ns = None;
 	let mut bars_5m = 0u64;
+	let mut warmup_hits = 0u64;
 	for d in warmup {
 		let (start, end) = day_bounds(*d);
 		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &[LaneKind::Trades], latency);
@@ -76,9 +77,13 @@ async fn main() {
 			{
 				first_momentum_ns = Some(out.bar_5m[i].ts_open + 5 * 60_000_000_000);
 			}
+			warmup_hits += (out.rsi_screener.iter().flatten().count() + out.std_screener.iter().flatten().count()) as u64;
+			// The configured screener warms off trades alone, so it does fire here — SPL's `trade_start`
+			// window, where a hit is real but unactionable. What makes it unactionable is structural
+			// rather than a warmth gate: no book lane ⇒ no `BookTop` tick ⇒ `Deprecator` never leaves Idle.
 			assert!(
-				out.shallow.iter().all(Option::is_none),
-				"shallow built during trades-only warmup: the oi and mc lanes cannot be present yet"
+				out.deprecator.iter().all(Option::is_none),
+				"an intent was produced during trades-only warmup, with no book lane to price an entry against"
 			);
 		}
 	}
@@ -93,7 +98,7 @@ async fn main() {
 	let earliest = range_start.as_nanos() + (momentum.lookback as i64 + 1) * widest_min * 60_000_000_000;
 	let possible = warmup.len() as u64 * 24 * 12;
 	println!(
-		"warmup: {} days, {bars_5m}/{possible} 5m bars ({} buckets had no trade), momentum warm at {:?}, {:.1}h before trading opens",
+		"warmup: {} days, {bars_5m}/{possible} 5m bars ({} buckets had no trade), {warmup_hits} screener hits (unactionable: no book lane), momentum warm at {:?}, {:.1}h before trading opens",
 		warmup.len(),
 		possible - bars_5m,
 		Ts::<Venue>::from_nanos(first_momentum_ns),
@@ -135,40 +140,40 @@ async fn main() {
 					volume: b.vol_base * b.close,
 				});
 			}
-			for s in out.shallow.iter().flatten() {
-				day.shallow += 1;
-				if let Some(r) = s.rsi {
-					top(&mut day.max_rsi_4h, r.rsi_4h.actual);
-				}
-				if let Some(m) = s.momentum {
-					top(&mut day.max_sharpe_5m, m.sharpe_5m);
-					if let Some(x) = m.sharpe_4h {
-						top(&mut day.max_sharpe_4h, x);
-					}
-				}
-				top(&mut day.max_change_1d, s.price.change_1d_pct);
-				if day.first_shallow_ns.is_none() {
-					day.first_shallow_ns = Some(s.ts_ns);
+			// Each indie is read on its own, at its own rate — there is no snapshot to gate them together.
+			for r in out.rsi.iter().flatten() {
+				day.rsi_snaps += 1;
+				top(&mut day.max_rsi_4h, r.rsi_4h.actual);
+			}
+			for p in out.price.iter().flatten() {
+				day.price_snaps += 1;
+				top(&mut day.max_change_1d, p.change_1d_pct);
+			}
+			for m in out.momentum.iter().flatten() {
+				day.momentum_snaps += 1;
+				top(&mut day.max_sharpe_5m, m.sharpe_5m);
+				if let Some(x) = m.sharpe_4h {
+					top(&mut day.max_sharpe_4h, x);
 				}
 			}
 			day.rsi_hits += out.rsi_screener.iter().flatten().count() as u64;
 			day.std_hits += out.std_screener.iter().flatten().count() as u64;
 			day.classifications += out.classify.iter().flatten().count() as u64;
 
-			day.deep_reads += out.deep.len() as u64;
-			for x in out.deep.iter().flatten() {
-				day.check_deep(x);
+			day.top_reads += out.book_top.len() as u64;
+			for x in out.book_top.iter().flatten() {
+				day.check_top(x);
 			}
-			assert_eq!(out.deprecator.len(), out.deep.len(), "Deprecator/Deep rate mismatch");
+			assert_eq!(out.deprecator.len(), out.book_top.len(), "Deprecator/BookTop rate mismatch");
 			for i in 0..out.deprecator.len() {
-				day.check_intent(out.deprecator[i], out.deep[i]);
+				day.check_intent(out.deprecator[i], out.book_top[i]);
 			}
 		}
 	}
 
 	println!(
-		"traded: shallow={} deep={}/{} rsi_hits={} std_hits={} classifications={} episodes={} intents={}",
-		day.shallow, day.deep, day.deep_reads, day.rsi_hits, day.std_hits, day.classifications, day.episodes, day.intents
+		"traded: rsi={} price={} momentum={} top={}/{} rsi_hits={} std_hits={} classifications={} episodes={} intents={}",
+		day.rsi_snaps, day.price_snaps, day.momentum_snaps, day.top, day.top_reads, day.rsi_hits, day.std_hits, day.classifications, day.episodes, day.intents
 	);
 	let seen = |x: Option<f64>| x.map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"));
 	println!(
@@ -179,18 +184,30 @@ async fn main() {
 		seen(day.max_sharpe_5m)
 	);
 
-	assert!(day.first_shallow_ns.is_some(), "no shallow snapshot in the trading window — an indie never warmed");
-	assert_eq!(day.deep, day.deep_reads, "the book was unsynced on some deep read — our own checkpoints failed to seed it");
-	// ponytail: one read per *woven delta run*, and the weaver merges consecutive 1s emissions when
-	// no trade arrives between them — so this is materially below the 86400/day SPL's wall-clock timer
-	// would fire. What is lost is observation cadence, never fold order; the per-bucket assert in
-	// `check_deep` is the invariant that actually holds. Interleave a per-second marker lane if it
-	// ever matters.
-	assert!(day.deep > 10_000 * trading.len() as u64, "deep read count {} is far below a day of 1s book sampling", day.deep);
-	let span_hours = (day.last_deep_ns - day.first_deep_ns) / HOUR_NS;
+	// Only the configured screener's own inputs have to warm. Asserting on all three would re-impose
+	// the union the shallow tier used to demand — under `Screen::Std` the 4h `Rsi` legitimately never
+	// warms on a short window, and nothing reads it.
+	let (needed, warm) = match cfg.strategy.screen {
+		Screen::Rsi(_) => ("price+rsi", day.price_snaps > 0 && day.rsi_snaps > 0),
+		Screen::Std(_) => ("momentum", day.momentum_snaps > 0),
+	};
+	assert!(
+		warm,
+		"the configured screener's inputs ({needed}) never warmed in the trading window: rsi={} price={} momentum={}",
+		day.rsi_snaps,
+		day.price_snaps,
+		day.momentum_snaps
+	);
+	assert_eq!(day.top, day.top_reads, "the book was unsynced on some read — our own checkpoints failed to seed it");
+	// ponytail: one read per *woven delta run*, and the weaver merges consecutive 1s emissions when no
+	// trade arrives between them — so this sits materially below the 86400/day SPL's wall-clock timer
+	// would fire. What is lost is observation cadence, never fold order. Interleave a per-second marker
+	// lane if it ever matters.
+	assert!(day.top > 10_000 * trading.len() as u64, "book read count {} is far below a day of 1s book sampling", day.top);
+	let span_hours = (day.last_top_ns - day.first_top_ns) / HOUR_NS;
 	assert!(
 		span_hours >= trading.len() as i64 * 24 - 1,
-		"the deep stream spans {span_hours}h, short of the {} trading days",
+		"the book stream spans {span_hours}h, short of the {} trading days",
 		trading.len()
 	);
 	assert!(
@@ -211,21 +228,22 @@ async fn main() {
 	viz.serve(base + ORDINAL).await;
 }
 
-/// Per-day accumulator and the running assert block over the deep/deprecator streams.
+/// Per-day accumulator and the running assert block over the book/deprecator streams.
 #[derive(Default)]
 struct Day {
-	shallow: u64,
+	rsi_snaps: u64,
+	price_snaps: u64,
+	momentum_snaps: u64,
 	/// Book reads that produced a snapshot, and every read attempted — equal unless the book desyncs.
-	deep: u64,
-	deep_reads: u64,
-	first_deep_ns: i64,
-	last_deep_ns: i64,
+	top: u64,
+	top_reads: u64,
+	first_top_ns: i64,
+	last_top_ns: i64,
 	rsi_hits: u64,
 	std_hits: u64,
 	classifications: u64,
 	intents: u64,
 	episodes: u64,
-	first_shallow_ns: Option<i64>,
 	max_rsi_4h: Option<f64>,
 	max_change_1d: Option<f64>,
 	max_sharpe_4h: Option<f64>,
@@ -235,29 +253,32 @@ struct Day {
 	open: Option<Open>,
 }
 impl Day {
-	fn check_deep(&mut self, d: &DeepSnap) {
-		self.deep += 1;
-		if self.first_deep_ns == 0 {
-			self.first_deep_ns = d.ts_ns;
+	fn check_top(&mut self, d: &BookTopSnap) {
+		self.top += 1;
+		if self.first_top_ns == 0 {
+			self.first_top_ns = d.ts_ns;
 		}
+		// An invariant of the ingested lane, not of the node: `pump_archives` emits the top-20 diff once
+		// per second, and a read is stamped with the last delta in its woven run. Two reads sharing a
+		// second means the ingest bucket changed under us.
 		assert!(
-			d.ts_ns.div_euclid(1_000_000_000) > self.last_deep_ns.div_euclid(1_000_000_000),
-			"two book reads inside one second bucket, at {}",
+			d.ts_ns.div_euclid(1_000_000_000) > self.last_top_ns.div_euclid(1_000_000_000),
+			"two book reads inside one second of the L20@1s delta lane, at {}",
 			d.ts_ns
 		);
-		self.last_deep_ns = d.ts_ns;
+		self.last_top_ns = d.ts_ns;
 		assert!(d.best_bid < d.best_ask, "crossed book at {}: {} >= {}", d.ts_ns, d.best_bid, d.best_ask);
 		assert!(d.spread_pct.is_finite() && d.spread_pct > 0.0, "degenerate spread at {}: {}", d.ts_ns, d.spread_pct);
 		assert!(d.top20_bid_depth_usd > 0.0 && d.top20_ask_depth_usd > 0.0, "empty top-20 depth at {}", d.ts_ns);
 		assert!((-1.0..=1.0).contains(&d.imbalance), "imbalance out of range at {}: {}", d.ts_ns, d.imbalance);
 	}
 
-	fn check_intent(&mut self, intent: Option<Intent>, deep: Option<DeepSnap>) {
+	fn check_intent(&mut self, intent: Option<Intent>, top: Option<BookTopSnap>) {
 		let Some(i) = intent else {
 			self.close_episode();
 			return;
 		};
-		let d = deep.expect("an intent is only emitted on a deep tick");
+		let d = top.expect("an intent is only emitted on a book tick");
 		self.intents += 1;
 		assert!(i.ts_ns > self.last_intent_ns, "intents not strictly increasing: {} <= {}", i.ts_ns, self.last_intent_ns);
 		self.last_intent_ns = i.ts_ns;
@@ -305,7 +326,7 @@ impl Day {
 		let Some(first_zero_ns) = o.first_zero_ns else {
 			panic!("episode ended at {} without ever reaching zero eval — only the drain deadline may end one", o.last_ns);
 		};
-		// Deep ticks land on the last book message of each second, so they are ~1s apart but not
+		// Book ticks land on the last book message of each second, so they are ~1s apart but not
 		// exactly: the invariant is that the episode ended on the *first* tick at or after the
 		// deadline, not that it ended within any fixed slack of it.
 		let deadline = first_zero_ns + config::strategy().classification.drain_grace.duration().as_nanos() as i64;

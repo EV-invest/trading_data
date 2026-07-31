@@ -1,13 +1,19 @@
 //! The scam_pump_liqs strategy as a compile-time step graph: five roots weave into per-timeframe
-//! bars → the seven shallow indies → `ShallowSnap`, and the book folds into a 1s `DeepSnap`; the two
-//! screeners fire off the shallow, `Classify` turns a hit into a distribution, and `Deprecator` runs
-//! the per-deep-tick degrader that produces `target_q`.
+//! bars, the indies derive off those, the configured screener fires off the ones it reads,
+//! `Classify` turns a hit into a distribution, and `Deprecator` runs the per-book-tick degrader that
+//! produces `target_q`.
 //!
 //! Everything up to `target_q` is pure and ported verbatim — windows, thresholds and the two
 //! misnomers SPL keeps from its Pine source. Execution (`trailing_limit`, `OrderAction`,
-//! `rebalance_threshold`, cache reads, the market flatten) is out of scope: what SPL's bus plumbing
-//! bought — per-indicator topics, `RefCell` drain timers, per-instrument subscribe/unsubscribe
-//! flicker — the `graph!` field order buys here for free.
+//! `rebalance_threshold`, cache reads, the market flatten) is out of scope.
+//!
+//! SPL sorts its indies into shallow and deep tiers, and that split is not strategy: deep is the
+//! per-instrument *switchable* subscription it opens on a situation and closes on exit, and
+//! `shallow_topics()` is a hand-rolled runtime list of which indies the configured screener consumes
+//! — needed only because a msgbus has no static knowledge of who reads what. Here `type Deps` *is*
+//! that list, and the compiler checks it. So there are no tiers: every node names exactly the inputs
+//! it reads, and warmth is per-input rather than the union of a tier's. What `config.nix` still
+//! decides is *which screener runs*, not which indie is registered to be readable.
 
 use core::fmt;
 use std::collections::VecDeque;
@@ -36,9 +42,8 @@ const BARS_1D: usize = 24;
 const BARS_3M: usize = 3;
 /// SPL's `execution::RISK_FRACTION`: fraction of equity committed per entry.
 const RISK_FRACTION: f64 = 0.03;
-/// SPL's `OrderBookActor::DEPTH` and `SNAPSHOT_INTERVAL_NS`.
+/// SPL's `OrderBookActor::DEPTH`.
 const DEPTH: usize = 20;
-const DEEP_BUCKET_NS: i64 = 1_000_000_000;
 
 // ─── flattening ─────────────────────────────────────────────────────────────────────────────────
 
@@ -228,8 +233,8 @@ pub struct Rsi {
 	h4: RsiSlot,
 	buf: Vec<Option<RsiSnap>>,
 }
-/// Wilder ATR(14) on 1m bars. A shallow indie rather than an execution-owned indicator: that is what
-/// removed SPL's per-situation bar subscribe/unsubscribe flicker.
+/// Wilder ATR(14) on 1m bars. An indie in its own right rather than an execution-owned indicator:
+/// that is what removed SPL's per-situation bar subscribe/unsubscribe flicker.
 #[derive(Clone)]
 pub struct Atr {
 	atr: WilderAtr,
@@ -268,33 +273,7 @@ pub struct MarketCap {
 	buf: Vec<Option<McSnap>>,
 }
 #[derive(Clone, Copy, Debug)]
-pub struct ShallowSnap {
-	pub ts_ns: i64,
-	pub price: PriceSnap,
-	pub volume: VolSnap,
-	/// `None` when the indie is not registered for the configured screener — SPL's own model, and
-	/// honest rather than fabricated. The screener that needs one asserts on it.
-	pub rsi: Option<RsiSnap>,
-	pub momentum: Option<MomSnap>,
-	pub oi: OiSnap,
-	pub atr: f64,
-	pub mc: McSnap,
-}
-/// SPL's `ShallowPartial::try_build(required)`: each indie's latest publish is cached as a level and
-/// the snapshot only builds once every required field is warm. Absence stays honest — no defaults.
-#[derive(Clone, Default)]
-pub struct Shallow {
-	price: Option<PriceSnap>,
-	volume: Option<VolSnap>,
-	rsi: Option<RsiSnap>,
-	momentum: Option<MomSnap>,
-	oi: Option<OiSnap>,
-	mc: Option<McSnap>,
-	atr: Option<f64>,
-	buf: Vec<Option<ShallowSnap>>,
-}
-#[derive(Clone, Copy, Debug)]
-pub struct DeepSnap {
+pub struct BookTopSnap {
 	pub ts_ns: i64,
 	pub best_bid: f64,
 	pub best_ask: f64,
@@ -303,19 +282,19 @@ pub struct DeepSnap {
 	pub imbalance: f64,
 	pub spread_pct: f64,
 }
-impl DeepSnap {
+impl BookTopSnap {
 	pub fn mid(&self) -> f64 {
 		(self.best_bid + self.best_ask) / 2.0
 	}
 }
 
-/// The folded book, read once per second — SPL's `SNAPSHOT_INTERVAL_NS` timer. A book still filling
-/// from its first deltas has one side empty; that is warmup, not corruption, so the tick is skipped
-/// and the deprecator simply doesn't enter yet.
+/// Best bid/ask, top-20 depth, imbalance and spread off the folded book — derived facts, peer to
+/// [`Rsi`] or [`Atr`], and the delta lane's own cadence is the rate. A book still filling from its
+/// first deltas has one side empty; that is warmup, not corruption, so the tick declines and the
+/// deprecator simply doesn't enter yet.
 #[derive(Clone, Default)]
-pub struct Deep {
-	last_bucket: Option<i64>,
-	buf: Vec<Option<DeepSnap>>,
+pub struct BookTop {
+	buf: Vec<Option<BookTopSnap>>,
 }
 /// A screener hit. Short-only and binary: certainty is `-1.0` on a hit, and a miss emits nothing at
 /// all (SPL's `Screened` contract to the classifier). A graded certainty is a later refinement.
@@ -324,14 +303,17 @@ pub struct Screened {
 	pub ts_ns: i64,
 	pub certainty: f64,
 }
-/// Top-gainer short: overbought on 4h while up on the day.
+/// Top-gainer short: overbought on 4h while up on the day. [`Bars<1>`] is the screening clock, so a
+/// verdict is reached once a minute exactly as in SPL — the rate comes from this node's own inputs.
 #[derive(Clone, Default)]
 pub struct RsiScreener {
+	rsi: Option<RsiSnap>,
 	buf: Vec<Option<Screened>>,
 }
 /// Pine's overvalued zone at both timeframes. The 4h leg is vacuously satisfied when 4h is disabled.
 #[derive(Clone, Default)]
 pub struct StdScreener {
+	momentum: Option<MomSnap>,
 	buf: Vec<Option<Screened>>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -364,7 +346,7 @@ pub struct Classified {
 pub struct Classify {
 	buf: Vec<Option<Classified>>,
 }
-/// Deep-tick trailing term: ratchets the favourable extreme and degrades linearly with the retrace
+/// Per-book-tick trailing term: ratchets the favourable extreme and degrades linearly with the retrace
 /// from it — certainty 0.0 at the extreme, 1.0 at `distance`. Certainty itself ratchets, so
 /// proximity recovering re-adds no size, and its impact caps at `severity`.
 ///
@@ -417,12 +399,12 @@ impl TrailingStop {
 	}
 }
 
-/// One deep tick of an open episode — the persisted intent stream, minus the execution fields.
+/// One book tick of an open episode — the persisted intent stream, minus the execution fields.
 #[derive(Clone, Copy, Debug)]
 pub struct Intent {
 	pub ts_ns: i64,
 	/// Which Idle→Active episode this tick belongs to — SPL's per-`Degrader` `Uuid`, as a counter.
-	/// Two episodes can be adjacent in the intent stream (a classification can land between two deep
+	/// Two episodes can be adjacent in the intent stream (a classification can land between two book
 	/// ticks), so this is the only thing that separates them.
 	pub episode: u64,
 	pub side: Side,
@@ -439,13 +421,13 @@ pub struct Intent {
 }
 /// SPL's `ExecutorState` + `Degrader`, one for one. Entry mid-prices off the book (not the last
 /// trade — on thin instruments that lags by whole percents and centres the envelope on a phantom);
-/// every deep tick then reduces one weighted ATR-envelope lambda against the trailing term.
+/// every book tick then reduces one weighted ATR-envelope lambda against the trailing term.
 #[derive(Clone, Default)]
 pub struct Deprecator {
 	state: State,
 	episodes: u64,
-	last_shallow: Option<ShallowSnap>,
-	last_deep: Option<DeepSnap>,
+	last_atr: Option<f64>,
+	last_top: Option<BookTopSnap>,
 	buf: Vec<Option<Intent>>,
 }
 /// The deprecator's three price-denominated levels, on the candle pane. Purely an observation
@@ -470,7 +452,15 @@ fn drain_upto(bars: &[Bar], minutes: u64, cursor: &mut usize, deadline: i64, mut
 	}
 }
 
-// ─── shallow indies ─────────────────────────────────────────────────────────────────────────────
+/// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that
+/// declined this tick (`None`) is not a publish, so the cached level stands.
+fn latest<T: Copy>(slot: &mut Option<T>, dep: &[Option<T>]) {
+	if let Some(Some(v)) = dep.last() {
+		*slot = Some(*v);
+	}
+}
+
+// ─── indies ─────────────────────────────────────────────────────────────────────────────────────
 
 flat_fields!(PriceSnap[current, change_3m_pct, change_1d_pct]);
 
@@ -832,103 +822,20 @@ impl Node for MarketCap {
 }
 slice_nudge!(MarketCap, Option<McSnap>);
 
-// ─── shallow snapshot ───────────────────────────────────────────────────────────────────────────
+// ─── book top ───────────────────────────────────────────────────────────────────────────────────
 
-impl Flat for ShallowSnap {
-	const DIMS: &'static [usize] = &[6];
+flat_fields!(BookTopSnap[best_bid, best_ask, top20_bid_depth_usd, top20_ask_depth_usd, imbalance, spread_pct]);
 
-	fn flat(&self, out: &mut [f64]) -> bool {
-		out.copy_from_slice(&[
-			self.price.current,
-			self.price.change_1d_pct,
-			self.rsi.map_or(f64::NAN, |r| r.rsi_4h.actual),
-			self.momentum.and_then(|m| m.sharpe_4h).unwrap_or(f64::NAN),
-			self.momentum.map_or(f64::NAN, |m| m.sharpe_5m),
-			self.atr,
-		]);
-		true
-	}
-}
-structural_bump!(ShallowSnap);
-
-impl Glance for ShallowSnap {
-	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self.rsi {
-			Some(r) => write!(f, "rsi4h {:.1} 1d {:+.2}%", r.rsi_4h.actual, self.price.change_1d_pct),
-			None => write!(f, "1d {:+.2}%", self.price.change_1d_pct),
-		}
-	}
-}
-
-/// `.last()` is the level view of a cross-rate dep; a dep that declined this tick (`None`) is not a
-/// publish, so the cached level stands — the bus semantics SPL gets from a topic.
-fn latest<T: Copy>(slot: &mut Option<T>, dep: &[Option<T>]) {
-	if let Some(Some(v)) = dep.last() {
-		*slot = Some(*v);
-	}
-}
-
-impl Cell for Shallow {
-	type Out<'t> = &'t [Option<ShallowSnap>];
-}
-impl Node for Shallow {
-	type Deps = (Price, Volume, Rsi, Atr, Momentum, OiDelta, MarketCap, Bars<1>);
-
-	const SKETCH: Sketch = Sketch {
-		labels: &["price", "chg_1d%", "rsi_4h", "sharpe_4h", "sharpe_5m", "atr"],
-		..Sketch::DEFAULT
-	};
-
-	fn advance<'t>(&'t mut self, (price, volume, rsi, atr, momentum, oi, mc, bars): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
-		latest(&mut self.price, price);
-		latest(&mut self.volume, volume);
-		latest(&mut self.rsi, rsi);
-		latest(&mut self.momentum, momentum);
-		latest(&mut self.oi, oi);
-		latest(&mut self.mc, mc);
-		latest(&mut self.atr, atr);
-
-		// SPL's `ShallowPartial::try_build(required)`: the universal set, plus the configured screener's
-		// own indie. An unregistered field passes through as `None`; a required one gates the build.
-		let signal_warm = match strategy().screen {
-			Screen::Rsi(_) => self.rsi.is_some(),
-			Screen::Std(_) => self.momentum.is_some(),
-		};
-		for b in bars {
-			self.buf.push(match (self.price, self.volume, self.oi, self.atr, self.mc) {
-				(Some(price), Some(volume), Some(oi), Some(atr), Some(mc)) if signal_warm => Some(ShallowSnap {
-					ts_ns: b.close_ns(1),
-					price,
-					volume,
-					rsi: matches!(strategy().screen, Screen::Rsi(_)).then_some(self.rsi).flatten(),
-					momentum: matches!(strategy().screen, Screen::Std(_)).then_some(self.momentum).flatten(),
-					oi,
-					atr,
-					mc,
-				}),
-				_ => None,
-			});
-		}
-		&self.buf
-	}
-}
-slice_nudge!(Shallow, Option<ShallowSnap>);
-
-// ─── deep snapshot ──────────────────────────────────────────────────────────────────────────────
-
-flat_fields!(DeepSnap[best_bid, best_ask, top20_bid_depth_usd, top20_ask_depth_usd, imbalance, spread_pct]);
-
-impl Glance for DeepSnap {
+impl Glance for BookTopSnap {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "{:.4}/{:.4} imb {:+.3}", self.best_bid, self.best_ask, self.imbalance)
 	}
 }
 
-impl Cell for Deep {
-	type Out<'t> = &'t [Option<DeepSnap>];
+impl Cell for BookTop {
+	type Out<'t> = &'t [Option<BookTopSnap>];
 }
-impl Node for Deep {
+impl Node for BookTop {
 	type Deps = (Book, BookDeltas);
 
 	const SKETCH: Sketch = Sketch {
@@ -939,11 +846,6 @@ impl Node for Deep {
 	fn advance<'t>(&'t mut self, (book, frame): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		let Some(&ts) = frame.cols().exec().last() else { return &self.buf };
-		let bucket = ts.as_nanos().div_euclid(DEEP_BUCKET_NS);
-		if self.last_bucket == Some(bucket) {
-			return &self.buf;
-		}
-		self.last_bucket = Some(bucket);
 		self.buf.push(book.and_then(|b| {
 			let (ps, qs) = (b.prec().price.scale(), b.prec().qty.scale());
 			let (bid, ask) = (b.best_bid()?, b.best_ask()?);
@@ -952,7 +854,7 @@ impl Node for Deep {
 			let top20_ask_depth_usd: f64 = b.asks().iter().take(DEPTH).map(usd).sum();
 			let total = top20_bid_depth_usd + top20_ask_depth_usd;
 			let (best_bid, best_ask) = (bid.0 as f64 / ps, ask.0 as f64 / ps);
-			Some(DeepSnap {
+			Some(BookTopSnap {
 				ts_ns: ts.as_nanos(),
 				best_bid,
 				best_ask,
@@ -965,7 +867,7 @@ impl Node for Deep {
 		&self.buf
 	}
 }
-slice_nudge!(Deep, Option<DeepSnap>);
+slice_nudge!(BookTop, Option<BookTopSnap>);
 
 // ─── screeners ──────────────────────────────────────────────────────────────────────────────────
 
@@ -977,29 +879,31 @@ impl Glance for Screened {
 	}
 }
 
-fn screened(snap: &ShallowSnap, hit: bool) -> Option<Screened> {
-	hit.then_some(Screened { ts_ns: snap.ts_ns, certainty: -1.0 })
+fn screened(ts_ns: i64, hit: bool) -> Option<Screened> {
+	hit.then_some(Screened { ts_ns, certainty: -1.0 })
 }
 
 impl Cell for RsiScreener {
 	type Out<'t> = &'t [Option<Screened>];
 }
 impl Node for RsiScreener {
-	type Deps = (Shallow,);
+	type Deps = (Bars<1>, Price, Rsi);
 
-	fn advance<'t>(&'t mut self, (shallow,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (bars, price, rsi): DepOuts<'t, Self>) -> Self::Out<'t> {
+		assert_eq!(bars.len(), price.len(), "Bars<1>/Price rate mismatch");
 		self.buf.clear();
 		// Inert unless configured, but still rate-preserving: `Classify` zips the two screeners by
 		// index, so an empty slice here would read as a rate mismatch rather than as "no hits".
 		let Screen::Rsi(c) = strategy().screen else {
-			self.buf.resize(shallow.len(), None);
+			self.buf.resize(bars.len(), None);
 			return &self.buf;
 		};
-		for s in shallow {
-			self.buf.push(s.and_then(|s| {
-				let rsi = s.rsi.expect("rsi is registered whenever the rsi screener is the configured one");
-				screened(&s, rsi.rsi_4h.actual > c.rsi_threshold && s.price.change_1d_pct > *c.price_percent)
-			}));
+		latest(&mut self.rsi, rsi);
+		for (b, p) in bars.iter().zip(price) {
+			self.buf.push(match (p, self.rsi) {
+				(Some(p), Some(rsi)) => screened(b.close_ns(1), rsi.rsi_4h.actual > c.rsi_threshold && p.change_1d_pct > *c.price_percent),
+				_ => None,
+			});
 		}
 		&self.buf
 	}
@@ -1010,25 +914,25 @@ impl Cell for StdScreener {
 	type Out<'t> = &'t [Option<Screened>];
 }
 impl Node for StdScreener {
-	type Deps = (Shallow,);
+	type Deps = (Bars<1>, Momentum);
 
-	fn advance<'t>(&'t mut self, (shallow,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (bars, momentum): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		// Inert unless configured, but still rate-preserving: `Classify` zips the two screeners by
 		// index, so an empty slice here would read as a rate mismatch rather than as "no hits".
 		let Screen::Std(c) = strategy().screen else {
-			self.buf.resize(shallow.len(), None);
+			self.buf.resize(bars.len(), None);
 			return &self.buf;
 		};
-		for s in shallow {
-			self.buf.push(s.and_then(|s| {
-				let m = s.momentum.expect("momentum is registered whenever the std screener is the configured one");
+		latest(&mut self.momentum, momentum);
+		for b in bars {
+			self.buf.push(self.momentum.and_then(|m| {
 				// The vacuous 4h leg must come from `use_4h` and nothing else: `Momentum` declines to
 				// publish at all when 4h is enabled but degenerate, so an absent Sharpe here would
 				// otherwise let a wiring bug read as an unconditional hit.
 				assert_eq!(m.sharpe_4h.is_some(), use_4h(), "sharpe_4h presence disagrees with indies.momentum.use_4h");
 				let trigger_4h = m.sharpe_4h.is_none_or(|x| x > c.overvalued_threshold_4h);
-				screened(&s, trigger_4h && m.sharpe_5m > c.overvalued_threshold_5m)
+				screened(b.close_ns(1), trigger_4h && m.sharpe_5m > c.overvalued_threshold_5m)
 			}));
 		}
 		&self.buf
@@ -1108,24 +1012,22 @@ impl Cell for Deprecator {
 	type Out<'t> = &'t [Option<Intent>];
 }
 impl Node for Deprecator {
-	type Deps = (Classify, Shallow, Deep);
+	type Deps = (Classify, Atr, BookTop);
 
 	const SKETCH: Sketch = Sketch {
 		labels: &["target_q", "base_q", "eval", "lambda_atr", "trail_fraction"],
 		..Sketch::DEFAULT
 	};
 
-	fn advance<'t>(&'t mut self, (classify, shallow, deep): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (classify, atr, top): DepOuts<'t, Self>) -> Self::Out<'t> {
 		let liq = &strategy().classification.liquidations;
 		self.buf.clear();
-		if let Some(Some(s)) = shallow.last() {
-			self.last_shallow = Some(*s);
-		}
-		// Classification is honored only while Idle; once Active we drive solely off deep ticks. No
+		latest(&mut self.last_atr, atr);
+		// Classification is honored only while Idle; once Active we drive solely off book ticks. No
 		// book yet ⇒ don't enter — the screener keeps firing, so the next classification retries.
 		if matches!(self.state, State::Idle)
 			&& classify.iter().any(Option::is_some)
-			&& let Some(book) = self.last_deep
+			&& let Some(book) = self.last_top
 		{
 			let entry_price = book.mid();
 			//TODO: real selection over the full distribution; derive the side from the classification
@@ -1144,22 +1046,21 @@ impl Node for Deprecator {
 			});
 		}
 
-		// Rate-preserving over `deep`, so the two zip by index — that is how a consumer recovers the
+		// Rate-preserving over `top`, so the two zip by index — that is how a consumer recovers the
 		// tick's mid price for an intent without it being copied into one.
-		for d in deep {
+		for d in top {
 			let Some(d) = d else {
 				self.buf.push(None);
 				continue;
 			};
-			self.last_deep = Some(*d);
-			// Management needs `target_q` off the ATR envelope; skip until the first shallow lands.
-			let (State::Active(a), Some(shallow)) = (&mut self.state, self.last_shallow) else {
+			self.last_top = Some(*d);
+			// Management needs `target_q` off the ATR envelope; skip until the first ATR lands.
+			let (State::Active(a), Some(atr)) = (&mut self.state, self.last_atr) else {
 				self.buf.push(None);
 				continue;
 			};
 			let mid = d.mid();
 			let (trail_mult, trail_fraction, trail_stop) = a.trail.step(mid);
-			let atr = shallow.atr;
 			let (sl, tp) = match a.side {
 				Side::Buy => (a.entry_price - atr * liq.atr_sl_x, a.entry_price + atr * liq.atr_tp_x),
 				Side::Sell => (a.entry_price + atr * liq.atr_sl_x, a.entry_price - atr * liq.atr_tp_x),
@@ -1254,9 +1155,8 @@ trading_data::graph! {
 	momentum: Momentum,
 	oi_delta: OiDelta,
 	market_cap: MarketCap,
-	shallow: Shallow,
 	book: Book,
-	deep: Deep,
+	book_top: BookTop,
 	rsi_screener: RsiScreener,
 	std_screener: StdScreener,
 	classify: Classify,

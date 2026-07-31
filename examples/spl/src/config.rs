@@ -66,8 +66,8 @@ pub struct Strategy {
 }
 impl Strategy {
 	/// Closed bars of each timeframe the required indies need, as `(minutes, count)` — SPL's
-	/// `merge_warmup_requirements` over `screen.shallow_topics()`. The universal set is always
-	/// present; the configured screener's own indie joins it.
+	/// `merge_warmup_requirements`. Ingest-side only: it sizes the window of history to buy, where the
+	/// graph's own warmth is per-node and needs no such list.
 	fn warmup_bars(&self) -> Vec<(u64, usize)> {
 		// price: 24 closed 1h for the 1d change, 3 closed 1m for the 3m change.
 		// volume: latest closed bar per timeframe. atr: one Wilder period of 1m.
@@ -89,7 +89,7 @@ impl Strategy {
 	/// Whole UTC days of history the required indies need before `start`. SPL's
 	/// `warmup_buffer_days`: the widest single requirement, rounded up to a day.
 	pub fn warmup_days(&self) -> i64 {
-		let widest = self.warmup_bars().iter().map(|(m, n)| m * 60 * *n as u64).max().expect("the universal set is never empty");
+		let widest = self.warmup_bars().iter().map(|(m, n)| m * 60 * *n as u64).max().expect("price and atr are always required");
 		(widest / 86_400) as i64 + 1
 	}
 }
@@ -117,8 +117,8 @@ pub struct Momentum {
 pub struct Atr {
 	pub period: usize,
 }
-/// Exactly one screener is configured; the other node stays inert. Which one also decides whose
-/// indie joins the universal set in `ShallowSnap`'s required fields.
+/// Exactly one screener is configured; the other node stays inert. Both still declare their own
+/// `type Deps`, so which one runs is all this decides — not which indie is readable.
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub enum Screen {
 	Rsi(RsiScreen),
