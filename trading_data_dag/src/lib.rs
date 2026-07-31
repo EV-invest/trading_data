@@ -124,6 +124,12 @@ pub trait Stamped {
 /// frame as `&'t [T]` and heavy root/node state is lent as `&'t State`.
 pub trait Cell {
 	type Out<'t>: Copy;
+
+	/// What this cell is called wherever a human reads the graph — cards, edges, `step_until`.
+	/// Defaults to the Rust path, which is right for a type whose *identity* is its name. A cell
+	/// parameterised by a bare number overrides it: `Bars<1>` leaves the reader to guess the unit,
+	/// where `Bar:1m` states it.
+	const NAME: &'static str = core::any::type_name::<Self>();
 }
 
 /// A cell output as a fixed-shape element array: the unit of observation and differentiation.
@@ -491,10 +497,10 @@ impl GateSet for () {
 	const NAMES: &'static [&'static str] = &[];
 }
 impl<A: Gate> GateSet for (A,) {
-	const NAMES: &'static [&'static str] = &[core::any::type_name::<A>()];
+	const NAMES: &'static [&'static str] = &[A::NAME];
 }
 impl<A: Gate, B: Gate> GateSet for (A, B) {
-	const NAMES: &'static [&'static str] = &[core::any::type_name::<A>(), core::any::type_name::<B>()];
+	const NAMES: &'static [&'static str] = &[A::NAME, B::NAME];
 }
 
 pub trait Node: Cell {
@@ -928,7 +934,7 @@ macro_rules! impl_arity {
 		impl<$($T: Cell),+> DepSet for ($($T,)+) {
 			type Outs<'t> = ($($T::Out<'t>,)+);
 
-			const NAMES: &'static [&'static str] = &[$(core::any::type_name::<$T>()),+];
+			const NAMES: &'static [&'static str] = &[$($T::NAME),+];
 		}
 		impl<'t, F, $($T: Cell, $I),+> Pull<'t, F, ($($I,)+)> for ($($T,)+)
 		where F: $(Has<'t, $T, $I> +)+ {
@@ -1217,7 +1223,7 @@ where
 	if !<N::When as Drive<'t, N, F, I, J>>::open(&frame) {
 		let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
 		obs.on(
-			core::any::type_name::<N>(),
+			N::NAME,
 			<N::Deps as DepSet>::NAMES,
 			<N::When as GateSet>::NAMES,
 			Fire {
@@ -1254,7 +1260,7 @@ where
 	let jac = fired.then(|| fd_jac::<N>(&pre, deps, &dep_buf, &out_buf));
 
 	obs.on(
-		core::any::type_name::<N>(),
+		N::NAME,
 		<N::Deps as DepSet>::NAMES,
 		<N::When as GateSet>::NAMES,
 		Fire {
@@ -1318,7 +1324,7 @@ where
 	let trace = formula.trace(&dep_buf);
 
 	obs.on(
-		core::any::type_name::<N>(),
+		N::NAME,
 		<N::Deps as DepSet>::NAMES,
 		<N::When as GateSet>::NAMES,
 		Fire {
@@ -1359,11 +1365,11 @@ impl core::fmt::Display for Derivs {
 	}
 }
 
-/// `const_type_name` is feature-gated at the call site; this wrapper keeps [`graph!`] users
-/// off nightly feature attrs.
+/// A cell's [`Cell::NAME`], reached through a function so [`graph!`] users stay off nightly
+/// feature attrs.
 #[doc(hidden)]
-pub const fn node_name<T>() -> &'static str {
-	core::any::type_name::<T>()
+pub const fn node_name<T: Cell>() -> &'static str {
+	T::NAME
 }
 
 /// The `TypeId` of a root's event type, for [`graph!`]'s `required_events`.
@@ -1504,7 +1510,7 @@ where
 	let mut buf = alloc::vec![f64::NAN; <C::Out<'t> as Flat>::LEN];
 	let fired = out.flat(&mut buf);
 	obs.on(
-		core::any::type_name::<C>(),
+		C::NAME,
 		&[],
 		&[],
 		Fire {

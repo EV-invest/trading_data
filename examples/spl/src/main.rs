@@ -104,7 +104,7 @@ async fn main() {
 	// downstream can read an unwarmed value in the first place.
 	let lanes = required_lanes::<Graph>();
 	println!("required lanes: {lanes:?}");
-	let viz = Viz::new(Some("Bars<1>"), SCROLLBACK, 60_000);
+	let viz = Viz::new(Some("Bar:1m"), SCROLLBACK, 60_000);
 	let mut recorder = viz.clone();
 	let mut day = Day::default();
 	let began = std::time::Instant::now();

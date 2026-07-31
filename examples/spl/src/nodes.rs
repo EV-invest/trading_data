@@ -39,7 +39,7 @@ const PINE_PERIODS_PER_YEAR: f64 = 365.0;
 const SPAN_1D: Timeframe = Timeframe::from_naive(1, TimeframeDesignator::Days);
 /// What the 1h series must retain to answer it: the day, plus one period of cross-rate slack — the
 /// 1m bar whose close asks the question stands up to a whole 1h period past the newest 1h bar.
-const REACH_1D: Horizon = Horizon::Span(SPAN_1D.0 + Bars::<60>::TF.0);
+const REACH_1D: Horizon = Horizon::Span(SPAN_1D.0 + Bar1h::TF.0);
 /// Reach behind `change_3m_pct` — three minutes, spanned by the opens of the 1m bars inside it.
 const SPAN_3M: Timeframe = Timeframe::from_naive(3, TimeframeDesignator::Minutes);
 /// Bybit's open-interest publish cadence: the deltas read the publish standing a whole number of
@@ -136,32 +136,44 @@ impl Stamped for Bar {
 	}
 }
 
-/// Trades → `M`-minute OHLCV bars. Rate-changing: one non-optional bar per boundary crossed, so a
-/// batch spanning two periods emits two; a partial period emits none (its bar stays in `acc`).
+/// [`Timeframe`]'s parse rules in const position. Parsing is the cheap direction — const-formatting
+/// a number back out is not — so the literal that *names* a series is the same one that *defines*
+/// it, and `Bar:1m` cannot drift into being a one-*second* series.
+const fn tf(s: &str) -> Timeframe {
+	let b = s.as_bytes();
+	let (mut n, mut i) = (0u64, 0);
+	while i < b.len() && b[i].is_ascii_digit() {
+		n = n * 10 + (b[i] - b'0') as u64;
+		i += 1;
+	}
+	assert!(n > 0, "a timeframe leads with its count");
+	let (_, designator) = b.split_at(i);
+	Timeframe::from_naive(
+		n,
+		match designator {
+			b"s" => TimeframeDesignator::Seconds,
+			b"m" => TimeframeDesignator::Minutes,
+			b"h" => TimeframeDesignator::Hours,
+			b"d" => TimeframeDesignator::Days,
+			_ => panic!("timeframe designator is one of s/m/h/d"),
+		},
+	)
+}
+
+/// Trades → OHLCV bars at one period. Rate-changing: one non-optional bar per boundary crossed, so
+/// a batch spanning two periods emits two; a partial period emits none (its bar stays in `acc`).
+/// Shared by every series: only the period and the name are per-type.
 #[derive(Clone, Default)]
-pub struct Bars<const M: u64> {
+pub struct BarAcc {
 	acc: Option<Bar>,
 	buf: Vec<Bar>,
 }
-impl<const M: u64> Bars<M> {
-	/// A const generic cannot be a [`Timeframe`], so `M` is minutes and this is the well-formed name
-	/// of it. Everything taking a timeframe takes this, never the bare number.
-	pub const TF: Timeframe = Timeframe::from_naive(M, TimeframeDesignator::Minutes);
-}
-impl<const M: u64> Cell for Bars<M> {
-	type Out<'t> = &'t [Bar];
-}
-impl<const M: u64> Node for Bars<M> {
-	type Deps = (Trades,);
-
-	/// Only the partial bar is held, so the state reaches back exactly one period.
-	const HORIZON: Horizon = Horizon::Span(Self::TF.0);
-
-	fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
+impl BarAcc {
+	fn advance<'t>(&'t mut self, trades: <Trades as Cell>::Out<'_>, tf: Timeframe) -> &'t [Bar] {
 		self.buf.clear();
 		// precision is the run's, so the two scales are hoisted once instead of read per trade.
 		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
-		let step = Exact::from_nanos(Self::TF.duration().as_nanos() as i64);
+		let step = Exact::from_nanos(tf.duration().as_nanos() as i64);
 		for (i, exec) in trades.exec().iter().enumerate() {
 			let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
 			let ts_open = exec.floor(step).as_nanos();
@@ -190,11 +202,36 @@ impl<const M: u64> Node for Bars<M> {
 		&self.buf
 	}
 }
-slice_nudge!(Bars<1>, Bar);
-slice_nudge!(Bars<5>, Bar);
-slice_nudge!(Bars<15>, Bar);
-slice_nudge!(Bars<60>, Bar);
-slice_nudge!(Bars<240>, Bar);
+
+/// One named series per timeframe. A distinct type per period is what the graph already demands
+/// (node identity *is* its type); naming it after the timeframe is what makes the period legible
+/// everywhere the name surfaces — DAG cards, dep edges, `step_until`.
+macro_rules! bars {
+	($($ty:ident = $tf:literal),+ $(,)?) => { $(
+		#[derive(Clone, Default)]
+		pub struct $ty(BarAcc);
+		impl $ty {
+			pub const TF: Timeframe = tf($tf);
+		}
+		impl Cell for $ty {
+			type Out<'t> = &'t [Bar];
+
+			const NAME: &'static str = concat!("Bar:", $tf);
+		}
+		impl Node for $ty {
+			type Deps = (Trades,);
+
+			/// Only the partial bar is held, so the state reaches back exactly one period.
+			const HORIZON: Horizon = Horizon::Span(Self::TF.0);
+
+			fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
+				self.0.advance(trades, Self::TF)
+			}
+		}
+		slice_nudge!($ty, Bar);
+	)+ };
+}
+bars!(Bar1m = "1m", Bar5m = "5m", Bar15m = "15m", Bar1h = "1h", Bar4h = "4h");
 
 #[derive(Clone, Copy, Debug)]
 pub struct PriceSnap {
@@ -313,7 +350,7 @@ pub struct BookTop {
 pub struct Screened {
 	pub ts_ns: i64,
 }
-/// Top gainer: overbought on 4h while up on the day. [`Bars<1>`] is the screening clock, so a
+/// Top gainer: overbought on 4h while up on the day. [`Bar1m`] is the screening clock, so a
 /// verdict is reached once a minute exactly as in SPL — the rate comes from this node's own inputs.
 #[derive(Clone, Default)]
 pub struct RsiScreener {
@@ -473,17 +510,17 @@ impl Cell for Price {
 	type Out<'t> = &'t [Option<PriceSnap>];
 }
 impl Node for Price {
-	type Deps = (Buffering<Bars<1>, { Horizon::Span(SPAN_3M.0) }>, Buffering<Bars<60>, REACH_1D>);
+	type Deps = (Buffering<Bar1m, { Horizon::Span(SPAN_3M.0) }>, Buffering<Bar1h, REACH_1D>);
 
 	fn advance<'t>(&'t mut self, (m1, h1): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for (b, w3) in m1.fresh().iter().zip(m1.trailing()) {
-			let deadline = b.close_ns(Bars::<1>::TF);
-			let closed_1h = closed_by(h1.all(), Bars::<60>::TF, deadline);
+			let deadline = b.close_ns(Bar1m::TF);
+			let closed_1h = closed_by(h1.all(), Bar1h::TF, deadline);
 			let day_ago = deadline - SPAN_1D.duration().as_nanos() as i64;
 			// The close standing a day back is the first one after `day_ago`; index 0 means the retained
 			// run does not reach behind it, so there is nothing a day old to compare against yet.
-			let oldest_1h = closed_1h.iter().position(|h| h.close_ns(Bars::<60>::TF) > day_ago).filter(|&i| i > 0).map(|i| closed_1h[i].close);
+			let oldest_1h = closed_1h.iter().position(|h| h.close_ns(Bar1h::TF) > day_ago).filter(|&i| i > 0).map(|i| closed_1h[i].close);
 			self.buf.push(match (w3, oldest_1h) {
 				(Some(w3), Some(oldest_1h)) => {
 					let base_open = w3[0].open;
@@ -515,14 +552,14 @@ impl Cell for Volume {
 impl Node for Volume {
 	// One element: the level standing at each 1m bar's close, retained across the ticks where the
 	// slower series emits nothing.
-	type Deps = (Bars<1>, Buffering<Bars<60>, { Horizon::Elems(1) }>, Buffering<Bars<240>, { Horizon::Elems(1) }>);
+	type Deps = (Bar1m, Buffering<Bar1h, { Horizon::Elems(1) }>, Buffering<Bar4h, { Horizon::Elems(1) }>);
 
 	fn advance<'t>(&'t mut self, (m1, h1, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for b in m1 {
-			let usd = |bars: &[Bar], tf: Timeframe| closed_by(bars, tf, b.close_ns(Bars::<1>::TF)).last().map(|h| h.vol_base * h.close);
+			let usd = |bars: &[Bar], tf: Timeframe| closed_by(bars, tf, b.close_ns(Bar1m::TF)).last().map(|h| h.vol_base * h.close);
 			self.buf
-				.push(usd(h1.all(), Bars::<60>::TF).zip(usd(h4.all(), Bars::<240>::TF)).map(|(volume_1h_usd, volume_4h_usd)| VolSnap {
+				.push(usd(h1.all(), Bar1h::TF).zip(usd(h4.all(), Bar4h::TF)).map(|(volume_1h_usd, volume_4h_usd)| VolSnap {
 					volume_1m_usd: b.vol_base * b.close,
 					volume_1h_usd,
 					volume_4h_usd,
@@ -582,7 +619,7 @@ impl Cell for RsiAverages {
 	type Out<'t> = &'t [Option<AvgGainLoss>];
 }
 impl Node for RsiAverages {
-	type Deps = (Bars<5>, Bars<15>, Bars<60>, Bars<240>);
+	type Deps = (Bar5m, Bar15m, Bar1h, Bar4h);
 
 	// Price units, so no range.
 	const PLOTS: &'static [Plot] = &[Plot {
@@ -594,17 +631,11 @@ impl Node for RsiAverages {
 		self.buf.clear();
 		let cfg = strategy().indies.rsi;
 		let bars = match cfg.timeframe {
-			Bars::<5>::TF => m5,
-			Bars::<15>::TF => m15,
-			Bars::<60>::TF => h1,
-			Bars::<240>::TF => h4,
-			_ => panic!(
-				"`{cfg}`: the graph wires {}/{}/{}/{} bars and no others",
-				Bars::<5>::TF,
-				Bars::<15>::TF,
-				Bars::<60>::TF,
-				Bars::<240>::TF
-			),
+			Bar5m::TF => m5,
+			Bar15m::TF => m15,
+			Bar1h::TF => h1,
+			Bar4h::TF => h4,
+			_ => panic!("`{cfg}`: the graph wires {}/{}/{}/{} bars and no others", Bar5m::TF, Bar15m::TF, Bar1h::TF, Bar4h::TF),
 		};
 		for b in bars {
 			self.buf.push(self.avgs.update(b.close).map(|(gain, loss)| AvgGainLoss { gain, loss }));
@@ -661,7 +692,7 @@ impl Cell for Atr {
 	type Out<'t> = &'t [Option<f64>];
 }
 impl Node for Atr {
-	type Deps = (Bars<1>,);
+	type Deps = (Bar1m,);
 
 	fn advance<'t>(&'t mut self, (bars,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
@@ -717,7 +748,7 @@ impl Cell for Momentum {
 	type Out<'t> = &'t [Option<MomSnap>];
 }
 impl Node for Momentum {
-	type Deps = (Buffering<Bars<5>, { mom_cap(Bars::<5>::TF) }>, Buffering<Bars<240>, { mom_cap(Bars::<240>::TF) }>);
+	type Deps = (Buffering<Bar5m, { mom_cap(Bar5m::TF) }>, Buffering<Bar4h, { mom_cap(Bar4h::TF) }>);
 
 	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &["fast", "slow"],
@@ -731,12 +762,12 @@ impl Node for Momentum {
 		// Only these two series are retained a momentum window deep, so naming any other timeframe is a
 		// config bug rather than a leg that silently never fills.
 		let series = |tf| match tf {
-			Bars::<5>::TF => m5,
-			Bars::<240>::TF => h4,
+			Bar5m::TF => m5,
+			Bar4h::TF => h4,
 			_ => panic!(
 				"indies.momentum names {tf}, over which no {n}-bar window is retained — the graph buffers {} and {}",
-				Bars::<5>::TF,
-				Bars::<240>::TF
+				Bar5m::TF,
+				Bar4h::TF
 			),
 		};
 		// the lookback is a runtime knob, so the window is narrowed off the retained reach here.
@@ -904,10 +935,10 @@ impl Cell for RsiScreener {
 	type Out<'t> = &'t [Option<Screened>];
 }
 impl Node for RsiScreener {
-	type Deps = (Bars<1>, Price, Rsi);
+	type Deps = (Bar1m, Price, Rsi);
 
 	fn advance<'t>(&'t mut self, (bars, price, rsi): DepOuts<'t, Self>) -> Self::Out<'t> {
-		assert_eq!(bars.len(), price.len(), "Bars<1>/Price rate mismatch");
+		assert_eq!(bars.len(), price.len(), "Bar1m/Price rate mismatch");
 		self.buf.clear();
 		// Inert unless configured, but still rate-preserving: `ScreenHit` reads the two screeners as
 		// one signal, so an empty slice here would read as a rate mismatch rather than as "no hits".
@@ -918,7 +949,7 @@ impl Node for RsiScreener {
 		latest(&mut self.rsi, rsi);
 		for (b, p) in bars.iter().zip(price) {
 			self.buf.push(match (p, self.rsi) {
-				(Some(p), Some(rsi)) => (rsi.actual > c.rsi_threshold && p.change_1d_pct > *c.price_percent).then_some(Screened { ts_ns: b.close_ns(Bars::<1>::TF) }),
+				(Some(p), Some(rsi)) => (rsi.actual > c.rsi_threshold && p.change_1d_pct > *c.price_percent).then_some(Screened { ts_ns: b.close_ns(Bar1m::TF) }),
 				_ => None,
 			});
 		}
@@ -931,7 +962,7 @@ impl Cell for StdScreener {
 	type Out<'t> = &'t [Option<Screened>];
 }
 impl Node for StdScreener {
-	type Deps = (Bars<1>, Momentum);
+	type Deps = (Bar1m, Momentum);
 
 	fn advance<'t>(&'t mut self, (bars, momentum): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
@@ -949,7 +980,7 @@ impl Node for StdScreener {
 				// here would otherwise let a wiring bug read as an unconditional hit.
 				assert_eq!(m.slow.is_some(), strategy().indies.momentum.slow.is_some(), "a slow Sharpe disagrees with indies.momentum.slow");
 				let slow = m.slow.is_none_or(|x| x > c.slow_overvalued);
-				(slow && m.fast > c.fast_overvalued).then_some(Screened { ts_ns: b.close_ns(Bars::<1>::TF) })
+				(slow && m.fast > c.fast_overvalued).then_some(Screened { ts_ns: b.close_ns(Bar1m::TF) })
 			}));
 		}
 		&self.buf
@@ -1161,15 +1192,15 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape], oi: OiRoot[Oi], mc: McRoot[Mc] };
 	out TickOut;
-	bar_1m: Bars<1>,
-	bar_5m: Bars<5>,
-	bar_15m: Bars<15>,
-	bar_1h: Bars<60>,
-	bar_4h: Bars<240>,
-	bar_1m_hist: Buffer<Bars<1>, { Horizon::Span(SPAN_3M.0) }>,
-	bar_5m_hist: Buffer<Bars<5>, { mom_cap(Bars::<5>::TF) }>,
-	bar_1h_hist: Buffer<Bars<60>, REACH_1D>,
-	bar_4h_hist: Buffer<Bars<240>, { mom_cap(Bars::<240>::TF) }>,
+	bar_1m: Bar1m,
+	bar_5m: Bar5m,
+	bar_15m: Bar15m,
+	bar_1h: Bar1h,
+	bar_4h: Bar4h,
+	bar_1m_hist: Buffer<Bar1m, { Horizon::Span(SPAN_3M.0) }>,
+	bar_5m_hist: Buffer<Bar5m, { mom_cap(Bar5m::TF) }>,
+	bar_1h_hist: Buffer<Bar1h, REACH_1D>,
+	bar_4h_hist: Buffer<Bar4h, { mom_cap(Bar4h::TF) }>,
 	oi_hist: Buffer<OiRoot, OI_REACH>,
 	price: Price,
 	volume: Volume,
