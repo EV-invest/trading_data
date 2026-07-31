@@ -62,7 +62,8 @@ async fn main() {
 	let viz = Viz::new(None, 100_000, 100);
 	let mut server = tokio::task::JoinSet::new();
 	let base: u16 = std::env::var("PORT").expect("PORT: the devShell sets the base of the port range").parse().expect("PORT is a u16");
-	server.spawn(viz.clone().serve(base + ORDINAL));
+	// Never sealed: the feed *is* the recording, and the tape grows for as long as it runs.
+	server.spawn(viz.clone().serve_on(Viz::bind(base + ORDINAL).await));
 
 	// graph consumes on a blocking thread (blocking recv) while the async pumps feed it.
 	let ts_sink = live.sink();

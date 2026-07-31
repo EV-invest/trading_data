@@ -4615,6 +4615,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "trading_data",
  "trading_data_core",
  "trading_data_dag",

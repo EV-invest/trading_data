@@ -143,7 +143,9 @@ async fn main() {
 
 	println!("demo: ok");
 	let base: u16 = std::env::var("PORT").expect("PORT: the devShell sets the base of the port range").parse().expect("PORT is a u16");
-	viz.serve(base + ORDINAL).await;
+	// Replay-only: the recording is over before the first request, so the last tick is addressable.
+	viz.clone().seal();
+	viz.serve_on(Viz::bind(base + ORDINAL).await).await;
 }
 /// Surfaces the `Signal` node's self-documentation through the observation choke point: prints its
 /// formula, per-dep derivatives, and (behind `SIGNAL_TRACE`) the debug trace once; and asserts the
