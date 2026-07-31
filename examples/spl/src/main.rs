@@ -1,4 +1,4 @@
-//! Assert-driver over the SPL port. One long-lived `Graph`, one `Replay` per day over the
+//! Check-driver over the SPL port. One long-lived `Graph`, one `Replay` per day over the
 //! situation's window, every lane. `Replay` eager-loads its range, so chunking it across successive
 //! feeds is the sanctioned way to cover a window; graph state carries across, only the per-lane
 //! latency seed resets, which is deterministic. SPL's `request_bars(warmup)` + `Screener::trade_start`
@@ -7,10 +7,15 @@
 //! Which instrument, which window and every strategy knob come from `config.nix` — the same file
 //! scam_pump_liqs configures itself with, pointed at its `examples/situations.nix` MOCK target.
 //!
-//! The asserts below are the integration test — indie warmth, book shape, and the deprecator's
-//! five load-bearing invariants — plus SPL's own `trailing_stop_partial_degradation`
-//! replayed through the ported `TrailingStop`. The run is recorded by an attached [`Viz`] and served
-//! afterwards, so the degradation is eyeballable against price. `nix run .#spl` builds the
+//! The checks below are the integration test — indie warmth, book shape, and the deprecator's
+//! five load-bearing invariants — plus SPL's own `trailing_stop_partial_degradation` replayed
+//! through the ported `TrailingStop`. Everything the replay observes is a *finding about market
+//! data*, not tainted internal state, so it is counted and logged rather than panicked: killing an
+//! eight-minute run destroys the very tape you wanted to look at it with. Only the trail check
+//! panics — it reads no data, and so runs first, before a byte is loaded.
+//!
+//! The run is recorded by an attached [`Viz`] whose server runs *alongside* it, so the degradation
+//! is eyeballable against price while it is still being produced. `nix run .#spl` builds the
 //! `exec_viz_web` bundle and runs this against it.
 
 use std::path::PathBuf;
@@ -26,6 +31,18 @@ use trading_data_spl::{
 	nodes::{BookTopSnap, Graph, Intent, TrailingStop},
 	symbol, trading_days, ui,
 };
+use v_utils::utils::tracing::{LogDestination, init_subscriber};
+
+/// A failed observation about the replayed data: counted and logged, never fatal. The run's whole
+/// value is the tape it leaves behind, and a panic mid-replay throws that away.
+macro_rules! flag {
+	($self:ident, $cond:expr, $($arg:tt)*) => {
+		if !$cond {
+			$self.violations += 1;
+			tracing::error!($($arg)*);
+		}
+	};
+}
 
 /// This app's slot in the port range. The base is the devShell's and the flake's; the port is
 /// derived, not chosen, so several apps can be up at once and the URL says which is which.
@@ -54,6 +71,13 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
+	// `stderr_errors(false)`: the progress bar owns the terminal for the whole run, and a violation
+	// smeared across it would read worse than the JSON line. The final summary is what points here.
+	init_subscriber(LogDestination::file(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl.log")).stderr_errors(false));
+
+	// Data-independent, so it costs nothing to fail in the first millisecond rather than the last.
+	trailing_stop_partial_degradation();
+
 	let cli = Cli::parse();
 	let cfg = Config::load(&cli.config);
 	let situation = &cfg.situation;
@@ -85,143 +109,178 @@ async fn main() {
 	let mut day = Day::default();
 	let began = std::time::Instant::now();
 	let (run_start, _) = day_bounds(days[0]);
+
+	// Bound before a byte is read, and printed before the bar starts redrawing over it: the point of
+	// serving concurrently is that the URL works from the first second.
+	let port = std::env::var("PORT").map_or(PORT_BASE, |p| p.parse().expect("PORT is a u16")) + ORDINAL;
+	let server = viz.clone().serve_on(Viz::bind(port).await);
+	println!("serving on http://localhost:{port}");
+
 	let pb = ui::run("replay", days.len() as i64 * DAY_NS);
+	tokio::join!(server, async {
+		for d in &days {
+			let (start, end) = day_bounds(*d);
+			// ponytail: `Replay::new` eager-decodes the day's parquet (~40MB, seconds) with no await, so
+			// new connections stall for that long once per day. Chunking the window across successive
+			// `Replay`s (see the module doc) fixes it, but resets the per-lane latency seed at each
+			// boundary, which moves the run's numbers.
+			let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency, MEASURED_WINDOW);
+			while let Some(lanes) = feed.next() {
+				day.ticks += 1;
+				let ts_ns = lanes.ts_venue.as_nanos();
+				if day.ticks % 256 == 0 {
+					// `join!` polls both branches on this one task: without a yield the accept loop never
+					// runs, and the bound port stays deaf for the whole replay.
+					tokio::task::yield_now().await;
+					// Both calls take the draw lock. Every 1024th tick is still twice a second.
+					if day.ticks % 1024 == 0 {
+						pb.set_position((ts_ns - run_start.as_nanos()) as u64);
+						pb.set_message(format!("{} book reads, {} episodes, {} intents{}", day.top, day.episodes, day.intents, day.violations_msg()));
+					}
+				}
+				// The tape is the book's only independent witness: nothing downstream ever compares them.
+				if let Some(&raw) = lanes.trades.price.last() {
+					day.last_trade_px = Some(raw as f64 / lanes.trades.prec.price.scale());
+				}
+				let out = graph.tick_obs(lanes.into(), recorder.at(ts_ns));
 
-	for d in &days {
-		let (start, end) = day_bounds(*d);
-		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency, MEASURED_WINDOW);
-		while let Some(lanes) = feed.next() {
-			day.ticks += 1;
-			let ts_ns = lanes.ts_venue.as_nanos();
-			// Ticks land ~2k/s, and both calls take the draw lock. Every 1024th is still twice a second.
-			if day.ticks % 1024 == 0 {
-				pb.set_position((ts_ns - run_start.as_nanos()) as u64);
-				pb.set_message(format!("{} book reads, {} episodes, {} intents", day.top, day.episodes, day.intents));
-			}
-			// The tape is the book's only independent witness: nothing downstream ever compares them.
-			if let Some(&raw) = lanes.trades.price.last() {
-				day.last_trade_px = Some(raw as f64 / lanes.trades.prec.price.scale());
-			}
-			let out = graph.tick_obs(lanes.into(), recorder.at(ts_ns));
+				for b in out.bar_1m {
+					viz.bar(BarOut {
+						ts_ms: b.ts_open / 1_000_000,
+						open: b.open,
+						high: b.high,
+						low: b.low,
+						close: b.close,
+						volume: b.vol_base * b.close,
+					});
+				}
+				// Each indie is read on its own, at its own rate — there is no snapshot to gate them together.
+				for r in out.rsi.iter().flatten() {
+					day.rsi_snaps += 1;
+					top(&mut day.max_rsi, r.actual);
+				}
+				for p in out.price.iter().flatten() {
+					day.price_snaps += 1;
+					top(&mut day.max_change_1d, p.change_1d_pct);
+				}
+				for m in out.momentum.iter().flatten() {
+					day.momentum_snaps += 1;
+					day.first_momentum_ns.get_or_insert(ts_ns);
+					top(&mut day.max_sharpe_fast, m.fast);
+					if let Some(x) = m.slow {
+						top(&mut day.max_sharpe_slow, x);
+					}
+				}
+				day.rsi_hits += out.rsi_screener.iter().flatten().count() as u64;
+				day.std_hits += out.std_screener.iter().flatten().count() as u64;
+				day.classifications += out.classify.is_some() as u64;
 
-			for b in out.bar_1m {
-				viz.bar(BarOut {
-					ts_ms: b.ts_open / 1_000_000,
-					open: b.open,
-					high: b.high,
-					low: b.low,
-					close: b.close,
-					volume: b.vol_base * b.close,
-				});
-			}
-			// Each indie is read on its own, at its own rate — there is no snapshot to gate them together.
-			for r in out.rsi.iter().flatten() {
-				day.rsi_snaps += 1;
-				top(&mut day.max_rsi, r.actual);
-			}
-			for p in out.price.iter().flatten() {
-				day.price_snaps += 1;
-				top(&mut day.max_change_1d, p.change_1d_pct);
-			}
-			for m in out.momentum.iter().flatten() {
-				day.momentum_snaps += 1;
-				day.first_momentum_ns.get_or_insert(ts_ns);
-				top(&mut day.max_sharpe_fast, m.fast);
-				if let Some(x) = m.slow {
-					top(&mut day.max_sharpe_slow, x);
+				day.top_reads += out.book_top.len() as u64;
+				for x in out.book_top.iter().flatten() {
+					day.check_top(x);
+				}
+				flag!(
+					day,
+					out.deprecator.len() == out.book_top.len(),
+					"Deprecator/BookTop rate mismatch: {} vs {}",
+					out.deprecator.len(),
+					out.book_top.len()
+				);
+				// `min` where the rates were equal by assertion: a mismatch is now survivable, and the
+				// pairing is only meaningful over the overlap.
+				for i in 0..out.deprecator.len().min(out.book_top.len()) {
+					day.check_intent(out.deprecator[i], out.book_top[i]);
 				}
 			}
-			day.rsi_hits += out.rsi_screener.iter().flatten().count() as u64;
-			day.std_hits += out.std_screener.iter().flatten().count() as u64;
-			day.classifications += out.classify.is_some() as u64;
-
-			day.top_reads += out.book_top.len() as u64;
-			for x in out.book_top.iter().flatten() {
-				day.check_top(x);
-			}
-			assert_eq!(out.deprecator.len(), out.book_top.len(), "Deprecator/BookTop rate mismatch");
-			for i in 0..out.deprecator.len() {
-				day.check_intent(out.deprecator[i], out.book_top[i]);
-			}
 		}
-	}
-	ui::finish_run(&pb, format!("{} ticks, {} book reads, {} episodes", day.ticks, day.top, day.episodes));
+		ui::finish_run(&pb, format!("{} ticks, {} book reads, {} episodes{}", day.ticks, day.top, day.episodes, day.violations_msg()));
 
-	println!(
-		"traded: rsi={} price={} momentum={} top={}/{} rsi_hits={} std_hits={} classifications={} episodes={} intents={}",
-		day.rsi_snaps, day.price_snaps, day.momentum_snaps, day.top, day.top_reads, day.rsi_hits, day.std_hits, day.classifications, day.episodes, day.intents
-	);
-	// What the window bought, and what it cost: the FD observer runs per node per tick, so wall-clock
-	// is the binding constraint on how fine `MEASURED_WINDOW` can go.
-	println!("{} ticks in {:.1}s at a {MEASURED_WINDOW_MS}ms batch window", day.ticks, began.elapsed().as_secs_f64());
-	println!(
-		"tape vs book: max |last_trade - mid| / mid = {}",
-		day.max_tape_divergence.map_or_else(|| "n/a".to_string(), |v| format!("{:.3}%", v * 100.0))
-	);
-	// Ingest persists every change to the top-20 view, so the ceiling is the book itself; what the
-	// batch window then decides is how many of those changes a tick swallows without anyone looking.
-	// SPL's 1Hz timer is the reference, not the target — these gaps should sit well under it.
-	let spl_samples = days.len() as u64 * 24 * 3600;
-	println!(
-		"book cadence: {} reads vs SPL's {spl_samples} 1s samples ({:.1}×); blind gaps: mean {:.0}ms, max {}ms (ending {:?}), {} over 2s, {} over 10s",
-		day.top,
-		day.top as f64 / spl_samples as f64,
-		day.blind_total_ms as f64 / day.top as f64,
-		day.max_blind_ms,
-		Ts::<Venue>::from_nanos(day.max_blind_at_ns),
-		day.blind_over_2s,
-		day.blind_over_10s
-	);
-	let momentum = cfg.strategy.indies.momentum;
-	let seen = |x: Option<f64>| x.map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"));
-	println!(
-		"window maxima: rsi={} change_1d={}% sharpe {}={}{}",
-		seen(day.max_rsi),
-		seen(day.max_change_1d),
-		momentum.fast,
-		seen(day.max_sharpe_fast),
-		momentum.slow.map_or_else(String::new, |tf| format!(" {tf}={}", seen(day.max_sharpe_slow)))
-	);
-
-	// Only the configured screener's own inputs have to warm. Asserting on all three would re-impose
-	// the union the shallow tier used to demand — under `Screen::Std` nothing reads `Rsi` at all.
-	let (needed, warm) = match cfg.strategy.screen {
-		Screen::Rsi(_) => ("price+rsi", day.price_snaps > 0 && day.rsi_snaps > 0),
-		Screen::Std(_) => ("momentum", day.momentum_snaps > 0),
-	};
-	assert!(
-		warm,
-		"the configured screener's inputs ({needed}) never warmed in the trading window: rsi={} price={} momentum={}",
-		day.rsi_snaps, day.price_snaps, day.momentum_snaps
-	);
-	// Bars are aggregated from trades, so a bucket with no trade emits none: on a thin instrument the
-	// `lookback + 1`-th *emitted* bar lands strictly later than `lookback + 1` bar-widths in, which is
-	// why this is a floor and never the expected value.
-	let widest = [Some(momentum.fast), momentum.slow].into_iter().flatten().max().expect("a fast leg is always configured");
-	let earliest = run_start.as_nanos() + (momentum.lookback as i64 + 1) * widest.duration().as_nanos() as i64;
-	if let Some(warm_at) = day.first_momentum_ns {
-		assert!(
-			warm_at >= earliest,
-			"momentum published at {:?}, before its window could possibly have filled ({:?})",
-			Ts::<Venue>::from_nanos(warm_at),
-			Ts::<Venue>::from_nanos(earliest)
+		println!(
+			"traded: rsi={} price={} momentum={} top={}/{} rsi_hits={} std_hits={} classifications={} episodes={} intents={}",
+			day.rsi_snaps, day.price_snaps, day.momentum_snaps, day.top, day.top_reads, day.rsi_hits, day.std_hits, day.classifications, day.episodes, day.intents
 		);
-	}
-	assert_eq!(day.top, day.top_reads, "the book was unsynced on some read — our own checkpoints failed to seed it");
-	trailing_stop_partial_degradation();
+		// What the window bought, and what it cost: the FD observer runs per node per tick, so wall-clock
+		// is the binding constraint on how fine `MEASURED_WINDOW` can go.
+		println!("{} ticks in {:.1}s at a {MEASURED_WINDOW_MS}ms batch window", day.ticks, began.elapsed().as_secs_f64());
+		println!(
+			"tape vs book: max |last_trade - mid| / mid = {}",
+			day.max_tape_divergence.map_or_else(|| "n/a".to_string(), |v| format!("{:.3}%", v * 100.0))
+		);
+		// Ingest persists every change to the top-20 view, so the ceiling is the book itself; what the
+		// batch window then decides is how many of those changes a tick swallows without anyone looking.
+		// SPL's 1Hz timer is the reference, not the target — these gaps should sit well under it.
+		let spl_samples = days.len() as u64 * 24 * 3600;
+		println!(
+			"book cadence: {} reads vs SPL's {spl_samples} 1s samples ({:.1}×); blind gaps: mean {:.0}ms, max {}ms (ending {:?}), {} over 2s, {} over 10s",
+			day.top,
+			day.top as f64 / spl_samples as f64,
+			day.blind_total_ms as f64 / day.top as f64,
+			day.max_blind_ms,
+			Ts::<Venue>::from_nanos(day.max_blind_at_ns),
+			day.blind_over_2s,
+			day.blind_over_10s
+		);
+		let momentum = cfg.strategy.indies.momentum;
+		let seen = |x: Option<f64>| x.map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"));
+		println!(
+			"window maxima: rsi={} change_1d={}% sharpe {}={}{}",
+			seen(day.max_rsi),
+			seen(day.max_change_1d),
+			momentum.fast,
+			seen(day.max_sharpe_fast),
+			momentum.slow.map_or_else(String::new, |tf| format!(" {tf}={}", seen(day.max_sharpe_slow)))
+		);
 
-	let oi: Vec<_> = read_oi(&catalog, ExchangeName::Bybit, symbol(situation), Ts::MIN, Ts::MAX).expect("open oi lane").collect();
-	assert!(oi.windows(2).all(|w| w[0].ts_venue_exec <= w[1].ts_venue_exec), "oi timestamps unordered");
-	let mc: Vec<_> = read_mc(&catalog, asset(situation), Ts::MIN, Ts::MAX).expect("open mc lane").collect();
-	println!("oi rows={} mc rows={} (mc={:.3e})", oi.len(), mc.len(), mc[0].market_cap);
+		// Only the configured screener's own inputs have to warm. Checking all three would re-impose
+		// the union the shallow tier used to demand — under `Screen::Std` nothing reads `Rsi` at all.
+		let (needed, warm) = match cfg.strategy.screen {
+			Screen::Rsi(_) => ("price+rsi", day.price_snaps > 0 && day.rsi_snaps > 0),
+			Screen::Std(_) => ("momentum", day.momentum_snaps > 0),
+		};
+		flag!(
+			day,
+			warm,
+			"the configured screener's inputs ({needed}) never warmed in the trading window: rsi={} price={} momentum={}",
+			day.rsi_snaps,
+			day.price_snaps,
+			day.momentum_snaps
+		);
+		// Bars are aggregated from trades, so a bucket with no trade emits none: on a thin instrument the
+		// `lookback + 1`-th *emitted* bar lands strictly later than `lookback + 1` bar-widths in, which is
+		// why this is a floor and never the expected value.
+		let widest = [Some(momentum.fast), momentum.slow].into_iter().flatten().max().expect("a fast leg is always configured");
+		let earliest = run_start.as_nanos() + (momentum.lookback as i64 + 1) * widest.duration().as_nanos() as i64;
+		if let Some(warm_at) = day.first_momentum_ns {
+			flag!(
+				day,
+				warm_at >= earliest,
+				"momentum published at {:?}, before its window could possibly have filled ({:?})",
+				Ts::<Venue>::from_nanos(warm_at),
+				Ts::<Venue>::from_nanos(earliest)
+			);
+		}
+		flag!(
+			day,
+			day.top == day.top_reads,
+			"the book was unsynced on some read ({} of {} reads produced a snapshot) — our own checkpoints failed to seed it",
+			day.top,
+			day.top_reads
+		);
 
-	println!("spl: ok");
-	let port = std::env::var("PORT").map_or(PORT_BASE, |p| p.parse().expect("PORT is a u16")) + ORDINAL;
-	println!("serving on http://localhost:{port}");
-	viz.serve(port).await;
+		let oi: Vec<_> = read_oi(&catalog, ExchangeName::Bybit, symbol(situation), Ts::MIN, Ts::MAX).expect("open oi lane").collect();
+		flag!(day, oi.windows(2).all(|w| w[0].ts_venue_exec <= w[1].ts_venue_exec), "oi timestamps unordered");
+		let mc: Vec<_> = read_mc(&catalog, asset(situation), Ts::MIN, Ts::MAX).expect("open mc lane").collect();
+		println!("oi rows={} mc rows={} (mc={:.3e})", oi.len(), mc.len(), mc[0].market_cap);
+
+		match day.violations {
+			0 => println!("spl: ok"),
+			n => println!("spl: {n} INVARIANT VIOLATIONS — see tmp/spl.log"),
+		}
+		recorder.seal();
+	});
 }
 
-/// Per-day accumulator and the running assert block over the book/deprecator streams.
+/// Per-day accumulator and the running check block over the book/deprecator streams.
 #[derive(Default)]
 struct Day {
 	rsi_snaps: u64,
@@ -246,7 +305,9 @@ struct Day {
 	ticks: u64,
 	intents: u64,
 	episodes: u64,
-	/// First tick a Sharpe landed on, for the floor assert.
+	/// Observations that failed; each one is in `tmp/spl.log` with its detail.
+	violations: u64,
+	/// First tick a Sharpe landed on, for the floor check.
 	first_momentum_ns: Option<i64>,
 	max_rsi: Option<f64>,
 	max_change_1d: Option<f64>,
@@ -257,6 +318,15 @@ struct Day {
 	open: Option<Open>,
 }
 impl Day {
+	/// Empty while the run is clean, so the bar reads exactly as it always did and only a violated
+	/// run shouts.
+	fn violations_msg(&self) -> String {
+		match self.violations {
+			0 => String::new(),
+			n => format!(", {n} VIOLATIONS"),
+		}
+	}
+
 	fn check_top(&mut self, d: &BookTopSnap) {
 		self.top += 1;
 		// A fold that lost its precision, or that dropped deletes and froze a phantom top, drifts away
@@ -266,7 +336,8 @@ impl Day {
 		if let Some(px) = self.last_trade_px {
 			let divergence = (px - d.mid()).abs() / d.mid();
 			top(&mut self.max_tape_divergence, divergence);
-			assert!(
+			flag!(
+				self,
 				divergence < 0.1,
 				"book mid {} is {:.1}% away from the last trade at {px} — the fold has lost the market, at {}",
 				d.mid(),
@@ -277,7 +348,7 @@ impl Day {
 		// A read is stamped with the last delta of its woven run and the weaver never reorders, so reads
 		// walk the lane forwards. Equality is legal — two runs can end on messages sharing the archive's
 		// millisecond resolution.
-		assert!(d.ts_ns >= self.last_top_ns, "book reads went backwards at {}, after {}", d.ts_ns, self.last_top_ns);
+		flag!(self, d.ts_ns >= self.last_top_ns, "book reads went backwards at {}, after {}", d.ts_ns, self.last_top_ns);
 		if self.last_top_ns != 0 {
 			let gap = (d.ts_ns - self.last_top_ns) / 1_000_000;
 			if gap > self.max_blind_ms {
@@ -288,10 +359,10 @@ impl Day {
 			self.blind_total_ms += gap;
 		}
 		self.last_top_ns = d.ts_ns;
-		assert!(d.best_bid < d.best_ask, "crossed book at {}: {} >= {}", d.ts_ns, d.best_bid, d.best_ask);
-		assert!(d.spread_pct.is_finite() && d.spread_pct > 0.0, "degenerate spread at {}: {}", d.ts_ns, d.spread_pct);
-		assert!(d.top20_bid_depth_usd > 0.0 && d.top20_ask_depth_usd > 0.0, "empty top-20 depth at {}", d.ts_ns);
-		assert!((-1.0..=1.0).contains(&d.imbalance), "imbalance out of range at {}: {}", d.ts_ns, d.imbalance);
+		flag!(self, d.best_bid < d.best_ask, "crossed book at {}: {} >= {}", d.ts_ns, d.best_bid, d.best_ask);
+		flag!(self, d.spread_pct.is_finite() && d.spread_pct > 0.0, "degenerate spread at {}: {}", d.ts_ns, d.spread_pct);
+		flag!(self, d.top20_bid_depth_usd > 0.0 && d.top20_ask_depth_usd > 0.0, "empty top-20 depth at {}", d.ts_ns);
+		flag!(self, (-1.0..=1.0).contains(&d.imbalance), "imbalance out of range at {}: {}", d.ts_ns, d.imbalance);
 	}
 
 	fn check_intent(&mut self, intent: Option<Intent>, top: Option<BookTopSnap>) {
@@ -299,14 +370,26 @@ impl Day {
 			self.close_episode();
 			return;
 		};
-		let d = top.expect("an intent is only emitted on a book tick");
+		let Some(d) = top else {
+			flag!(self, false, "an intent is only emitted on a book tick, but one landed at {} without one", i.ts_ns);
+			return;
+		};
 		self.intents += 1;
-		assert!(i.ts_ns > self.last_intent_ns, "intents not strictly increasing: {} <= {}", i.ts_ns, self.last_intent_ns);
+		flag!(self, i.ts_ns > self.last_intent_ns, "intents not strictly increasing: {} <= {}", i.ts_ns, self.last_intent_ns);
 		self.last_intent_ns = i.ts_ns;
-		assert!(i.side == Side::Buy, "the ported classification stub hardcodes Buy");
-		assert!((0.0..=i.base_q).contains(&i.target_q), "target_q {} outside [0, base_q={}] at {}", i.target_q, i.base_q, i.ts_ns);
+		flag!(self, i.side == Side::Buy, "the ported classification stub hardcodes Buy, got {:?} at {}", i.side, i.ts_ns);
+		flag!(self, (0.0..=i.base_q).contains(&i.target_q), "target_q {} outside [0, base_q={}] at {}", i.target_q, i.base_q, i.ts_ns);
 		let inside = d.mid() > i.sl && d.mid() < i.tp;
-		assert_eq!(i.lambda_atr == 0.0, !inside, "lambda_atr disagrees with the ATR envelope at {}", i.ts_ns);
+		flag!(
+			self,
+			(i.lambda_atr == 0.0) == !inside,
+			"lambda_atr {} disagrees with the ATR envelope at {}: mid {} against sl {} tp {}",
+			i.lambda_atr,
+			i.ts_ns,
+			d.mid(),
+			i.sl,
+			i.tp
+		);
 
 		// Two episodes can be adjacent in the stream, so the id is what separates them, not a gap.
 		if self.open.is_some_and(|o| o.episode != i.episode) {
@@ -322,16 +405,17 @@ impl Day {
 				last_ns: i.ts_ns,
 			}
 		});
-		assert!(
+		flag!(
+			self,
 			i.trail_fraction <= open.trail_fraction,
 			"trail_fraction rose within an episode ({} > {}) — certainty must ratchet",
 			i.trail_fraction,
 			open.trail_fraction
 		);
 		let first_zero_ns = open.first_zero_ns.or((i.eval == 0.0).then_some(i.ts_ns));
-		assert_eq!(i.draining, first_zero_ns.is_some(), "draining must latch on the first zero eval, at {}", i.ts_ns);
+		flag!(self, i.draining == first_zero_ns.is_some(), "draining ({}) must latch on the first zero eval, at {}", i.draining, i.ts_ns);
 		if i.draining {
-			assert_eq!(i.target_q, 0.0, "draining tick still carries size at {}", i.ts_ns);
+			flag!(self, i.target_q == 0.0, "draining tick still carries size {} at {}", i.target_q, i.ts_ns);
 		}
 		self.open = Some(Open {
 			episode: i.episode,
@@ -345,13 +429,14 @@ impl Day {
 	fn close_episode(&mut self) {
 		let Some(o) = self.open.take() else { return };
 		let Some(first_zero_ns) = o.first_zero_ns else {
-			panic!("episode ended at {} without ever reaching zero eval — only the drain deadline may end one", o.last_ns);
+			flag!(self, false, "episode ended at {} without ever reaching zero eval — only the drain deadline may end one", o.last_ns);
+			return;
 		};
 		// Book ticks land on the last message of a woven run, at no fixed spacing: the invariant is that
 		// the episode ended on the *first* tick at or after the deadline, not within any slack of it.
 		let deadline = first_zero_ns + config::strategy().classification.drain_grace.duration().as_nanos() as i64;
-		assert!(o.last_ns >= deadline, "episode ended {}ns before its drain deadline", deadline - o.last_ns);
-		assert!(o.prev_ns < deadline, "episode outlived its drain deadline by a whole tick, ending at {}", o.last_ns);
+		flag!(self, o.last_ns >= deadline, "episode ended {}ns before its drain deadline", deadline - o.last_ns);
+		flag!(self, o.prev_ns < deadline, "episode outlived its drain deadline by a whole tick, ending at {}", o.last_ns);
 	}
 }
 
@@ -371,7 +456,8 @@ fn top(slot: &mut Option<f64>, v: f64) {
 }
 
 /// SPL's own unit test of the trail (`classification/lib.rs:353`), replayed through the port. The
-/// one test carried over: it is a persisted useful payload, not a retrofit.
+/// one test carried over: it is a persisted useful payload, not a retrofit. Reads no market data,
+/// so it stays a panic — a broken trail means the run would be measuring nothing.
 fn trailing_stop_partial_degradation() {
 	let check = |side: Side, seq: &[(f64, f64)]| {
 		let mut trail = TrailingStop::new(side, 10.0, 0.33);
