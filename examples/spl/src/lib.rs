@@ -57,7 +57,7 @@ pub fn day_bounds(d: jiff::civil::Date) -> (Ts<Venue>, Ts<Venue>) {
 	(Ts::from_nanos(start), Ts::from_nanos(start + 24 * 3600 * 1_000_000_000))
 }
 
-/// The situation's trading days — `[start, end)`. Everything before them is warmup.
+/// The situation's days — `[start, end)`.
 pub fn trading_days(s: &Situation) -> Vec<jiff::civil::Date> {
 	let mut d = s.start;
 	let mut out = Vec::new();
@@ -69,18 +69,18 @@ pub fn trading_days(s: &Situation) -> Vec<jiff::civil::Date> {
 	out
 }
 
-/// Acquires all four lanes, each idempotent, under one set of progress bars. `all_days` is the whole
-/// window — trades cover it, the other three only the trading days.
-pub fn ensure_lanes(cache: &Path, s: &Situation, all_days: &[jiff::civil::Date]) -> Catalog {
+/// Acquires all four lanes over the situation's window, each idempotent, under one set of progress
+/// bars.
+pub fn ensure_lanes(cache: &Path, s: &Situation) -> Catalog {
 	let mp = MultiProgress::new();
-	let trading = trading_days(s).len();
+	let days = trading_days(s);
 	// Prefixes are padded, so the green done-style — which recolours them — still lines the bars up.
-	let pb_trades = ui::lane(&mp, "trades", all_days.len());
-	let pb_book = ui::lane(&mp, "book  ", trading);
-	let pb_oi = ui::lane(&mp, "oi    ", trading);
-	let pb_mc = ui::lane(&mp, "mc    ", trading);
+	let pb_trades = ui::lane(&mp, "trades", days.len());
+	let pb_book = ui::lane(&mp, "book  ", days.len());
+	let pb_oi = ui::lane(&mp, "oi    ", days.len());
+	let pb_mc = ui::lane(&mp, "mc    ", days.len());
 
-	let catalog = ensure_trades(cache, s, all_days, &mp, &pb_trades);
+	let catalog = ensure_trades(cache, s, &days, &mp, &pb_trades);
 	ensure_book(cache, &catalog, s, &mp, &pb_book);
 	ensure_oi(&catalog, s, &pb_oi);
 	ensure_mc(&catalog, s, &pb_mc);

@@ -19,8 +19,8 @@
 
   strategy = {
     indies = {
-      rsi = { base_len = 14; smooth_len = 14; };
-      momentum = { lookback = 180; risk_free_rate = 0.04; use_4h = false; };
+      rsi = { timeframe = "5m"; base_len = 14; smooth_len = 14; };
+      momentum = { fast = "5m"; slow = null; lookback = 180; risk_free_rate = 0.04; };
       atr = { period = 14; };
     };
 
@@ -32,8 +32,8 @@
       #  price_percent = "20%";
       #};
       Std = {
-        overvalued_threshold_4h = 3.0;
-        overvalued_threshold_5m = 5.0;
+        fast_overvalued = 5.0;
+        slow_overvalued = 3.0;
       };
     };
 

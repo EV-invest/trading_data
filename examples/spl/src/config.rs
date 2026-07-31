@@ -11,7 +11,7 @@ use std::{path::Path, process::Command, sync::OnceLock};
 use serde::Deserialize;
 use trading_data::LatencyConfig;
 use trading_data_core::PrecisionPriceQty;
-use v_utils::{Timeframe, percent::PercentU};
+use v_utils::{Timeframe, macros::CompactFormatNamed, percent::PercentU};
 
 /// Panics if read before [`Config::load`] — a node running without its configuration is a wiring
 /// bug, not a case for defaults.
@@ -53,8 +53,8 @@ impl Config {
 	}
 }
 
-/// One backtest target: which instrument, and the trading window. Data before `start` is warmup —
-/// the graph consumes it silently and nothing may fire on it, SPL's `Screener::trade_start`.
+/// One backtest target: which instrument, and the window replayed. Indies warm inside it — a cold
+/// node declines, so the strategy simply does not fire until it has the history it reads.
 #[derive(Debug, Deserialize)]
 pub struct Situation {
 	pub pair: String,
@@ -73,54 +73,28 @@ pub struct Strategy {
 	pub screen: Screen,
 	pub classification: Classification,
 }
-impl Strategy {
-	/// Closed bars of each timeframe the required indies need, as `(minutes, count)` — SPL's
-	/// `merge_warmup_requirements`. Ingest-side only: it sizes the window of history to buy, where the
-	/// graph's own warmth is per-node and needs no such list.
-	fn warmup_bars(&self) -> Vec<(u64, usize)> {
-		// price: 24 closed 1h for the 1d change, 3 closed 1m for the 3m change.
-		// volume: latest closed bar per timeframe. atr: one Wilder period of 1m.
-		let mut out = vec![(60, 24), (1, 3), (1, 1), (60, 1), (240, 1), (1, self.indies.atr.period)];
-		let required = self.indies.rsi.base_len + self.indies.rsi.smooth_len;
-		let closes = self.indies.momentum.lookback + 1;
-		match self.screen {
-			Screen::Rsi(_) => out.extend([(5, required), (15, required), (60, required), (240, required)]),
-			Screen::Std(_) => {
-				out.push((5, closes));
-				if self.indies.momentum.use_4h {
-					out.push((240, closes));
-				}
-			}
-		}
-		out
-	}
-
-	/// Whole UTC days of history the required indies need before `start`. SPL's
-	/// `warmup_buffer_days`: the widest single requirement, rounded up to a day.
-	pub fn warmup_days(&self) -> i64 {
-		let widest = self.warmup_bars().iter().map(|(m, n)| m * 60 * *n as u64).max().expect("price and atr are always required");
-		(widest / 86_400) as i64 + 1
-	}
-}
-
 #[derive(Debug, Deserialize)]
 pub struct Indies {
 	pub rsi: Rsi,
 	pub momentum: Momentum,
 	pub atr: Atr,
 }
-#[derive(Clone, Copy, Debug, Deserialize)]
+/// `Display` is the indie's signature — `rsi:t5m:b14:s14` — so anything naming this indie names the
+/// timeframe with it. There is no default: the timeframe RSI runs on is the strategy.
+#[derive(Clone, CompactFormatNamed, Copy, Debug, Deserialize)]
 pub struct Rsi {
+	pub timeframe: Timeframe,
 	pub base_len: usize,
 	pub smooth_len: usize,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub struct Momentum {
+	pub fast: Timeframe,
+	/// The second, slower leg. `null` drops it entirely — never tracked, never warmed, and the
+	/// screener's slow leg is then vacuous. There is no default: a leg exists only if named.
+	pub slow: Option<Timeframe>,
 	pub lookback: usize,
 	pub risk_free_rate: f64,
-	/// `false` drops the 4h slot entirely — never tracked, never warmed, and the screener's 4h leg
-	/// is then vacuous.
-	pub use_4h: bool,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub struct Atr {
@@ -140,8 +114,8 @@ pub struct RsiScreen {
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub struct StdScreen {
-	pub overvalued_threshold_4h: f64,
-	pub overvalued_threshold_5m: f64,
+	pub fast_overvalued: f64,
+	pub slow_overvalued: f64,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub struct Classification {
@@ -167,16 +141,6 @@ pub struct ArrivalLatency {
 	pub p68: Timeframe,
 	pub p95: Timeframe,
 	pub p997: Timeframe,
-}
-/// Days the run covers, warmup first: `[start - warmup_days, end)`.
-pub fn days(situation: &Situation, warmup_days: i64) -> Vec<jiff::civil::Date> {
-	let mut d = situation.start.checked_sub(jiff::Span::new().days(warmup_days)).expect("date in range");
-	let mut out = Vec::new();
-	while d < situation.end {
-		out.push(d);
-		d = d.tomorrow().expect("date in range");
-	}
-	out
 }
 static CONFIG: OnceLock<Config> = OnceLock::new();
 

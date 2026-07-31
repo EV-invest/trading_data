@@ -1,13 +1,13 @@
-//! Assert-driver over the SPL port. One long-lived `Graph`, one `Replay` per day: trades-only
-//! warmup chunks (SPL's `request_bars(warmup)` + `Screener::trade_start` — nothing may trade yet),
-//! then the situation's trading days over every lane. `Replay` eager-loads its range, so chunking it
-//! across successive feeds is the sanctioned way to cover a window; graph state carries across, only
-//! the per-lane latency seed resets, which is deterministic.
+//! Assert-driver over the SPL port. One long-lived `Graph`, one `Replay` per day over the
+//! situation's window, every lane. `Replay` eager-loads its range, so chunking it across successive
+//! feeds is the sanctioned way to cover a window; graph state carries across, only the per-lane
+//! latency seed resets, which is deterministic. SPL's `request_bars(warmup)` + `Screener::trade_start`
+//! have no counterpart: warmth is each node's own `None`, so there is no phase to stage.
 //!
 //! Which instrument, which window and every strategy knob come from `config.nix` — the same file
 //! scam_pump_liqs configures itself with, pointed at its `examples/situations.nix` MOCK target.
 //!
-//! The asserts below are the integration test — warmup horizon, book shape, and the deprecator's
+//! The asserts below are the integration test — indie warmth, book shape, and the deprecator's
 //! five load-bearing invariants — plus SPL's own `trailing_stop_partial_degradation`
 //! replayed through the ported `TrailingStop`. The run is recorded by an attached [`Viz`] and served
 //! afterwards, so the degradation is eyeballable against price. `nix run .#spl` builds the
@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use exec_viz::{Viz, api_types::BarOut};
-use trading_data::{BatchWindow, Exact, Feed, LaneKind, LatencyConfig, Replay, Ts, read_mc, read_oi, required_lanes};
+use trading_data::{BatchWindow, Exact, Feed, LatencyConfig, Replay, Ts, read_mc, read_oi, required_lanes};
 use trading_data_core::{ExchangeName, Side, Venue};
 use trading_data_spl::{
 	asset,
@@ -44,9 +44,6 @@ const DAY_NS: i64 = 24 * HOUR_NS;
 /// how much of the degradation goes unseen.
 const MEASURED_WINDOW_MS: i64 = 100;
 const MEASURED_WINDOW: BatchWindow = BatchWindow::from(Exact::from_nanos(MEASURED_WINDOW_MS * 1_000_000));
-/// Warmup is trades only: bars are fold-order invariant and nothing there evaluates, so grouping an
-/// hour at a time costs nothing. Adding a cadence-sensitive node to warmup means dropping this.
-const WARMUP_WINDOW: BatchWindow = BatchWindow::from(Exact::from_nanos(HOUR_NS));
 #[derive(Parser)]
 #[command(about = "scam_pump_liqs as a trading_data graph", long_about = None)]
 struct Cli {
@@ -60,95 +57,37 @@ async fn main() {
 	let cli = Cli::parse();
 	let cfg = Config::load(&cli.config);
 	let situation = &cfg.situation;
-	let warmup_days = cfg.strategy.warmup_days();
-	let all = config::days(situation, warmup_days);
-	let trading = trading_days(situation);
-	let (warmup, measured) = all.split_at(all.len() - trading.len());
+	let days = trading_days(situation);
 	println!(
-		"{} {} .. {} ({} trading days, {warmup_days} warmup), screen {:?}",
+		"{} {} .. {} ({} days), screen {:?}, {}",
 		situation.pair,
 		situation.start,
 		situation.end,
-		trading.len(),
-		cfg.strategy.screen
+		days.len(),
+		cfg.strategy.screen,
+		cfg.strategy.indies.rsi
 	);
 
 	// Per-symbol so switching the situation's pair cannot read another one's catalog.
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(&situation.bybit_symbol);
-	let catalog = ensure_lanes(&cache, situation, &all);
+	let catalog = ensure_lanes(&cache, situation);
 
 	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
 	let mut graph = Graph::default();
 
-	// --- warmup: trades only, no viz. Nothing may fire on it. ---
-	let mut first_momentum_ns = None;
-	let mut bars_5m = 0u64;
-	let mut warmup_hits = 0u64;
-	let (range_start, _) = day_bounds(all[0]);
-	let pb = ui::run("warmup", warmup.len() as i64 * DAY_NS);
-	for d in warmup {
-		let (start, end) = day_bounds(*d);
-		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &[LaneKind::Trades], latency, WARMUP_WINDOW);
-		while let Some(lanes) = feed.next() {
-			pb.set_position((lanes.ts_venue.as_nanos() - range_start.as_nanos()) as u64);
-			let out = graph.tick(lanes.into());
-			bars_5m += out.bar_5m.len() as u64;
-			assert_eq!(out.momentum.len(), out.bar_5m.len(), "Momentum/Bars<5> rate mismatch");
-			if first_momentum_ns.is_none()
-				&& let Some(i) = out.momentum.iter().position(Option::is_some)
-			{
-				first_momentum_ns = Some(out.bar_5m[i].ts_open + 5 * 60_000_000_000);
-			}
-			warmup_hits += (out.rsi_screener.iter().flatten().count() + out.std_screener.iter().flatten().count()) as u64;
-			// The configured screener warms off trades alone, so it does fire here — SPL's `trade_start`
-			// window, where a hit is real but unactionable. What makes it unactionable is structural
-			// rather than a warmth gate: no book lane ⇒ no `BookTop` tick ⇒ `Deprecator` never leaves Idle.
-			assert!(
-				out.deprecator.iter().all(Option::is_none),
-				"an intent was produced during trades-only warmup, with no book lane to price an entry against"
-			);
-			pb.set_message(format!("{bars_5m} 5m bars, {warmup_hits} screener hits"));
-		}
-	}
-	ui::finish_run(&pb, format!("{bars_5m} 5m bars, {warmup_hits} screener hits"));
-	let first_momentum_ns = first_momentum_ns.expect("Momentum never warmed inside the warmup window — the horizon is short");
-	let (trade_start, _) = day_bounds(measured[0]);
-	// Bars are aggregated from trades, so a bucket with no trade emits none: on a thin instrument the
-	// `lookback + 1`-th *emitted* bar lands strictly later than `lookback + 1` bar-widths in. `earliest`
-	// is therefore a floor, never the expected value.
-	let momentum = cfg.strategy.indies.momentum;
-	let widest_min = if momentum.use_4h { 240 } else { 5 };
-	let earliest = range_start.as_nanos() + (momentum.lookback as i64 + 1) * widest_min * 60_000_000_000;
-	let possible = warmup.len() as u64 * 24 * 12;
-	println!(
-		"warmup: {} days, {bars_5m}/{possible} 5m bars ({} buckets had no trade), {warmup_hits} screener hits (unactionable: no book lane), momentum warm at {:?}, {:.1}h before trading opens",
-		warmup.len(),
-		possible - bars_5m,
-		Ts::<Venue>::from_nanos(first_momentum_ns),
-		(trade_start.as_nanos() - first_momentum_ns) as f64 / HOUR_NS as f64,
-	);
-	assert!(
-		first_momentum_ns >= earliest,
-		"momentum warmed at {:?}, before its window could possibly have filled ({:?})",
-		Ts::<Venue>::from_nanos(first_momentum_ns),
-		Ts::<Venue>::from_nanos(earliest)
-	);
-	assert!(
-		first_momentum_ns < trade_start.as_nanos(),
-		"momentum only warmed at {:?}, after trading opens at {trade_start:?} — the warmup window is short",
-		Ts::<Venue>::from_nanos(first_momentum_ns)
-	);
-
-	// --- trading days: every lane, recorded. ---
+	// Every lane, every day, recorded. There is no warmup phase and no horizon to size: a node that
+	// has not seen enough history emits `None`, the same channel it declines on when warm, so nothing
+	// downstream can read an unwarmed value in the first place.
 	let lanes = required_lanes::<Graph>();
 	println!("required lanes: {lanes:?}");
 	let viz = Viz::new(Some("Bars<1>"), SCROLLBACK, 60_000);
 	let mut recorder = viz.clone();
 	let mut day = Day::default();
 	let began = std::time::Instant::now();
-	let pb = ui::run("replay", measured.len() as i64 * DAY_NS);
+	let (run_start, _) = day_bounds(days[0]);
+	let pb = ui::run("replay", days.len() as i64 * DAY_NS);
 
-	for d in measured {
+	for d in &days {
 		let (start, end) = day_bounds(*d);
 		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency, MEASURED_WINDOW);
 		while let Some(lanes) = feed.next() {
@@ -156,7 +95,7 @@ async fn main() {
 			let ts_ns = lanes.ts_venue.as_nanos();
 			// Ticks land ~2k/s, and both calls take the draw lock. Every 1024th is still twice a second.
 			if day.ticks % 1024 == 0 {
-				pb.set_position((ts_ns - trade_start.as_nanos()) as u64);
+				pb.set_position((ts_ns - run_start.as_nanos()) as u64);
 				pb.set_message(format!("{} book reads, {} episodes, {} intents", day.top, day.episodes, day.intents));
 			}
 			// The tape is the book's only independent witness: nothing downstream ever compares them.
@@ -178,7 +117,7 @@ async fn main() {
 			// Each indie is read on its own, at its own rate — there is no snapshot to gate them together.
 			for r in out.rsi.iter().flatten() {
 				day.rsi_snaps += 1;
-				top(&mut day.max_rsi_4h, r.rsi_4h.actual);
+				top(&mut day.max_rsi, r.actual);
 			}
 			for p in out.price.iter().flatten() {
 				day.price_snaps += 1;
@@ -186,14 +125,15 @@ async fn main() {
 			}
 			for m in out.momentum.iter().flatten() {
 				day.momentum_snaps += 1;
-				top(&mut day.max_sharpe_5m, m.sharpe_5m);
-				if let Some(x) = m.sharpe_4h {
-					top(&mut day.max_sharpe_4h, x);
+				day.first_momentum_ns.get_or_insert(ts_ns);
+				top(&mut day.max_sharpe_fast, m.fast);
+				if let Some(x) = m.slow {
+					top(&mut day.max_sharpe_slow, x);
 				}
 			}
 			day.rsi_hits += out.rsi_screener.iter().flatten().count() as u64;
 			day.std_hits += out.std_screener.iter().flatten().count() as u64;
-			day.classifications += out.classify.iter().flatten().count() as u64;
+			day.classifications += out.classify.is_some() as u64;
 
 			day.top_reads += out.book_top.len() as u64;
 			for x in out.book_top.iter().flatten() {
@@ -221,7 +161,7 @@ async fn main() {
 	// Ingest persists every change to the top-20 view, so the ceiling is the book itself; what the
 	// batch window then decides is how many of those changes a tick swallows without anyone looking.
 	// SPL's 1Hz timer is the reference, not the target — these gaps should sit well under it.
-	let spl_samples = trading.len() as u64 * 24 * 3600;
+	let spl_samples = days.len() as u64 * 24 * 3600;
 	println!(
 		"book cadence: {} reads vs SPL's {spl_samples} 1s samples ({:.1}×); blind gaps: mean {:.0}ms, max {}ms (ending {:?}), {} over 2s, {} over 10s",
 		day.top,
@@ -232,18 +172,19 @@ async fn main() {
 		day.blind_over_2s,
 		day.blind_over_10s
 	);
+	let momentum = cfg.strategy.indies.momentum;
 	let seen = |x: Option<f64>| x.map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"));
 	println!(
-		"window maxima: rsi_4h={} change_1d={}% sharpe_4h={} sharpe_5m={}",
-		seen(day.max_rsi_4h),
+		"window maxima: rsi={} change_1d={}% sharpe {}={}{}",
+		seen(day.max_rsi),
 		seen(day.max_change_1d),
-		seen(day.max_sharpe_4h),
-		seen(day.max_sharpe_5m)
+		momentum.fast,
+		seen(day.max_sharpe_fast),
+		momentum.slow.map_or_else(String::new, |tf| format!(" {tf}={}", seen(day.max_sharpe_slow)))
 	);
 
 	// Only the configured screener's own inputs have to warm. Asserting on all three would re-impose
-	// the union the shallow tier used to demand — under `Screen::Std` the 4h `Rsi` legitimately never
-	// warms on a short window, and nothing reads it.
+	// the union the shallow tier used to demand — under `Screen::Std` nothing reads `Rsi` at all.
 	let (needed, warm) = match cfg.strategy.screen {
 		Screen::Rsi(_) => ("price+rsi", day.price_snaps > 0 && day.rsi_snaps > 0),
 		Screen::Std(_) => ("momentum", day.momentum_snaps > 0),
@@ -253,6 +194,19 @@ async fn main() {
 		"the configured screener's inputs ({needed}) never warmed in the trading window: rsi={} price={} momentum={}",
 		day.rsi_snaps, day.price_snaps, day.momentum_snaps
 	);
+	// Bars are aggregated from trades, so a bucket with no trade emits none: on a thin instrument the
+	// `lookback + 1`-th *emitted* bar lands strictly later than `lookback + 1` bar-widths in, which is
+	// why this is a floor and never the expected value.
+	let widest = [Some(momentum.fast), momentum.slow].into_iter().flatten().max().expect("a fast leg is always configured");
+	let earliest = run_start.as_nanos() + (momentum.lookback as i64 + 1) * widest.duration().as_nanos() as i64;
+	if let Some(warm_at) = day.first_momentum_ns {
+		assert!(
+			warm_at >= earliest,
+			"momentum published at {:?}, before its window could possibly have filled ({:?})",
+			Ts::<Venue>::from_nanos(warm_at),
+			Ts::<Venue>::from_nanos(earliest)
+		);
+	}
 	assert_eq!(day.top, day.top_reads, "the book was unsynced on some read — our own checkpoints failed to seed it");
 	trailing_stop_partial_degradation();
 
@@ -292,10 +246,12 @@ struct Day {
 	ticks: u64,
 	intents: u64,
 	episodes: u64,
-	max_rsi_4h: Option<f64>,
+	/// First tick a Sharpe landed on, for the floor assert.
+	first_momentum_ns: Option<i64>,
+	max_rsi: Option<f64>,
 	max_change_1d: Option<f64>,
-	max_sharpe_4h: Option<f64>,
-	max_sharpe_5m: Option<f64>,
+	max_sharpe_fast: Option<f64>,
+	max_sharpe_slow: Option<f64>,
 	last_intent_ns: i64,
 	/// Dropped rather than closed at end of day: an episode still open then never had to drain.
 	open: Option<Open>,

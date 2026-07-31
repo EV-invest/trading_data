@@ -18,14 +18,13 @@
 use core::fmt;
 
 use trading_data::{
-	Book, BookAnchors, BookDeltas, BookShape, Buffer, Buffering, Bump, Cell, DeltaFrame, DepOuts, Exact, Flat, Glance, Lanes, Mc, McRoot, Node, Oi, OiRoot, Plot, TradeCols, Trades,
-	WilderAtr, WilderRsi, slice_nudge,
+	Book, BookAnchors, BookDeltas, BookShape, Buffer, Buffering, Bump, Cell, DeltaFrame, DepOuts, Exact, Flat, Gate, Glance, Lanes, Mc, McRoot, Node, Oi, OiRoot, Plot, TradeCols, Trades,
+	WilderAtr, WilderRsi, slice_nudge, value_nudge,
 };
 use trading_data_core::Side;
+use v_utils::{Timeframe, TimeframeDesignator};
 
 use crate::config::{Screen, strategy};
-
-const MIN_NS: i64 = 60_000_000_000;
 
 // ─── ported constants ───────────────────────────────────────────────────────────────────────────
 //
@@ -104,8 +103,8 @@ pub struct Bar {
 	pub vol_base: f64,
 }
 impl Bar {
-	fn close_ns(&self, minutes: u64) -> i64 {
-		self.ts_open + minutes as i64 * MIN_NS
+	fn close_ns(&self, tf: Timeframe) -> i64 {
+		self.ts_open + tf.duration().as_nanos() as i64
 	}
 }
 
@@ -124,6 +123,11 @@ pub struct Bars<const M: u64> {
 	acc: Option<Bar>,
 	buf: Vec<Bar>,
 }
+impl<const M: u64> Bars<M> {
+	/// A const generic cannot be a [`Timeframe`], so `M` is minutes and this is the well-formed name
+	/// of it. Everything taking a timeframe takes this, never the bare number.
+	pub const TF: Timeframe = Timeframe::from_naive(M, TimeframeDesignator::Minutes);
+}
 impl<const M: u64> Cell for Bars<M> {
 	type Out<'t> = &'t [Bar];
 }
@@ -134,7 +138,7 @@ impl<const M: u64> Node for Bars<M> {
 		self.buf.clear();
 		// precision is the run's, so the two scales are hoisted once instead of read per trade.
 		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
-		let step = Exact::from_nanos(M as i64 * MIN_NS);
+		let step = Exact::from_nanos(Self::TF.duration().as_nanos() as i64);
 		for (i, exec) in trades.exec().iter().enumerate() {
 			let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
 			let ts_open = exec.floor(step).as_nanos();
@@ -198,22 +202,12 @@ pub struct RsiValues {
 	pub actual: f64,
 	pub smooth: f64,
 }
-#[derive(Clone, Copy, Debug)]
-pub struct RsiSnap {
-	pub rsi_5m: RsiValues,
-	pub rsi_15m: RsiValues,
-	pub rsi_1h: RsiValues,
-	pub rsi_4h: RsiValues,
-}
-/// Wilder RSI(14) per timeframe, each EMA(14)-smoothed. Emits per 5m bar — every 15m/1h/4h boundary
-/// is also a 5m one, so nothing is missed by anchoring there.
+/// Wilder RSI, EMA-smoothed, on the one timeframe `indies.rsi.timeframe` names. Every wired bar
+/// series is a candidate input, which is why they are all deps; the config picks which one is read.
 #[derive(Clone)]
 pub struct Rsi {
-	m5: RsiSlot,
-	m15: RsiSlot,
-	h1: RsiSlot,
-	h4: RsiSlot,
-	buf: Vec<Option<RsiSnap>>,
+	slot: RsiSlot,
+	buf: Vec<Option<RsiValues>>,
 }
 /// Wilder ATR(14) on 1m bars. An indie in its own right rather than an execution-owned indicator:
 /// that is what removed SPL's per-situation bar subscribe/unsubscribe flicker.
@@ -224,10 +218,13 @@ pub struct Atr {
 }
 #[derive(Clone, Copy, Debug)]
 pub struct MomSnap {
-	/// `None` when 4h is disabled: the slot is never created, so there is no window to compute from.
-	pub sharpe_4h: Option<f64>,
-	pub sharpe_5m: f64,
+	pub fast: f64,
+	/// `None` when `indies.momentum.slow` names no second leg: the slot is never created, so there is
+	/// no window to compute from.
+	pub slow: Option<f64>,
 }
+/// Sharpe on the timeframe `indies.momentum.fast` names, plus an optional slower leg. Both wired
+/// series are candidate inputs, which is why both are deps; the config picks which is which.
 #[derive(Clone, Default)]
 pub struct Momentum {
 	buf: Vec<Option<MomSnap>>,
@@ -275,21 +272,20 @@ impl BookTopSnap {
 pub struct BookTop {
 	buf: Vec<Option<BookTopSnap>>,
 }
-/// A screener hit. Binary: certainty is signed and saturated on a hit, and a miss emits nothing at
-/// all (SPL's `Screened` contract to the classifier). A graded certainty is a later refinement.
+/// A screener hit. A miss emits nothing at all — SPL's `Screened` contract to the classifier.
 #[derive(Clone, Copy, Debug)]
 pub struct Screened {
 	pub ts_ns: i64,
-	pub certainty: f64,
 }
 /// Top gainer: overbought on 4h while up on the day. [`Bars<1>`] is the screening clock, so a
 /// verdict is reached once a minute exactly as in SPL — the rate comes from this node's own inputs.
 #[derive(Clone, Default)]
 pub struct RsiScreener {
-	rsi: Option<RsiSnap>,
+	rsi: Option<RsiValues>,
 	buf: Vec<Option<Screened>>,
 }
-/// Pine's overvalued zone at both timeframes. The 4h leg is vacuously satisfied when 4h is disabled.
+/// Pine's overvalued zone at both of momentum's legs. The slow leg is vacuously satisfied when the
+/// config names no slow timeframe.
 #[derive(Clone, Default)]
 pub struct StdScreener {
 	momentum: Option<MomSnap>,
@@ -320,11 +316,15 @@ pub struct Classified {
 	pub category: Category,
 	pub quality: Quality,
 }
+/// Open on a tick either screener fired. SPL runs exactly one per config and this reads both, so
+/// `Classify` is gated identically either way — which arm runs stays a config fact, not a wiring one.
+#[derive(Clone, Copy, Default)]
+pub struct ScreenHit;
 /// SPL runs exactly one screener per config; both are wired here, so a hit on either classifies.
-#[derive(Clone, Default)]
-pub struct Classify {
-	buf: Vec<Option<Classified>>,
-}
+/// Classification is a per-hit act rather than a series — everything it reads is in the hit — so it
+/// is a gated current node, latent on the ticks nothing fired.
+#[derive(Clone, Copy, Default)]
+pub struct Classify;
 /// Per-book-tick trailing term: ratchets the favourable extreme and degrades linearly with the retrace
 /// from it — certainty 0.0 at the extreme, 1.0 at `distance`. Certainty itself ratchets, so
 /// proximity recovering re-adds no size, and its impact caps at `severity`.
@@ -409,21 +409,10 @@ pub struct Deprecator {
 	last_top: Option<BookTopSnap>,
 	buf: Vec<Option<Intent>>,
 }
-/// Advances a slower bar cursor to every bar that has closed by `deadline`, feeding each to `sink`.
-/// Bars of different timeframes reach SPL as independent bus messages; here they arrive in one
-/// batch, so the merge is explicit rather than accidental.
-fn drain_upto(bars: &[Bar], minutes: u64, cursor: &mut usize, deadline: i64, mut sink: impl FnMut(&Bar)) {
-	while *cursor < bars.len() && bars[*cursor].close_ns(minutes) <= deadline {
-		sink(&bars[*cursor]);
-		*cursor += 1;
-	}
-}
-
 /// The prefix of a slower series that has *closed* by `deadline` — the cross-rate read a node
-/// clocked by a faster series makes against a [`Buffering`] dep, and the level-view sibling of
-/// [`drain_upto`]'s cursor walk.
-fn closed_by(bars: &[Bar], minutes: u64, deadline: i64) -> &[Bar] {
-	&bars[..bars.partition_point(|b| b.close_ns(minutes) <= deadline)]
+/// clocked by a faster series makes against a [`Buffering`] dep.
+fn closed_by(bars: &[Bar], tf: Timeframe, deadline: i64) -> &[Bar] {
+	&bars[..bars.partition_point(|b| b.close_ns(tf) <= deadline)]
 }
 
 /// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that
@@ -453,7 +442,7 @@ impl Node for Price {
 	fn advance<'t>(&'t mut self, (m1, h1): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for (b, w3) in m1.fresh().iter().zip(m1.trailing(BARS_3M)) {
-			let closed_1h = closed_by(h1.all(), 60, b.close_ns(1));
+			let closed_1h = closed_by(h1.all(), Bars::<60>::TF, b.close_ns(Bars::<1>::TF));
 			self.buf.push(match (w3, closed_1h.len() >= BARS_1D) {
 				(Some(w3), true) => {
 					let (base_open, oldest_1h) = (w3[0].open, closed_1h[closed_1h.len() - BARS_1D].close);
@@ -490,33 +479,24 @@ impl Node for Volume {
 	fn advance<'t>(&'t mut self, (m1, h1, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for b in m1 {
-			let usd = |bars: &[Bar], minutes: u64| closed_by(bars, minutes, b.close_ns(1)).last().map(|h| h.vol_base * h.close);
-			self.buf.push(usd(h1.all(), 60).zip(usd(h4.all(), 240)).map(|(volume_1h_usd, volume_4h_usd)| VolSnap {
-				volume_1m_usd: b.vol_base * b.close,
-				volume_1h_usd,
-				volume_4h_usd,
-			}));
+			let usd = |bars: &[Bar], tf: Timeframe| closed_by(bars, tf, b.close_ns(Bars::<1>::TF)).last().map(|h| h.vol_base * h.close);
+			self.buf
+				.push(usd(h1.all(), Bars::<60>::TF).zip(usd(h4.all(), Bars::<240>::TF)).map(|(volume_1h_usd, volume_4h_usd)| VolSnap {
+					volume_1m_usd: b.vol_base * b.close,
+					volume_1h_usd,
+					volume_4h_usd,
+				}));
 		}
 		&self.buf
 	}
 }
 slice_nudge!(Volume, Option<VolSnap>);
 
-impl Flat for RsiSnap {
-	const DIMS: &'static [usize] = &[8];
+flat_fields!(RsiValues[actual, smooth]);
 
-	fn flat(&self, out: &mut [f64]) -> bool {
-		out.copy_from_slice(&[
-			self.rsi_5m.actual, self.rsi_5m.smooth, self.rsi_15m.actual, self.rsi_15m.smooth, self.rsi_1h.actual, self.rsi_1h.smooth, self.rsi_4h.actual, self.rsi_4h.smooth,
-		]);
-		true
-	}
-}
-structural_bump!(RsiSnap);
-
-impl Glance for RsiSnap {
+impl Glance for RsiValues {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "4h {:.1}", self.rsi_4h.actual)
+		write!(f, "{} {:.1}", strategy().indies.rsi.timeframe, self.actual)
 	}
 }
 
@@ -570,16 +550,13 @@ impl RsiSlot {
 impl Default for Rsi {
 	fn default() -> Self {
 		Self {
-			m5: RsiSlot::new(),
-			m15: RsiSlot::new(),
-			h1: RsiSlot::new(),
-			h4: RsiSlot::new(),
+			slot: RsiSlot::new(),
 			buf: Vec::new(),
 		}
 	}
 }
 impl Cell for Rsi {
-	type Out<'t> = &'t [Option<RsiSnap>];
+	type Out<'t> = &'t [Option<RsiValues>];
 }
 impl Node for Rsi {
 	type Deps = (Bars<5>, Bars<15>, Bars<60>, Bars<240>);
@@ -588,28 +565,34 @@ impl Node for Rsi {
 	// one here would pin a number the config is free to move.
 	const PLOTS: &'static [Plot] = &[Plot {
 		range: Some((0.0, 100.0)),
-		labels: &["5m", "5m~", "15m", "15m~", "1h", "1h~", "4h", "4h~"],
+		labels: &["actual", "smooth"],
 		..Plot::DEFAULT
 	}];
 
 	fn advance<'t>(&'t mut self, (m5, m15, h1, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		let (mut c15, mut c1h, mut c4h) = (0, 0, 0);
-		for b in m5 {
-			let deadline = b.close_ns(5);
-			drain_upto(m15, 15, &mut c15, deadline, |x| self.m15.update(x.close));
-			drain_upto(h1, 60, &mut c1h, deadline, |x| self.h1.update(x.close));
-			drain_upto(h4, 240, &mut c4h, deadline, |x| self.h4.update(x.close));
-			self.m5.update(b.close);
-			self.buf.push(match (self.m5.last, self.m15.last, self.h1.last, self.h4.last) {
-				(Some(rsi_5m), Some(rsi_15m), Some(rsi_1h), Some(rsi_4h)) => Some(RsiSnap { rsi_5m, rsi_15m, rsi_1h, rsi_4h }),
-				_ => None,
-			});
+		let cfg = strategy().indies.rsi;
+		let bars = match cfg.timeframe {
+			Bars::<5>::TF => m5,
+			Bars::<15>::TF => m15,
+			Bars::<60>::TF => h1,
+			Bars::<240>::TF => h4,
+			_ => panic!(
+				"`{cfg}`: the graph wires {}/{}/{}/{} bars and no others",
+				Bars::<5>::TF,
+				Bars::<15>::TF,
+				Bars::<60>::TF,
+				Bars::<240>::TF
+			),
+		};
+		for b in bars {
+			self.slot.update(b.close);
+			self.buf.push(self.slot.last);
 		}
 		&self.buf
 	}
 }
-slice_nudge!(Rsi, Option<RsiSnap>);
+slice_nudge!(Rsi, Option<RsiValues>);
 
 impl Default for Atr {
 	fn default() -> Self {
@@ -639,7 +622,8 @@ impl Flat for MomSnap {
 	const DIMS: &'static [usize] = &[2];
 
 	fn flat(&self, out: &mut [f64]) -> bool {
-		out.copy_from_slice(&[self.sharpe_4h.unwrap_or(f64::NAN), self.sharpe_5m]);
+		// An unconfigured slow leg has no value, which is the empty slot the flattening already spells.
+		out.copy_from_slice(&[self.fast, self.slow.unwrap_or(f64::NAN)]);
 		true
 	}
 }
@@ -647,7 +631,12 @@ structural_bump!(MomSnap);
 
 impl Glance for MomSnap {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "4h {:?} 5m {:.2}", self.sharpe_4h.map(|s| (s * 100.0).round() / 100.0), self.sharpe_5m)
+		let cfg = strategy().indies.momentum;
+		write!(f, "{} {:.2}", cfg.fast, self.fast)?;
+		match (cfg.slow, self.slow) {
+			(Some(tf), Some(x)) => write!(f, " {tf} {x:.2}"),
+			_ => Ok(()),
+		}
 	}
 }
 
@@ -676,23 +665,36 @@ impl Node for Momentum {
 	type Deps = (Buffering<Bars<5>, MOM_CAP>, Buffering<Bars<240>, MOM_CAP>);
 
 	const PLOTS: &'static [Plot] = &[Plot {
-		labels: &["4h", "5m"],
+		labels: &["fast", "slow"],
 		..Plot::DEFAULT
 	}];
 
 	fn advance<'t>(&'t mut self, (m5, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		let n = strategy().indies.momentum.lookback + 1;
-		for (b, w5) in m5.fresh().iter().zip(m5.trailing(n)) {
-			let closed_4h = closed_by(h4.all(), 240, b.close_ns(5));
-			let w4 = (closed_4h.len() >= n).then(|| &closed_4h[closed_4h.len() - n..]);
+		let cfg = strategy().indies.momentum;
+		let n = cfg.lookback + 1;
+		// Only these two series are retained a momentum window deep, so naming any other timeframe is a
+		// config bug rather than a leg that silently never fills.
+		let series = |tf| match tf {
+			Bars::<5>::TF => m5,
+			Bars::<240>::TF => h4,
+			_ => panic!(
+				"indies.momentum names {tf}, which nothing retains {n} deep — the graph buffers {} and {}",
+				Bars::<5>::TF,
+				Bars::<240>::TF
+			),
+		};
+		let fast = series(cfg.fast);
+		let slow = cfg.slow.map(|tf| (tf, series(tf)));
+		for (b, w) in fast.fresh().iter().zip(fast.trailing(n)) {
+			let slow = slow.map(|(tf, s)| {
+				let closed = closed_by(s.all(), tf, b.close_ns(cfg.fast));
+				(closed.len() >= n).then(|| &closed[closed.len() - n..]).and_then(sharpe)
+			});
 			// A degenerate (zero-stdev) window skips the publish rather than fabricating a Sharpe.
-			self.buf.push(match (w5.and_then(sharpe), use_4h().then(|| w4.and_then(sharpe))) {
-				(Some(sharpe_5m), Some(Some(sharpe_4h))) => Some(MomSnap {
-					sharpe_4h: Some(sharpe_4h),
-					sharpe_5m,
-				}),
-				(Some(sharpe_5m), None) => Some(MomSnap { sharpe_4h: None, sharpe_5m }),
+			self.buf.push(match (w.and_then(sharpe), slow) {
+				(Some(fast), None) => Some(MomSnap { fast, slow: None }),
+				(Some(fast), Some(Some(slow))) => Some(MomSnap { fast, slow: Some(slow) }),
 				_ => None,
 			});
 		}
@@ -817,18 +819,20 @@ slice_nudge!(BookTop, Option<BookTopSnap>);
 
 // ─── screeners ──────────────────────────────────────────────────────────────────────────────────
 
-flat_fields!(Screened[certainty]);
+impl Flat for Screened {
+	const DIMS: &'static [usize] = &[];
+
+	fn flat(&self, out: &mut [f64]) -> bool {
+		out[0] = 1.0;
+		true
+	}
+}
+structural_bump!(Screened);
 
 impl Glance for Screened {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{:+.1}", self.certainty)
+		f.write_str("hit")
 	}
-}
-
-/// The sign is the direction the screener votes for, its magnitude the confidence; both screeners
-/// currently saturate, so a hit is the full vote.
-fn screened(ts_ns: i64, hit: bool) -> Option<Screened> {
-	hit.then_some(Screened { ts_ns, certainty: -1.0 })
 }
 
 impl Cell for RsiScreener {
@@ -840,8 +844,8 @@ impl Node for RsiScreener {
 	fn advance<'t>(&'t mut self, (bars, price, rsi): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert_eq!(bars.len(), price.len(), "Bars<1>/Price rate mismatch");
 		self.buf.clear();
-		// Inert unless configured, but still rate-preserving: `Classify` zips the two screeners by
-		// index, so an empty slice here would read as a rate mismatch rather than as "no hits".
+		// Inert unless configured, but still rate-preserving: `ScreenHit` reads the two screeners as
+		// one signal, so an empty slice here would read as a rate mismatch rather than as "no hits".
 		let Screen::Rsi(c) = strategy().screen else {
 			self.buf.resize(bars.len(), None);
 			return &self.buf;
@@ -849,7 +853,7 @@ impl Node for RsiScreener {
 		latest(&mut self.rsi, rsi);
 		for (b, p) in bars.iter().zip(price) {
 			self.buf.push(match (p, self.rsi) {
-				(Some(p), Some(rsi)) => screened(b.close_ns(1), rsi.rsi_4h.actual > c.rsi_threshold && p.change_1d_pct > *c.price_percent),
+				(Some(p), Some(rsi)) => (rsi.actual > c.rsi_threshold && p.change_1d_pct > *c.price_percent).then_some(Screened { ts_ns: b.close_ns(Bars::<1>::TF) }),
 				_ => None,
 			});
 		}
@@ -866,8 +870,8 @@ impl Node for StdScreener {
 
 	fn advance<'t>(&'t mut self, (bars, momentum): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		// Inert unless configured, but still rate-preserving: `Classify` zips the two screeners by
-		// index, so an empty slice here would read as a rate mismatch rather than as "no hits".
+		// Inert unless configured, but still rate-preserving: `ScreenHit` reads the two screeners as
+		// one signal, so an empty slice here would read as a rate mismatch rather than as "no hits".
 		let Screen::Std(c) = strategy().screen else {
 			self.buf.resize(bars.len(), None);
 			return &self.buf;
@@ -875,12 +879,12 @@ impl Node for StdScreener {
 		latest(&mut self.momentum, momentum);
 		for b in bars {
 			self.buf.push(self.momentum.and_then(|m| {
-				// The vacuous 4h leg must come from `use_4h` and nothing else: `Momentum` declines to
-				// publish at all when 4h is enabled but degenerate, so an absent Sharpe here would
-				// otherwise let a wiring bug read as an unconditional hit.
-				assert_eq!(m.sharpe_4h.is_some(), use_4h(), "sharpe_4h presence disagrees with indies.momentum.use_4h");
-				let trigger_4h = m.sharpe_4h.is_none_or(|x| x > c.overvalued_threshold_4h);
-				screened(b.close_ns(1), trigger_4h && m.sharpe_5m > c.overvalued_threshold_5m)
+				// The vacuous slow leg must come from `indies.momentum.slow` and nothing else: `Momentum`
+				// declines to publish at all when a configured slow leg is degenerate, so an absent Sharpe
+				// here would otherwise let a wiring bug read as an unconditional hit.
+				assert_eq!(m.slow.is_some(), strategy().indies.momentum.slow.is_some(), "a slow Sharpe disagrees with indies.momentum.slow");
+				let slow = m.slow.is_none_or(|x| x > c.slow_overvalued);
+				(slow && m.fast > c.fast_overvalued).then_some(Screened { ts_ns: b.close_ns(Bars::<1>::TF) })
 			}));
 		}
 		&self.buf
@@ -898,27 +902,42 @@ impl Glance for Classified {
 	}
 }
 
+impl Cell for ScreenHit {
+	type Out<'t> = bool;
+}
+impl Node for ScreenHit {
+	type Deps = (RsiScreener, StdScreener);
+
+	fn advance<'t>(&'t mut self, (rsi, std): DepOuts<'t, Self>) -> bool {
+		assert_eq!(rsi.len(), std.len(), "RsiScreener/StdScreener rate mismatch");
+		rsi.iter().chain(std).any(Option::is_some)
+	}
+}
+impl Gate for ScreenHit {}
+value_nudge!(ScreenHit);
+
 impl Cell for Classify {
-	type Out<'t> = &'t [Option<Classified>];
+	type Out<'t> = Option<Classified>;
 }
 impl Node for Classify {
 	type Deps = (RsiScreener, StdScreener);
+	type When = (ScreenHit,);
+
+	const HISTORIC: bool = false;
 
 	fn advance<'t>(&'t mut self, (rsi, std): DepOuts<'t, Self>) -> Self::Out<'t> {
-		assert_eq!(rsi.len(), std.len(), "RsiScreener/StdScreener rate mismatch");
-		self.buf.clear();
-		for i in 0..rsi.len() {
-			self.buf.push(rsi[i].or(std[i]).map(|s| Classified {
-				ts_ns: s.ts_ns,
-				probability: 1.0,
-				category: Category::None,
-				quality: Quality::A,
-			}));
-		}
-		&self.buf
+		// A batch spanning several bar closes can carry more than one hit; the latest is the one an
+		// entry would act on, and the older ones are already stale by the time this tick publishes.
+		let hit = rsi.iter().zip(std).rev().find_map(|(r, s)| r.or(*s)).expect("gate open ⇒ some screener fired");
+		Some(Classified {
+			ts_ns: hit.ts_ns,
+			probability: 1.0,
+			category: Category::None,
+			quality: Quality::A,
+		})
 	}
 }
-slice_nudge!(Classify, Option<Classified>);
+value_nudge!(Classify);
 
 // ─── deprecator ─────────────────────────────────────────────────────────────────────────────────
 
@@ -993,7 +1012,7 @@ impl Node for Deprecator {
 		// Classification is honored only while Idle; once Active we drive solely off book ticks. No
 		// book yet ⇒ don't enter — the screener keeps firing, so the next classification retries.
 		if matches!(self.state, State::Idle)
-			&& classify.iter().any(Option::is_some)
+			&& classify.is_some()
 			&& let Some(book) = self.last_top
 		{
 			let entry_price = book.mid();
@@ -1096,6 +1115,7 @@ trading_data::graph! {
 	book_top: BookTop,
 	rsi_screener: RsiScreener,
 	std_screener: StdScreener,
+	screen_hit: ScreenHit,
 	classify: Classify,
 	deprecator: Deprecator,
 }
@@ -1112,10 +1132,6 @@ impl<'t> From<Lanes<'t>> for Batches<'t> {
 			mc: l.mc,
 		}
 	}
-}
-
-fn use_4h() -> bool {
-	strategy().indies.momentum.use_4h
 }
 
 /// SPL sizes off live portfolio equity; the simulated venue's seed is the honest stand-in.
