@@ -31,7 +31,7 @@ use trading_data_core::{Asset, ExchangeName, Instrument, Local, Pair, PrecisionP
 use crate::config::Situation;
 
 /// SPL's `OrderBookActor::DEPTH`. The archive carries 200 levels a side; the strategy reads 20.
-const DEPTH: usize = 20;
+pub(crate) const DEPTH: usize = 20;
 /// CloudFront 403s reqwest/ureq's default agent string on the quote-saver host; any custom one passes.
 const UA: &str = "trading_data_spl";
 /// Five-minute buckets in a UTC day — what a complete OI day must have.

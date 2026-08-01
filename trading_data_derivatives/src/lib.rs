@@ -4,20 +4,21 @@
 //! Wilder semantics throughout: warmup = SMA over the first `period` samples, then
 //! `(prev*(n-1)+x)/n`; `None` until warm.
 
+/// Wilder's running mean (Pine's `rma`).
 #[derive(Clone)]
-struct Wilder {
+pub struct Wilder {
 	period: usize,
 	value: f64,
 	warmed: usize,
 }
 
 impl Wilder {
-	fn new(period: usize) -> Self {
+	pub fn new(period: usize) -> Self {
 		assert!(period > 0);
 		Self { period, value: 0.0, warmed: 0 }
 	}
 
-	fn update(&mut self, x: f64) -> Option<f64> {
+	pub fn update(&mut self, x: f64) -> Option<f64> {
 		let n = self.period as f64;
 		if self.warmed < self.period {
 			self.value += x;
