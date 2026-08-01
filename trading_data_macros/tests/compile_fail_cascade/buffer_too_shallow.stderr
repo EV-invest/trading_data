@@ -27,9 +27,9 @@ LL |                 ($(Has::<'t, $T, $I>::get(f),)+)
 LL | impl_arity!(A Ia a sa);
   | ---------------------- in this macro invocation
   |
-    = note: the full name for the type has been written to '$DIR/trading_data_macros/target/ui/0/tests/compile_fail_cascade/buffer_too_shallow.long-type.txt'
-    = note: consider using `--verbose` to print the full type name to the console
-    = note: this note originates in the macro `impl_arity` (in Nightly builds, run with -Z macro-backtrace for more info)
+     = note: the full name for the type has been written to '$DIR/trading_data_macros/target/ui/0/tests/compile_fail_cascade/buffer_too_shallow.long-type.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+     = note: this note originates in the macro `impl_arity` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: aborting due to 1 previous error
 

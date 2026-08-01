@@ -92,12 +92,15 @@ async fn main() {
 		cfg.strategy.indies.rsi
 	);
 
+	// Before the archives, not after: every node asserts the config names something it wires as it is
+	// constructed, and a cold cache would otherwise spend gigabytes earning the right to that panic.
+	let mut graph = Graph::default();
+
 	// Per-symbol so switching the situation's pair cannot read another one's catalog.
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(&situation.bybit_symbol);
 	let catalog = ensure_lanes(&cache, situation);
 
 	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
-	let mut graph = Graph::default();
 
 	// Every lane, every day, recorded. There is no warmup phase and no horizon to size: a node that
 	// has not seen enough history emits `None`, the same channel it declines on when warm, so nothing
@@ -166,10 +169,7 @@ async fn main() {
 				for m in out.momentum.iter().flatten() {
 					day.momentum_snaps += 1;
 					day.first_momentum_ns.get_or_insert(ts_ns);
-					top(&mut day.max_sharpe_fast, m.fast);
-					if let Some(x) = m.slow {
-						top(&mut day.max_sharpe_slow, x);
-					}
+					top(&mut day.max_sharpe_fast, *m);
 				}
 				day.rsi_hits += out.rsi_screener.iter().flatten().count() as u64;
 				day.std_hits += out.std_screener.iter().flatten().count() as u64;
@@ -182,9 +182,11 @@ async fn main() {
 						day.check_top(x, out.spread[i], out.imbalance[i]);
 					}
 				}
+				// Rate preservation is a property of an *advancing* node: latched down, the deprecator is
+				// dark and emits nothing, which is the empty batch the gate contracts for.
 				flag!(
 					day,
-					out.deprecator.len() == out.book_top.len(),
+					!out.armed || out.deprecator.len() == out.book_top.len(),
 					"Deprecator/BookTop rate mismatch: {} vs {}",
 					out.deprecator.len(),
 					out.book_top.len()
@@ -226,12 +228,11 @@ async fn main() {
 		let momentum = cfg.strategy.indies.momentum;
 		let seen = |x: Option<f64>| x.map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"));
 		println!(
-			"window maxima: rsi={} change_1d={}% sharpe {}={}{}",
+			"window maxima: rsi={} change_1d={}% sharpe {}={}",
 			seen(day.max_rsi),
 			seen(day.max_change_1d),
 			momentum.fast,
-			seen(day.max_sharpe_fast),
-			momentum.slow.map_or_else(String::new, |tf| format!(" {tf}={}", seen(day.max_sharpe_slow)))
+			seen(day.max_sharpe_fast)
 		);
 
 		// Only the configured screener's own inputs have to warm. Checking all three would re-impose
@@ -251,8 +252,7 @@ async fn main() {
 		// Bars are aggregated from trades, so a bucket with no trade emits none: on a thin instrument the
 		// `lookback + 1`-th *emitted* bar lands strictly later than `lookback + 1` bar-widths in, which is
 		// why this is a floor and never the expected value.
-		let widest = [Some(momentum.fast), momentum.slow].into_iter().flatten().max().expect("a fast leg is always configured");
-		let earliest = run_start.as_nanos() + (momentum.lookback as i64 + 1) * widest.duration().as_nanos() as i64;
+		let earliest = run_start.as_nanos() + (momentum.lookback as i64 + 1) * momentum.fast.duration().as_nanos() as i64;
 		if let Some(warm_at) = day.first_momentum_ns {
 			flag!(
 				day,
@@ -315,7 +315,6 @@ struct Day {
 	max_rsi: Option<f64>,
 	max_change_1d: Option<f64>,
 	max_sharpe_fast: Option<f64>,
-	max_sharpe_slow: Option<f64>,
 	last_intent_ns: i64,
 	/// Dropped rather than closed at end of day: an episode still open then never had to drain.
 	open: Option<Open>,
@@ -405,15 +404,9 @@ impl Day {
 			i.tp
 		);
 
-		// Two episodes can be adjacent in the stream, and `terminal` closed the earlier one — so an
-		// id change with one still open means the deprecator abandoned it undrained.
-		if let Some(o) = self.open.take_if(|o| o.episode != i.episode) {
-			flag!(self, false, "episode {} was superseded by {} without a terminal intent, at {}", o.episode, i.episode, i.ts_ns);
-		}
 		let open = self.open.unwrap_or_else(|| {
 			self.episodes += 1;
 			Open {
-				episode: i.episode,
 				trail_fraction: 1.0,
 				first_zero_ns: None,
 				prev_ns: i.ts_ns,
@@ -439,7 +432,6 @@ impl Day {
 			flag!(self, i.target_q == 0.0, "draining tick still carries size {} at {}", i.target_q, i.ts_ns);
 		}
 		self.open = Some(Open {
-			episode: i.episode,
 			trail_fraction: i.trail_fraction,
 			first_zero_ns,
 			prev_ns: open.last_ns,
@@ -472,7 +464,6 @@ impl Day {
 /// The episode currently being checked.
 #[derive(Clone, Copy)]
 struct Open {
-	episode: u64,
 	trail_fraction: f64,
 	/// When 100% deprecation first latched the drain clock.
 	first_zero_ns: Option<i64>,

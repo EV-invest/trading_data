@@ -87,6 +87,7 @@ const LEAF: NodeMeta = NodeMeta {
 	deps: &[],
 	horizon: Horizon::Unit,
 	gates: &[],
+	latch: false,
 };
 const _: () = assert!(!shadowed("leaf", &[LEAF]));
 
@@ -98,36 +99,42 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			horizon: Horizon::Unbounded,
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "gate",
 			deps: &["hist"],
 			horizon: Horizon::Unbounded,
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "cur",
 			deps: &["root"],
 			horizon: Horizon::Unit,
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "mixed",
 			deps: &["root"],
 			horizon: Horizon::Unit,
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "cls",
 			deps: &["cur", "hist", "mixed"],
 			horizon: Horizon::Unit,
 			gates: &["gate"],
+			latch: false,
 		},
 		NodeMeta {
 			name: "sink",
 			deps: &["mixed"],
 			horizon: Horizon::Unit,
 			gates: &[],
+			latch: false,
 		},
 	];
 	let check = |name, expect| assert_eq!(shadowed(name, nodes), expect, "{name}");
@@ -146,12 +153,14 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			horizon: Horizon::Unit,
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "c",
 			deps: &["g"],
 			horizon: Horizon::Unit,
 			gates: &["g"],
+			latch: false,
 		},
 	];
 	assert!(!shadowed("g", self_gate));
@@ -163,18 +172,21 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			horizon: Horizon::Unit,
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "a",
 			deps: &["x"],
 			horizon: Horizon::Unit,
 			gates: &["g1"],
+			latch: false,
 		},
 		NodeMeta {
 			name: "b",
 			deps: &["x"],
 			horizon: Horizon::Unit,
 			gates: &["g2"],
+			latch: false,
 		},
 	];
 	assert!(!shadowed("x", split));
@@ -186,18 +198,21 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			horizon: Horizon::Unit,
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "a",
 			deps: &["x"],
 			horizon: Horizon::Unit,
 			gates: &["g1", "g2"],
+			latch: false,
 		},
 		NodeMeta {
 			name: "b",
 			deps: &["x"],
 			horizon: Horizon::Unit,
 			gates: &["g2"],
+			latch: false,
 		},
 	];
 	assert!(shadowed("x", multi));
