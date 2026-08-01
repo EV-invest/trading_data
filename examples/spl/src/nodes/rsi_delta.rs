@@ -1,7 +1,11 @@
-use trading_data::{Cell, DepOuts, Horizon, Node, slice_nudge};
+use trading_data::{Cell, DepOuts, Folding, Horizon, Node, slice_nudge};
 
 use super::bar::{Bar1h, Bar4h, Bar5m, Bar15m};
 use crate::config::strategy;
+
+/// Only the previous close is held — of whichever series the config names, which is why every
+/// candidate carries it.
+const PREV: Horizon = Horizon::Elems(1);
 
 /// Close-to-close change on the timeframe `indies.rsi.timeframe` names — the one series both Wilder
 /// averages are taken of, so the config is read here and nowhere downstream. Every wired bar series
@@ -17,10 +21,7 @@ impl Cell for RsiDelta {
 	type Out<'t> = &'t [f64];
 }
 impl Node for RsiDelta {
-	type Deps = (Bar5m, Bar15m, Bar1h, Bar4h);
-
-	/// Only the previous close is held.
-	const HORIZON: Horizon = Horizon::Elems(1);
+	type Deps = (Folding<Bar5m, PREV>, Folding<Bar15m, PREV>, Folding<Bar1h, PREV>, Folding<Bar4h, PREV>);
 
 	fn advance<'t>(&'t mut self, (m5, m15, h1, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();

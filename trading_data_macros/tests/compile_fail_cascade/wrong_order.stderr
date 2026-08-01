@@ -25,6 +25,9 @@ LL | |     T: Has<'t, N, I>,
 ...
 LL |   impl<'t, C: Series, const K: Horizon, const H: Horizon, T> Has<'t, Buffering<C, H>, Here> for Cons<'t, Buffer<C, K>, T> {
   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Cons<'t, Buffer<C, K>, T>` implements `Has<'t, Buffering<C, H>, Here>`
+...
+LL |   impl<'t, C: Cell, const H: Horizon, T> Has<'t, Folding<C, H>, Here> for Cons<'t, C, T> {
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Cons<'t, C, T>` implements `Has<'t, Folding<C, H>, Here>`
      = note: required for `Cons<'_, Src, Nil>` to implement `Has<'_, A, There<_>>`
      = note: required for `(A,)` to implement `Pull<'_, Cons<'_, Src, Nil>, (There<_>,)>`
 note: required by a bound in `step_obs`

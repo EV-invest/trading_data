@@ -2,7 +2,7 @@
 //! notional per trade), BookFlow (running signed level qty, market activity only) and Spread off
 //! the folded `Book`. 1m bars won't close in 15s, so the proof rides on these per-event outputs.
 
-use trading_data::{Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaFrame, DepOuts, Lanes, Node, TradeCols, Trades, slice_nudge};
+use trading_data::{Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaFrame, DepOuts, Folding, Horizon, Lanes, Node, TradeCols, Trades, slice_nudge};
 use trading_data_core::Side;
 
 /// Cumulative volume delta: running Σ signed notional, one element per trade.
@@ -15,7 +15,8 @@ impl Cell for Cvd {
 	type Out<'t> = &'t [f64];
 }
 impl Node for Cvd {
-	type Deps = (Trades,);
+	/// A running sum reaches to the start of the run.
+	type Deps = (Folding<Trades, { Horizon::Unbounded }>,);
 
 	fn advance<'t>(&'t mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
@@ -44,7 +45,8 @@ impl Cell for BookFlow {
 	type Out<'t> = &'t [f64];
 }
 impl Node for BookFlow {
-	type Deps = (BookDeltas,);
+	/// A running sum reaches to the start of the run.
+	type Deps = (Folding<BookDeltas, { Horizon::Unbounded }>,);
 
 	fn advance<'t>(&'t mut self, (frame,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();

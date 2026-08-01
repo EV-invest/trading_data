@@ -21,9 +21,6 @@ impl Cell for Change1d {
 impl Node for Change1d {
 	type Deps = (Bar1m, Buffering<Bar1h, REACH_1D>);
 
-	/// The day is the dep's to retain.
-	const HORIZON: Horizon = Horizon::Unit;
-
 	fn advance<'t>(&'t mut self, (m1, h1): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for b in m1 {

@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Node, slice_nudge};
+use trading_data::{Cell, DepOuts, Folding, Horizon, Node, slice_nudge};
 
 use super::{
 	bar::Bar1m,
@@ -20,7 +20,8 @@ impl Cell for RsiScreener {
 	type Out<'t> = &'t [Option<Screened>];
 }
 impl Node for RsiScreener {
-	type Deps = (Bar1m, Change1d, Rsi);
+	/// The cached RSI level stands until the next publish, however many minutes that takes.
+	type Deps = (Bar1m, Change1d, Folding<Rsi, { Horizon::Unbounded }>);
 
 	fn advance<'t>(&'t mut self, (bars, change_1d, rsi): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert_eq!(bars.len(), change_1d.len(), "Bar1m/Change1d rate mismatch");

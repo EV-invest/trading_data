@@ -229,7 +229,7 @@ pub fn graph(input: TokenStream) -> TokenStream {
 				#dag::NodeMeta {
 					name: #dag::node_name::<#node_tys>(),
 					deps: <<#node_tys as #dag::Node>::Deps as #dag::DepSet>::NAMES,
-					horizon: <#node_tys as #dag::Node>::HORIZON,
+					reach: <<#node_tys as #dag::Node>::Deps as #dag::DepSet>::REACH,
 					gates: <<#node_tys as #dag::Node>::When as #dag::GateSet>::NAMES,
 				},
 			)*];
@@ -237,7 +237,7 @@ pub fn graph(input: TokenStream) -> TokenStream {
 			// its message as a format string.
 			#(assert!(
 				!#dag::shadowed(#dag::node_name::<#node_tys>(), METAS),
-				concat!(stringify!(#fields), " is only consumed under a gate: gate it too, or declare `HORIZON = Horizon::Unbounded`")
+				concat!(stringify!(#fields), " is only consumed under a gate: gate it too, or declare a dep at `Horizon::Unbounded`")
 			);)*
 		};
 

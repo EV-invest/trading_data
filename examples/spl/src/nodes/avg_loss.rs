@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Node, Wilder, slice_nudge};
+use trading_data::{Cell, DepOuts, Folding, Horizon, Node, Wilder, slice_nudge};
 
 use super::rsi_delta::RsiDelta;
 use crate::config::strategy;
@@ -22,7 +22,8 @@ impl Cell for AvgLoss {
 	type Out<'t> = &'t [Option<f64>];
 }
 impl Node for AvgLoss {
-	type Deps = (RsiDelta,);
+	/// A Wilder recurrence reaches to the start of the run.
+	type Deps = (Folding<RsiDelta, { Horizon::Unbounded }>,);
 
 	fn advance<'t>(&'t mut self, (deltas,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();

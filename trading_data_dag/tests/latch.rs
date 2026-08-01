@@ -6,7 +6,7 @@
 //! The root is batch (`&[Pulse]`); the gate/latch/episode nodes stay scalar-out. `None` becomes
 //! an empty root slice, `Some(Pulse)` a one-element slice.
 
-use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Glance, Horizon, Latch, Node, graph, slice_nudge};
+use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Glance, Latch, Node, graph, slice_nudge};
 
 #[derive(Clone, Copy, Debug)]
 struct Pulse;
@@ -102,8 +102,6 @@ impl Cell for Deprec {
 impl Node for Deprec {
 	type Deps = (Trig,);
 	type When = (Live,);
-
-	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, _: DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.t += 1;

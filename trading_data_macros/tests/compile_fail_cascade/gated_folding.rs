@@ -1,8 +1,7 @@
-//! `Cur` is current, ungated, and its only consumer `Sink` sits behind gate `Hot` — sampling it
-//! while `Hot` is closed is pure waste, so the macro's `shadowed` completeness assert must reject
-//! the graph.
-
-use trading_data_dag::{Bump, Cell, DepOuts, Flat, Gate, Glance, Node, slice_nudge, value_nudge};
+//! A gated node may not hold its own reach: a closed gate pulls no deps, so `Folding` is exactly
+//! the state nothing re-warms. The fix the message names is to move the reach into the frame —
+//! a `Buffer<Src, K>` field and the dep restated as `Buffering<Src, H>`.
+use trading_data_dag::{Bump, Cell, DepOuts, Flat, Folding, Gate, Glance, Horizon, Node, slice_nudge, value_nudge};
 use trading_data_macros::graph;
 
 #[derive(Clone, Copy, Debug)]
@@ -15,7 +14,6 @@ impl Flat for Ev {
 		true
 	}
 }
-
 impl Bump for Ev {
 	fn bump(self, _: usize, _: f64) -> (Self, f64) {
 		(self, 0.0)
@@ -47,33 +45,24 @@ impl Node for Hot {
 }
 impl Gate for Hot {}
 
+/// Counts the last three batches itself — a window the gate would blank out.
 #[derive(Clone, Default)]
-struct Cur;
-impl Cell for Cur {
+struct Windowed {
+	seen: Vec<usize>,
+}
+impl Cell for Windowed {
 	type Out<'t> = Option<f64>;
 }
-impl Node for Cur {
-	type Deps = (Src,);
-
-	fn advance<'t>(&'t mut self, (s,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		Some(s.len() as f64)
-	}
-}
-value_nudge!(Cur);
-
-#[derive(Clone, Default)]
-struct Sink;
-impl Cell for Sink {
-	type Out<'t> = Option<f64>;
-}
-impl Node for Sink {
-	type Deps = (Cur,);
+impl Node for Windowed {
+	type Deps = (Folding<Src, { Horizon::Elems(3) }>,);
 	type When = (Hot,);
 
-	fn advance<'t>(&'t mut self, (c,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		c
+	fn advance<'t>(&'t mut self, (s,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		self.seen.push(s.len());
+		Some(self.seen.iter().rev().take(3).sum::<usize>() as f64)
 	}
 }
+value_nudge!(Windowed);
 
 graph! {
 	struct G;
@@ -81,8 +70,10 @@ graph! {
 	roots { src: Src[Ev] };
 	out GOut;
 	hot: Hot,
-	cur: Cur,
-	sink: Sink,
+	windowed: Windowed,
 }
 
-fn main() {}
+fn main() {
+	let mut g = G::default();
+	let _ = g.tick(Batches { src: &[Ev] });
+}

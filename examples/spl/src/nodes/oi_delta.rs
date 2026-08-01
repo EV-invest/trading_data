@@ -34,9 +34,6 @@ macro_rules! oi_deltas {
 		impl Node for $ty {
 			type Deps = (Buffering<OiRoot, OI_REACH>,);
 
-			/// Every input is read at a declared reach and nothing is accumulated, so this can be gated.
-			const HORIZON: Horizon = Horizon::Unit;
-
 			fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 				self.buf.clear();
 				for i in 0..hist.fresh().len() {

@@ -10,7 +10,7 @@
 //! checkpoint instead of from a warmup it can never recover.
 
 use trading_data::{
-	Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaBuf, DeltaFrame, DepOuts, FrameKind, Gate, Horizon, Node, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades, Ts,
+	Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaBuf, DeltaFrame, DepOuts, FrameKind, Gate, Node, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades, Ts,
 };
 
 const PREC: PrecisionPriceQty = PrecisionPriceQty {
@@ -20,6 +20,10 @@ const PREC: PrecisionPriceQty = PrecisionPriceQty {
 
 /// `Node::When` is fixed on the impl, so the shipped `Book` node is the ungated one; gating it is
 /// this eight-line wrapper over the same public `Book::step` fold. The two cannot drift.
+///
+/// Its deps are bare where the shipped node declares its deltas `Folding` — and that is the claim
+/// under test rather than an oversight: this fold re-warms from a checkpoint, out of band, so the
+/// graph owes it no history. A `Folding` dep here would (correctly, for anything else) not compile.
 #[derive(Clone, Default)]
 struct GatedBook(Book);
 impl Cell for GatedBook {
@@ -40,8 +44,6 @@ impl Nudge for GatedBook {
 impl Node for GatedBook {
 	type Deps = (BookAnchors, BookDeltas);
 	type When = (Hot,);
-
-	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, (a, d): DepOuts<'t, Self>) -> Option<&'t Book> {
 		self.0.step(a, d).then_some(&self.0)
@@ -73,8 +75,6 @@ impl Cell for Mid {
 impl Node for Mid {
 	type Deps = (GatedBook,);
 	type When = (Hot,);
-
-	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, (book,): DepOuts<'t, Self>) -> Option<f64> {
 		let b = book?;

@@ -273,8 +273,6 @@ mod revive {
 		type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
 		type When = (Live,);
 
-		const HORIZON: Horizon = Horizon::Unit;
-
 		fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 			self.t += 1;
 			self.seen.push(hist.trailing_at(0).map_or(0, <[Tick]>::len));

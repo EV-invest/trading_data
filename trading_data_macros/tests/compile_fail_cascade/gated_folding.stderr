@@ -1,0 +1,40 @@
+error[E0080]: evaluation panicked: a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (a `Buffer<C, K>` field, and the dep as `Buffering<C, H>`), or drop `When`
+  --> <sysroot>/library/core/src/panic.rs:LL:CC
+  |
+    = note: evaluation of `<(Hot,) as trading_data_dag::Drive<'_, Windowed, trading_data_dag::Cons<'_, Hot, trading_data_dag::Cons<'_, Src, trading_data_dag::Nil>>, (trading_data_dag::There<trading_data_dag::Here>,), (trading_data_dag::Here,)>>::drive::{constant#0}` failed here
+  |
+    ::: $DIR/trading_data_dag/src/lib.rs:LL:CC
+  |
+LL |         reject_gated_folding!(N);
+  |         ------------------------ in this macro invocation
+  |
+     = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `reject_gated_folding` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+note: erroneous constant encountered
+  --> $DIR/trading_data_dag/src/lib.rs:LL:CC
+  |
+LL | / ...   const {
+LL | | ...       assert!(
+LL | | ...           !<<$N as Node>::Deps as DepSet>::FOLDED,
+LL | | ...           "a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain i...
+LL | | ...       )
+LL | | ...   }
+  | |_______^
+...
+LL |   ...   reject_gated_folding!(N);
+  |         ------------------------ in this macro invocation
+  |
+     = note: this note originates in the macro `reject_gated_folding` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+note: the above error was encountered while instantiating `fn <(Hot,) as Drive<'_, Windowed, Cons<'_, Hot, ...>, ..., ...>>::drive`
+  --> $DIR/trading_data_dag/src/lib.rs:LL:CC
+  |
+LL |         let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
+  |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+     = note: the full name for the type has been written to '$DIR/trading_data_macros/target/ui/0/tests/compile_fail_cascade/gated_folding.long-type.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0080`.

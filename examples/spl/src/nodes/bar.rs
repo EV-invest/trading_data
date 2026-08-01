@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Exact, Glance, Horizon, Node, Stamped, Trades, slice_nudge};
+use trading_data::{Cell, DepOuts, Exact, Folding, Glance, Horizon, Node, Stamped, Trades, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 #[derive(Clone, Copy, Debug)]
@@ -124,10 +124,9 @@ macro_rules! bars {
 			const NAME: &'static str = concat!("Bar:", $tf);
 		}
 		impl Node for $ty {
-			type Deps = (Trades,);
-
-			/// Only the partial bar is held, so the state reaches back exactly one period.
-			const HORIZON: Horizon = Horizon::Span(Self::TF);
+			/// The partial bar is the whole of the state, so the trades it holds reach back exactly
+			/// one period.
+			type Deps = (Folding<Trades, { Horizon::Span(Self::TF) }>,);
 
 			fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
 				self.0.advance(trades, Self::TF)

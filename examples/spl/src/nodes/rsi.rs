@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Glance, Node, Plot, rsi, slice_nudge};
+use trading_data::{Cell, DepOuts, Folding, Glance, Horizon, Node, Plot, rsi, slice_nudge};
 
 use super::{avg_gain::AvgGain, avg_loss::AvgLoss};
 use crate::config::strategy;
@@ -60,7 +60,8 @@ impl Cell for Rsi {
 	type Out<'t> = &'t [Option<RsiValues>];
 }
 impl Node for Rsi {
-	type Deps = (AvgGain, AvgLoss);
+	/// The smoothing EMA is a recurrence over both legs, so it reaches to the start of the run.
+	type Deps = (Folding<AvgGain, { Horizon::Unbounded }>, Folding<AvgLoss, { Horizon::Unbounded }>);
 
 	// No threshold guide: the trigger is a `config.nix` value and `Plot` is a const, so drawing
 	// one here would pin a number the config is free to move.

@@ -18,9 +18,6 @@ impl Cell for Change3m {
 impl Node for Change3m {
 	type Deps = (Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>,);
 
-	/// The window is the dep's to retain.
-	const HORIZON: Horizon = Horizon::Unit;
-
 	fn advance<'t>(&'t mut self, (m1,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for (b, w3) in m1.fresh().iter().zip(m1.trailing()) {

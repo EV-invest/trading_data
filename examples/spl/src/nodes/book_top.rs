@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Book, BookDeltas, Cell, DepOuts, Glance, Horizon, Node, Plot, slice_nudge};
+use trading_data::{Book, BookDeltas, Cell, DepOuts, Glance, Node, Plot, slice_nudge};
 
 use crate::DEPTH;
 
@@ -44,9 +44,6 @@ impl Cell for BookTop {
 impl Node for BookTop {
 	type Deps = (Book, BookDeltas);
 
-	/// The `buf` it clears as `advance`'s first act is the whole of its state — the depth it reads is
-	/// `Book`'s to hold, not this node's.
-	const HORIZON: Horizon = Horizon::Unit;
 	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &["bid", "ask", "bid_depth$", "ask_depth$"],
 		..Plot::DEFAULT

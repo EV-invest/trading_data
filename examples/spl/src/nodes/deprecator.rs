@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Flat, Glance, Node, Plot, slice_nudge};
+use trading_data::{Cell, DepOuts, Flat, Folding, Glance, Horizon, Node, Plot, slice_nudge};
 use trading_data_core::Side;
 
 use super::{
@@ -151,7 +151,13 @@ impl Cell for Deprecator {
 	type Out<'t> = &'t [Option<Intent>];
 }
 impl Node for Deprecator {
-	type Deps = (Classify, Atr, BookTop);
+	/// An open episode outlives every one of its inputs: the entry it was taken on, the ATR level it
+	/// last saw, and the extreme its trail has ratcheted over every book tick since.
+	type Deps = (
+		Folding<Classify, { Horizon::Unbounded }>,
+		Folding<Atr, { Horizon::Unbounded }>,
+		Folding<BookTop, { Horizon::Unbounded }>,
+	);
 
 	const PLOTS: &'static [Plot] = &[
 		Plot {

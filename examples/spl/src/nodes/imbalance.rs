@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Horizon, Node, Plot, slice_nudge};
+use trading_data::{Cell, DepOuts, Node, Plot, slice_nudge};
 
 use super::book_top::BookTop;
 
@@ -15,7 +15,6 @@ impl Cell for Imbalance {
 impl Node for Imbalance {
 	type Deps = (BookTop,);
 
-	const HORIZON: Horizon = Horizon::Unit;
 	const PLOTS: &'static [Plot] = &[Plot {
 		range: Some((-1.0, 1.0)),
 		..Plot::DEFAULT

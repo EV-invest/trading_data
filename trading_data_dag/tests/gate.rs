@@ -50,8 +50,6 @@ impl Node for Gated {
 	type Deps = (Hist,);
 	type When = (Hot,);
 
-	const HORIZON: Horizon = Horizon::Unit;
-
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.calls += 1;
 		hist
@@ -85,7 +83,7 @@ fn closed_gate_skips_gated_node_but_not_its_unbounded_dep() {
 const LEAF: NodeMeta = NodeMeta {
 	name: "leaf",
 	deps: &[],
-	horizon: Horizon::Unit,
+	reach: &[],
 	gates: &[],
 };
 const _: () = assert!(!shadowed("leaf", &[LEAF]));
@@ -96,37 +94,43 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 		NodeMeta {
 			name: "hist",
 			deps: &["root"],
-			horizon: Horizon::Unbounded,
+			reach: &[Horizon::Unbounded],
 			gates: &[],
 		},
 		NodeMeta {
 			name: "gate",
 			deps: &["hist"],
-			horizon: Horizon::Unbounded,
+			reach: &[Horizon::Unbounded],
 			gates: &[],
 		},
 		NodeMeta {
 			name: "cur",
 			deps: &["root"],
-			horizon: Horizon::Unit,
+			reach: &[Horizon::Unit],
 			gates: &[],
 		},
 		NodeMeta {
 			name: "mixed",
 			deps: &["root"],
-			horizon: Horizon::Unit,
+			reach: &[Horizon::Unit],
+			gates: &[],
+		},
+		NodeMeta {
+			name: "part",
+			deps: &["root", "hist"],
+			reach: &[Horizon::Unit, Horizon::Unbounded],
 			gates: &[],
 		},
 		NodeMeta {
 			name: "cls",
-			deps: &["cur", "hist", "mixed"],
-			horizon: Horizon::Unit,
+			deps: &["cur", "hist", "mixed", "part"],
+			reach: &[Horizon::Unit, Horizon::Unit, Horizon::Unit, Horizon::Unit],
 			gates: &["gate"],
 		},
 		NodeMeta {
 			name: "sink",
 			deps: &["mixed"],
-			horizon: Horizon::Unit,
+			reach: &[Horizon::Unit],
 			gates: &[],
 		},
 	];
@@ -134,6 +138,7 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 
 	check("cur", true); // bounded, ungated, only consumer sits behind "gate"
 	check("hist", false); // unbounded: must stay warm regardless
+	check("part", false); // reach is per dep: one unbounded input is enough to demand warmth
 	check("cls", false); // gated itself (and a leaf)
 	check("gate", false); // leaf: graph output
 	check("mixed", false); // one consumer gated, one not — sampling is not wasted
@@ -144,13 +149,13 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 		NodeMeta {
 			name: "g",
 			deps: &["root"],
-			horizon: Horizon::Unit,
+			reach: &[Horizon::Unit],
 			gates: &[],
 		},
 		NodeMeta {
 			name: "c",
 			deps: &["g"],
-			horizon: Horizon::Unit,
+			reach: &[Horizon::Unit],
 			gates: &["g"],
 		},
 	];
@@ -161,19 +166,19 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 		NodeMeta {
 			name: "x",
 			deps: &["root"],
-			horizon: Horizon::Unit,
+			reach: &[Horizon::Unit],
 			gates: &[],
 		},
 		NodeMeta {
 			name: "a",
 			deps: &["x"],
-			horizon: Horizon::Unit,
+			reach: &[Horizon::Unit],
 			gates: &["g1"],
 		},
 		NodeMeta {
 			name: "b",
 			deps: &["x"],
-			horizon: Horizon::Unit,
+			reach: &[Horizon::Unit],
 			gates: &["g2"],
 		},
 	];
@@ -184,19 +189,19 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 		NodeMeta {
 			name: "x",
 			deps: &["root"],
-			horizon: Horizon::Unit,
+			reach: &[Horizon::Unit],
 			gates: &[],
 		},
 		NodeMeta {
 			name: "a",
 			deps: &["x"],
-			horizon: Horizon::Unit,
+			reach: &[Horizon::Unit],
 			gates: &["g1", "g2"],
 		},
 		NodeMeta {
 			name: "b",
 			deps: &["x"],
-			horizon: Horizon::Unit,
+			reach: &[Horizon::Unit],
 			gates: &["g2"],
 		},
 	];

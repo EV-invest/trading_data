@@ -3,7 +3,7 @@
 //! `Cell`/`Node` are the dag's and these types are ours, so orphan rules make this the only crate
 //! that may write these impls. Nothing else here knows the dag exists.
 
-use trading_data_dag::{Cell, DepOuts, Horizon, Node, Nudge};
+use trading_data_dag::{Cell, DepOuts, Folding, Horizon, Node, Nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 use crate::{Book, BookShape, DeltaBuf, DeltaFrame, TradeBuf, TradeCols};
@@ -74,12 +74,14 @@ impl Cell for Book {
 }
 
 impl Node for Book {
-	type Deps = (BookAnchors, BookDeltas);
-
-	/// A book re-warms from a checkpoint: its state reaches back exactly one checkpoint interval, so
-	/// gating it off and back on costs one desync and one resync, not a warmup it can never recover.
-	/// `trading_data_persistence` reads its anchor-age bound off this.
-	const HORIZON: Horizon = Horizon::Span(Timeframe::from_naive(15, TimeframeDesignator::Minutes));
+	/// The fold reaches back over the deltas exactly one checkpoint interval — a book re-warms from a
+	/// checkpoint, so gating it off and back on costs one desync and one resync, not a warmup it can
+	/// never recover. `trading_data_persistence` reads its anchor-age bound off this.
+	///
+	/// `Folding` and not `Buffering` only because `DeltaFrame` is no `Series`, so there is nothing
+	/// the engine can retain for it — which is also what still makes a gated book a compile error,
+	/// checkpoint or no. Retaining the deltas as stamped level rows is what would lift that.
+	type Deps = (BookAnchors, Folding<BookDeltas, { Horizon::Span(Timeframe::from_naive(15, TimeframeDesignator::Minutes)) }>);
 
 	fn advance<'t>(&'t mut self, (anchor, deltas): DepOuts<'t, Self>) -> Option<&'t Book> {
 		self.step(anchor, deltas).then_some(&*self)

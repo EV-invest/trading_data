@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Node, slice_nudge};
+use trading_data::{Cell, DepOuts, Folding, Horizon, Node, slice_nudge};
 
 use super::{
 	bar::Bar1m,
@@ -19,7 +19,8 @@ impl Cell for StdScreener {
 	type Out<'t> = &'t [Option<Screened>];
 }
 impl Node for StdScreener {
-	type Deps = (Bar1m, Momentum);
+	/// The cached momentum level stands until the next publish, however many minutes that takes.
+	type Deps = (Bar1m, Folding<Momentum, { Horizon::Unbounded }>);
 
 	fn advance<'t>(&'t mut self, (bars, momentum): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();

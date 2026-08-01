@@ -30,10 +30,12 @@
 //!   [`Node::When`] are not advanced while it is false. Batch-out nodes cannot be gates or gated
 //!   (tick-level gating on a batch is lossy, and a self-borrowing batch out can't be reset
 //!   post-sweep) — this is a load-bearing invariant, see [`graph!`].
-//! - **Horizon.** Every node declares how far back its own state reaches ([`Node::HORIZON`]), and
-//!   every buffered dep how far back it reads ([`Buffering`]). A [`Horizon::Unbounded`] node — a
-//!   recurrence (Wilder RSI) or a running sum (CVD) — must advance every tick to stay warm, so
-//!   gating one is a compile error; a bounded horizon is state its inputs can reconstitute.
+//! - **Horizon.** Reach is stated per *dep*, because "how far back must this be looked at" is a
+//!   question about an input: a bare dep reaches [`Horizon::Unit`] (this tick's batch), a
+//!   [`Buffering`] dep names the reach the *engine* retains for it, and a [`Folding`] dep names the
+//!   reach the *node itself* holds. A closed gate pulls no deps, so node-held state cannot survive
+//!   one: a [`Folding`] dep on a gated node is a compile error, and a gated node's reach is
+//!   therefore retained in the frame by construction.
 //! - **Latches.** A [`Latch`] is a [`Gate`] armed externally and cut from within: when its `Cut`
 //!   node's out reads [`Episode::terminal`], [`graph!`] commutates it and resets every node gated
 //!   on it to `Default` — deferred to the *next* tick's start (the frame still borrows batch
@@ -79,9 +81,10 @@ use v_utils::Timeframe;
 mod expr;
 pub use expr::{Abs, Add, Ast, Const, Div, Ex, Expr, Mul, Neg, Square, Sub, Sum, Trace, Var, Vars, abs, constant, square, sum};
 
-/// How far back something reaches: a node's own state ([`Node::HORIZON`]), or a dep's retained
-/// history ([`Buffering`]). One vocabulary for both, so the reach a node reads and the reach it
-/// holds are stated the same way — and a `const` of it drops straight into const-generic position.
+/// How far back a dep position reaches: nothing at all (a bare dep), the engine's retention
+/// ([`Buffering`]), or the consumer's own state ([`Folding`]). One vocabulary for all three, so the
+/// reach a node reads and the reach it holds are stated the same way — and a `const` of it drops
+/// straight into const-generic position.
 #[derive(Clone, core::marker::ConstParamTy, Copy, Debug, Eq, PartialEq)]
 pub enum Horizon {
 	/// The current value only — no history at all.
@@ -131,6 +134,16 @@ pub trait Cell {
 	/// parameterised by a bare number overrides it: `Bars<1>` leaves the reader to guess the unit,
 	/// where `Bar:1m` states it.
 	const NAME: &'static str = core::any::type_name::<Self>();
+
+	/// How far back a consumer naming this in dep position reads. A bare cell is this tick's batch
+	/// and nothing more; the wrappers ([`Buffering`], [`Folding`]) are what state anything else. This
+	/// lives on [`Cell`] rather than a `Dep` trait because [`DepSet`] is implemented over tuples of
+	/// cells, and a blanket `impl<C: Cell> Dep for C` would conflict with the wrapper impls.
+	const REACH: Horizon = Horizon::Unit;
+
+	/// Whether [`REACH`](Cell::REACH) is the *node's* to hold — true of [`Folding`] alone. A closed
+	/// gate pulls no deps, so a folded reach is the one thing gating cannot re-warm.
+	const FOLDED: bool = false;
 }
 
 /// A cell output as a fixed-shape element array: the unit of observation and differentiation.
@@ -373,6 +386,10 @@ impl Plot {
 pub trait DepSet {
 	type Outs<'t>;
 	const NAMES: &'static [&'static str];
+	/// Per-dep [`Cell::REACH`], positionally — how far back a revived node must look, input by input.
+	const REACH: &'static [Horizon];
+	/// Whether any dep is a [`Folding`]. Enough for the gating rule, which asks nothing per-dep.
+	const FOLDED: bool;
 }
 
 /// [`Flat`] over a whole dep tuple, elements concatenated in `Deps` order (each batch dep as its
@@ -507,10 +524,6 @@ impl<A: Gate, B: Gate> GateSet for (A, B) {
 pub trait Node: Cell {
 	type Deps: DepSet;
 	type When: GateSet = ();
-	/// How far back this node's own state reaches. [`Horizon::Unbounded`] cannot be gated — nothing
-	/// re-warms it. Anything else can: [`Horizon::Unit`] holds no state at all, and a bounded horizon
-	/// is state the node's inputs can reconstitute.
-	const HORIZON: Horizon = Horizon::Unbounded;
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
 }
@@ -760,8 +773,8 @@ impl<T: Glance> Glance for Hist<'_, T> {
 	}
 }
 
-/// Engine-owned retention over a [`Series`] — an ordinary node (`Deps = (C,)`, ungated,
-/// [`Horizon::Unbounded`]) sitting *next to* its source in the frame, not over it. It advances every
+/// Engine-owned retention over a [`Series`] — an ordinary node (`Deps = (Folding<C, H>,)`, ungated)
+/// sitting *next to* its source in the frame, not over it. It advances every
 /// tick regardless of what is dark downstream, because being warm is its whole job: a consumer
 /// switched off and revived reads a full window on its first tick back, where a client-owned window
 /// would come back cold.
@@ -803,13 +816,15 @@ impl<C: Series, const H: Horizon> Clone for Buffer<C, H> {
 
 impl<C: Series, const H: Horizon> Cell for Buffer<C, H> {
 	type Out<'t> = Hist<'t, C::Item>;
+
+	const REACH: Horizon = H;
 }
 
 impl<C: Series, const H: Horizon> Node for Buffer<C, H>
 where
 	C::Item: Stamped,
 {
-	type Deps = (C,);
+	type Deps = (Folding<C, H>,);
 
 	fn advance<'t>(&'t mut self, (fresh,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		const {
@@ -861,6 +876,8 @@ pub struct Buffering<C: Series, const H: Horizon>(core::marker::PhantomData<C>);
 
 impl<C: Series, const H: Horizon> Cell for Buffering<C, H> {
 	type Out<'t> = Hist<'t, C::Item>;
+
+	const REACH: Horizon = H;
 }
 
 impl<'t, C: Series, const K: Horizon, const H: Horizon, T> Has<'t, Buffering<C, H>, Here> for Cons<'t, Buffer<C, K>, T> {
@@ -905,10 +922,51 @@ where
 	}
 }
 
+/// Dep position only, never a frame field: "this dep, `H` of which I hold myself". The out is the
+/// bare cell's — nothing wraps the data and nothing is retained for it, so this is a pure
+/// declaration, the node's own recurrence or window stated where it is actually about.
+///
+/// [`Buffering`]'s sibling, differing only in who holds the history. That difference is the whole
+/// reason they are two types: a gate can re-warm what the engine holds and cannot re-warm what the
+/// node does, and their `Has` routes resolve off different frame cells anyway — one `Buffer<C, K>`,
+/// the other `C` — which a single wrapper could not disambiguate in a frame carrying both.
+pub struct Folding<C: Cell, const H: Horizon>(core::marker::PhantomData<C>);
+
+impl<C: Cell, const H: Horizon> Cell for Folding<C, H> {
+	type Out<'t> = C::Out<'t>;
+
+	const FOLDED: bool = true;
+	/// Forwarded: `shadowed` and `Roots::required_events` match dep names against frame cell names,
+	/// and a wrapper that renamed its dep would drop out of both.
+	const NAME: &'static str = C::NAME;
+	const REACH: Horizon = H;
+}
+
+impl<'t, C: Cell, const H: Horizon, T> Has<'t, Folding<C, H>, Here> for Cons<'t, C, T> {
+	fn get(&self) -> C::Out<'t> {
+		const { assert!(!matches!(H, Horizon::Unit), "a Folding at Unit is the bare dep C — drop the wrapper") }
+		self.out
+	}
+}
+
+impl<C: Nudge, const H: Horizon> Nudge for Folding<C, H> {
+	type Scratch = C::Scratch;
+
+	fn stage<'t>(out: C::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
+		C::stage(out, s, bump, h)
+	}
+
+	fn view<'l>(s: &'l Self::Scratch) -> C::Out<'l> {
+		C::view(s)
+	}
+}
+
 impl DepSet for () {
 	type Outs<'t> = ();
 
+	const FOLDED: bool = false;
 	const NAMES: &'static [&'static str] = &[];
+	const REACH: &'static [Horizon] = &[];
 }
 impl<'t, F> Pull<'t, F, ()> for () {
 	fn pull(_: &F) {}
@@ -935,7 +993,9 @@ macro_rules! impl_arity {
 		impl<$($T: Cell),+> DepSet for ($($T,)+) {
 			type Outs<'t> = ($($T::Out<'t>,)+);
 
+			const FOLDED: bool = false $(|| $T::FOLDED)+;
 			const NAMES: &'static [&'static str] = &[$($T::NAME),+];
+			const REACH: &'static [Horizon] = &[$($T::REACH),+];
 		}
 		impl<'t, F, $($T: Cell, $I),+> Pull<'t, F, ($($I,)+)> for ($($T,)+)
 		where F: $(Has<'t, $T, $I> +)+ {
@@ -996,6 +1056,20 @@ impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg);
 impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg, H Ih h sh);
 impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg, H Ih h sh, J Ij j sj);
 
+/// A gated node's every dep must be bare or [`Buffering`]: a closed gate pulls nothing, so the only
+/// reach that survives it is the one the frame holds. A macro and not a shared `const`, because
+/// `assert!` reads its message as a format string and so demands a literal.
+macro_rules! reject_gated_folding {
+	($N:ty) => {
+		const {
+			assert!(
+				!<<$N as Node>::Deps as DepSet>::FOLDED,
+				"a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (a `Buffer<C, K>` field, and the dep as `Buffering<C, H>`), or drop `When`"
+			)
+		}
+	};
+}
+
 /// [`step`]'s evaluation dispatch, keyed on the node's [`Node::When`]: ungated nodes advance
 /// unconditionally; gated nodes advance only while every gate reads true in the frame,
 /// yielding [`Latent::latent`] otherwise — deps not pulled. `I`/`J` are inferred index paths.
@@ -1043,12 +1117,7 @@ where
 	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't, {
-		const {
-			assert!(
-				!matches!(N::HORIZON, Horizon::Unbounded),
-				"an unbounded node cannot be gated: nothing re-warms it — declare a bounded `HORIZON` or drop `When`"
-			)
-		}
+		reject_gated_folding!(N);
 		if !<Self as Drive<'t, N, F, I, (Ia,)>>::open(f) {
 			return Latent::latent();
 		}
@@ -1074,12 +1143,7 @@ where
 	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't, {
-		const {
-			assert!(
-				!matches!(N::HORIZON, Horizon::Unbounded),
-				"an unbounded node cannot be gated: nothing re-warms it — declare a bounded `HORIZON` or drop `When`"
-			)
-		}
+		reject_gated_folding!(N);
 		if !<Self as Drive<'t, N, F, I, (Ia, Ib)>>::open(f) {
 			return Latent::latent();
 		}
@@ -1395,7 +1459,8 @@ pub use alloc::vec::Vec as MacroVec;
 pub struct NodeMeta {
 	pub name: &'static str,
 	pub deps: &'static [&'static str],
-	pub horizon: Horizon,
+	/// Per-dep, positionally with `deps`.
+	pub reach: &'static [Horizon],
 	pub gates: &'static [&'static str],
 }
 
@@ -1426,10 +1491,22 @@ pub const fn contains(set: &[&str], name: &str) -> bool {
 	false
 }
 
-/// [`graph!`]'s completeness check: true when `name` is bounded-horizon, ungated, has in-graph
-/// consumers, and all of them sit behind one common gate (other than `name` itself) — sampling
-/// it while that gate is closed is pure waste, so it must be gated too or declare
-/// [`Horizon::Unbounded`]. Leaves (no in-graph consumers) are graph outputs — exempt.
+const fn reaches_unbounded(reach: &[Horizon]) -> bool {
+	let mut i = 0;
+	while i < reach.len() {
+		if matches!(reach[i], Horizon::Unbounded) {
+			return true;
+		}
+		i += 1;
+	}
+	false
+}
+
+/// [`graph!`]'s completeness check: true when `name` reaches boundedly into every dep, is ungated,
+/// has in-graph consumers, and all of them sit behind one common gate (other than `name` itself) —
+/// sampling it while that gate is closed is pure waste, so it must be gated too or read some dep at
+/// [`Horizon::Unbounded`], which is the reach nothing recovers. Leaves (no in-graph consumers) are
+/// graph outputs — exempt.
 #[doc(hidden)]
 pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 	let mut me = 0;
@@ -1437,7 +1514,7 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 		me += 1;
 	}
 	assert!(me < nodes.len(), "shadowed: name must be one of nodes");
-	if matches!(nodes[me].horizon, Horizon::Unbounded) || !nodes[me].gates.is_empty() {
+	if reaches_unbounded(nodes[me].reach) || !nodes[me].gates.is_empty() {
 		return false;
 	}
 	let mut fc = 0;

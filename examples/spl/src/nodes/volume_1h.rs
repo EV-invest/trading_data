@@ -14,8 +14,6 @@ impl Cell for Volume1h {
 impl Node for Volume1h {
 	type Deps = (Bar1m, Buffering<Bar1h, { Horizon::Elems(1) }>);
 
-	const HORIZON: Horizon = Horizon::Unit;
-
 	fn advance<'t>(&'t mut self, (m1, h1): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for b in m1 {

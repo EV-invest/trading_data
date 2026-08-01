@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Node, WilderAtr, slice_nudge};
+use trading_data::{Cell, DepOuts, Folding, Horizon, Node, WilderAtr, slice_nudge};
 
 use super::bar::Bar1m;
 use crate::config::strategy;
@@ -22,7 +22,8 @@ impl Cell for Atr {
 	type Out<'t> = &'t [Option<f64>];
 }
 impl Node for Atr {
-	type Deps = (Bar1m,);
+	/// A Wilder recurrence reaches to the start of the run.
+	type Deps = (Folding<Bar1m, { Horizon::Unbounded }>,);
 
 	fn advance<'t>(&'t mut self, (bars,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();

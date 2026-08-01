@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Glance, Horizon, Node, value_nudge};
+use trading_data::{Cell, DepOuts, Glance, Node, value_nudge};
 
 use super::{rsi_screener::RsiScreener, std_screener::StdScreener};
 
@@ -48,8 +48,6 @@ impl Cell for Classify {
 }
 impl Node for Classify {
 	type Deps = (RsiScreener, StdScreener);
-
-	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, (rsi, std): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert_eq!(rsi.len(), std.len(), "RsiScreener/StdScreener rate mismatch");

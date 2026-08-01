@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Horizon, Node, slice_nudge};
+use trading_data::{Cell, DepOuts, Node, slice_nudge};
 
 use super::book_top::BookTop;
 
@@ -12,8 +12,6 @@ impl Cell for Spread {
 }
 impl Node for Spread {
 	type Deps = (BookTop,);
-
-	const HORIZON: Horizon = Horizon::Unit;
 
 	fn advance<'t>(&'t mut self, (top,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
