@@ -6,6 +6,7 @@ LL | |     struct G;
 LL | |     batches Batches;
 LL | |     roots { r: Root[u8] };
 LL | |     out GOut;
+LL | |     outputs { n }
 LL | | }
   | |_^
   |

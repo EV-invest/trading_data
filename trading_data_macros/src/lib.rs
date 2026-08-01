@@ -20,6 +20,8 @@ mod kw {
 	syn::custom_keyword!(latch);
 	syn::custom_keyword!(diff);
 	syn::custom_keyword!(emit);
+	syn::custom_keyword!(outputs);
+	syn::custom_keyword!(observe);
 }
 
 /// `field: Ty [Event]` — a root cell and the event type its slice carries.
@@ -67,6 +69,8 @@ struct GraphDef {
 	batches: Ident,
 	roots: Vec<Root>,
 	out: Ident,
+	outputs: Vec<Ident>,
+	observe: Vec<Ident>,
 	latches: Vec<FieldNode>,
 	diffs: Vec<FieldNode>,
 	nodes: Vec<FieldNode>,
@@ -94,6 +98,26 @@ impl Parse for GraphDef {
 		input.parse::<kw::out>()?;
 		let out: Ident = input.parse()?;
 		input.parse::<Token![;]>()?;
+
+		input.parse::<kw::outputs>()?;
+		let content;
+		braced!(content in input);
+		let outputs: Punctuated<Ident, Token![,]> = Punctuated::parse_terminated(&content)?;
+		if outputs.is_empty() {
+			return Err(syn::Error::new(
+				input.span(),
+				"graph! needs at least one output: a graph whose every field is unread computes nothing",
+			));
+		}
+
+		let observe = if input.peek(kw::observe) && input.peek2(token::Brace) {
+			input.parse::<kw::observe>()?;
+			let content;
+			braced!(content in input);
+			Punctuated::<Ident, Token![,]>::parse_terminated(&content)?.into_iter().collect()
+		} else {
+			Vec::new()
+		};
 
 		let latches = if input.peek(kw::latch) && input.peek2(token::Brace) {
 			input.parse::<kw::latch>()?;
@@ -124,6 +148,8 @@ impl Parse for GraphDef {
 			batches,
 			roots: roots.into_iter().collect(),
 			out,
+			outputs: outputs.into_iter().collect(),
+			observe,
 			latches,
 			diffs: diffs.into_iter().collect(),
 			nodes: nodes.into_iter().collect(),
@@ -140,6 +166,8 @@ impl Parse for GraphDef {
 ///     batches Batches;                       // name of the generated root-slices struct
 ///     roots { trades: Trades[Trade], oi: OiRoot[Oi] };
 ///     out TickOut;
+///     outputs { cvd }                        // what the graph is for
+///     observe { bar }                        // read by the app or the viz only
 ///     latch { live: Live }                   // optional
 ///     emit bar: Bar1m, cvd: Cvd, ...
 /// }
@@ -161,6 +189,12 @@ impl Parse for GraphDef {
 ///
 /// An optional `diff { field: Type, .. }` group names `Diff` fields (also in the node list): they
 /// sweep via `step_exact`, emitting exact partials + formula + derivatives alongside the FD view.
+///
+/// The node list is a *manifest*, not a trusted declaration: `closed`, `ordered` and `reachable` are
+/// asserted over it in const position beside `shadowed`. `outputs { .. }` names the fields the graph
+/// exists to produce and `observe { .. }` those an app or the viz reads and nothing else does;
+/// together they are what `reachable` measures against, so a field left wired after a refactor is a
+/// compile error rather than dead work done every tick forever.
 #[proc_macro]
 pub fn graph(input: TokenStream) -> TokenStream {
 	let GraphDef {
@@ -169,6 +203,8 @@ pub fn graph(input: TokenStream) -> TokenStream {
 		batches,
 		roots,
 		out,
+		outputs,
+		observe,
 		latches,
 		diffs,
 		nodes,
@@ -213,6 +249,24 @@ pub fn graph(input: TokenStream) -> TokenStream {
 			if n.emit { quote!(#field: #dag::Emitter<#ty>) } else { quote!(#field: #ty) }
 		})
 		.collect();
+
+	// `outputs`/`observe` name fields; the const predicates work in cell names, so resolve them here
+	// — where an ident that names no field is a `syn::Error` pointing at it rather than a const panic.
+	let named: Result<Vec<&Type>, syn::Error> = outputs
+		.iter()
+		.chain(&observe)
+		.map(|o| {
+			nodes
+				.iter()
+				.find(|n| n.field == *o)
+				.map(|n| &n.ty)
+				.ok_or_else(|| syn::Error::new(o.span(), "not a field of this graph"))
+		})
+		.collect();
+	let named = match named {
+		Ok(n) => n,
+		Err(e) => return e.to_compile_error().into(),
+	};
 
 	// `diff { }` fields sweep via `step_exact` (exact partials + formula + derivatives); the rest
 	// keep the FD-only `step_obs`, or `step_emit_obs` where the engine owns the buffer. Same choke
@@ -269,17 +323,36 @@ pub fn graph(input: TokenStream) -> TokenStream {
 
 		const _: () = {
 			const LATCHES: &[&str] = &[#(#dag::node_name::<#latch_tys>()),*];
+			const ROOTS: &[&str] = &[#(#dag::node_name::<#root_tys>()),*];
+			const NAMED: &[&str] = &[#(#dag::node_name::<#named>()),*];
 			const METAS: &[#dag::NodeMeta] = &[#(
 				#dag::NodeMeta {
 					name: #dag::node_name::<#node_tys>(),
 					deps: <#node_deps as #dag::DepSet>::NAMES,
 					reach: <#node_deps as #dag::DepSet>::REACH,
+					folds: <#node_deps as #dag::DepSet>::FOLDS,
 					gates: <#node_whens as #dag::GateSet>::NAMES,
+					retains: !matches!(<#node_tys as #dag::Cell>::REACH, #dag::Horizon::Unit),
 					latch: #dag::contains(LATCHES, #dag::node_name::<#node_tys>()),
 				},
 			)*];
 			// the *field*, not the type: a const-generic type name carries braces, and `assert!` reads
 			// its message as a format string.
+			#(assert!(
+				#dag::closed(#dag::node_name::<#node_tys>(), METAS, ROOTS),
+				concat!(stringify!(#fields), " reads something this graph does not declare: add the missing field, or name it as a root")
+			);)*
+
+			#(assert!(
+				#dag::ordered(#dag::node_name::<#node_tys>(), METAS),
+				concat!(stringify!(#fields), " is declared before something it reads: the list is in topo order, and a step cannot pull a dep the frame has not seen")
+			);)*
+
+			#(assert!(
+				#dag::reachable(#dag::node_name::<#node_tys>(), METAS, NAMED),
+				concat!(stringify!(#fields), " reaches no `outputs` or `observe` field: it is work nobody asked for — unwire it, or declare what reads it")
+			);)*
+
 			#(assert!(
 				!#dag::shadowed(#dag::node_name::<#node_tys>(), METAS),
 				concat!(stringify!(#fields), " is only consumed under a gate: gate it too, or declare a dep at `Horizon::Unbounded`")

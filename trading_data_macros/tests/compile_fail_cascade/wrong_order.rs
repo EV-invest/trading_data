@@ -64,6 +64,7 @@ graph! {
 	batches Batches;
 	roots { src: Src[Ev] };
 	out GOut;
+	outputs { b }
 	b: B,
 	a: A,
 }

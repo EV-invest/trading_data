@@ -127,6 +127,10 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape], oi: OiRoot[Oi], mc: McRoot[Mc] };
 	out TickOut;
+	outputs { deprecator }
+	// Nothing downstream of `target_q` reads these: they are `main.rs`'s checks and the viz, which is
+	// a legitimate reason for a node to exist and a bad one to leave implicit.
+	observe { bar_1m, change_1d, change_3m, volume_1m, volume_1h, volume_4h, rsi, momentum, oi_delta_5m, oi_delta_15m, market_cap, book_top, imbalance, spread }
 	latch { armed: Armed<Deprecator> }
 	emit bar_1m: Bar1m,
 	emit bar_5m: Bar5m,

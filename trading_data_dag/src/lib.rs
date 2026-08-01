@@ -392,8 +392,21 @@ pub trait DepSet {
 	const NAMES: &'static [&'static str];
 	/// Per-dep [`Cell::REACH`], positionally — how far back a revived node must look, input by input.
 	const REACH: &'static [Horizon];
-	/// Whether any dep is a [`Folding`]. Enough for the gating rule, which asks nothing per-dep.
-	const FOLDED: bool;
+	/// Per-dep [`Cell::FOLDED`], positionally. With `NAMES` and `REACH` this is what picks the frame
+	/// field a dep resolves against: folded or `Unit` reads the cell itself, anything else reads the
+	/// [`Buffer`] retaining it.
+	const FOLDS: &'static [bool];
+}
+
+const fn any(flags: &[bool]) -> bool {
+	let mut i = 0;
+	while i < flags.len() {
+		if flags[i] {
+			return true;
+		}
+		i += 1;
+	}
+	false
 }
 
 /// [`Flat`] over a whole dep tuple, elements concatenated in `Deps` order (each batch dep as its
@@ -1068,6 +1081,10 @@ pub struct Buffering<C: Series, const H: Horizon>(core::marker::PhantomData<C>);
 impl<C: Series, const H: Horizon> Cell for Buffering<C, H> {
 	type Out<'t> = Hist<'t, C::Item>;
 
+	/// Forwarded, for the same reason [`Folding`]'s is: the graph predicates match dep names against
+	/// frame cell names, and a wrapper that renamed its dep would drop out of every one of them.
+	/// `REACH`/`FOLDED` are what then say it is the retention and not the cell itself being asked for.
+	const NAME: &'static str = C::NAME;
 	const REACH: Horizon = H;
 }
 
@@ -1155,7 +1172,7 @@ impl<C: Nudge, const H: Horizon> Nudge for Folding<C, H> {
 impl DepSet for () {
 	type Outs<'t> = ();
 
-	const FOLDED: bool = false;
+	const FOLDS: &'static [bool] = &[];
 	const NAMES: &'static [&'static str] = &[];
 	const REACH: &'static [Horizon] = &[];
 }
@@ -1184,7 +1201,7 @@ macro_rules! impl_arity {
 		impl<$($T: Cell),+> DepSet for ($($T,)+) {
 			type Outs<'t> = ($($T::Out<'t>,)+);
 
-			const FOLDED: bool = false $(|| $T::FOLDED)+;
+			const FOLDS: &'static [bool] = &[$($T::FOLDED),+];
 			const NAMES: &'static [&'static str] = &[$($T::NAME),+];
 			const REACH: &'static [Horizon] = &[$($T::REACH),+];
 		}
@@ -1254,7 +1271,7 @@ macro_rules! reject_gated_folding {
 	($D:ty, $G:ty) => {
 		const {
 			assert!(
-				<$G as GateSet>::NAMES.is_empty() || !<$D as DepSet>::FOLDED,
+				<$G as GateSet>::NAMES.is_empty() || !any(<$D as DepSet>::FOLDS),
 				"a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (a `Buffer<C, K>` field, and the dep as `Buffering<C, H>`), or drop `When`"
 			)
 		}
@@ -1814,7 +1831,12 @@ pub struct NodeMeta {
 	pub deps: &'static [&'static str],
 	/// Per-dep, positionally with `deps`.
 	pub reach: &'static [Horizon],
+	/// Per-dep, positionally with `deps`.
+	pub folds: &'static [bool],
 	pub gates: &'static [&'static str],
+	/// A [`Buffer`] field: it *is* the frame's retention of `deps[0]`, which is how a `Buffering` dep
+	/// finds it while a bare read of the same cell goes elsewhere.
+	pub retains: bool,
 	/// A `latch { }` field. A latch is momentary by nature, so a consumer behind one is not standing
 	/// demand: what it reads must be warm *before* the episode arms.
 	pub latch: bool,
@@ -1847,6 +1869,141 @@ pub const fn contains(set: &[&str], name: &str) -> bool {
 	false
 }
 
+/// The field index `name` occupies. Every predicate is asked about a declared field, so an absent
+/// one is [`graph!`] emitting something other than its own node list.
+const fn field(name: &str, nodes: &[NodeMeta]) -> usize {
+	let mut i = 0;
+	while i < nodes.len() && !str_eq(nodes[i].name, name) {
+		i += 1;
+	}
+	assert!(i < nodes.len(), "name must be one of nodes");
+	i
+}
+
+/// The field a dep resolves against — the const mirror of the [`Has`] impls. A [`Buffering`] reads
+/// the [`Buffer`] retaining its cell; a bare or [`Folding`] dep reads the cell itself. `None` is a
+/// dep no field answers, which is either a root or the hole [`closed`] reports.
+const fn resolve(name: &str, buffered: bool, nodes: &[NodeMeta]) -> Option<usize> {
+	let mut i = 0;
+	while i < nodes.len() {
+		let hit = match (buffered, nodes[i].retains) {
+			(true, true) => !nodes[i].deps.is_empty() && str_eq(nodes[i].deps[0], name),
+			(false, false) => str_eq(nodes[i].name, name),
+			_ => false,
+		};
+		if hit {
+			return Some(i);
+		}
+		i += 1;
+	}
+	None
+}
+
+/// Whether a dep at this reach and fold is asking for a retention rather than the cell itself —
+/// [`Buffering`] alone, which is neither this tick's batch nor a fold the node holds.
+const fn buffered(reach: Horizon, folds: bool) -> bool {
+	!folds && !matches!(reach, Horizon::Unit)
+}
+
+/// Whether field `c` reads field `i`, by dep or by gate.
+const fn consumes(c: &NodeMeta, i: usize, nodes: &[NodeMeta]) -> bool {
+	let mut d = 0;
+	while d < c.deps.len() {
+		if matches!(resolve(c.deps[d], buffered(c.reach[d], c.folds[d]), nodes), Some(j) if j == i) {
+			return true;
+		}
+		d += 1;
+	}
+	let mut g = 0;
+	while g < c.gates.len() {
+		if matches!(resolve(c.gates[g], false, nodes), Some(j) if j == i) {
+			return true;
+		}
+		g += 1;
+	}
+	false
+}
+
+/// [`graph!`]'s manifest check: every dep and gate of `name` resolves to a declared field or to a
+/// root. What it catches is a node left out of the list, which otherwise surfaces as an unresolved
+/// `Pull` bound naming everything but the culprit.
+#[doc(hidden)]
+pub const fn closed(name: &'static str, nodes: &[NodeMeta], roots: &[&str]) -> bool {
+	let me = field(name, nodes);
+	let mut d = 0;
+	while d < nodes[me].deps.len() {
+		let want = buffered(nodes[me].reach[d], nodes[me].folds[d]);
+		// a root is a frame seed, never retained — so only a bare or folded dep can land on one.
+		if resolve(nodes[me].deps[d], want, nodes).is_none() && !(!want && contains(roots, nodes[me].deps[d])) {
+			return false;
+		}
+		d += 1;
+	}
+	let mut g = 0;
+	while g < nodes[me].gates.len() {
+		if resolve(nodes[me].gates[g], false, nodes).is_none() {
+			return false;
+		}
+		g += 1;
+	}
+	true
+}
+
+/// [`graph!`]'s manifest check: every dep and gate of `name` is declared before it. `Pull` needs its
+/// deps already in the frame, so declaration order is load-bearing at the type level; this is the
+/// same fact with the offending field named. Says nothing about a dep that resolves to nothing —
+/// that is [`closed`]'s to report, and a root is always ahead of every field.
+#[doc(hidden)]
+pub const fn ordered(name: &'static str, nodes: &[NodeMeta]) -> bool {
+	let me = field(name, nodes);
+	let mut d = 0;
+	while d < nodes[me].deps.len() {
+		if matches!(resolve(nodes[me].deps[d], buffered(nodes[me].reach[d], nodes[me].folds[d]), nodes), Some(j) if j >= me) {
+			return false;
+		}
+		d += 1;
+	}
+	let mut g = 0;
+	while g < nodes[me].gates.len() {
+		if matches!(resolve(nodes[me].gates[g], false, nodes), Some(j) if j >= me) {
+			return false;
+		}
+		g += 1;
+	}
+	true
+}
+
+/// The fields in the closure of `outputs`, as a bitmask. Deps resolve backwards ([`ordered`]), so
+/// one reverse sweep is the whole fixpoint.
+///
+/// ponytail: a `u128` caps a graph at 128 fields, asserted rather than silently wrapped.
+const fn live(nodes: &[NodeMeta], outputs: &[&str]) -> u128 {
+	assert!(nodes.len() <= 128, "graph! tracks reachability in a u128: this graph has outgrown one");
+	let mut mask = 0u128;
+	let mut i = nodes.len();
+	while i > 0 {
+		i -= 1;
+		let mut j = i + 1;
+		let mut hit = contains(outputs, nodes[i].name);
+		while !hit && j < nodes.len() {
+			hit = mask >> j & 1 == 1 && consumes(&nodes[j], i, nodes);
+			j += 1;
+		}
+		if hit {
+			mask |= 1 << i;
+		}
+	}
+	mask
+}
+
+/// [`graph!`]'s manifest check: `name` is in the closure of the declared `outputs`. A field outside
+/// it is work nobody asked for, done every tick and read by nothing — the one failure here that
+/// nothing else in the type system catches.
+#[doc(hidden)]
+pub const fn reachable(name: &'static str, nodes: &[NodeMeta], outputs: &[&str]) -> bool {
+	live(nodes, outputs) >> field(name, nodes) & 1 == 1
+}
+
 const fn reaches_unbounded(reach: &[Horizon]) -> bool {
 	let mut i = 0;
 	while i < reach.len() {
@@ -1877,16 +2034,12 @@ const fn latched(gates: &[&str], nodes: &[NodeMeta]) -> bool {
 /// consumers) are graph outputs — exempt.
 #[doc(hidden)]
 pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
-	let mut me = 0;
-	while me < nodes.len() && !str_eq(nodes[me].name, name) {
-		me += 1;
-	}
-	assert!(me < nodes.len(), "shadowed: name must be one of nodes");
+	let me = field(name, nodes);
 	if reaches_unbounded(nodes[me].reach) || !nodes[me].gates.is_empty() {
 		return false;
 	}
 	let mut fc = 0;
-	while fc < nodes.len() && !(contains(nodes[fc].deps, name) && !latched(nodes[fc].gates, nodes)) {
+	while fc < nodes.len() && !(consumes(&nodes[fc], me, nodes) && !latched(nodes[fc].gates, nodes)) {
 		fc += 1;
 	}
 	if fc == nodes.len() {
@@ -1900,7 +2053,7 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 			let mut all = true;
 			let mut j = fc + 1;
 			while j < nodes.len() {
-				if contains(nodes[j].deps, name) && !latched(nodes[j].gates, nodes) && !contains(nodes[j].gates, gate) {
+				if consumes(&nodes[j], me, nodes) && !latched(nodes[j].gates, nodes) && !contains(nodes[j].gates, gate) {
 					all = false;
 					break;
 				}

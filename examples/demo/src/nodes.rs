@@ -446,6 +446,10 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], oi: OiRoot[Oi] };
 	out TickOut;
+	outputs { classified }
+	// `main.rs`'s day-end levels, the exact/FD witness and the viz overlay — nothing downstream reads
+	// any of them.
+	observe { cvd, oi_change, signal, atr_stop }
 	diff { signal: Signal }
 	emit bar: Bar1m,
 	// 61 = the deepest request (Momentum/Lambda1m's `window + 1`); VolUsd1h's 60 rides along.

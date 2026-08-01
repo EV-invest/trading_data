@@ -107,6 +107,8 @@ graph! {
 	batches Batches;
 	roots { src: Src[f64] };
 	out GOut;
+	outputs { sum3 }
+	observe { split, level }
 	hist: Buffer<Src, { Horizon::Elems(3) }>,
 	emit sum3: Sum3,
 	emit split: Split,
@@ -207,6 +209,7 @@ mod span {
 		batches SBatches;
 		roots { src: Src[f64] };
 		out SOut;
+		outputs { hist }
 		hist: Buffer<Src, { Horizon::Span(Timeframe::from_naive(10, TimeframeDesignator::Seconds)) }>,
 	}
 
@@ -318,6 +321,7 @@ mod revive {
 		batches LBatches;
 		roots { src: Src[f64], trig: Trig[u32] };
 		out LOut;
+		outputs { episodic }
 		latch { live: Live }
 		hist: Buffer<Src, { Horizon::Elems(3) }>,
 		live: Live,

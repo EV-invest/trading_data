@@ -69,6 +69,7 @@ graph! {
 	batches Batches;
 	roots { src: Src[Ev] };
 	out GOut;
+	outputs { windowed }
 	hot: Hot,
 	windowed: Windowed,
 }

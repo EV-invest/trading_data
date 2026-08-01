@@ -15,7 +15,7 @@ note: erroneous constant encountered
   |
 LL | / ...   const {
 LL | | ...       assert!(
-LL | | ...           <$G as GateSet>::NAMES.is_empty() || !<$D as DepSet>::FOLDED,
+LL | | ...           <$G as GateSet>::NAMES.is_empty() || !any(<$D as DepSet>::FOLDS),
 LL | | ...           "a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain i...
 LL | | ...       )
 LL | | ...   }

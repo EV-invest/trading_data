@@ -196,6 +196,8 @@ graph! {
 	batches Batches;
 	roots { trig: Trig[Pulse], feed: Feed[Pulse] };
 	out GOut;
+	outputs { deprec }
+	observe { leg, ticks }
 	latch { armed: Armed<Deprec> }
 	open: Open,
 	classify: Classify,
@@ -290,7 +292,9 @@ const LATCH_DISCOUNT: &[NodeMeta] = &[
 		name: "latch",
 		deps: &["arm"],
 		reach: &[Horizon::Unbounded],
+		folds: &[true],
 		gates: &[],
+		retains: false,
 		latch: true,
 	},
 	// bounded, ungated, and its only consumer sits behind the latch — a plain gate would shadow it.
@@ -298,14 +302,18 @@ const LATCH_DISCOUNT: &[NodeMeta] = &[
 		name: "warm",
 		deps: &["root"],
 		reach: &[Horizon::Unit],
+		folds: &[false],
 		gates: &[],
+		retains: false,
 		latch: false,
 	},
 	NodeMeta {
 		name: "episode",
 		deps: &["warm"],
 		reach: &[Horizon::Unit],
+		folds: &[false],
 		gates: &["latch"],
+		retains: false,
 		latch: false,
 	},
 ];
