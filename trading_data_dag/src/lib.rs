@@ -25,10 +25,14 @@
 //!   decides which roots are *required* ([`graph!`] exposes `required_events()`).
 //! - **Node identity = its type.** Two instances of one node type in a frame make [`Has`]
 //!   resolution ambiguous — a compile error. Distinguish via newtypes or const generics.
-//! - **A gate is scalar-out; a gated node may be batch-out.** A [`Gate`] outputs plain `bool`; nodes
-//!   naming it in [`Node::When`] / [`Emit::When`] are not advanced while it is false — a [`Node`]
-//!   reads [`Latent::latent`], a dark [`Emit`] is simply the empty run. The gate resolves once per
-//!   tick, so a gated batch node's episode boundary is quantized to its batch window.
+//! - **A gate is scalar-out; a gated node may be batch-out.** A [`Gate`] outputs plain `bool`; a
+//!   node naming it through a [`Gating`] dep is not advanced while it is false — a [`Node`] reads
+//!   [`Latent::latent`], a dark [`Emit`] is simply the empty run. The gate resolves once per tick,
+//!   so a gated batch node's episode boundary is quantized to its batch window.
+//! - **Gating is a dep kind.** A gate is an input like any other — the one that *dominates* — so it
+//!   is named in `Deps`, wrapped in [`Gating`], beside [`Buffering`] and [`Folding`]. One channel,
+//!   not two: what gates a node is also what it depends on, and no reader of the graph has to learn
+//!   a second edge set to see that.
 //! - **Horizon.** Reach is stated per *dep*, because "how far back must this be looked at" is a
 //!   question about an input: a bare dep reaches [`Horizon::Unit`] (this tick's batch), a
 //!   [`Buffering`] dep names the reach the *engine* retains for it, and a [`Folding`] dep names the
@@ -144,6 +148,31 @@ pub trait Cell {
 	/// Whether [`REACH`](Cell::REACH) is the *node's* to hold — true of [`Folding`] alone. A closed
 	/// gate pulls no deps, so a folded reach is the one thing gating cannot re-warm.
 	const FOLDED: bool = false;
+
+	/// Whether a consumer naming this in dep position is *dominated* by it — [`Gating`] alone. A type
+	/// rather than a `const` because it is what dispatches the dark branch ([`Dark`]), and only a type
+	/// can demand a [`Latent`] out of gated nodes alone.
+	type Gates: Bit = No;
+
+	/// Whether this dep, read here, lets its consumer advance. `true` for every dep but a [`Gating`]
+	/// one, whose out is permission rather than data.
+	fn opens(_: Self::Out<'_>) -> bool {
+		true
+	}
+}
+
+/// A `bool` in type position, so a dep kind's domination can both dispatch an impl ([`Dark`]) and
+/// land in [`graph!`]'s `const` manifest.
+pub trait Bit {
+	const VALUE: bool;
+}
+pub struct Yes;
+pub struct No;
+impl Bit for Yes {
+	const VALUE: bool = true;
+}
+impl Bit for No {
+	const VALUE: bool = false;
 }
 
 /// A cell output as a fixed-shape element array: the unit of observation and differentiation.
@@ -396,6 +425,11 @@ pub trait DepSet {
 	/// field a dep resolves against: folded or `Unit` reads the cell itself, anything else reads the
 	/// [`Buffer`] retaining it.
 	const FOLDS: &'static [bool];
+	/// Per-dep [`Cell::Gates`], positionally — which of these inputs are the node's gates.
+	const GATES: &'static [bool];
+	/// The leading dep's [`Cell::Gates`], which — gating deps leading, as [`Pull::open`] const-asserts
+	/// — is "is this node gated at all", in the type position [`Dark`] dispatches on.
+	type Lead: Bit;
 }
 
 const fn any(flags: &[bool]) -> bool {
@@ -407,6 +441,21 @@ const fn any(flags: &[bool]) -> bool {
 		i += 1;
 	}
 	false
+}
+
+/// Whether every gating dep precedes every plain one — see [`Pull::open`].
+const fn gating_leads(gates: &[bool]) -> bool {
+	let mut i = 0;
+	while i < gates.len() && gates[i] {
+		i += 1;
+	}
+	while i < gates.len() {
+		if gates[i] {
+			return false;
+		}
+		i += 1;
+	}
+	true
 }
 
 /// [`Flat`] over a whole dep tuple, elements concatenated in `Deps` order (each batch dep as its
@@ -510,6 +559,13 @@ pub trait Pull<'t, F, I>: DepSet {
 	fn pull(f: &F) -> Self::Outs<'t>
 	where
 		F: 't;
+
+	/// Whether every [`Gating`] dep of this set reads true — the one question answerable without
+	/// pulling anything else, and the reason gating deps must *lead* the tuple: the conjunction runs
+	/// in dep order, so a closed gate short-circuits before a plain dep is so much as read.
+	fn open(f: &F) -> bool
+	where
+		F: 't;
 }
 
 /// The "didn't run" value for gated nodes — `Option` and batch outs only, so gating a node with no
@@ -530,24 +586,25 @@ impl<T> Latent for &[T] {
 	}
 }
 
-/// The gates a node waits on: `()` or a small tuple of [`Gate`]s, all of which must be true
-/// for its `advance` to run. Same arity ceiling note as deps.
-pub trait GateSet {
-	const NAMES: &'static [&'static str];
+/// What a node reads on a tick its gate refused, dispatched on [`DepSet::Lead`] so the [`Latent`]
+/// bound lands on gated nodes alone — an ungated node is never dark, and demanding an unfired
+/// reading of it would rule out every scalar-out cell in the graph.
+pub trait Dark<B: Bit> {
+	fn dark() -> Self;
 }
-impl GateSet for () {
-	const NAMES: &'static [&'static str] = &[];
+impl<T> Dark<No> for T {
+	fn dark() -> Self {
+		unreachable!("an ungated node's `open` is const-true, so nothing reaches its dark branch")
+	}
 }
-impl<A: Gate> GateSet for (A,) {
-	const NAMES: &'static [&'static str] = &[A::NAME];
-}
-impl<A: Gate, B: Gate> GateSet for (A, B) {
-	const NAMES: &'static [&'static str] = &[A::NAME, B::NAME];
+impl<T: Latent> Dark<Yes> for T {
+	fn dark() -> Self {
+		T::latent()
+	}
 }
 
 pub trait Node: Cell {
 	type Deps: DepSet;
-	type When: GateSet = ();
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
 }
@@ -566,7 +623,6 @@ pub trait Emit: Series
 where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
 	type Deps: DepSet;
-	type When: GateSet = ();
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	fn emit<'t>(&mut self, deps: EmitOuts<'t, Self>, out: &mut alloc::vec::Vec<Self::Item>);
 }
@@ -706,7 +762,7 @@ where
 	}
 }
 
-/// A binary control signal. Nodes naming it in [`Node::When`] are not advanced while it is
+/// A binary control signal. A node naming it through a [`Gating`] dep is not advanced while it is
 /// false: deps not pulled, no work done, out = [`Latent::latent`]. Gates are scalar-out.
 pub trait Gate: Node
 where
@@ -771,7 +827,7 @@ where
 pub type TriggerOut<'t, N> = <<N as Episodic>::Trigger as Cell>::Out<'t>;
 
 /// An [`Episodic`] node's own contact, sealed in: an ordinary node stepped before `N`, so `N` and any
-/// leg meant to go dark with it name it in [`Node::When`]. It folds its trigger at
+/// leg meant to go dark with it name it in a [`Gating`] dep. It folds its trigger at
 /// [`Horizon::Unbounded`] by construction — a latched bit is exactly the state nothing reconstitutes
 /// — which is also why it can never itself be gated.
 ///
@@ -1191,15 +1247,74 @@ impl<C: Nudge, const H: Horizon> Nudge for Folding<C, H> {
 	}
 }
 
+/// Dep position only, never a frame field: the input that *dominates*. While it reads false its
+/// consumer does not advance — no other dep is pulled, and the out is [`Latent::latent`].
+///
+/// [`Buffering`]/[`Folding`]'s third sibling. Those two say how far back an input is read; this one
+/// says the input is permission rather than data. Being a dep is the point: what gates a node is
+/// also what it depends on, and stating it anywhere else makes an edge no reader of `Deps` can see.
+///
+/// Gating deps lead the tuple — see [`Pull::open`].
+pub struct Gating<C: Gate>(core::marker::PhantomData<C>);
+
+impl<C: Gate> Cell for Gating<C> {
+	type Gates = Yes;
+	type Out<'t> = bool;
+
+	/// Forwarded, for the same reason [`Folding`]'s is: the graph predicates match dep names against
+	/// frame cell names, and a wrapper that renamed its dep would drop out of every one of them.
+	const NAME: &'static str = C::NAME;
+
+	fn opens(out: <Self as Cell>::Out<'_>) -> bool {
+		out
+	}
+}
+
+impl<'t, C: Gate, T> Has<'t, Gating<C>, Here> for Cons<'t, C, T> {
+	fn get(&self) -> bool {
+		self.out
+	}
+}
+
+/// A gate carries no signal to differentiate against — [`Bump`] for `bool` already reads as much —
+/// so the column its slot owns stays NaN.
+impl<C: Gate> Nudge for Gating<C> {
+	type Scratch = bool;
+
+	fn stage<'t>(out: <Self as Cell>::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
+		match bump {
+			Some(slot) => {
+				let (v, dh) = Bump::bump(out, slot, h);
+				*s = v;
+				dh
+			}
+			None => {
+				*s = out;
+				0.0
+			}
+		}
+	}
+
+	fn view<'l>(s: &'l Self::Scratch) -> <Self as Cell>::Out<'l> {
+		*s
+	}
+}
+
 impl DepSet for () {
+	type Lead = No;
 	type Outs<'t> = ();
 
 	const FOLDS: &'static [bool] = &[];
+	const GATES: &'static [bool] = &[];
 	const NAMES: &'static [&'static str] = &[];
 	const REACH: &'static [Horizon] = &[];
 }
 impl<'t, F> Pull<'t, F, ()> for () {
 	fn pull(_: &F) {}
+
+	fn open(_: &F) -> bool {
+		true
+	}
 }
 impl DepFlat for () {
 	type Scratch = ();
@@ -1218,12 +1333,21 @@ impl DepFlat for () {
 	fn view<'l>(_: &'l Self::Scratch) -> Self::Outs<'l> {}
 }
 
+/// The head of a type list, for [`DepSet::Lead`] — only the leading dep can gate.
+macro_rules! head {
+	($A:ty $(, $T:ty)*) => {
+		$A
+	};
+}
+
 macro_rules! impl_arity {
 	($($T:ident $I:ident $v:ident $s:ident),+) => {
 		impl<$($T: Cell),+> DepSet for ($($T,)+) {
 			type Outs<'t> = ($($T::Out<'t>,)+);
+			type Lead = <head!($($T),+) as Cell>::Gates;
 
 			const FOLDS: &'static [bool] = &[$($T::FOLDED),+];
+			const GATES: &'static [bool] = &[$(<$T::Gates as Bit>::VALUE),+];
 			const NAMES: &'static [&'static str] = &[$($T::NAME),+];
 			const REACH: &'static [Horizon] = &[$($T::REACH),+];
 		}
@@ -1231,6 +1355,20 @@ macro_rules! impl_arity {
 		where F: $(Has<'t, $T, $I> +)+ {
 			fn pull(f: &F) -> Self::Outs<'t> where F: 't {
 				($(Has::<'t, $T, $I>::get(f),)+)
+			}
+
+			fn open(f: &F) -> bool where F: 't {
+				const {
+					assert!(
+						gating_leads(<Self as DepSet>::GATES),
+						"a `Gating` dep precedes the plain ones: a closed gate must pull nothing, and `open` reads the tuple left to right"
+					);
+					assert!(
+						!any(<Self as DepSet>::GATES) || !any(<Self as DepSet>::FOLDS),
+						"a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (a `Buffer<C, K>` field, and the dep as `Buffering<C, H>`), or drop the `Gating` dep"
+					);
+				}
+				true $(&& (!<$T::Gates as Bit>::VALUE || $T::opens(Has::<'t, $T, $I>::get(f))))+
 			}
 		}
 		impl<$($T: Nudge),+> DepFlat for ($($T,)+)
@@ -1286,146 +1424,34 @@ impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg);
 impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg, H Ih h sh);
 impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg, H Ih h sh, J Ij j sj);
 
-/// A gated node's every dep must be bare or [`Buffering`]: a closed gate pulls nothing, so the only
-/// reach that survives it is the one the frame holds. A macro and not a shared `const`, because
-/// `assert!` reads its message as a format string and so demands a literal.
-macro_rules! reject_gated_folding {
-	($D:ty, $G:ty) => {
-		const {
-			assert!(
-				<$G as GateSet>::NAMES.is_empty() || !any(<$D as DepSet>::FOLDS),
-				"a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (a `Buffer<C, K>` field, and the dep as `Buffering<C, H>`), or drop `When`"
-			)
-		}
-	};
-}
-
-/// Whether every gate in this set reads true in the frame. Split from [`Drive`] because gate
-/// resolution never touches the node: [`step_emit`] needs it without an `N` at all. `J` is the
-/// inferred index path.
-pub trait Open<'t, F, J>: GateSet {
-	fn open(f: &F) -> bool
-	where
-		F: 't;
-}
-
-impl<'t, F> Open<'t, F, ()> for () {
-	fn open(_: &F) -> bool
-	where
-		F: 't, {
-		true
-	}
-}
-
-impl<'t, F, A, Ia> Open<'t, F, (Ia,)> for (A,)
-where
-	A: Gate,
-	F: Has<'t, A, Ia>,
-{
-	fn open(f: &F) -> bool
-	where
-		F: 't, {
-		Has::<'t, A, Ia>::get(f)
-	}
-}
-
-impl<'t, F, A, Ia, B, Ib> Open<'t, F, (Ia, Ib)> for (A, B)
-where
-	A: Gate,
-	B: Gate,
-	F: Has<'t, A, Ia> + Has<'t, B, Ib>,
-{
-	fn open(f: &F) -> bool
-	where
-		F: 't, {
-		Has::<'t, A, Ia>::get(f) && Has::<'t, B, Ib>::get(f)
-	}
-}
-
-/// [`step`]'s evaluation dispatch, keyed on the node's [`Node::When`]: ungated nodes advance
-/// unconditionally; gated nodes advance only while [`Open`] reads true in the frame, yielding
-/// [`Latent::latent`] otherwise — deps not pulled. `I`/`J` are inferred index paths.
-pub trait Drive<'t, N: Node, F, I, J>: Open<'t, F, J> {
-	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
-	where
-		F: 't;
-}
-
-impl<'t, N, F, I> Drive<'t, N, F, I, ()> for ()
-where
-	N: Node<When = ()>,
-	N::Deps: Pull<'t, F, I>,
-{
-	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
-	where
-		F: 't, {
-		node.advance(<N::Deps as Pull<'t, F, I>>::pull(f))
-	}
-}
-
-impl<'t, N, F, I, A, Ia> Drive<'t, N, F, I, (Ia,)> for (A,)
-where
-	A: Gate,
-	N: Node<When = (A,)>,
-	N::Deps: Pull<'t, F, I>,
-	F: Has<'t, A, Ia>,
-	for<'x> N::Out<'x>: Latent,
-{
-	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
-	where
-		F: 't, {
-		reject_gated_folding!(<N as Node>::Deps, Self);
-		if !<Self as Open<'t, F, (Ia,)>>::open(f) {
-			return Latent::latent();
-		}
-		node.advance(<N::Deps as Pull<'t, F, I>>::pull(f))
-	}
-}
-
-impl<'t, N, F, I, A, Ia, B, Ib> Drive<'t, N, F, I, (Ia, Ib)> for (A, B)
-where
-	A: Gate,
-	B: Gate,
-	N: Node<When = (A, B)>,
-	N::Deps: Pull<'t, F, I>,
-	F: Has<'t, A, Ia> + Has<'t, B, Ib>,
-	for<'x> N::Out<'x>: Latent,
-{
-	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
-	where
-		F: 't, {
-		reject_gated_folding!(<N as Node>::Deps, Self);
-		if !<Self as Open<'t, F, (Ia, Ib)>>::open(f) {
-			return Latent::latent();
-		}
-		node.advance(<N::Deps as Pull<'t, F, I>>::pull(f))
-	}
-}
-
-/// Advances `node` over `frame` and pushes its output. The `Pull` bound is the engine's reason to
-/// exist: a node stepped before its deps are in the frame does not compile.
-pub fn step<'t, N, F, I, J>(frame: F, node: &'t mut N) -> Cons<'t, N, F>
+/// Advances `node` over `frame` and pushes its output — unless a [`Gating`] dep reads false, when
+/// nothing is pulled and the out is the node's [`Dark`] reading. The `Pull` bound is the engine's
+/// reason to exist: a node stepped before its deps are in the frame does not compile.
+pub fn step<'t, N, F, I>(frame: F, node: &'t mut N) -> Cons<'t, N, F>
 where
 	N: Node,
-	N::When: Drive<'t, N, F, I, J>,
+	N::Deps: Pull<'t, F, I>,
+	N::Out<'t>: Dark<<N::Deps as DepSet>::Lead>,
 	F: 't, {
-	let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
+	let out = match <N::Deps as Pull<'t, F, I>>::open(&frame) {
+		true => node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame)),
+		false => Dark::dark(),
+	};
 	Cons { out, tail: frame }
 }
 
 /// [`step`] for an [`Emit`]: clear the engine's buffer, let the node fill it, push it as the frame's
 /// out. The frame is keyed on `E` itself — the [`Emitter`] is storage, not a cell — so a dep naming
-/// `E` resolves through the ordinary [`Has`] impl.
-pub fn step_emit<'t, E, F, I, J>(frame: F, e: &'t mut Emitter<E>) -> Cons<'t, E, F>
+/// `E` resolves through the ordinary [`Has`] impl. A dark one needs no [`Dark`] reading: not
+/// emitting *is* the empty run.
+pub fn step_emit<'t, E, F, I>(frame: F, e: &'t mut Emitter<E>) -> Cons<'t, E, F>
 where
 	E: Emit,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Deps: Pull<'t, F, I>,
-	E::When: Open<'t, F, J>,
 	F: 't, {
-	reject_gated_folding!(<E as Emit>::Deps, <E as Emit>::When);
 	e.buf.clear();
-	if <E::When as Open<'t, F, J>>::open(&frame) {
+	if <E::Deps as Pull<'t, F, I>>::open(&frame) {
 		e.node.emit(<E::Deps as Pull<'t, F, I>>::pull(&frame), &mut e.buf);
 	}
 	Cons { out: &e.buf, tail: frame }
@@ -1466,21 +1492,22 @@ pub struct Fire<'a> {
 pub trait Observer {
 	/// Gates all flattening/FD work in [`step_obs`]; monomorphized away when `false`.
 	const ACTIVE: bool = true;
-	/// `gates` are the node's [`Node::When`] control edges (empty for ungated nodes and roots).
-	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [&'static str], fire: Fire<'_>);
+	/// `gates` is [`DepSet::GATES`]: positional with `deps`, marking the ones that are control edges
+	/// rather than data. All-`false` for ungated nodes, empty for roots.
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>);
 }
 
 impl Observer for () {
 	const ACTIVE: bool = false;
 
-	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [&'static str], _: Fire<'_>) {}
+	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], _: Fire<'_>) {}
 }
 
 /// Two interpretations of the same sweep — e.g. an app's own assertions next to a viz recorder.
 impl<A: Observer, B: Observer> Observer for (A, B) {
 	const ACTIVE: bool = A::ACTIVE || B::ACTIVE;
 
-	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [&'static str], fire: Fire<'_>) {
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
 		self.0.on(node, deps, gates, fire);
 		self.1.on(node, deps, gates, fire);
 	}
@@ -1541,28 +1568,26 @@ where
 /// Under an active observer, each fired node's Jacobian is finite-differenced: clone the
 /// pre-advance node, [`Nudge`] the *last* element of one dep (batch deps copied into scratch),
 /// re-advance the clone at a shorter lifetime, diff the last out elements.
-pub fn step_obs<'t, N, F, I, J, O: Observer>(frame: F, node: &'t mut N, obs: &mut O) -> Cons<'t, N, F>
+pub fn step_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node + Clone,
-	N::When: Drive<'t, N, F, I, J>,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: core::fmt::Debug + Glance,
+	N::Out<'t>: core::fmt::Debug + Glance + Dark<<N::Deps as DepSet>::Lead>,
 	F: 't, {
 	const { assert!(Plot::coherent(N::PLOTS), "a multi-plot node must name each plot's slots; `[]` claims all of them") }
 	if !O::ACTIVE {
-		let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
-		return Cons { out, tail: frame };
+		return step(frame, node);
 	}
 
 	// gate closed: no advance, no dep flatten, no FD — an unfired `Fire` is the honest view.
-	if !<N::When as Open<'t, F, J>>::open(&frame) {
-		let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
+	if !<N::Deps as Pull<'t, F, I>>::open(&frame) {
+		let out: N::Out<'t> = Dark::dark();
 		obs.on(
 			N::NAME,
 			<N::Deps as DepSet>::NAMES,
-			<N::When as GateSet>::NAMES,
+			<N::Deps as DepSet>::GATES,
 			Fire {
 				debug: &out,
 				glance: &out,
@@ -1599,7 +1624,7 @@ where
 	obs.on(
 		N::NAME,
 		<N::Deps as DepSet>::NAMES,
-		<N::When as GateSet>::NAMES,
+		<N::Deps as DepSet>::GATES,
 		Fire {
 			debug: &out,
 			glance: &out,
@@ -1658,27 +1683,25 @@ where
 
 /// [`step_emit`] + [`Observer::on`] before the push — [`step_obs`]'s sibling, with the engine's
 /// buffer standing in for the node's out. A gate-closed emit node is simply the empty run.
-pub fn step_emit_obs<'t, E, F, I, J, O: Observer>(frame: F, e: &'t mut Emitter<E>, obs: &mut O) -> Cons<'t, E, F>
+pub fn step_emit_obs<'t, E, F, I, O: Observer>(frame: F, e: &'t mut Emitter<E>, obs: &mut O) -> Cons<'t, E, F>
 where
 	E: Emit + Clone,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Item: Flat + core::fmt::Debug + Glance,
 	E::Deps: Pull<'t, F, I> + DepFlat,
-	E::When: Open<'t, F, J>,
 	EmitOuts<'t, E>: Copy,
 	F: 't, {
 	const { assert!(Plot::coherent(<E as Emit>::PLOTS), "a multi-plot node must name each plot's slots; `[]` claims all of them") }
-	reject_gated_folding!(<E as Emit>::Deps, <E as Emit>::When);
 	e.buf.clear();
 
 	// gate closed: no emit, no dep flatten, no FD — the empty run is the honest view.
-	if !<E::When as Open<'t, F, J>>::open(&frame) {
+	if !<E::Deps as Pull<'t, F, I>>::open(&frame) {
 		let out: &'t [E::Item] = &e.buf;
 		if O::ACTIVE {
 			obs.on(
 				E::NAME,
 				<E::Deps as DepSet>::NAMES,
-				<E::When as GateSet>::NAMES,
+				<E::Deps as DepSet>::GATES,
 				Fire {
 					debug: &out,
 					glance: &out,
@@ -1721,7 +1744,7 @@ where
 	obs.on(
 		E::NAME,
 		<E::Deps as DepSet>::NAMES,
-		<E::When as GateSet>::NAMES,
+		<E::Deps as DepSet>::GATES,
 		Fire {
 			debug: &out,
 			glance: &out,
@@ -1743,17 +1766,22 @@ where
 /// [`step_obs`]'s sibling for a [`Diff`] node: the same advance + FD momentary Jacobian, plus the
 /// *exact* partials, the equation formula, and its simplified per-dep derivatives — the graph's
 /// "differentiate + document themselves" reading. The `graph!` `diff { }` group routes fields here.
-pub fn step_exact<'t, N, F, I, J, O: Observer>(frame: F, node: &'t mut N, obs: &mut O) -> Cons<'t, N, F>
+pub fn step_exact<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node + Diff + Clone,
-	N::When: Drive<'t, N, F, I, J>,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
 	N::Out<'t>: core::fmt::Debug + Glance,
 	F: 't, {
+	const {
+		assert!(
+			!any(<N::Deps as DepSet>::GATES),
+			"a `diff` node is ungated: its exact partials are stated over deps it pulls every tick"
+		)
+	}
 	if !O::ACTIVE {
-		let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
+		let out = node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame));
 		return Cons { out, tail: frame };
 	}
 
@@ -1785,7 +1813,7 @@ where
 	obs.on(
 		N::NAME,
 		<N::Deps as DepSet>::NAMES,
-		<N::When as GateSet>::NAMES,
+		<N::Deps as DepSet>::GATES,
 		Fire {
 			debug: &out,
 			glance: &out,
@@ -1847,7 +1875,7 @@ pub trait Roots {
 #[doc(hidden)]
 pub use alloc::vec::Vec as MacroVec;
 
-/// One node's compile-time shape, as [`graph!`] sees it. `name`/`deps`/`gates` are
+/// One node's compile-time shape, as [`graph!`] sees it. `name`/`deps` are
 /// [`core::any::type_name`] strings: const-comparable, never persisted.
 #[doc(hidden)]
 pub struct NodeMeta {
@@ -1857,7 +1885,8 @@ pub struct NodeMeta {
 	pub reach: &'static [Horizon],
 	/// Per-dep, positionally with `deps`.
 	pub folds: &'static [bool],
-	pub gates: &'static [&'static str],
+	/// Per-dep, positionally with `deps`: which of them are gates.
+	pub gates: &'static [bool],
 	/// A [`Buffer`] field: it *is* the frame's retention of `deps[0]`, which is how a `Buffering` dep
 	/// finds it while a bare read of the same cell goes elsewhere.
 	pub retains: bool,
@@ -1929,7 +1958,7 @@ const fn buffered(reach: Horizon, folds: bool) -> bool {
 	!folds && !matches!(reach, Horizon::Unit)
 }
 
-/// Whether field `c` reads field `i`, by dep or by gate.
+/// Whether field `c` reads field `i` — gates included, a gate being a dep.
 const fn consumes(c: &NodeMeta, i: usize, nodes: &[NodeMeta]) -> bool {
 	let mut d = 0;
 	while d < c.deps.len() {
@@ -1938,19 +1967,25 @@ const fn consumes(c: &NodeMeta, i: usize, nodes: &[NodeMeta]) -> bool {
 		}
 		d += 1;
 	}
-	let mut g = 0;
-	while g < c.gates.len() {
-		if matches!(resolve(c.gates[g], false, nodes), Some(j) if j == i) {
+	false
+}
+
+/// Whether `deps` names `gate` in a gating position — the const mirror of a [`Gating`] dep.
+#[doc(hidden)]
+pub const fn gates_on(deps: &[&str], gates: &[bool], gate: &str) -> bool {
+	let mut i = 0;
+	while i < deps.len() {
+		if gates[i] && str_eq(deps[i], gate) {
 			return true;
 		}
-		g += 1;
+		i += 1;
 	}
 	false
 }
 
-/// [`graph!`]'s manifest check: every dep and gate of `name` resolves to a declared field or to a
-/// root. What it catches is a node left out of the list, which otherwise surfaces as an unresolved
-/// `Pull` bound naming everything but the culprit.
+/// [`graph!`]'s manifest check: every dep of `name` resolves to a declared field or to a root. What
+/// it catches is a node left out of the list, which otherwise surfaces as an unresolved `Pull` bound
+/// naming everything but the culprit.
 #[doc(hidden)]
 pub const fn closed(name: &'static str, nodes: &[NodeMeta], roots: &[&str]) -> bool {
 	let me = field(name, nodes);
@@ -1963,17 +1998,10 @@ pub const fn closed(name: &'static str, nodes: &[NodeMeta], roots: &[&str]) -> b
 		}
 		d += 1;
 	}
-	let mut g = 0;
-	while g < nodes[me].gates.len() {
-		if resolve(nodes[me].gates[g], false, nodes).is_none() {
-			return false;
-		}
-		g += 1;
-	}
 	true
 }
 
-/// [`graph!`]'s manifest check: every dep and gate of `name` is declared before it. `Pull` needs its
+/// [`graph!`]'s manifest check: every dep of `name` is declared before it. `Pull` needs its
 /// deps already in the frame, so declaration order is load-bearing at the type level; this is the
 /// same fact with the offending field named. Says nothing about a dep that resolves to nothing —
 /// that is [`closed`]'s to report, and a root is always ahead of every field.
@@ -1986,13 +2014,6 @@ pub const fn ordered(name: &'static str, nodes: &[NodeMeta]) -> bool {
 			return false;
 		}
 		d += 1;
-	}
-	let mut g = 0;
-	while g < nodes[me].gates.len() {
-		if matches!(resolve(nodes[me].gates[g], false, nodes), Some(j) if j >= me) {
-			return false;
-		}
-		g += 1;
 	}
 	true
 }
@@ -2039,11 +2060,11 @@ const fn reaches_unbounded(reach: &[Horizon]) -> bool {
 	false
 }
 
-/// Whether any of `gates` names a latch.
-const fn latched(gates: &[&str], nodes: &[NodeMeta]) -> bool {
+/// Whether any gate of `m` is a latch.
+const fn latched(m: &NodeMeta, nodes: &[NodeMeta]) -> bool {
 	let mut i = 0;
 	while i < nodes.len() {
-		if nodes[i].latch && contains(gates, nodes[i].name) {
+		if nodes[i].latch && gates_on(m.deps, m.gates, nodes[i].name) {
 			return true;
 		}
 		i += 1;
@@ -2059,11 +2080,11 @@ const fn latched(gates: &[&str], nodes: &[NodeMeta]) -> bool {
 #[doc(hidden)]
 pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 	let me = field(name, nodes);
-	if reaches_unbounded(nodes[me].reach) || !nodes[me].gates.is_empty() {
+	if reaches_unbounded(nodes[me].reach) || any(nodes[me].gates) {
 		return false;
 	}
 	let mut fc = 0;
-	while fc < nodes.len() && !(consumes(&nodes[fc], me, nodes) && !latched(nodes[fc].gates, nodes)) {
+	while fc < nodes.len() && !(consumes(&nodes[fc], me, nodes) && !latched(&nodes[fc], nodes)) {
 		fc += 1;
 	}
 	if fc == nodes.len() {
@@ -2071,13 +2092,13 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 	}
 	// a common gate must appear on the first consumer; try each of its gates against the rest
 	let mut g = 0;
-	while g < nodes[fc].gates.len() {
-		let gate = nodes[fc].gates[g];
-		if !str_eq(gate, name) {
+	while g < nodes[fc].deps.len() {
+		let gate = nodes[fc].deps[g];
+		if nodes[fc].gates[g] && !str_eq(gate, name) {
 			let mut all = true;
 			let mut j = fc + 1;
 			while j < nodes.len() {
-				if consumes(&nodes[j], me, nodes) && !latched(nodes[j].gates, nodes) && !contains(nodes[j].gates, gate) {
+				if consumes(&nodes[j], me, nodes) && !latched(&nodes[j], nodes) && !gates_on(nodes[j].deps, nodes[j].gates, gate) {
 					all = false;
 					break;
 				}
@@ -2092,15 +2113,15 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 	false
 }
 
-/// A latch is cut from within, so its [`Cut`](Latch::Cut) must be a stepped field naming it in the
-/// gates. Absent from the manifest ⇒ a root, and a root is never gated — which is exactly what the
-/// old `Cut: Node` bound stood in for, minus its blindness to an [`Emit`].
+/// A latch is cut from within, so its [`Cut`](Latch::Cut) must be a stepped field naming it in a
+/// [`Gating`] dep. Absent from the manifest ⇒ a root, and a root is never gated — which is exactly
+/// what the old `Cut: Node` bound stood in for, minus its blindness to an [`Emit`].
 #[doc(hidden)]
 pub const fn cut_gated(cut: &'static str, latch: &'static str, nodes: &[NodeMeta]) -> bool {
 	let mut i = 0;
 	while i < nodes.len() {
 		if str_eq(nodes[i].name, cut) {
-			return contains(nodes[i].gates, latch);
+			return gates_on(nodes[i].deps, nodes[i].gates, latch);
 		}
 		i += 1;
 	}
@@ -2117,7 +2138,7 @@ pub const fn deadlocked(latch: &'static str, arms: &'static [&'static str], node
 		let mut i = 0;
 		while i < nodes.len() {
 			// a name absent from `nodes` is a root — external, always live, exempt.
-			if str_eq(nodes[i].name, arms[a]) && contains(nodes[i].gates, latch) {
+			if str_eq(nodes[i].name, arms[a]) && gates_on(nodes[i].deps, nodes[i].gates, latch) {
 				return true;
 			}
 			i += 1;

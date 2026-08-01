@@ -105,7 +105,7 @@ fn diamond_option_propagation() {
 #[derive(Default)]
 struct Rec(Vec<(&'static str, &'static [&'static str], String)>);
 impl Observer for Rec {
-	fn on(&mut self, node: &'static str, deps: &'static [&'static str], _: &'static [&'static str], fire: Fire<'_>) {
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
 		self.0.push((node, deps, format!("{:?}", fire.debug)));
 	}
 }
@@ -215,7 +215,7 @@ fn inference_stress_depth_10_arity_8() {
 #[derive(Default)]
 struct JacRec(Vec<Option<Vec<f64>>>);
 impl Observer for JacRec {
-	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [&'static str], fire: Fire<'_>) {
+	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
 		self.0.push(fire.jac.map(<[f64]>::to_vec));
 	}
 }

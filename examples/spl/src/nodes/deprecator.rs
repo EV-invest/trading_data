@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Armed, Cell, Emit, EmitOuts, Episode, Episodic, Flat, Glance, Plot, TriggerOut, slice_nudge};
+use trading_data::{Armed, Cell, Emit, EmitOuts, Episode, Episodic, Flat, Gating, Glance, Plot, TriggerOut, slice_nudge};
 use trading_data_core::Side;
 
 use super::{atr::Atr, book_top::BookTop, classify::Classify, latest};
@@ -144,8 +144,7 @@ impl Cell for Deprecator {
 	type Out<'t> = &'t [Option<Intent>];
 }
 impl Emit for Deprecator {
-	type Deps = (Classify, Atr, BookTop);
-	type When = (Armed<Deprecator>,);
+	type Deps = (Gating<Armed<Deprecator>>, Classify, Atr, BookTop);
 
 	const PLOTS: &'static [Plot] = &[
 		Plot {
@@ -161,7 +160,8 @@ impl Emit for Deprecator {
 		},
 	];
 
-	fn emit(&mut self, (classify, atr, top): EmitOuts<'_, Self>, out: &mut Vec<Option<Intent>>) {
+	fn emit(&mut self, (armed, classify, atr, top): EmitOuts<'_, Self>, out: &mut Vec<Option<Intent>>) {
+		assert!(armed, "a gating dep reads true inside `emit`");
 		let liq = &strategy().classification.liquidations;
 		latest(&mut self.last_atr, atr, top.len());
 

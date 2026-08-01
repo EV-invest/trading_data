@@ -2,7 +2,7 @@
 //! `Latch::Cut: Node` bound stood in for this; `cut_gated` reads the manifest instead, and says it
 //! in the graph's own words.
 
-use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Glance, Latch, Node, slice_nudge, value_nudge};
+use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Latch, Node, slice_nudge, value_nudge};
 use trading_data_macros::graph;
 
 #[derive(Clone, Copy, Debug)]
@@ -65,10 +65,9 @@ impl Cell for Sink {
 	type Out<'t> = Option<f64>;
 }
 impl Node for Sink {
-	type Deps = (Src,);
-	type When = (L,);
+	type Deps = (Gating<L>, Src);
 
-	fn advance<'t>(&'t mut self, (s,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (_, s): DepOuts<'t, Self>) -> Self::Out<'t> {
 		Some(s.len() as f64)
 	}
 }

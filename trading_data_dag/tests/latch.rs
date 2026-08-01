@@ -6,7 +6,7 @@
 //! The root is batch (`&[Pulse]`); the gate/latch/episode nodes stay scalar-out. `None` becomes
 //! an empty root slice, `Some(Pulse)` a one-element slice.
 
-use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Glance, Latch, Node, graph, slice_nudge};
+use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Latch, Node, graph, slice_nudge};
 
 #[derive(Clone, Copy, Debug)]
 struct Pulse;
@@ -100,10 +100,10 @@ impl Cell for Deprec {
 	type Out<'t> = Option<Phase>;
 }
 impl Node for Deprec {
-	type Deps = (Trig,);
-	type When = (Live,);
+	type Deps = (Gating<Live>, Trig);
 
-	fn advance<'t>(&'t mut self, _: DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (live, _): DepOuts<'t, Self>) -> Self::Out<'t> {
+		assert!(live, "a gating dep reads true inside `advance`");
 		self.t += 1;
 		Some(if self.t >= 3 { Phase::Done } else { Phase::Degrading(self.t) })
 	}

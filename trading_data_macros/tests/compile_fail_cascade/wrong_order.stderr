@@ -24,28 +24,18 @@ LL | |     a: A,
 LL | | }
   | |_- required by a bound introduced by this call
   |
-help: the following other types implement trait `Has<'t, N, I>`
-  --> $DIR/trading_data_dag/src/lib.rs:LL:CC
-  |
-LL |   impl<'t, N: Cell, T> Has<'t, N, Here> for Cons<'t, N, T> {
-  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Cons<'t, N, T>` implements `Has<'t, N, Here>`
-...
-LL | / impl<'t, N: Cell, M: Cell, T, I> Has<'t, N, There<I>> for Cons<'t, M, T>
-LL | | where
-LL | |     T: Has<'t, N, I>,
-  | |_____________________^ `Cons<'t, M, T>` implements `Has<'t, N, There<I>>`
-...
-LL |   impl<'t, C: Series, const K: Horizon, const H: Horizon, T> Has<'t, Buffering<C, H>, Here> for Cons<'t, Buffer<C, K>, T> {
-  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Cons<'t, Buffer<C, K>, T>` implements `Has<'t, Buffering<C, H>, Here>`
-...
-LL |   impl<'t, C: Cell, const H: Horizon, T> Has<'t, Folding<C, H>, Here> for Cons<'t, C, T> {
-  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Cons<'t, C, T>` implements `Has<'t, Folding<C, H>, Here>`
+     = help: the following other types implement trait `Has<'t, N, I>`:
+               `Cons<'t, Buffer<C, K>, T>` implements `Has<'t, Buffering<C, H>, Here>`
+               `Cons<'t, C, T>` implements `Has<'t, Folding<C, H>, Here>`
+               `Cons<'t, C, T>` implements `Has<'t, Gating<C>, Here>`
+               `Cons<'t, M, T>` implements `Has<'t, N, There<I>>`
+               `Cons<'t, N, T>` implements `Has<'t, N, Here>`
      = note: required for `Cons<'_, Src, Nil>` to implement `Has<'_, A, There<_>>`
      = note: required for `(A,)` to implement `Pull<'_, Cons<'_, Src, Nil>, (There<_>,)>`
 note: required by a bound in `step_obs`
   --> $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
-LL | pub fn step_obs<'t, N, F, I, J, O: Observer>(frame: F, node: &'t mut N, obs: &mut O) -> Cons<'t, N, F>
+LL | pub fn step_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, obs: &mut O) -> Cons<'t, N, F>
   |        -------- required by a bound in this function
 ...
 LL |     N::Deps: Pull<'t, F, I> + DepFlat,

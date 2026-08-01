@@ -2,7 +2,7 @@
 //! entirely, while its unbounded deps keep warming. Plus the [`graph!`] completeness rule
 //! ([`shadowed`]) over hand-built metas.
 
-use trading_data_dag::{Cell, Cons, DepOuts, Gate, Horizon, Nil, Node, NodeMeta, shadowed, step};
+use trading_data_dag::{Cell, Cons, DepOuts, Gate, Gating, Horizon, Nil, Node, NodeMeta, shadowed, step};
 
 struct Feed;
 impl Cell for Feed {
@@ -47,10 +47,10 @@ impl Cell for Gated {
 	type Out<'t> = Option<f64>;
 }
 impl Node for Gated {
-	type Deps = (Hist,);
-	type When = (Hot,);
+	type Deps = (Gating<Hot>, Hist);
 
-	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (hot, hist): DepOuts<'t, Self>) -> Self::Out<'t> {
+		assert!(hot, "a gating dep reads true inside `advance`");
 		self.calls += 1;
 		hist
 	}
@@ -99,7 +99,7 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			reach: &[Horizon::Unbounded],
 			folds: &[true],
-			gates: &[],
+			gates: &[false],
 			retains: false,
 			latch: false,
 		},
@@ -108,7 +108,7 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["hist"],
 			reach: &[Horizon::Unbounded],
 			folds: &[true],
-			gates: &[],
+			gates: &[false],
 			retains: false,
 			latch: false,
 		},
@@ -117,7 +117,7 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			reach: &[Horizon::Unit],
 			folds: &[false],
-			gates: &[],
+			gates: &[false],
 			retains: false,
 			latch: false,
 		},
@@ -126,7 +126,7 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			reach: &[Horizon::Unit],
 			folds: &[false],
-			gates: &[],
+			gates: &[false],
 			retains: false,
 			latch: false,
 		},
@@ -135,16 +135,16 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root", "hist"],
 			reach: &[Horizon::Unit, Horizon::Unbounded],
 			folds: &[false, true],
-			gates: &[],
+			gates: &[false, false],
 			retains: false,
 			latch: false,
 		},
 		NodeMeta {
 			name: "cls",
-			deps: &["cur", "hist", "mixed", "part"],
-			reach: &[Horizon::Unit, Horizon::Unit, Horizon::Unit, Horizon::Unit],
-			folds: &[false, false, false, false],
-			gates: &["gate"],
+			deps: &["gate", "cur", "hist", "mixed", "part"],
+			reach: &[Horizon::Unit, Horizon::Unit, Horizon::Unit, Horizon::Unit, Horizon::Unit],
+			folds: &[false, false, false, false, false],
+			gates: &[true, false, false, false, false],
 			retains: false,
 			latch: false,
 		},
@@ -153,7 +153,7 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["mixed"],
 			reach: &[Horizon::Unit],
 			folds: &[false],
-			gates: &[],
+			gates: &[false],
 			retains: false,
 			latch: false,
 		},
@@ -175,7 +175,7 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			reach: &[Horizon::Unit],
 			folds: &[false],
-			gates: &[],
+			gates: &[false],
 			retains: false,
 			latch: false,
 		},
@@ -184,7 +184,7 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["g"],
 			reach: &[Horizon::Unit],
 			folds: &[false],
-			gates: &["g"],
+			gates: &[true],
 			retains: false,
 			latch: false,
 		},
@@ -198,57 +198,57 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			reach: &[Horizon::Unit],
 			folds: &[false],
-			gates: &[],
+			gates: &[false],
 			retains: false,
 			latch: false,
 		},
 		NodeMeta {
 			name: "a",
-			deps: &["x"],
-			reach: &[Horizon::Unit],
-			folds: &[false],
-			gates: &["g1"],
+			deps: &["g1", "x"],
+			reach: &[Horizon::Unit, Horizon::Unit],
+			folds: &[false, false],
+			gates: &[true, false],
 			retains: false,
 			latch: false,
 		},
 		NodeMeta {
 			name: "b",
-			deps: &["x"],
-			reach: &[Horizon::Unit],
-			folds: &[false],
-			gates: &["g2"],
+			deps: &["g2", "x"],
+			reach: &[Horizon::Unit, Horizon::Unit],
+			folds: &[false, false],
+			gates: &[true, false],
 			retains: false,
 			latch: false,
 		},
 	];
 	assert!(!shadowed("x", split));
 
-	// common gate buried in multi-gate Whens still counts.
+	// common gate buried in a multi-gate dep list still counts.
 	let multi = &[
 		NodeMeta {
 			name: "x",
 			deps: &["root"],
 			reach: &[Horizon::Unit],
 			folds: &[false],
-			gates: &[],
+			gates: &[false],
 			retains: false,
 			latch: false,
 		},
 		NodeMeta {
 			name: "a",
-			deps: &["x"],
-			reach: &[Horizon::Unit],
-			folds: &[false],
-			gates: &["g1", "g2"],
+			deps: &["g1", "g2", "x"],
+			reach: &[Horizon::Unit, Horizon::Unit, Horizon::Unit],
+			folds: &[false, false, false],
+			gates: &[true, true, false],
 			retains: false,
 			latch: false,
 		},
 		NodeMeta {
 			name: "b",
-			deps: &["x"],
-			reach: &[Horizon::Unit],
-			folds: &[false],
-			gates: &["g2"],
+			deps: &["g2", "x"],
+			reach: &[Horizon::Unit, Horizon::Unit],
+			folds: &[false, false],
+			gates: &[true, false],
 			retains: false,
 			latch: false,
 		},

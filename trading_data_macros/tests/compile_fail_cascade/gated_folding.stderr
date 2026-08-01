@@ -1,36 +1,37 @@
-error[E0080]: evaluation panicked: a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (a `Buffer<C, K>` field, and the dep as `Buffering<C, H>`), or drop `When`
+error[E0080]: evaluation panicked: a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (a `Buffer<C, K>` field, and the dep as `Buffering<C, H>`), or drop the `Gating` dep
   --> <sysroot>/library/core/src/panic.rs:LL:CC
   |
-    = note: evaluation of `<(Hot,) as trading_data_dag::Drive<'_, Windowed, trading_data_dag::Cons<'_, Hot, trading_data_dag::Cons<'_, Src, trading_data_dag::Nil>>, (trading_data_dag::There<trading_data_dag::Here>,), (trading_data_dag::Here,)>>::drive::{constant#0}` failed here
+    = note: evaluation of `<(trading_data_dag::Gating<Hot>, trading_data_dag::Folding<Src, trading_data_dag::Horizon::Elems(3)>) as trading_data_dag::Pull<'_, trading_data_dag::Cons<'_, Hot, trading_data_dag::Cons<'_, Src, trading_data_dag::Nil>>, (trading_data_dag::Here, trading_data_dag::There<trading_data_dag::Here>)>>::open::{constant#0}` failed here
   |
     ::: $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
-LL |         reject_gated_folding!(<N as Node>::Deps, Self);
-  |         ---------------------------------------------- in this macro invocation
+LL | impl_arity!(A Ia a sa, B Ib b sb);
+  | --------------------------------- in this macro invocation
   |
-     = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `reject_gated_folding` (in Nightly builds, run with -Z macro-backtrace for more info)
+     = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `impl_arity` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 note: erroneous constant encountered
   --> $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
-LL | / ...   const {
-LL | | ...       assert!(
-LL | | ...           <$G as GateSet>::NAMES.is_empty() || !any(<$D as DepSet>::FOLDS),
-LL | | ...           "a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain i...
-LL | | ...       )
-LL | | ...   }
-  | |_______^
+LL | /                 const {
+LL | |                     assert!(
+LL | |                         gating_leads(<Self as DepSet>::GATES),
+LL | |                         "a `Gating` dep precedes the plain ones: a closed gate must pull nothing, and `open` reads the tuple lef...
+...    |
+LL | |                     );
+LL | |                 }
+  | |_________________^
 ...
-LL |   ...   reject_gated_folding!(<N as Node>::Deps, Self);
-  |         ---------------------------------------------- in this macro invocation
+LL |   impl_arity!(A Ia a sa, B Ib b sb);
+  |   --------------------------------- in this macro invocation
   |
-     = note: this note originates in the macro `reject_gated_folding` (in Nightly builds, run with -Z macro-backtrace for more info)
+     = note: this note originates in the macro `impl_arity` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-note: the above error was encountered while instantiating `fn <(Hot,) as Drive<'_, Windowed, Cons<'_, Hot, ...>, ..., ...>>::drive`
+note: the above error was encountered while instantiating `fn <(Gating<Hot>, Folding<Src, Elems(3)>) as Pull<'_, ..., ...>>::open`
   --> $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
-LL |         let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
-  |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+LL |     let out = match <N::Deps as Pull<'t, F, I>>::open(&frame) {
+  |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
      = note: the full name for the type has been written to '$DIR/trading_data_macros/target/ui/0/tests/compile_fail_cascade/gated_folding.long-type.txt'
      = note: consider using `--verbose` to print the full type name to the console

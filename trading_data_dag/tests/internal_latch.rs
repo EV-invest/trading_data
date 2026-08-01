@@ -7,7 +7,9 @@
 //! batch whose terminal element is *not* last still commutates (`Episode for &[T]` is `any`, not
 //! `last`).
 
-use trading_data_dag::{Armed, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Episodic, Flat, Gate, Glance, Horizon, Node, NodeMeta, TriggerOut, graph, shadowed, slice_nudge, value_nudge};
+use trading_data_dag::{
+	Armed, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Episodic, Flat, Gate, Gating, Glance, Horizon, Node, NodeMeta, TriggerOut, graph, shadowed, slice_nudge, value_nudge,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Pulse;
@@ -68,10 +70,10 @@ impl Cell for Classify {
 	type Out<'t> = Option<Pulse>;
 }
 impl Node for Classify {
-	type Deps = (Trig,);
-	type When = (Open,);
+	type Deps = (Gating<Open>, Trig);
 
-	fn advance<'t>(&'t mut self, (trig,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (open, trig): DepOuts<'t, Self>) -> Self::Out<'t> {
+		assert!(open, "a gating dep reads true inside `advance`");
 		self.calls += 1;
 		trig.first().copied()
 	}
@@ -123,10 +125,9 @@ impl Cell for Deprec {
 	type Out<'t> = &'t [Option<Phase>];
 }
 impl Emit for Deprec {
-	type Deps = (Classify, Feed);
-	type When = (Armed<Deprec>,);
+	type Deps = (Gating<Armed<Deprec>>, Classify, Feed);
 
-	fn emit(&mut self, (_, feed): EmitOuts<'_, Self>, out: &mut Vec<Option<Phase>>) {
+	fn emit(&mut self, (_, _, feed): EmitOuts<'_, Self>, out: &mut Vec<Option<Phase>>) {
 		self.calls += 1;
 		for _ in feed {
 			if self.idle {
@@ -160,10 +161,9 @@ impl Cell for Leg {
 	type Out<'t> = &'t [Option<Pulse>];
 }
 impl Emit for Leg {
-	type Deps = (Feed,);
-	type When = (Armed<Deprec>,);
+	type Deps = (Gating<Armed<Deprec>>, Feed);
 
-	fn emit(&mut self, (feed,): EmitOuts<'_, Self>, out: &mut Vec<Option<Pulse>>) {
+	fn emit(&mut self, (_, feed): EmitOuts<'_, Self>, out: &mut Vec<Option<Pulse>>) {
 		self.calls += 1;
 		out.extend(feed.iter().copied().map(Some));
 	}
@@ -289,7 +289,7 @@ const LATCH_DISCOUNT: &[NodeMeta] = &[
 		deps: &["arm"],
 		reach: &[Horizon::Unbounded],
 		folds: &[true],
-		gates: &[],
+		gates: &[false],
 		retains: false,
 		latch: true,
 	},
@@ -299,16 +299,16 @@ const LATCH_DISCOUNT: &[NodeMeta] = &[
 		deps: &["root"],
 		reach: &[Horizon::Unit],
 		folds: &[false],
-		gates: &[],
+		gates: &[false],
 		retains: false,
 		latch: false,
 	},
 	NodeMeta {
 		name: "episode",
-		deps: &["warm"],
-		reach: &[Horizon::Unit],
-		folds: &[false],
-		gates: &["latch"],
+		deps: &["latch", "warm"],
+		reach: &[Horizon::Unit, Horizon::Unit],
+		folds: &[false, false],
+		gates: &[true, false],
 		retains: false,
 		latch: false,
 	},

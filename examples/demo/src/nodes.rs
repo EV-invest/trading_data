@@ -367,7 +367,7 @@ impl Emit for Screener {
 }
 slice_nudge!(Screener, bool);
 
-/// Per-bar 4-way distribution, gated (as a plain zip, not `When`) on the same-rate Screener: a
+/// Per-bar 4-way distribution, gated (as a plain zip, not a `Gating` dep) on the same-rate Screener: a
 /// `Some` where the screener fired, `None` otherwise.
 #[derive(Clone, Default)]
 pub struct Classify;

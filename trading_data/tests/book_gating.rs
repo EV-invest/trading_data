@@ -1,8 +1,8 @@
 //! The book as a gateable stateful node. Three claims, in order:
 //!
 //! 1. an unseeded book publishes `None` — the fold's own honesty, not a wrapper's;
-//! 2. a closed gate leaves the venue frames *untouched* — `Drive` returns `Latent` without pulling
-//!    deps, so no checkpoint and no level is read;
+//! 2. a closed gate leaves the venue frames *untouched* — the node goes dark without pulling its
+//!    plain deps, so no checkpoint and no level is read;
 //! 3. reopening does not fold onto stale state — the `monotonic_seq` discontinuity the skipped
 //!    frames left behind desyncs it, and only the next checkpoint re-arms it.
 //!
@@ -10,7 +10,7 @@
 //! checkpoint instead of from a warmup it can never recover.
 
 use trading_data::{
-	Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaBuf, DeltaFrame, DepOuts, FrameKind, Gate, Node, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades, Ts,
+	Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaBuf, DeltaFrame, DepOuts, FrameKind, Gate, Gating, Node, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades, Ts,
 };
 
 const PREC: PrecisionPriceQty = PrecisionPriceQty {
@@ -18,7 +18,7 @@ const PREC: PrecisionPriceQty = PrecisionPriceQty {
 	qty: Precision(4),
 };
 
-/// `Node::When` is fixed on the impl, so the shipped `Book` node is the ungated one; gating it is
+/// `Node::Deps` is fixed on the impl, so the shipped `Book` node is the ungated one; gating it is
 /// this eight-line wrapper over the same public `Book::step` fold. The two cannot drift.
 ///
 /// Its deps are bare where the shipped node declares its deltas `Folding` — and that is the claim
@@ -42,10 +42,9 @@ impl Nudge for GatedBook {
 	}
 }
 impl Node for GatedBook {
-	type Deps = (BookAnchors, BookDeltas);
-	type When = (Hot,);
+	type Deps = (Gating<Hot>, BookAnchors, BookDeltas);
 
-	fn advance<'t>(&'t mut self, (a, d): DepOuts<'t, Self>) -> Option<&'t Book> {
+	fn advance<'t>(&'t mut self, (_, a, d): DepOuts<'t, Self>) -> Option<&'t Book> {
 		self.0.step(a, d).then_some(&self.0)
 	}
 }
@@ -73,10 +72,9 @@ impl Cell for Mid {
 	type Out<'t> = Option<f64>;
 }
 impl Node for Mid {
-	type Deps = (GatedBook,);
-	type When = (Hot,);
+	type Deps = (Gating<Hot>, GatedBook);
 
-	fn advance<'t>(&'t mut self, (book,): DepOuts<'t, Self>) -> Option<f64> {
+	fn advance<'t>(&'t mut self, (_, book): DepOuts<'t, Self>) -> Option<f64> {
 		let b = book?;
 		let (bid, ask) = (b.best_bid()?, b.best_ask()?);
 		Some((bid.0.as_f64() + ask.0.as_f64()) / 2.0)
@@ -144,7 +142,7 @@ fn gated_book_is_latent_closed_and_resyncs_from_a_checkpoint() {
 	assert_eq!(epoch, Some(1));
 	assert_eq!(mid, Some(100.025), "best bid must be the folded level, not the checkpoint's");
 
-	// 3. gate closed: latent, and the frames go by unread. `Drive` never pulls the deps.
+	// 3. gate closed: latent, and the frames go by unread — a closed gate pulls no plain dep.
 	frame(&mut deltas, &[(3, Side::Sell, 10_005, 2)]);
 	assert_eq!(tick(&mut g, false, None, &deltas, &mut trades), (None, None));
 	frame(&mut deltas, &[(4, Side::Sell, 10_004, 2)]);

@@ -222,7 +222,7 @@ pub fn graph(input: TokenStream) -> TokenStream {
 	let fields: Vec<&Ident> = nodes.iter().map(|n| &n.field).collect();
 	let node_tys: Vec<&Type> = nodes.iter().map(|n| &n.ty).collect();
 
-	// The four metadata reads that live on the node trait rather than on the cell — `Emit` and `Node`
+	// The metadata reads that live on the node trait rather than on the cell — `Emit` and `Node`
 	// declare the same ones, so only the trait naming them differs per field.
 	let decls: Vec<_> = nodes.iter().map(|n| if n.emit { quote!(#dag::Emit) } else { quote!(#dag::Node) }).collect();
 	let node_deps: Vec<_> = nodes
@@ -231,14 +231,6 @@ pub fn graph(input: TokenStream) -> TokenStream {
 		.map(|(n, d)| {
 			let ty = &n.ty;
 			quote!(<#ty as #d>::Deps)
-		})
-		.collect();
-	let node_whens: Vec<_> = nodes
-		.iter()
-		.zip(&decls)
-		.map(|(n, d)| {
-			let ty = &n.ty;
-			quote!(<#ty as #d>::When)
 		})
 		.collect();
 	// an `emit` field stores the engine's buffer next to the node; the frame is still keyed on `ty`.
@@ -302,14 +294,18 @@ pub fn graph(input: TokenStream) -> TokenStream {
 		let lfield = &l.field;
 		let latch_ty = &l.ty;
 		let resets = &resets;
-		let node_whens = &node_whens;
+		let node_deps = &node_deps;
 		quote! {
 			if self.__pending.#lfield {
 				self.__pending.#lfield = false;
 				<#latch_ty as #dag::Latch>::commutate(&mut self.#lfield);
 				#(
 					if const {
-						#dag::contains(<#node_whens as #dag::GateSet>::NAMES, #dag::node_name::<#latch_ty>())
+						#dag::gates_on(
+							<#node_deps as #dag::DepSet>::NAMES,
+							<#node_deps as #dag::DepSet>::GATES,
+							#dag::node_name::<#latch_ty>(),
+						)
 					} {
 						#resets;
 					}
@@ -345,7 +341,7 @@ pub fn graph(input: TokenStream) -> TokenStream {
 					deps: <#node_deps as #dag::DepSet>::NAMES,
 					reach: <#node_deps as #dag::DepSet>::REACH,
 					folds: <#node_deps as #dag::DepSet>::FOLDS,
-					gates: <#node_whens as #dag::GateSet>::NAMES,
+					gates: <#node_deps as #dag::DepSet>::GATES,
 					retains: !matches!(<#node_tys as #dag::Cell>::REACH, #dag::Horizon::Unit),
 					latch: #dag::contains(LATCHES, #dag::node_name::<#node_tys>()),
 				},
@@ -375,7 +371,7 @@ pub fn graph(input: TokenStream) -> TokenStream {
 			// a latch is cut from within: what it gates must be what cuts it.
 			#(assert!(
 				#dag::cut_gated(#dag::node_name::<<#latch_tys as #dag::Latch>::Cut>(), #dag::node_name::<#latch_tys>(), METAS),
-				concat!(stringify!(#lfields), "'s `Cut` is no field of this graph naming it in `When` — a latch cut by something it does not gate never commutates")
+				concat!(stringify!(#lfields), "'s `Cut` is no field of this graph naming it in a `Gating` dep — a latch cut by something it does not gate never commutates")
 			);)*
 
 			// an internal latch must not gate its own arm.

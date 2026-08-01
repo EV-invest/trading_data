@@ -13,8 +13,8 @@
 //! — needed only because a msgbus has no static knowledge of who reads what. Here `type Deps` *is*
 //! that list, and the compiler checks it. So there are no tiers: every node names exactly the inputs
 //! it reads, and warmth is per-input rather than the union of a tier's. What `config.nix` still
-//! decides is the screener's *thresholds*; which arm runs is [`Screener`], because `Node::When` is a
-//! type and there is no runtime gate selection.
+//! decides is the screener's *thresholds*; which arm runs is [`Screener`], because a gate is named in
+//! `Node::Deps` like any other input and there is no runtime selection of one.
 
 /// `Flat` + `Bump` for a record whose observed slots are plain `f64` fields, in the order given.
 macro_rules! flat_fields {

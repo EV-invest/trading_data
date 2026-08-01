@@ -124,8 +124,9 @@ Structural rules (enforced by the signatures, not convention):
   node: a step that computes nothing, and differentiates to nothing, stays out of the topology.
 - **Node identity = its type.** Two instances of one node type in a frame are ambiguous —
   compile error; distinguish via newtypes/const generics (`Rsi<14>` vs `Rsi<28>`).
-- **A gate is scalar-out; a gated node may be batch-out.** A `Gate` is a `bool`-out node; nodes
-  naming it in `When` are skipped while it's false. The gate resolves once per tick, so a gated
+- **A gate is scalar-out; a gated node may be batch-out.** A `Gate` is a `bool`-out node; a consumer
+  names it in `Deps` wrapped in `Gating<C>` — the input that *dominates*, leading the tuple — and is
+  skipped while it reads false, pulling none of its plain deps. The gate resolves once per tick, so a gated
   batch node's episode boundary is quantized to its batch window. *Historic* nodes (stateful)
   must advance every tick to stay warm: gating one is a compile error; only *current* nodes gate.
   A current node whose every in-graph consumer sits behind one gate must be gated too — `graph!`
@@ -136,7 +137,7 @@ Structural rules (enforced by the signatures, not convention):
   `monotonic_seq` discontinuity desyncs it, so it never folds onto stale state. A checkpoint is a
   standing offer, taken only by a book with no place in the stream — unseeded or desynced; the delta
   lane is gapless, so a synced book already holds it and ignores it, which leaves `epoch` counting
-  genuine resyncs. `Node::When` is fixed on the impl, so the shipped `Book` node is the ungated one;
+  genuine resyncs. `Node::Deps` is fixed on the impl, so the shipped `Book` node is the ungated one;
   gating it is an eight-line wrapper over the same public `Book::step` fold.
 - **Latches.** A `Latch` is a `Gate` armed from outside and cut from within (an SCR): an external
   event arms it; when its `Cut` node publishes an `Episode::terminal` out, `graph!` commutates it
@@ -149,7 +150,7 @@ Structural rules (enforced by the signatures, not convention):
   a client-owned window comes back cold and must re-warm, an engine-owned one is warm on its first
   tick back. So a buffer advances every tick regardless of what is dark downstream — being ready is
   its whole job. Four invariants, all by construction: it is never gated (`Hist` isn't `Latent`, and
-  `HISTORIC` makes gating one a compile error); never latch-reset (`When = ()`, so the window
+  `HISTORIC` makes gating one a compile error); never latch-reset (no `Gating` dep, so the window
   outlives the episode); never lets its own upstream be shadowed (it is an ungated in-graph
   consumer); and there is one per series per frame (two make every `Buffering<C, _>` ambiguous, as
   with any duplicated node type). `K` is declared once by the graph author and const-checked to

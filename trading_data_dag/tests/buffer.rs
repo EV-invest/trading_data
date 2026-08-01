@@ -3,7 +3,7 @@
 //! irregular stream, and a latch commutation that resets a consumer while leaving the buffer whole —
 //! the point of engine-owned retention.
 
-use trading_data_dag::{Buffer, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Fire, Flat, Gate, Glance, Horizon, Latch, Node, Observer, Stamped, graph, slice_nudge};
+use trading_data_dag::{Buffer, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Node, Observer, Stamped, graph, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 /// A retained element is stamped: that is what a [`Horizon`] indexes by. One unit of `v` is one
@@ -176,7 +176,7 @@ fn flat_reads_fresh_only() {
 		src: Option<(usize, Vec<f64>)>,
 	}
 	impl Observer for Rec {
-		fn on(&mut self, node: &'static str, _: &'static [&'static str], _: &'static [&'static str], fire: Fire<'_>) {
+		fn on(&mut self, node: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
 			let slot = if node.contains("Buffer") {
 				&mut self.hist
 			} else if node.ends_with("Src") {
@@ -306,10 +306,10 @@ mod revive {
 		type Out<'t> = Option<Phase>;
 	}
 	impl Node for Episodic {
-		type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
-		type When = (Live,);
+		type Deps = (Gating<Live>, Buffering<Src, { Horizon::Elems(3) }>);
 
-		fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		fn advance<'t>(&'t mut self, (live, hist): DepOuts<'t, Self>) -> Self::Out<'t> {
+			assert!(live, "a gating dep reads true inside `advance`");
 			self.t += 1;
 			self.seen.push(hist.trailing_at(0).map_or(0, <[Tick]>::len));
 			Some(Phase(self.t))

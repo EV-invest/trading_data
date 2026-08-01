@@ -1,7 +1,7 @@
 //! A gated node may not hold its own reach: a closed gate pulls no deps, so `Folding` is exactly
 //! the state nothing re-warms. The fix the message names is to move the reach into the frame —
 //! a `Buffer<Src, K>` field and the dep restated as `Buffering<Src, H>`.
-use trading_data_dag::{Bump, Cell, DepOuts, Flat, Folding, Gate, Glance, Horizon, Node, slice_nudge, value_nudge};
+use trading_data_dag::{Bump, Cell, DepOuts, Flat, Folding, Gate, Gating, Glance, Horizon, Node, slice_nudge, value_nudge};
 use trading_data_macros::graph;
 
 #[derive(Clone, Copy, Debug)]
@@ -54,10 +54,9 @@ impl Cell for Windowed {
 	type Out<'t> = Option<f64>;
 }
 impl Node for Windowed {
-	type Deps = (Folding<Src, { Horizon::Elems(3) }>,);
-	type When = (Hot,);
+	type Deps = (Gating<Hot>, Folding<Src, { Horizon::Elems(3) }>);
 
-	fn advance<'t>(&'t mut self, (s,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (_, s): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.seen.push(s.len());
 		Some(self.seen.iter().rev().take(3).sum::<usize>() as f64)
 	}

@@ -21,8 +21,8 @@ LL | |         }
 note: the above error was encountered while instantiating `fn <Cons<'_, Buffer<Src, Elems(3)>, ...> as Has<'_, ..., ...>>::get`
   --> $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
-LL |                 ($(Has::<'t, $T, $I>::get(f),)+)
-  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+LL |                 true $(&& (!<$T::Gates as Bit>::VALUE || $T::opens(Has::<'t, $T, $I>::get(f))))+
+  |                                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^
 ...
 LL | impl_arity!(A Ia a sa);
   | ---------------------- in this macro invocation

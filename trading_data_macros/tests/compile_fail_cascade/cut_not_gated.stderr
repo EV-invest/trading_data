@@ -1,4 +1,4 @@
-error[E0080]: evaluation panicked: l's `Cut` is no field of this graph naming it in `When` — a latch cut by something it does not gate never commutates
+error[E0080]: evaluation panicked: l's `Cut` is no field of this graph naming it in a `Gating` dep — a latch cut by something it does not gate never commutates
   --> $DIR/trading_data_macros/tests/compile_fail_cascade/cut_not_gated.rs:LL:CC
   |
 LL | / graph! {

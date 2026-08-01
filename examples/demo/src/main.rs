@@ -158,7 +158,7 @@ struct SignalDoc {
 	max_rel: f64,
 }
 impl Observer for SignalDoc {
-	fn on(&mut self, node: &'static str, _: &'static [&'static str], _: &'static [&'static str], fire: Fire<'_>) {
+	fn on(&mut self, node: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
 		if node.rsplit("::").next() != Some("Signal") {
 			return;
 		}
