@@ -11,7 +11,7 @@ const SPAN_1D: Timeframe = Timeframe::from_naive(1, TimeframeDesignator::Days);
 /// What the 1h series must retain to answer it: the day, plus one period of cross-rate slack — the
 /// 1m bar whose close asks the question stands up to a whole 1h period past the newest 1h bar.
 pub(super) const REACH_1D: Horizon = Horizon::Span(Timeframe(SPAN_1D.0 + Bar1h::TF.0));
-/// Reach behind `change_3m_pct` — three minutes, spanned by the opens of the 1m bars inside it.
+/// Reach behind `change_3m_pct` — three minutes, spanned by the closes of the 1m bars inside it.
 pub(super) const SPAN_3M: Timeframe = Timeframe::from_naive(3, TimeframeDesignator::Minutes);
 
 #[derive(Clone, Copy, Debug)]
@@ -44,12 +44,11 @@ impl Node for Price {
 	fn advance<'t>(&'t mut self, (m1, h1): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for (b, w3) in m1.fresh().iter().zip(m1.trailing()) {
-			let deadline = b.close_ns(Bar1m::TF);
-			let closed_1h = closed_by(h1.all(), Bar1h::TF, deadline);
-			let day_ago = deadline - SPAN_1D.duration().as_nanos() as i64;
+			let closed_1h = closed_by(h1.all(), b.ts_close);
+			let day_ago = b.ts_close - SPAN_1D.duration().as_nanos() as i64;
 			// The close standing a day back is the first one after `day_ago`; index 0 means the retained
 			// run does not reach behind it, so there is nothing a day old to compare against yet.
-			let oldest_1h = closed_1h.iter().position(|h| h.close_ns(Bar1h::TF) > day_ago).filter(|&i| i > 0).map(|i| closed_1h[i].close);
+			let oldest_1h = closed_1h.iter().position(|h| h.ts_close > day_ago).filter(|&i| i > 0).map(|i| closed_1h[i].close);
 			self.buf.push(match (w3, oldest_1h) {
 				(Some(w3), Some(oldest_1h)) => {
 					let base_open = w3[0].open;

@@ -28,7 +28,7 @@ use trading_data_spl::{
 	asset,
 	config::{self, Config, Screen},
 	day_bounds, ensure_lanes,
-	nodes::{BookTopSnap, Graph, Intent, TrailingStop},
+	nodes::{Bar1m, BookTopSnap, Graph, Intent, TrailingStop},
 	symbol, trading_days, ui,
 };
 use v_utils::utils::tracing::{LogDestination, init_subscriber};
@@ -107,6 +107,7 @@ async fn main() {
 	let viz = Viz::new(Some("Bar:1m"), SCROLLBACK, 60_000);
 	let mut recorder = viz.clone();
 	let mut day = Day::default();
+	let two_legged = cfg.strategy.indies.momentum.slow.is_some();
 	let began = std::time::Instant::now();
 	let (run_start, _) = day_bounds(days[0]);
 
@@ -146,7 +147,8 @@ async fn main() {
 
 				for b in out.bar_1m {
 					viz.bar(BarOut {
-						ts_ms: b.ts_open / 1_000_000,
+						// a candle is keyed by its open.
+						ts_ms: (b.ts_close - Bar1m::TF.duration().as_nanos() as i64) / 1_000_000,
 						open: b.open,
 						high: b.high,
 						low: b.low,
@@ -167,12 +169,12 @@ async fn main() {
 					day.momentum_snaps += 1;
 					day.first_momentum_ns.get_or_insert(ts_ns);
 					top(&mut day.max_sharpe_fast, m.fast);
-					if let Some(x) = m.slow {
-						top(&mut day.max_sharpe_slow, x);
+					if two_legged {
+						top(&mut day.max_sharpe_slow, m.slow);
 					}
 				}
-				day.rsi_hits += out.rsi_screener.iter().flatten().count() as u64;
-				day.std_hits += out.std_screener.iter().flatten().count() as u64;
+				day.rsi_hits += out.rsi_screener.iter().filter(|v| **v == Some(true)).count() as u64;
+				day.std_hits += out.std_screener.iter().filter(|v| **v == Some(true)).count() as u64;
 				day.classifications += out.classify.is_some() as u64;
 
 				day.top_reads += out.book_top.len() as u64;

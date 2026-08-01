@@ -4,7 +4,6 @@ use super::{
 	bar::Bar1m,
 	latest,
 	momentum::{MomSnap, Momentum},
-	screened::Screened,
 };
 use crate::config::{Screen, strategy};
 
@@ -13,10 +12,10 @@ use crate::config::{Screen, strategy};
 #[derive(Clone, Default)]
 pub struct StdScreener {
 	momentum: Option<MomSnap>,
-	buf: Vec<Option<Screened>>,
+	buf: Vec<Option<bool>>,
 }
 impl Cell for StdScreener {
-	type Out<'t> = &'t [Option<Screened>];
+	type Out<'t> = &'t [Option<bool>];
 }
 impl Node for StdScreener {
 	type Deps = (Bar1m, Momentum);
@@ -30,17 +29,10 @@ impl Node for StdScreener {
 			return &self.buf;
 		};
 		latest(&mut self.momentum, momentum);
-		for b in bars {
-			self.buf.push(self.momentum.and_then(|m| {
-				// The vacuous slow leg must come from `indies.momentum.slow` and nothing else: `Momentum`
-				// declines to publish at all when a configured slow leg is degenerate, so an absent Sharpe
-				// here would otherwise let a wiring bug read as an unconditional hit.
-				assert_eq!(m.slow.is_some(), strategy().indies.momentum.slow.is_some(), "a slow Sharpe disagrees with indies.momentum.slow");
-				let slow = m.slow.is_none_or(|x| x > c.slow_overvalued);
-				(slow && m.fast > c.fast_overvalued).then_some(Screened { ts_ns: b.close_ns(Bar1m::TF) })
-			}));
-		}
+		let two_legged = strategy().indies.momentum.slow.is_some();
+		let verdict = self.momentum.map(|m| m.fast > c.fast_overvalued && (!two_legged || m.slow > c.slow_overvalued));
+		self.buf.resize(bars.len(), verdict);
 		&self.buf
 	}
 }
-slice_nudge!(StdScreener, Option<Screened>);
+slice_nudge!(StdScreener, Option<bool>);

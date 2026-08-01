@@ -5,7 +5,6 @@ use super::{
 	latest,
 	price::Price,
 	rsi::{Rsi, RsiValues},
-	screened::Screened,
 };
 use crate::config::{Screen, strategy};
 
@@ -14,10 +13,10 @@ use crate::config::{Screen, strategy};
 #[derive(Clone, Default)]
 pub struct RsiScreener {
 	rsi: Option<RsiValues>,
-	buf: Vec<Option<Screened>>,
+	buf: Vec<Option<bool>>,
 }
 impl Cell for RsiScreener {
-	type Out<'t> = &'t [Option<Screened>];
+	type Out<'t> = &'t [Option<bool>];
 }
 impl Node for RsiScreener {
 	type Deps = (Bar1m, Price, Rsi);
@@ -32,13 +31,13 @@ impl Node for RsiScreener {
 			return &self.buf;
 		};
 		latest(&mut self.rsi, rsi);
-		for (b, p) in bars.iter().zip(price) {
+		for p in price {
 			self.buf.push(match (p, self.rsi) {
-				(Some(p), Some(rsi)) => (rsi.actual > c.rsi_threshold && p.change_1d_pct > *c.price_percent).then_some(Screened { ts_ns: b.close_ns(Bar1m::TF) }),
+				(Some(p), Some(rsi)) => Some(rsi.actual > c.rsi_threshold && p.change_1d_pct > *c.price_percent),
 				_ => None,
 			});
 		}
 		&self.buf
 	}
 }
-slice_nudge!(RsiScreener, Option<Screened>);
+slice_nudge!(RsiScreener, Option<bool>);

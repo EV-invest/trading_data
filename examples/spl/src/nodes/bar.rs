@@ -5,18 +5,13 @@ use v_utils::{Timeframe, TimeframeDesignator};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Bar {
-	pub ts_open: i64,
+	pub ts_close: i64,
 	pub open: f64,
 	pub high: f64,
 	pub low: f64,
 	pub close: f64,
 	/// Base-denominated. SPL's volume indie reads `volume * close` — the close standing in for vwap.
 	pub vol_base: f64,
-}
-impl Bar {
-	pub(super) fn close_ns(&self, tf: Timeframe) -> i64 {
-		self.ts_open + tf.duration().as_nanos() as i64
-	}
 }
 
 flat_fields!(Bar[open, high, low, close, vol_base]);
@@ -27,18 +22,16 @@ impl Glance for Bar {
 	}
 }
 
-/// The open: a bar is retained and windowed by the period it *covers*, and its close is that plus
-/// the series' own timeframe, which a bare `Bar` does not know.
 impl Stamped for Bar {
 	fn ts_ns(&self) -> i64 {
-		self.ts_open
+		self.ts_close
 	}
 }
 
 /// The prefix of a slower series that has *closed* by `deadline` — the cross-rate read a node
 /// clocked by a faster series makes against a [`trading_data::Buffering`] dep.
-pub(super) fn closed_by(bars: &[Bar], tf: Timeframe, deadline: i64) -> &[Bar] {
-	&bars[..bars.partition_point(|b| b.close_ns(tf) <= deadline)]
+pub(super) fn closed_by(bars: &[Bar], deadline: i64) -> &[Bar] {
+	&bars[..bars.partition_point(|b| b.ts_ns() <= deadline)]
 }
 
 /// [`Timeframe`]'s parse rules in const position. Parsing is the cheap direction — const-formatting
@@ -81,9 +74,9 @@ impl BarAcc {
 		let step = Exact::from_nanos(tf.duration().as_nanos() as i64);
 		for (i, exec) in trades.exec().iter().enumerate() {
 			let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
-			let ts_open = exec.floor(step).as_nanos();
+			let ts_close = exec.floor(step).as_nanos() + step.as_nanos();
 			match &mut self.acc {
-				Some(b) if b.ts_open == ts_open => {
+				Some(b) if b.ts_close == ts_close => {
 					b.high = b.high.max(price);
 					b.low = b.low.min(price);
 					b.close = price;
@@ -94,7 +87,7 @@ impl BarAcc {
 						self.buf.push(done);
 					}
 					*acc = Some(Bar {
-						ts_open,
+						ts_close,
 						open: price,
 						high: price,
 						low: price,

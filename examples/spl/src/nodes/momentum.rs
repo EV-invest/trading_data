@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Buffering, Cell, DepOuts, Flat, Glance, Horizon, Node, Plot, slice_nudge};
+use trading_data::{Buffering, Cell, DepOuts, Glance, Horizon, Node, Plot, slice_nudge};
 use v_utils::Timeframe;
 
 use super::bar::{Bar, Bar4h, Bar5m, closed_by};
@@ -21,30 +21,20 @@ pub const fn mom_cap(tf: Timeframe) -> Horizon {
 #[derive(Clone, Copy, Debug)]
 pub struct MomSnap {
 	pub fast: f64,
-	/// `None` when `indies.momentum.slow` names no second leg: the slot is never created, so there is
-	/// no window to compute from.
-	pub slow: Option<f64>,
+	/// `NAN` when `indies.momentum.slow` names no second leg: there is no window to compute from.
+	pub slow: f64,
 }
 
-impl Flat for MomSnap {
-	const DIMS: &'static [usize] = &[2];
-
-	fn flat(&self, out: &mut [f64]) -> bool {
-		// An unconfigured slow leg has no value, which is the empty slot the flattening already spells.
-		out.copy_from_slice(&[self.fast, self.slow.unwrap_or(f64::NAN)]);
-		true
-	}
-}
-structural_bump!(MomSnap);
+flat_fields!(MomSnap[fast, slow]);
 
 impl Glance for MomSnap {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		let cfg = strategy().indies.momentum;
 		write!(f, "{} {:.2}", cfg.fast, self.fast)?;
-		match (cfg.slow, self.slow) {
-			(Some(tf), Some(x)) => write!(f, " {tf} {x:.2}"),
-			_ => Ok(()),
+		if let Some(tf) = cfg.slow {
+			write!(f, " {tf} {:.2}", self.slow)?;
 		}
+		Ok(())
 	}
 }
 
@@ -100,16 +90,16 @@ impl Node for Momentum {
 		};
 		// the lookback is a runtime knob, so the window is narrowed off the retained reach here.
 		let fast = series(cfg.fast).narrowed(Horizon::Elems(n));
-		let slow = cfg.slow.map(|tf| (tf, series(tf)));
+		let slow = cfg.slow.map(series);
 		for (b, w) in fast.fresh().iter().zip(fast.trailing()) {
-			let slow = slow.map(|(tf, s)| {
-				let closed = closed_by(s.all(), tf, b.close_ns(cfg.fast));
+			let slow = slow.map(|s| {
+				let closed = closed_by(s.all(), b.ts_close);
 				(closed.len() >= n).then(|| &closed[closed.len() - n..]).and_then(sharpe)
 			});
 			// A degenerate (zero-stdev) window skips the publish rather than fabricating a Sharpe.
 			self.buf.push(match (w.and_then(sharpe), slow) {
-				(Some(fast), None) => Some(MomSnap { fast, slow: None }),
-				(Some(fast), Some(Some(slow))) => Some(MomSnap { fast, slow: Some(slow) }),
+				(Some(fast), None) => Some(MomSnap { fast, slow: f64::NAN }),
+				(Some(fast), Some(Some(slow))) => Some(MomSnap { fast, slow }),
 				_ => None,
 			});
 		}

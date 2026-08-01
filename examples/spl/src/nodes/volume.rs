@@ -1,7 +1,6 @@
 use core::fmt;
 
 use trading_data::{Buffering, Cell, DepOuts, Glance, Horizon, Node, slice_nudge};
-use v_utils::Timeframe;
 
 use super::bar::{Bar, Bar1h, Bar1m, Bar4h, closed_by};
 
@@ -36,13 +35,12 @@ impl Node for Volume {
 	fn advance<'t>(&'t mut self, (m1, h1, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for b in m1 {
-			let usd = |bars: &[Bar], tf: Timeframe| closed_by(bars, tf, b.close_ns(Bar1m::TF)).last().map(|h| h.vol_base * h.close);
-			self.buf
-				.push(usd(h1.all(), Bar1h::TF).zip(usd(h4.all(), Bar4h::TF)).map(|(volume_1h_usd, volume_4h_usd)| VolSnap {
-					volume_1m_usd: b.vol_base * b.close,
-					volume_1h_usd,
-					volume_4h_usd,
-				}));
+			let usd = |bars: &[Bar]| closed_by(bars, b.ts_close).last().map(|h| h.vol_base * h.close);
+			self.buf.push(usd(h1.all()).zip(usd(h4.all())).map(|(volume_1h_usd, volume_4h_usd)| VolSnap {
+				volume_1m_usd: b.vol_base * b.close,
+				volume_1h_usd,
+				volume_4h_usd,
+			}));
 		}
 		&self.buf
 	}
