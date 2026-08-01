@@ -29,7 +29,7 @@ impl Node for StdScreener {
 			self.buf.resize(bars.len(), None);
 			return &self.buf;
 		};
-		latest(&mut self.momentum, momentum);
+		latest(&mut self.momentum, momentum, bars.len());
 		for b in bars {
 			self.buf.push(self.momentum.and_then(|m| {
 				// The vacuous slow leg must come from `indies.momentum.slow` and nothing else: `Momentum`

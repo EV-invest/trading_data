@@ -2,8 +2,8 @@ use trading_data::{Cell, DepOuts, Node, slice_nudge};
 
 use super::{
 	bar::Bar1m,
+	change_1d::Change1d,
 	latest,
-	price::Price,
 	rsi::{Rsi, RsiValues},
 	screened::Screened,
 };
@@ -20,10 +20,10 @@ impl Cell for RsiScreener {
 	type Out<'t> = &'t [Option<Screened>];
 }
 impl Node for RsiScreener {
-	type Deps = (Bar1m, Price, Rsi);
+	type Deps = (Bar1m, Change1d, Rsi);
 
-	fn advance<'t>(&'t mut self, (bars, price, rsi): DepOuts<'t, Self>) -> Self::Out<'t> {
-		assert_eq!(bars.len(), price.len(), "Bar1m/Price rate mismatch");
+	fn advance<'t>(&'t mut self, (bars, change_1d, rsi): DepOuts<'t, Self>) -> Self::Out<'t> {
+		assert_eq!(bars.len(), change_1d.len(), "Bar1m/Change1d rate mismatch");
 		self.buf.clear();
 		// Inert unless configured, but still rate-preserving: `Classify` reads the two screeners as one
 		// signal, so an empty slice here would read as a rate mismatch rather than as "no hits".
@@ -31,10 +31,10 @@ impl Node for RsiScreener {
 			self.buf.resize(bars.len(), None);
 			return &self.buf;
 		};
-		latest(&mut self.rsi, rsi);
-		for (b, p) in bars.iter().zip(price) {
-			self.buf.push(match (p, self.rsi) {
-				(Some(p), Some(rsi)) => (rsi.actual > c.rsi_threshold && p.change_1d_pct > *c.price_percent).then_some(Screened { ts_ns: b.close_ns(Bar1m::TF) }),
+		latest(&mut self.rsi, rsi, bars.len());
+		for (b, change) in bars.iter().zip(change_1d) {
+			self.buf.push(match (change, self.rsi) {
+				(Some(change), Some(rsi)) => (rsi.actual > c.rsi_threshold && *change > *c.price_percent).then_some(Screened { ts_ns: b.close_ns(Bar1m::TF) }),
 				_ => None,
 			});
 		}

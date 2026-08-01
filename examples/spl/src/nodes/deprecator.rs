@@ -170,7 +170,7 @@ impl Node for Deprecator {
 	fn advance<'t>(&'t mut self, (classify, atr, top): DepOuts<'t, Self>) -> Self::Out<'t> {
 		let liq = &strategy().classification.liquidations;
 		self.buf.clear();
-		latest(&mut self.last_atr, atr);
+		latest(&mut self.last_atr, atr, top.len());
 		// Classification is honored only while Idle; once Active we drive solely off book ticks. No
 		// book yet ⇒ don't enter — the screener keeps firing, so the next classification retries.
 		if matches!(self.state, State::Idle)

@@ -61,49 +61,61 @@ mod avg_gain;
 mod avg_loss;
 mod bar;
 mod book_top;
+mod change_1d;
+mod change_3m;
 mod classify;
 mod deprecator;
+mod imbalance;
 mod market_cap;
 mod momentum;
 mod oi_delta;
-mod price;
 mod rsi;
 mod rsi_delta;
 mod rsi_screener;
 mod screened;
+mod spread;
 mod std_screener;
-mod volume;
+mod volume_1h;
+mod volume_1m;
+mod volume_4h;
 
 pub use atr::Atr;
 pub use avg_gain::AvgGain;
 pub use avg_loss::AvgLoss;
 pub use bar::{Bar, Bar1h, Bar1m, Bar4h, Bar5m, Bar15m};
 pub use book_top::{BookTop, BookTopSnap};
+pub use change_1d::Change1d;
+pub use change_3m::Change3m;
 pub use classify::{Category, Classified, Classify, Quality};
 pub use deprecator::{Deprecator, Intent, TrailingStop};
+pub use imbalance::Imbalance;
 pub use market_cap::{MarketCap, McSnap};
 pub use momentum::{MOM_PERIODS, MomSnap, Momentum, mom_cap};
-pub use oi_delta::{OiDelta, OiSnap};
-pub use price::{Price, PriceSnap};
+pub use oi_delta::{OiDelta5m, OiDelta15m};
 pub use rsi::{Rsi, RsiValues};
 pub use rsi_delta::RsiDelta;
 pub use rsi_screener::RsiScreener;
 pub use screened::Screened;
+pub use spread::Spread;
 pub use std_screener::StdScreener;
 use trading_data::{Book, BookAnchors, BookDeltas, BookShape, Buffer, DeltaFrame, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
-pub use volume::{VolSnap, Volume};
+pub use volume_1h::Volume1h;
+pub use volume_1m::Volume1m;
+pub use volume_4h::Volume4h;
 
-use crate::nodes::{
-	oi_delta::OI_REACH,
-	price::{REACH_1D, SPAN_3M},
-};
+use crate::nodes::{change_1d::REACH_1D, change_3m::SPAN_3M, oi_delta::OI_REACH};
 
 /// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that
-/// declined this tick (`None`) is not a publish, so the cached level stands.
-fn latest<T: Copy>(slot: &mut Option<T>, dep: &[Option<T>]) {
-	if let Some(Some(v)) = dep.last() {
-		*slot = Some(*v);
-	}
+/// declined this tick is not a publish, so the cached level stands.
+///
+/// `ticks` is how many of its own the caller is about to apply the level to. A publish landing in a
+/// batch that carries more than one of those is unplaceable — neither slice says which ticks precede
+/// it — so the early ones would read a level out of their own future. Reaching that needs a batch
+/// window at least as wide as the consumer's period, which is not a case to guess through.
+fn latest<T: Copy>(slot: &mut Option<T>, dep: &[Option<T>], ticks: usize) {
+	let Some(v) = dep.iter().flatten().last() else { return };
+	assert!(ticks <= 1, "a level published inside a {ticks}-tick batch cannot be placed against those ticks");
+	*slot = Some(*v);
 }
 
 trading_data::graph! {
@@ -121,18 +133,24 @@ trading_data::graph! {
 	bar_1h_hist: Buffer<Bar1h, REACH_1D>,
 	bar_4h_hist: Buffer<Bar4h, { mom_cap(Bar4h::TF) }>,
 	oi_hist: Buffer<OiRoot, OI_REACH>,
-	price: Price,
-	volume: Volume,
+	change_3m: Change3m,
+	change_1d: Change1d,
+	volume_1m: Volume1m,
+	volume_1h: Volume1h,
+	volume_4h: Volume4h,
 	rsi_delta: RsiDelta,
 	avg_gain: AvgGain,
 	avg_loss: AvgLoss,
 	rsi: Rsi,
 	atr: Atr,
 	momentum: Momentum,
-	oi_delta: OiDelta,
+	oi_delta_5m: OiDelta5m,
+	oi_delta_15m: OiDelta15m,
 	market_cap: MarketCap,
 	book: Book,
 	book_top: BookTop,
+	imbalance: Imbalance,
+	spread: Spread,
 	rsi_screener: RsiScreener,
 	std_screener: StdScreener,
 	classify: Classify,

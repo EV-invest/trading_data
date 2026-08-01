@@ -159,9 +159,9 @@ async fn main() {
 					day.rsi_snaps += 1;
 					top(&mut day.max_rsi, r.actual);
 				}
-				for p in out.price.iter().flatten() {
+				for c in out.change_1d.iter().flatten() {
 					day.price_snaps += 1;
-					top(&mut day.max_change_1d, p.change_1d_pct);
+					top(&mut day.max_change_1d, *c);
 				}
 				for m in out.momentum.iter().flatten() {
 					day.momentum_snaps += 1;
@@ -176,8 +176,11 @@ async fn main() {
 				day.classifications += out.classify.is_some() as u64;
 
 				day.top_reads += out.book_top.len() as u64;
-				for x in out.book_top.iter().flatten() {
-					day.check_top(x);
+				// Imbalance and Spread are rate-preserving over BookTop, so the three zip by index.
+				for i in 0..out.book_top.len() {
+					if let Some(x) = &out.book_top[i] {
+						day.check_top(x, out.spread[i], out.imbalance[i]);
+					}
 				}
 				flag!(
 					day,
@@ -327,7 +330,7 @@ impl Day {
 		}
 	}
 
-	fn check_top(&mut self, d: &BookTopSnap) {
+	fn check_top(&mut self, d: &BookTopSnap, spread: Option<f64>, imbalance: Option<f64>) {
 		self.top += 1;
 		// A fold that lost its precision, or that dropped deletes and froze a phantom top, drifts away
 		// from the traded price and nothing else here would notice. A tape print can still land between
@@ -360,9 +363,14 @@ impl Day {
 		}
 		self.last_top_ns = d.ts_ns;
 		flag!(self, d.best_bid < d.best_ask, "crossed book at {}: {} >= {}", d.ts_ns, d.best_bid, d.best_ask);
-		flag!(self, d.spread_pct.is_finite() && d.spread_pct > 0.0, "degenerate spread at {}: {}", d.ts_ns, d.spread_pct);
 		flag!(self, d.top20_bid_depth_usd > 0.0 && d.top20_ask_depth_usd > 0.0, "empty top-20 depth at {}", d.ts_ns);
-		flag!(self, (-1.0..=1.0).contains(&d.imbalance), "imbalance out of range at {}: {}", d.ts_ns, d.imbalance);
+		// Both derive off this very read, so declining where it published is a wiring fault, not warmth.
+		let (Some(spread), Some(imbalance)) = (spread, imbalance) else {
+			flag!(self, false, "Spread/Imbalance declined on a book read that published, at {}", d.ts_ns);
+			return;
+		};
+		flag!(self, spread.is_finite() && spread > 0.0, "degenerate spread at {}: {spread}", d.ts_ns);
+		flag!(self, (-1.0..=1.0).contains(&imbalance), "imbalance out of range at {}: {imbalance}", d.ts_ns);
 	}
 
 	fn check_intent(&mut self, intent: Option<Intent>, top: Option<BookTopSnap>) {
