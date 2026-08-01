@@ -470,6 +470,10 @@ pub struct Intent {
 	/// The level where the trail fires; `None` once fully retraced, when it stops drawing.
 	pub trail_stop: Option<f64>,
 	pub draining: bool,
+	/// The episode's last intent: the drain deadline passed on this book tick, so this one is
+	/// published and `Active` closes. A reader has no other way to tell a spent episode from a book
+	/// tick that merely declined to publish.
+	pub terminal: bool,
 }
 /// SPL's `ExecutorState` + `Degrader`, one for one. Entry mid-prices off the book (not the last
 /// trade — on thin instruments that lags by whole percents and centres the envelope on a phantom);
@@ -882,6 +886,9 @@ impl Cell for BookTop {
 impl Node for BookTop {
 	type Deps = (Book, BookDeltas);
 
+	/// The `buf` it clears as `advance`'s first act is the whole of its state — the depth it reads is
+	/// `Book`'s to hold, not this node's.
+	const HORIZON: Horizon = Horizon::Unit;
 	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &["bid", "ask", "bid_depth$", "ask_depth$", "imbalance", "spread%"],
 		..Plot::DEFAULT
@@ -1162,6 +1169,7 @@ impl Node for Deprecator {
 				a.drain_deadline_ns = Some(d.ts_ns + drain_grace_ns());
 			}
 			let draining = a.drain_deadline_ns.is_some();
+			let terminal = a.drain_deadline_ns.is_some_and(|dl| d.ts_ns >= dl);
 			self.buf.push(Some(Intent {
 				ts_ns: d.ts_ns,
 				episode: a.episode,
@@ -1175,8 +1183,9 @@ impl Node for Deprecator {
 				tp,
 				trail_stop,
 				draining,
+				terminal,
 			}));
-			if a.drain_deadline_ns.is_some_and(|dl| d.ts_ns >= dl) {
+			if terminal {
 				self.state = State::Idle;
 			}
 		}

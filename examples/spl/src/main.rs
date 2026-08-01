@@ -366,10 +366,9 @@ impl Day {
 	}
 
 	fn check_intent(&mut self, intent: Option<Intent>, top: Option<BookTopSnap>) {
-		let Some(i) = intent else {
-			self.close_episode();
-			return;
-		};
+		// An idle slot, or a book tick that declined to publish mid-episode — neither ends an episode.
+		// Only `Intent::terminal` does, below.
+		let Some(i) = intent else { return };
 		let Some(d) = top else {
 			flag!(self, false, "an intent is only emitted on a book tick, but one landed at {} without one", i.ts_ns);
 			return;
@@ -398,9 +397,10 @@ impl Day {
 			i.tp
 		);
 
-		// Two episodes can be adjacent in the stream, so the id is what separates them, not a gap.
-		if self.open.is_some_and(|o| o.episode != i.episode) {
-			self.close_episode();
+		// Two episodes can be adjacent in the stream, and `terminal` closed the earlier one — so an
+		// id change with one still open means the deprecator abandoned it undrained.
+		if let Some(o) = self.open.take_if(|o| o.episode != i.episode) {
+			flag!(self, false, "episode {} was superseded by {} without a terminal intent, at {}", o.episode, i.episode, i.ts_ns);
 		}
 		let open = self.open.unwrap_or_else(|| {
 			self.episodes += 1;
@@ -437,6 +437,9 @@ impl Day {
 			prev_ns: open.last_ns,
 			last_ns: i.ts_ns,
 		});
+		if i.terminal {
+			self.close_episode();
+		}
 	}
 
 	fn close_episode(&mut self) {
