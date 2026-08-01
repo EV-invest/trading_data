@@ -51,8 +51,9 @@ const ORDINAL: u16 = 3;
 /// on the slot the flake would have given it.
 const PORT_BASE: u16 = 59990;
 
-/// Retained ticks. A trading day weaves into far more than this; the ring keeps the tail, which is
-/// what a scrub of the degradation wants.
+/// Retained ticks. A trading day weaves into ~50× this, so most of the run is only reachable at a
+/// stride — the tape thins with age rather than forgetting its front, which keeps the degradation
+/// at the end tick-exact and the morning still walkable.
 const SCROLLBACK: usize = 20_000;
 const HOUR_NS: i64 = 3600 * 1_000_000_000;
 const DAY_NS: i64 = 24 * HOUR_NS;
@@ -206,7 +207,13 @@ async fn main() {
 		);
 		// The screener *is* `Classify`'s gate, so the two counts are the same event read twice — once at
 		// its source and once past the gate. Divergence means the gate fired out of step with it.
-		flag!(day, day.classifications == day.std_hits, "{} classifications against {} screener hits", day.classifications, day.std_hits);
+		flag!(
+			day,
+			day.classifications == day.std_hits,
+			"{} classifications against {} screener hits",
+			day.classifications,
+			day.std_hits
+		);
 		// What the window bought, and what it cost: the FD observer runs per node per tick, so wall-clock
 		// is the binding constraint on how fine `MEASURED_WINDOW` can go.
 		println!("{} ticks in {:.1}s at a {MEASURED_WINDOW_MS}ms batch window", day.ticks, began.elapsed().as_secs_f64());
