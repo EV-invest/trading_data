@@ -93,8 +93,10 @@ impl Nudge for Book {
 
 	fn stage(out: Option<&Book>, s: &mut Self::Scratch, _: Option<usize>, _: f64) -> f64 {
 		match (out, s.as_mut()) {
-			// `clone_from` keeps the two `BTreeMap` allocations across ticks — the observer already
-			// pays two book clones per fired node, and again per dep slot.
+			// `clone_from` so that a hand-written `Clone for Book` would keep the two level vectors
+			// across ticks; `Book` derives its own, and a derived `clone_from` is `*self =
+			// source.clone()`, so today this reuses nothing. The observer pays two book clones per
+			// fired node and again per dep slot, which is what makes that worth closing.
 			(Some(b), Some(dst)) => dst.clone_from(b),
 			(Some(b), None) => *s = Some(b.clone()),
 			(None, _) => *s = None,

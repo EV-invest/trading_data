@@ -1031,6 +1031,13 @@ impl<C: Series, const H: Horizon> Clone for Buffer<C, H> {
 			watermark: self.watermark,
 		}
 	}
+
+	/// The one thing `derive(Clone)` would not have given: its `clone_from` is `*self = clone()`, and
+	/// a buffer holding a whole reach is what [`fd_col`] re-clones once per dep element.
+	fn clone_from(&mut self, src: &Self) {
+		self.buf.clone_from(&src.buf);
+		self.watermark = src.watermark;
+	}
 }
 
 impl<C: Series, const H: Horizon> Cell for Buffer<C, H> {
@@ -1479,21 +1486,21 @@ impl<A: Observer, B: Observer> Observer for (A, B) {
 	}
 }
 
-/// One finite-difference column: re-advance a fresh clone on `deps` with element `slot` bumped by
-/// about `h`, writing the bumped out into `bumped`; returns whether it fired and the perturbation
-/// the dep actually applied. Isolated from [`step_obs`] so the re-advance lifetime is purely local
-/// — the clone and its nudged deps never escape, which keeps the self-borrowing `advance` from
-/// pinning them to the caller's tick lifetime.
-/// `scratch` is the caller's: [`DepFlat::stage`] overwrites it wholly for every dep on every call,
-/// so allocating one per column would be dead work.
-fn fd_col<'d, N>(pre: &N, deps: DepOuts<'d, N>, scratch: &mut <N::Deps as DepFlat>::Scratch, slot: usize, h: f64, bumped: &mut [f64]) -> (bool, f64)
+/// One finite-difference column: re-advance `clone`, restored to `pre`, on `deps` with element
+/// `slot` bumped by about `h`, writing the bumped out into `bumped`; returns whether it fired and
+/// the perturbation the dep actually applied. Isolated from [`step_obs`] so the re-advance lifetime
+/// is purely local — the clone and its nudged deps never escape, which keeps the self-borrowing
+/// `advance` from pinning them to the caller's tick lifetime.
+/// `clone` and `scratch` are both the caller's, each overwritten wholly per column, so allocating
+/// either per column would be dead work.
+fn fd_col<'d, N>(pre: &N, clone: &mut N, deps: DepOuts<'d, N>, scratch: &mut <N::Deps as DepFlat>::Scratch, slot: usize, h: f64, bumped: &mut [f64]) -> (bool, f64)
 where
 	N: Node + Clone,
 	N::Deps: DepFlat,
 	DepOuts<'d, N>: Copy,
 	for<'x> N::Out<'x>: Flat, {
 	let dh = <N::Deps as DepFlat>::stage(deps, scratch, slot, h);
-	let mut clone = pre.clone();
+	clone.clone_from(pre);
 	(clone.advance(<N::Deps as DepFlat>::view(scratch)).flat(bumped), dh)
 }
 
@@ -1509,6 +1516,7 @@ where
 	let mut jac = alloc::vec![f64::NAN; out_len * dep_len];
 	let mut bumped = alloc::vec![f64::NAN; out_len];
 	let mut scratch = <N::Deps as DepFlat>::Scratch::default();
+	let mut clone = pre.clone();
 	for slot in 0..dep_len {
 		let x = dep_buf[slot];
 		if x.is_nan() {
@@ -1517,7 +1525,7 @@ where
 		let h = (x.abs() * 1e-6).max(1e-9);
 		// `dh`, not `h`: a quantized dep moves in whole ticks, and dividing by a step it never took
 		// is a fabricated slope. `0.0` ⇒ the slot has no derivative at all.
-		let (fired, dh) = fd_col::<N>(pre, deps, &mut scratch, slot, h, &mut bumped);
+		let (fired, dh) = fd_col::<N>(pre, &mut clone, deps, &mut scratch, slot, h, &mut bumped);
 		if !fired || dh == 0.0 {
 			continue; // bump crossed a firing branch, or the slot is discrete — column stays NaN
 		}
@@ -1611,8 +1619,8 @@ where
 }
 
 /// [`fd_jac`] for an [`Emit`]: same columns, but the re-`emit` needs no lifetime isolation (`&mut
-/// self` never lends the node), so the column body is inline and both scratches — the deps' and the
-/// clone's output run — are hoisted across the slot loop.
+/// self` never lends the node), so the column body is inline. Everything a column overwrites wholly
+/// — the deps' scratch, the clone, its output run — is hoisted across the slot loop.
 fn fd_jac_emit<'d, E>(pre: &E, deps: EmitOuts<'d, E>, dep_buf: &[f64], out_buf: &[f64]) -> alloc::vec::Vec<f64>
 where
 	E: Emit + Clone,
@@ -1625,6 +1633,7 @@ where
 	let mut bumped = alloc::vec![f64::NAN; out_len];
 	let mut scratch = <E::Deps as DepFlat>::Scratch::default();
 	let mut emitted = alloc::vec::Vec::new();
+	let mut clone = pre.clone();
 	for slot in 0..dep_len {
 		let x = dep_buf[slot];
 		if x.is_nan() {
@@ -1635,7 +1644,7 @@ where
 		// is a fabricated slope. `0.0` ⇒ the slot has no derivative at all.
 		let dh = <E::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
 		emitted.clear();
-		let mut clone = pre.clone();
+		clone.clone_from(pre);
 		clone.emit(<E::Deps as DepFlat>::view(&scratch), &mut emitted);
 		if !emitted.as_slice().flat(&mut bumped) || dh == 0.0 {
 			continue; // bump crossed a firing branch, or the slot is discrete — column stays NaN
