@@ -145,10 +145,6 @@ impl Cell for Deprecator {
 	type Out<'t> = &'t [Option<Intent>];
 }
 impl Node for Deprecator {
-	/// Bare, which a gated node's deps must be: the latch resets this node on commutation, so an
-	/// episode carries nothing across the dark and every input is read at this tick's batch. What the
-	/// reset costs is `last_atr`, which the next 1m publish refills — the episode's head declines
-	/// until then.
 	type Deps = (Classify, Atr, BookTop);
 	type When = (Armed<Deprecator>,);
 
@@ -171,16 +167,13 @@ impl Node for Deprecator {
 		self.buf.clear();
 		latest(&mut self.last_atr, atr, top.len());
 
-		// Rate-preserving over `top`, so the two zip by index — that is how a consumer recovers the
-		// tick's mid price for an intent without it being copied into one.
 		for d in top {
 			let Some(d) = d else {
 				self.buf.push(None);
 				continue;
 			};
-			// Entry prices off *this* tick's book rather than a cached one: the latch resets the node on
-			// commutation, so a cache would be cold on exactly the tick the arming classification lands.
-			// Classification is honored only while Idle; once Active we drive solely off book ticks.
+			//TODO: unreachable — see `Lanes`. `classify` is only `Some` on a trade-clocked tick and this
+			// loop only runs on a book-clocked one, so `State::Idle` never flips.
 			if matches!(self.state, State::Idle) && classify.is_some() {
 				let entry_price = d.mid();
 				//TODO: real selection over the full distribution; derive the side from the classification

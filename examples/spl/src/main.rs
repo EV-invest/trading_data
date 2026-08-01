@@ -57,9 +57,6 @@ const PORT_BASE: u16 = 59990;
 const SCROLLBACK: usize = 20_000;
 const HOUR_NS: i64 = 3600 * 1_000_000_000;
 const DAY_NS: i64 = 24 * HOUR_NS;
-/// The knob the whole measurement turns on: `TrailingStop`'s extremum and the `lambda_atr` crossing
-/// are running readings over *evaluated* states, so how much book one tick may swallow is exactly
-/// how much of the degradation goes unseen.
 const MEASURED_WINDOW_MS: i64 = 100;
 const MEASURED_WINDOW: BatchWindow = BatchWindow::from(Exact::from_nanos(MEASURED_WINDOW_MS * 1_000_000));
 #[derive(Parser)]
@@ -183,8 +180,6 @@ async fn main() {
 						day.check_top(x, out.spread[i], out.imbalance[i]);
 					}
 				}
-				// Rate preservation is a property of an *advancing* node: latched down, the deprecator is
-				// dark and emits nothing, which is the empty batch the gate contracts for.
 				flag!(
 					day,
 					!out.armed || out.deprecator.len() == out.book_top.len(),
@@ -192,8 +187,6 @@ async fn main() {
 					out.deprecator.len(),
 					out.book_top.len()
 				);
-				// `min` where the rates were equal by assertion: a mismatch is now survivable, and the
-				// pairing is only meaningful over the overlap.
 				for i in 0..out.deprecator.len().min(out.book_top.len()) {
 					day.check_intent(out.deprecator[i], out.book_top[i]);
 				}
@@ -214,15 +207,11 @@ async fn main() {
 			day.classifications,
 			day.std_hits
 		);
-		// What the window bought, and what it cost: the FD observer runs per node per tick, so wall-clock
-		// is the binding constraint on how fine `MEASURED_WINDOW` can go.
 		println!("{} ticks in {:.1}s at a {MEASURED_WINDOW_MS}ms batch window", day.ticks, began.elapsed().as_secs_f64());
 		println!(
 			"tape vs book: max |last_trade - mid| / mid = {}",
 			day.max_tape_divergence.map_or_else(|| "n/a".to_string(), |v| format!("{:.3}%", v * 100.0))
 		);
-		// Ingest persists every change to the top-20 view, so the ceiling is the book itself; what the
-		// batch window then decides is how many of those changes a tick swallows without anyone looking.
 		// SPL's 1Hz timer is the reference, not the target — these gaps should sit well under it.
 		let spl_samples = days.len() as u64 * 24 * 3600;
 		println!(
@@ -352,9 +341,7 @@ impl Day {
 				d.ts_ns
 			);
 		}
-		// A read is stamped with the last delta of its woven run and the weaver never reorders, so reads
-		// walk the lane forwards. Equality is legal — two runs can end on messages sharing the archive's
-		// millisecond resolution.
+		// Equality is legal — two reads can end on messages sharing the archive's millisecond resolution.
 		flag!(self, d.ts_ns >= self.last_top_ns, "book reads went backwards at {}, after {}", d.ts_ns, self.last_top_ns);
 		if self.last_top_ns != 0 {
 			let gap = (d.ts_ns - self.last_top_ns) / 1_000_000;
@@ -458,8 +445,8 @@ impl Day {
 			);
 			return;
 		};
-		// Book ticks land on the last message of a woven run, at no fixed spacing: the invariant is that
-		// the episode ended on the *first* tick at or after the deadline, not within any slack of it.
+		// The invariant is that the episode ended on the *first* tick at or after the deadline, not
+		// within any slack of it.
 		let deadline = first_zero_ns + config::strategy().classification.drain_grace.duration().as_nanos() as i64;
 		flag!(self, o.last_ns >= deadline, "episode ended {}ns before its drain deadline", deadline - o.last_ns);
 		flag!(self, o.prev_ns < deadline, "episode outlived its drain deadline by a whole tick, ending at {}", o.last_ns);

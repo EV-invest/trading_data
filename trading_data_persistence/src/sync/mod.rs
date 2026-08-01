@@ -1,13 +1,12 @@
-//! Central replay: one graph, one router, two feeds. A [`Feed`] weaves the required source lanes
-//! into a single arrival-ordered stream of [`Lanes`]. [`Replay`] is the backtest feed over a
+//! Central replay: one graph, one router, two feeds. [`Replay`] is the backtest feed over a
 //! catalog; [`Live`] is the live feed over push handles, teeing into the same Feather lanes a
 //! backtest later reads — so a live recording replays into the *identical* event stream.
 //!
-//! Every event is woven on an [`Arrival`] key. For [`Replay`] that's the recorded reception, or a
+//! Every event is keyed on an [`Arrival`]. For [`Replay`] that's the recorded reception, or a
 //! latency-simulation of the venue axis for historic (`None`) rows. For [`Live`] it is stamped at
 //! **ingest** — a single point, on the consumer thread — so it is monotonic without cross-thread
 //! races, and everything currently buffered is a complete prefix (every future event gets a larger
-//! stamp). That is what lets [`Live`] weave-and-emit incrementally and drop consumed rows:
+//! stamp). That is what lets [`Live`] emit incrementally and drop consumed rows:
 //! **bounded memory, no end-of-stream buffering, no quiet-lane stall.**
 //!
 //! The book lane is *our own recollection*, not the venue's story: [`Live`] runs every venue update
@@ -49,18 +48,12 @@ pub enum LaneKind {
 	Mc,
 }
 
-/// One arrival-ordered step. Every lane is present; lanes that did not arrive here are empty.
-///
-/// Batch-ness needs no tag — it iterates. The consumer's job is to hand these to its graph, not to
-/// re-dispatch a discriminant back into per-root fields.
+//TODO!!!!!!!: exactly one lane is non-empty per step, so trades and deltas can never share a tick — measured over a 2-day replay: 2736 ticks carried a 1m bar, 729100 carried a book read, 0 carried both — which silently makes unsatisfiable any node condition that reads two lanes at once, and `Deprecator`'s entry (a classification off the trade clock, an entry price off the book) is exactly that, so it has been emitting zero intents against 310 screener hits; a batch window cannot fix this because it caps a run rather than merging lanes, and neither can widening `Lanes`, because a push feed decides *for* the graph what a tick contains — we need to go fully pull-based, where a node asks each input for its value at the tick it is being advanced over and a rate is something the node declares rather than something the weaver happens to deliver.
 pub struct Lanes<'a> {
 	pub arrival: Arrival,
-	/// The winning run's last event, on the venue axis — the viz x-axis.
 	pub ts_venue: Ts<Venue>,
 	pub trades: TradeCols<'a>,
 	pub deltas: DeltaFrame<'a>,
-	/// Our checkpoint. Only the last of a step can matter: an earlier one is state the later one
-	/// already supersedes.
 	pub anchor: Option<&'a BookShape>,
 	pub oi: &'a [Oi],
 	pub mc: &'a [Mc],
@@ -72,8 +65,6 @@ pub trait Feed {
 	fn next(&mut self) -> Option<Lanes<'_>>;
 }
 
-/// The buffer behind one lane. Columnar for the raw lanes, a plain `Vec` for the f64-native ones —
-/// uniformity was the old `Batch` enum's sin; each lane keeps its natural shape.
 trait LaneBuf {
 	fn len(&self) -> usize;
 	fn drain_prefix(&mut self, n: usize);
@@ -198,8 +189,6 @@ impl Lane<DeltaBuf> {
 		self.key(ts, n);
 	}
 
-	/// A frame is homogeneous, so the run breaks where the kind changes as well as at the bound —
-	/// that is what lets the enum wrap the run instead of every row.
 	fn run_end_of_kind(&self, bound: Arrival) -> usize {
 		let kind = self.buf.kind_at(self.cur);
 		let mut e = self.cur + 1;
@@ -210,7 +199,6 @@ impl Lane<DeltaBuf> {
 	}
 }
 
-/// Merges the filled lanes into one arrival-ordered stream.
 #[derive(Default)]
 struct Weaver {
 	trades: Lane<TradeBuf>,
@@ -249,14 +237,8 @@ impl Weaver {
 		let bound = (0..heads.len()).filter(|&i| i != winner).filter_map(|i| heads[i]).min().unwrap_or(Arrival::from_nanos(i64::MAX));
 		assert!(win_ts >= self.prev_emit, "weaver emitted out of arrival order: {win_ts:?} < {:?}", self.prev_emit);
 
-		// The window is measured from `prev_emit` — when we started looking — not from the first
-		// element found, so an idle stretch does not add latency to what ends it.
-		// `max(win_ts)`: a venue message is atomic — its rows share one arrival and must not split, even
-		// when the window has already elapsed. `bound >= win_ts` holds (the winner has the minimum head),
-		// so the cap never falls below the run's own first element.
 		let bound = bound.min((self.prev_emit + self.window).max(win_ts));
 
-		// Claim the winning run first, so the borrows below are all shared and disjoint.
 		let (mut t, mut d, mut a, mut o, mut m) = ((0, 0), (0, 0), (0, 0), (0, 0), (0, 0));
 		let ts_venue = match winner {
 			0 => {

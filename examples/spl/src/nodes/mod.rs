@@ -1,7 +1,7 @@
-//! The scam_pump_liqs strategy as a compile-time step graph: five roots weave into per-timeframe
-//! bars, the indies derive off those, the configured screener fires off the ones it reads,
-//! `Classify` turns a hit into a distribution, and `Deprecator` runs the per-book-tick degrader that
-//! produces `target_q`.
+//! The scam_pump_liqs strategy as a compile-time step graph: five roots feed per-timeframe bars, the
+//! indies derive off those, the configured screener fires off the ones it reads, `Classify` turns a
+//! hit into a distribution, and `Deprecator` runs the per-book-tick degrader that produces
+//! `target_q`.
 //!
 //! Everything up to `target_q` is pure and ported verbatim — windows, thresholds and the two
 //! misnomers SPL keeps from its Pine source. Execution (`trailing_limit`, `OrderAction`,
@@ -111,11 +111,6 @@ use crate::nodes::{change_1d::REACH_1D, change_3m::SPAN_3M, oi_delta::OI_REACH};
 
 /// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that
 /// declined this tick is not a publish, so the cached level stands.
-///
-/// `ticks` is how many of its own the caller is about to apply the level to. A publish landing in a
-/// batch that carries more than one of those is unplaceable — neither slice says which ticks precede
-/// it — so the early ones would read a level out of their own future. Reaching that needs a batch
-/// window at least as wide as the consumer's period, which is not a case to guess through.
 fn latest<T: Copy>(slot: &mut Option<T>, dep: &[Option<T>], ticks: usize) {
 	let Some(v) = dep.iter().flatten().last() else { return };
 	assert!(ticks <= 1, "a level published inside a {ticks}-tick batch cannot be placed against those ticks");
