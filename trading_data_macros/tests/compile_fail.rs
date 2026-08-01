@@ -38,5 +38,12 @@ fn base_config(dir: PathBuf, root: &Path) -> ui_test::Config {
 	config.stderr_filter(r"(?m)^ *(\||-->)", "  $1");
 	// rustc spills an over-long type to a side file whose name carries a per-run hash.
 	config.stderr_filter(r"long-type-\d+\.txt", "long-type.txt");
+	// A const-eval panic is reported against `core`'s own `panic.rs`, which is the toolchain's, not
+	// ours: the sysroot path differs between rustup (`/rustc/<hash>`) and nix, and whether that frame
+	// renders as a quoted source line or a bare note depends on `rust-src` being installed. Collapse
+	// both spellings onto the note, so these snapshots pin our message and not the toolchain layout.
+	config.stderr_filter(r"(?:/rustc/[0-9a-f]+|/nix/store/[^/]+/lib/rustlib/src/rust)/library/", "<sysroot>/library/");
+	config.stderr_filter(r"(?m)^LL \| *\$crate::panicking::panic_fmt.*\n", "");
+	config.stderr_filter(r"(?m)^ *\| *\^+ (evaluation of .* failed here)$", "    = note: $1");
 	config
 }

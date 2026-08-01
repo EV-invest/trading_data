@@ -27,7 +27,7 @@ fn assert_schema_version(schema: &Schema) {
 /// *reading* — not drift: a miss means a gap in our own recording, not a book that folded too long
 /// since the venue last spoke.
 const MAX_ANCHOR_AGE: Duration = Duration::from_millis(match <Book as Node>::HORIZON {
-	Horizon::Span(ms) => ms,
+	Horizon::Span(tf) => tf.0,
 	_ => panic!("a book re-warms from a checkpoint, so its horizon is the span it reaches back"),
 });
 

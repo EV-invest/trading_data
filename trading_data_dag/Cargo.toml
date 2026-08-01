@@ -12,6 +12,8 @@ categories.workspace = true
 
 [dependencies]
 trading_data_macros.workspace = true
+# `Horizon::Span` is a `Timeframe`, which is a std type — so this crate is no longer `no_std`.
+v_utils.workspace = true
 
 [lints]
 workspace = true

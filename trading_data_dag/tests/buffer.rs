@@ -4,6 +4,7 @@
 //! the point of engine-owned retention.
 
 use trading_data_dag::{Buffer, Buffering, Bump, Cell, DepOuts, Episode, Fire, Flat, Gate, Glance, Horizon, Latch, Node, Observer, Stamped, graph, slice_nudge};
+use v_utils::{Timeframe, TimeframeDesignator};
 
 /// A retained element is stamped: that is what a [`Horizon`] indexes by. One unit of `v` is one
 /// second of `ts`, so a fixture's numbers double as its timeline.
@@ -173,7 +174,7 @@ mod span {
 		batches SBatches;
 		roots { src: Src[f64] };
 		out SOut;
-		hist: Buffer<Src, { Horizon::Span(10_000) }>,
+		hist: Buffer<Src, { Horizon::Span(Timeframe::from_naive(10, TimeframeDesignator::Seconds)) }>,
 	}
 
 	#[test]

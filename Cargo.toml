@@ -79,11 +79,10 @@ trading_data_persistence = { path = "trading_data_persistence", version = "0.3.0
 ui_test = "0.30"
 ureq = "^3"
 v_exchanges = { path = "../../v_exchanges/v_exchanges" }
-v_utils = { version = "^2.15.57", features = ["io", "macros", "cli", "distributions"] }
+v_utils = { version = "^2.16.1", features = ["io", "macros", "cli", "distributions"] }
 zip = "^7"
 
 [patch.crates-io]
-v_utils = { path = "../../v_utils/v_utils" }
 # `trading_data_core` dev-depends on `snapshot_fonts`, and `v_exchanges` names it from crates-io;
 # `[patch]` is only honored from the top-level workspace, so the redirect has to live here or those
 # graphs resolve to an incompatible second copy of the shared parse-boundary types.

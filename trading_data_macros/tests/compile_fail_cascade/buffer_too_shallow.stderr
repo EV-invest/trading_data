@@ -1,5 +1,5 @@
 error[E0080]: evaluation panicked: the frame's Buffer<C, K> does not reach as far back as this Buffering<C, H> asks for
-  --> /rustc/13f1859f2faf97a15664e655624baa7417fdc100/library/core/src/panic.rs:LL:CC
+  --> <sysroot>/library/core/src/panic.rs:LL:CC
   |
     = note: evaluation of `<trading_data_dag::Cons<'_, trading_data_dag::Buffer<Src, trading_data_dag::Horizon::Elems(3)>, trading_data_dag::Cons<'_, Src, trading_data_dag::Nil>> as trading_data_dag::Has<'_, trading_data_dag::Buffering<Src, trading_data_dag::Horizon::Elems(5)>, trading_data_dag::Here>>::get::{constant#0}` failed here
   |
