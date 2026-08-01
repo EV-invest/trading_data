@@ -39,13 +39,13 @@ const PINE_PERIODS_PER_YEAR: f64 = 365.0;
 const SPAN_1D: Timeframe = Timeframe::from_naive(1, TimeframeDesignator::Days);
 /// What the 1h series must retain to answer it: the day, plus one period of cross-rate slack — the
 /// 1m bar whose close asks the question stands up to a whole 1h period past the newest 1h bar.
-const REACH_1D: Horizon = Horizon::Span(SPAN_1D.0 + Bar1h::TF.0);
+const REACH_1D: Horizon = Horizon::Span(Timeframe(SPAN_1D.0 + Bar1h::TF.0));
 /// Reach behind `change_3m_pct` — three minutes, spanned by the opens of the 1m bars inside it.
 const SPAN_3M: Timeframe = Timeframe::from_naive(3, TimeframeDesignator::Minutes);
 /// Bybit's open-interest publish cadence: the deltas read the publish standing a whole number of
 /// these back, so the retained reach is one past the longer leg.
 const OI_STEP: Timeframe = Timeframe::from_naive(5, TimeframeDesignator::Minutes);
-const OI_REACH: Horizon = Horizon::Span(4 * OI_STEP.0);
+const OI_REACH: Horizon = Horizon::Span(Timeframe(4 * OI_STEP.0));
 /// SPL's `execution::RISK_FRACTION`: fraction of equity committed per entry.
 const RISK_FRACTION: f64 = 0.03;
 /// SPL's `OrderBookActor::DEPTH`.
@@ -56,7 +56,7 @@ const DEPTH: usize = 20;
 pub const MOM_PERIODS: u64 = 256;
 /// That capacity as the reach it is: `MOM_PERIODS` of the series' own periods.
 pub const fn mom_cap(tf: Timeframe) -> Horizon {
-	Horizon::Span(MOM_PERIODS * tf.0)
+	Horizon::Span(Timeframe(MOM_PERIODS * tf.0))
 }
 
 // ─── flattening ─────────────────────────────────────────────────────────────────────────────────
@@ -222,7 +222,7 @@ macro_rules! bars {
 			type Deps = (Trades,);
 
 			/// Only the partial bar is held, so the state reaches back exactly one period.
-			const HORIZON: Horizon = Horizon::Span(Self::TF.0);
+			const HORIZON: Horizon = Horizon::Span(Self::TF);
 
 			fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
 				self.0.advance(trades, Self::TF)
@@ -510,7 +510,7 @@ impl Cell for Price {
 	type Out<'t> = &'t [Option<PriceSnap>];
 }
 impl Node for Price {
-	type Deps = (Buffering<Bar1m, { Horizon::Span(SPAN_3M.0) }>, Buffering<Bar1h, REACH_1D>);
+	type Deps = (Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>, Buffering<Bar1h, REACH_1D>);
 
 	fn advance<'t>(&'t mut self, (m1, h1): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
@@ -1197,7 +1197,7 @@ trading_data::graph! {
 	bar_15m: Bar15m,
 	bar_1h: Bar1h,
 	bar_4h: Bar4h,
-	bar_1m_hist: Buffer<Bar1m, { Horizon::Span(SPAN_3M.0) }>,
+	bar_1m_hist: Buffer<Bar1m, { Horizon::Span(SPAN_3M) }>,
 	bar_5m_hist: Buffer<Bar5m, { mom_cap(Bar5m::TF) }>,
 	bar_1h_hist: Buffer<Bar1h, REACH_1D>,
 	bar_4h_hist: Buffer<Bar4h, { mom_cap(Bar4h::TF) }>,

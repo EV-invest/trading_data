@@ -66,7 +66,6 @@
 //! let f = step(f, &mut double);
 //! assert_eq!(f.head(), 42.0);
 //! ```
-#![no_std]
 #![feature(adt_const_params)]
 #![feature(associated_type_defaults)]
 #![feature(const_type_name)]
@@ -74,6 +73,8 @@
 extern crate alloc;
 
 use core::any::TypeId;
+
+use v_utils::Timeframe;
 
 mod expr;
 pub use expr::{Abs, Add, Ast, Const, Div, Ex, Expr, Mul, Neg, Square, Sub, Sum, Trace, Var, Vars, abs, constant, square, sum};
@@ -86,9 +87,9 @@ pub enum Horizon {
 	/// The current value only — no history at all.
 	Unit,
 	Elems(usize),
-	/// Wall-clock milliseconds — `Timeframe`'s own unit, so `Timeframe::from_naive(..).0` is the
-	/// literal you write.
-	Span(u64),
+	/// A window of wall clock, stated as the timeframe it is — the unit travels with the number
+	/// instead of being a convention the reader has to know.
+	Span(Timeframe),
 	/// Reaches to the start of the run: a recurrence (Wilder RSI) or a running sum (CVD). Nothing
 	/// recovers such a node, so it must advance every tick.
 	Unbounded,
@@ -101,15 +102,15 @@ impl Horizon {
 	pub const fn serves(self, req: Horizon) -> bool {
 		match (self, req) {
 			(Horizon::Elems(k), Horizon::Elems(j)) => k >= j,
-			(Horizon::Span(k), Horizon::Span(j)) => k >= j,
+			(Horizon::Span(k), Horizon::Span(j)) => k.0 >= j.0,
 			(Horizon::Span(_), Horizon::Elems(_)) => true,
 			_ => false,
 		}
 	}
 
 	/// Only a [`Horizon::Span`] has one; the caller has already matched the variant.
-	const fn ns(ms: u64) -> i64 {
-		(ms * 1_000_000) as i64
+	const fn ns(tf: Timeframe) -> i64 {
+		(tf.0 * 1_000_000) as i64
 	}
 }
 
@@ -719,8 +720,8 @@ impl<'t, T: Stamped> Hist<'t, T> {
 			}
 			// exclusive: the window is the last `ms` of wall clock, the same predicate the buffer trims
 			// on — so what it retains and what a consumer reads are one statement.
-			Horizon::Span(ms) => {
-				let cut = self.all[end - 1].ts_ns() - Horizon::ns(ms);
+			Horizon::Span(tf) => {
+				let cut = self.all[end - 1].ts_ns() - Horizon::ns(tf);
 				(cut >= self.watermark).then(|| &self.all[self.all[..end].partition_point(|x| x.ts_ns() <= cut)..end])
 			}
 			h => unreachable!("a Buffering is const-asserted bounded, and `narrowed` re-asserts it: {h:?}"),
@@ -815,19 +816,19 @@ where
 			assert!(
 				match H {
 					Horizon::Elems(k) => k >= 1,
-					Horizon::Span(ms) => ms > 0,
+					Horizon::Span(tf) => tf.0 > 0,
 					_ => false,
 				},
-				"a buffer retains a bounded reach: Horizon::Elems(k >= 1) or Horizon::Span(ms > 0)"
+				"a buffer retains a bounded reach: Horizon::Elems(k >= 1) or Horizon::Span(tf > 0)"
 			)
 		}
 		// Trim *before* the append: `past` must be what stood behind this tick's batch, or an
 		// intra-batch cursor walking several elements reads a window already trimmed by its own tail.
 		let drop = match H {
 			Horizon::Elems(k) => self.buf.len().saturating_sub(k),
-			Horizon::Span(ms) => match self.buf.last() {
+			Horizon::Span(tf) => match self.buf.last() {
 				Some(newest) => {
-					let cut = newest.ts_ns() - Horizon::ns(ms);
+					let cut = newest.ts_ns() - Horizon::ns(tf);
 					self.buf.partition_point(|x| x.ts_ns() <= cut)
 				}
 				None => 0,

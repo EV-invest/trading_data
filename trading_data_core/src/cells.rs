@@ -4,6 +4,7 @@
 //! that may write these impls. Nothing else here knows the dag exists.
 
 use trading_data_dag::{Cell, DepOuts, Horizon, Node, Nudge};
+use v_utils::{Timeframe, TimeframeDesignator};
 
 use crate::{Book, BookShape, DeltaBuf, DeltaFrame, TradeBuf, TradeCols};
 
@@ -78,7 +79,7 @@ impl Node for Book {
 	/// A book re-warms from a checkpoint: its state reaches back exactly one checkpoint interval, so
 	/// gating it off and back on costs one desync and one resync, not a warmup it can never recover.
 	/// `trading_data_persistence` reads its anchor-age bound off this.
-	const HORIZON: Horizon = Horizon::Span(15 * 60 * 1_000);
+	const HORIZON: Horizon = Horizon::Span(Timeframe::from_naive(15, TimeframeDesignator::Minutes));
 
 	fn advance<'t>(&'t mut self, (anchor, deltas): DepOuts<'t, Self>) -> Option<&'t Book> {
 		self.step(anchor, deltas).then_some(&*self)
