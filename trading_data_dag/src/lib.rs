@@ -26,10 +26,9 @@
 //!   decides which roots are *required* ([`graph!`] exposes `required_events()`).
 //! - **Node identity = its type.** Two instances of one node type in a frame make [`Has`]
 //!   resolution ambiguous — a compile error. Distinguish via newtypes or const generics.
-//! - **Gates operate on scalar cells only.** A [`Gate`] outputs plain `bool`; nodes naming it in
-//!   [`Node::When`] are not advanced while it is false. Batch-out nodes cannot be gates or gated
-//!   (tick-level gating on a batch is lossy, and a self-borrowing batch out can't be reset
-//!   post-sweep) — this is a load-bearing invariant, see [`graph!`].
+//! - **A gate is scalar-out; a gated node may be batch-out.** A [`Gate`] outputs plain `bool`; nodes
+//!   naming it in [`Node::When`] are not advanced while it is false. The gate resolves once per tick,
+//!   so a gated batch node's episode boundary is quantized to its batch window.
 //! - **Horizon.** Reach is stated per *dep*, because "how far back must this be looked at" is a
 //!   question about an input: a bare dep reaches [`Horizon::Unit`] (this tick's batch), a
 //!   [`Buffering`] dep names the reach the *engine* retains for it, and a [`Folding`] dep names the
@@ -495,14 +494,21 @@ pub trait Pull<'t, F, I>: DepSet {
 		F: 't;
 }
 
-/// The "didn't run" value for gated nodes. Implemented for `Option` only, so gating a
-/// non-`Option` node is a compile error — no dishonest zeros.
+/// The "didn't run" value for gated nodes — `Option` and batch outs only, so gating a node with no
+/// unfired reading is a compile error — no dishonest zeros.
 pub trait Latent: Copy {
 	fn latent() -> Self;
 }
 impl<T: Copy> Latent for Option<T> {
 	fn latent() -> Self {
 		None
+	}
+}
+/// A dark batch node emits nothing, which [`Flat`] already reads as `fires() == 0` / unfired.
+impl<T> Latent for &[T] {
+	fn latent() -> Self {
+		// core's `impl<T> Default for &[T]`; a bare `&[]` would lean on promoting `[T; 0]`.
+		Default::default()
 	}
 }
 
@@ -619,6 +625,16 @@ impl<T: Episode> Episode for Option<T> {
 	}
 }
 
+/// A batch ends the episode if *any* element does. Deliberately not `.last()` like [`Flat`]: that
+/// reads the value standing at end-of-batch, where this asks whether the boundary was crossed
+/// anywhere in the run — a rate-preserving node keeps emitting past its own terminal element.
+/// Empty ⇒ false, so a dark node never self-commutates.
+impl<T: Episode> Episode for &[T] {
+	fn terminal(&self) -> bool {
+		self.iter().any(Episode::terminal)
+	}
+}
+
 /// A [`Gate`] armed from outside and cut from within — the SCR/thyristor: an external event
 /// (its `Deps`) sets it, conduction latches in its own state, and it turns off by natural
 /// commutation when the episode it gates reaches a [`Episode::terminal`] out. No second external
@@ -628,9 +644,87 @@ pub trait Latch: Gate
 where
 	for<'t> Self: Cell<Out<'t> = bool>,
 	for<'t> <Self::Cut as Cell>::Out<'t>: Episode, {
-	/// The gated node whose terminal out commutates this latch.
-	type Cut: Cell;
+	/// The gated node whose terminal out commutates this latch. A [`Node`], not a bare [`Cell`]: a
+	/// root cannot be gated, so it could never be cut from within.
+	type Cut: Node;
 	fn commutate(&mut self);
+}
+
+/// A node that runs a self-terminating episode, latched from inside the graph. `Trigger` is the one
+/// dep that stays live while the episode is dark — the arm — and the node's own [`Episode::terminal`]
+/// out drops the contact. Where a hand-written [`Latch`] leaves the loop open (nothing checks that
+/// the gate you armed is the gate your episode cuts), this closes it in the type: [`Armed<Self>`] is
+/// the only gate it can be.
+pub trait Episodic: Node
+where
+	for<'t> <Self as Cell>::Out<'t>: Episode, {
+	type Trigger: Cell;
+	fn arms<'t>(trigger: TriggerOut<'t, Self>) -> bool;
+}
+
+/// Binder-correct trigger-out type for [`Episodic::arms`] impls — the arm-side [`DepOuts`]. Writing
+/// the concrete type hits E0195 whenever the trigger's out carries no lifetime of its own.
+pub type TriggerOut<'t, N> = <<N as Episodic>::Trigger as Cell>::Out<'t>;
+
+/// An [`Episodic`] node's own contact, sealed in: an ordinary node stepped before `N`, so `N` and any
+/// leg meant to go dark with it name it in [`Node::When`]. It folds its trigger at
+/// [`Horizon::Unbounded`] by construction — a latched bit is exactly the state nothing reconstitutes
+/// — which is also why it can never itself be gated.
+///
+/// [`Episodic`]'s `where` is repeated on every impl below: a trait's where-clause is an obligation at
+/// each use of the bound, not an implied one, and [`Latch`] needs exactly it to accept `Cut = N`.
+pub struct Armed<N: Episodic>(bool, core::marker::PhantomData<N>)
+where
+	for<'t> N::Out<'t>: Episode;
+
+// hand-written: `derive` would demand `N: Default + Clone`, which the episode need not be.
+impl<N: Episodic> Default for Armed<N>
+where
+	for<'t> N::Out<'t>: Episode,
+{
+	fn default() -> Self {
+		Self(false, core::marker::PhantomData)
+	}
+}
+impl<N: Episodic> Clone for Armed<N>
+where
+	for<'t> N::Out<'t>: Episode,
+{
+	fn clone(&self) -> Self {
+		Self(self.0, core::marker::PhantomData)
+	}
+}
+
+impl<N: Episodic> Cell for Armed<N>
+where
+	for<'t> N::Out<'t>: Episode,
+{
+	type Out<'t> = bool;
+}
+
+impl<N: Episodic> Node for Armed<N>
+where
+	for<'t> N::Out<'t>: Episode,
+{
+	type Deps = (Folding<N::Trigger, { Horizon::Unbounded }>,);
+
+	fn advance<'t>(&'t mut self, (trigger,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		self.0 |= N::arms(trigger);
+		self.0
+	}
+}
+
+impl<N: Episodic> Gate for Armed<N> where for<'t> N::Out<'t>: Episode {}
+
+impl<N: Episodic> Latch for Armed<N>
+where
+	for<'t> N::Out<'t>: Episode,
+{
+	type Cut = N;
+
+	fn commutate(&mut self) {
+		self.0 = false;
+	}
 }
 
 /// Uniform binder-correct dep-tuple type for `advance` impls (concrete types there hit E0195).
@@ -1462,6 +1556,9 @@ pub struct NodeMeta {
 	/// Per-dep, positionally with `deps`.
 	pub reach: &'static [Horizon],
 	pub gates: &'static [&'static str],
+	/// A `latch { }` field. A latch is momentary by nature, so a consumer behind one is not standing
+	/// demand: what it reads must be warm *before* the episode arms.
+	pub latch: bool,
 }
 
 const fn str_eq(a: &str, b: &str) -> bool {
@@ -1502,11 +1599,23 @@ const fn reaches_unbounded(reach: &[Horizon]) -> bool {
 	false
 }
 
+/// Whether any of `gates` names a latch.
+const fn latched(gates: &[&str], nodes: &[NodeMeta]) -> bool {
+	let mut i = 0;
+	while i < nodes.len() {
+		if nodes[i].latch && contains(gates, nodes[i].name) {
+			return true;
+		}
+		i += 1;
+	}
+	false
+}
+
 /// [`graph!`]'s completeness check: true when `name` reaches boundedly into every dep, is ungated,
-/// has in-graph consumers, and all of them sit behind one common gate (other than `name` itself) —
-/// sampling it while that gate is closed is pure waste, so it must be gated too or read some dep at
-/// [`Horizon::Unbounded`], which is the reach nothing recovers. Leaves (no in-graph consumers) are
-/// graph outputs — exempt.
+/// has in-graph consumers, and all of them sit behind one common **non-latch** gate (other than
+/// `name` itself) — sampling it while that gate is closed is pure waste, so it must be gated too or
+/// read some dep at [`Horizon::Unbounded`], which is the reach nothing recovers. Leaves (no in-graph
+/// consumers) are graph outputs — exempt.
 #[doc(hidden)]
 pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 	let mut me = 0;
@@ -1518,7 +1627,7 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 		return false;
 	}
 	let mut fc = 0;
-	while fc < nodes.len() && !contains(nodes[fc].deps, name) {
+	while fc < nodes.len() && !(contains(nodes[fc].deps, name) && !latched(nodes[fc].gates, nodes)) {
 		fc += 1;
 	}
 	if fc == nodes.len() {
@@ -1532,7 +1641,7 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 			let mut all = true;
 			let mut j = fc + 1;
 			while j < nodes.len() {
-				if contains(nodes[j].deps, name) && !contains(nodes[j].gates, gate) {
+				if contains(nodes[j].deps, name) && !latched(nodes[j].gates, nodes) && !contains(nodes[j].gates, gate) {
 					all = false;
 					break;
 				}
@@ -1543,6 +1652,26 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 			}
 		}
 		g += 1;
+	}
+	false
+}
+
+/// A latch whose arm is a node it also gates can never re-arm: the arm is dark exactly when the
+/// latch is down. Roots are always live, so an external latch is exempt by construction — which is
+/// the whole of the difference between the two flavours.
+#[doc(hidden)]
+pub const fn deadlocked(latch: &'static str, arms: &'static [&'static str], nodes: &[NodeMeta]) -> bool {
+	let mut a = 0;
+	while a < arms.len() {
+		let mut i = 0;
+		while i < nodes.len() {
+			// a name absent from `nodes` is a root — external, always live, exempt.
+			if str_eq(nodes[i].name, arms[a]) && contains(nodes[i].gates, latch) {
+				return true;
+			}
+			i += 1;
+		}
+		a += 1;
 	}
 	false
 }
@@ -1569,7 +1698,8 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 /// An optional `latch { field: Type, .. }` group names [`Latch`] fields (also in the node list).
 /// A latch whose `Cut` out reads [`Episode::terminal`] is commutated and its gated fields reset
 /// to `Default` at the *next* tick's start (deferred: the frame still borrows batch fields).
-/// **Every gate/latch/gated field must be scalar-out** — a batch-out gate is out of contract.
+/// **Every gate/latch field must be scalar-out**; a gated field may be batch-out, its episode
+/// boundary then quantized to the batch window.
 ///
 /// An optional `diff { field: Type, .. }` group names [`Diff`] fields (also in the node list):
 /// they sweep via [`step_exact`], emitting exact partials + formula + derivatives.

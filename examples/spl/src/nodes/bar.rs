@@ -35,36 +35,6 @@ impl Stamped for Bar {
 	}
 }
 
-/// The prefix of a slower series that has *closed* by `deadline` — the cross-rate read a node
-/// clocked by a faster series makes against a [`trading_data::Buffering`] dep.
-pub(super) fn closed_by(bars: &[Bar], tf: Timeframe, deadline: i64) -> &[Bar] {
-	&bars[..bars.partition_point(|b| b.close_ns(tf) <= deadline)]
-}
-
-/// [`Timeframe`]'s parse rules in const position. Parsing is the cheap direction — const-formatting
-/// a number back out is not — so the literal that *names* a series is the same one that *defines*
-/// it, and `Bar:1m` cannot drift into being a one-*second* series.
-const fn tf(s: &str) -> Timeframe {
-	let b = s.as_bytes();
-	let (mut n, mut i) = (0u64, 0);
-	while i < b.len() && b[i].is_ascii_digit() {
-		n = n * 10 + (b[i] - b'0') as u64;
-		i += 1;
-	}
-	assert!(n > 0, "a timeframe leads with its count");
-	let (_, designator) = b.split_at(i);
-	Timeframe::from_naive(
-		n,
-		match designator {
-			b"s" => TimeframeDesignator::Seconds,
-			b"m" => TimeframeDesignator::Minutes,
-			b"h" => TimeframeDesignator::Hours,
-			b"d" => TimeframeDesignator::Days,
-			_ => panic!("timeframe designator is one of s/m/h/d"),
-		},
-	)
-}
-
 /// Trades → OHLCV bars at one period. Rate-changing: one non-optional bar per boundary crossed, so
 /// a batch spanning two periods emits two; a partial period emits none (its bar stays in `acc`).
 /// Shared by every series: only the period and the name are per-type.
@@ -106,6 +76,36 @@ impl BarAcc {
 		}
 		&self.buf
 	}
+}
+
+/// The prefix of a slower series that has *closed* by `deadline` — the cross-rate read a node
+/// clocked by a faster series makes against a [`trading_data::Buffering`] dep.
+pub(super) fn closed_by(bars: &[Bar], tf: Timeframe, deadline: i64) -> &[Bar] {
+	&bars[..bars.partition_point(|b| b.close_ns(tf) <= deadline)]
+}
+
+/// [`Timeframe`]'s parse rules in const position. Parsing is the cheap direction — const-formatting
+/// a number back out is not — so the literal that *names* a series is the same one that *defines*
+/// it, and `Bar:1m` cannot drift into being a one-*second* series.
+const fn tf(s: &str) -> Timeframe {
+	let b = s.as_bytes();
+	let (mut n, mut i) = (0u64, 0);
+	while i < b.len() && b[i].is_ascii_digit() {
+		n = n * 10 + (b[i] - b'0') as u64;
+		i += 1;
+	}
+	assert!(n > 0, "a timeframe leads with its count");
+	let (_, designator) = b.split_at(i);
+	Timeframe::from_naive(
+		n,
+		match designator {
+			b"s" => TimeframeDesignator::Seconds,
+			b"m" => TimeframeDesignator::Minutes,
+			b"h" => TimeframeDesignator::Hours,
+			b"d" => TimeframeDesignator::Days,
+			_ => panic!("timeframe designator is one of s/m/h/d"),
+		},
+	)
 }
 
 /// One named series per timeframe. A distinct type per period is what the graph already demands

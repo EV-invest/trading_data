@@ -85,6 +85,7 @@ const LEAF: NodeMeta = NodeMeta {
 	deps: &[],
 	reach: &[],
 	gates: &[],
+	latch: false,
 };
 const _: () = assert!(!shadowed("leaf", &[LEAF]));
 
@@ -96,42 +97,49 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			reach: &[Horizon::Unbounded],
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "gate",
 			deps: &["hist"],
 			reach: &[Horizon::Unbounded],
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "cur",
 			deps: &["root"],
 			reach: &[Horizon::Unit],
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "mixed",
 			deps: &["root"],
 			reach: &[Horizon::Unit],
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "part",
 			deps: &["root", "hist"],
 			reach: &[Horizon::Unit, Horizon::Unbounded],
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "cls",
 			deps: &["cur", "hist", "mixed", "part"],
 			reach: &[Horizon::Unit, Horizon::Unit, Horizon::Unit, Horizon::Unit],
 			gates: &["gate"],
+			latch: false,
 		},
 		NodeMeta {
 			name: "sink",
 			deps: &["mixed"],
 			reach: &[Horizon::Unit],
 			gates: &[],
+			latch: false,
 		},
 	];
 	let check = |name, expect| assert_eq!(shadowed(name, nodes), expect, "{name}");
@@ -151,12 +159,14 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			reach: &[Horizon::Unit],
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "c",
 			deps: &["g"],
 			reach: &[Horizon::Unit],
 			gates: &["g"],
+			latch: false,
 		},
 	];
 	assert!(!shadowed("g", self_gate));
@@ -168,18 +178,21 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			reach: &[Horizon::Unit],
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "a",
 			deps: &["x"],
 			reach: &[Horizon::Unit],
 			gates: &["g1"],
+			latch: false,
 		},
 		NodeMeta {
 			name: "b",
 			deps: &["x"],
 			reach: &[Horizon::Unit],
 			gates: &["g2"],
+			latch: false,
 		},
 	];
 	assert!(!shadowed("x", split));
@@ -191,18 +204,21 @@ fn shadowed_flags_exactly_the_bounded_ungated_all_consumers_one_gate_case() {
 			deps: &["root"],
 			reach: &[Horizon::Unit],
 			gates: &[],
+			latch: false,
 		},
 		NodeMeta {
 			name: "a",
 			deps: &["x"],
 			reach: &[Horizon::Unit],
 			gates: &["g1", "g2"],
+			latch: false,
 		},
 		NodeMeta {
 			name: "b",
 			deps: &["x"],
 			reach: &[Horizon::Unit],
 			gates: &["g2"],
+			latch: false,
 		},
 	];
 	assert!(shadowed("x", multi));

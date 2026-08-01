@@ -124,9 +124,9 @@ Structural rules (enforced by the signatures, not convention):
   node: a step that computes nothing, and differentiates to nothing, stays out of the topology.
 - **Node identity = its type.** Two instances of one node type in a frame are ambiguous —
   compile error; distinguish via newtypes/const generics (`Rsi<14>` vs `Rsi<28>`).
-- **Gates operate on scalar cells only.** A `Gate` is a `bool`-out node; nodes naming it in `When`
-  are skipped while it's false. A batch-out node can be neither gate nor gated (tick-level gating
-  on a batch is lossy, and a self-borrowing batch out can't be reset). *Historic* nodes (stateful)
+- **A gate is scalar-out; a gated node may be batch-out.** A `Gate` is a `bool`-out node; nodes
+  naming it in `When` are skipped while it's false. The gate resolves once per tick, so a gated
+  batch node's episode boundary is quantized to its batch window. *Historic* nodes (stateful)
   must advance every tick to stay warm: gating one is a compile error; only *current* nodes gate.
   A current node whose every in-graph consumer sits behind one gate must be gated too — `graph!`
   rejects the omission at compile time.

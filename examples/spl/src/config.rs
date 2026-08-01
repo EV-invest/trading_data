@@ -23,6 +23,7 @@ pub fn strategy() -> &'static Strategy {
 	&config().strategy
 }
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
 	pub situation: Situation,
 	pub strategy: Strategy,
@@ -56,6 +57,7 @@ impl Config {
 /// One backtest target: which instrument, and the window replayed. Indies warm inside it — a cold
 /// node declines, so the strategy simply does not fire until it has the history it reads.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Situation {
 	pub pair: String,
 	pub bybit_symbol: String,
@@ -68,12 +70,14 @@ pub struct Situation {
 	pub end: jiff::civil::Date,
 }
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Strategy {
 	pub indies: Indies,
 	pub screen: Screen,
 	pub classification: Classification,
 }
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Indies {
 	pub rsi: Rsi,
 	pub momentum: Momentum,
@@ -82,47 +86,51 @@ pub struct Indies {
 /// `Display` is the indie's signature — `rsi:t5m:b14:s14` — so anything naming this indie names the
 /// timeframe with it. There is no default: the timeframe RSI runs on is the strategy.
 #[derive(Clone, CompactFormatNamed, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rsi {
 	pub timeframe: Timeframe,
 	pub base_len: usize,
 	pub smooth_len: usize,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Momentum {
 	pub fast: Timeframe,
-	/// The second, slower leg. `null` drops it entirely — never tracked, never warmed, and the
-	/// screener's slow leg is then vacuous. There is no default: a leg exists only if named.
-	pub slow: Option<Timeframe>,
 	pub lookback: usize,
 	pub risk_free_rate: f64,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Atr {
 	pub period: usize,
 }
 /// Exactly one screener is configured; the other node stays inert. Both still declare their own
 /// `type Deps`, so which one runs is all this decides — not which indie is readable.
 #[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Screen {
 	Rsi(RsiScreen),
 	Std(StdScreen),
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RsiScreen {
 	pub rsi_threshold: f64,
 	pub price_percent: PercentU,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StdScreen {
 	pub fast_overvalued: f64,
-	pub slow_overvalued: f64,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Classification {
 	pub drain_grace: Timeframe,
 	pub liquidations: Liquidations,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Liquidations {
 	pub atr_sl_x: f64,
 	pub atr_tp_x: f64,
@@ -130,6 +138,7 @@ pub struct Liquidations {
 	pub trail_severity: PercentU,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Backtest {
 	/// Equity the position sizes off. SPL reads live portfolio equity; the simulated venue's seed is
 	/// the honest stand-in.
@@ -137,6 +146,7 @@ pub struct Backtest {
 	pub arrival_latency: ArrivalLatency,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArrivalLatency {
 	pub p68: Timeframe,
 	pub p95: Timeframe,

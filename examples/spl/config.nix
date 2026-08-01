@@ -20,7 +20,7 @@
   strategy = {
     indies = {
       rsi = { timeframe = "5m"; base_len = 14; smooth_len = 14; };
-      momentum = { fast = "5m"; slow = null; lookback = 180; risk_free_rate = 0.04; };
+      momentum = { fast = "5m"; lookback = 180; risk_free_rate = 0.04; };
       atr = { period = 14; };
     };
 
@@ -33,7 +33,6 @@
       #};
       Std = {
         fast_overvalued = 5.0;
-        slow_overvalued = 3.0;
       };
     };
 

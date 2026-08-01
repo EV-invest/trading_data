@@ -19,6 +19,14 @@ impl Glance for RsiValues {
 	}
 }
 
+/// Wilder RSI, EMA-smoothed. Warmth is `base_len + smooth_len` closed bars, which is exactly when
+/// both stages are warm: the averages need `base_len` deltas, and only then does the EMA start
+/// seeing values.
+#[derive(Clone)]
+pub struct Rsi {
+	smooth: Ema,
+	buf: Vec<Option<RsiValues>>,
+}
 /// Nautilus's `ExponentialMovingAverage`: seeded on the first sample, warm after `period` of them.
 #[derive(Clone)]
 struct Ema {
@@ -40,14 +48,6 @@ impl Ema {
 	}
 }
 
-/// Wilder RSI, EMA-smoothed. Warmth is `base_len + smooth_len` closed bars, which is exactly when
-/// both stages are warm: the averages need `base_len` deltas, and only then does the EMA start
-/// seeing values.
-#[derive(Clone)]
-pub struct Rsi {
-	smooth: Ema,
-	buf: Vec<Option<RsiValues>>,
-}
 impl Default for Rsi {
 	fn default() -> Self {
 		Self {

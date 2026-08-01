@@ -12,10 +12,27 @@ const PREV: Horizon = Horizon::Elems(1);
 /// is a candidate input, which is why they are all deps.
 ///
 /// Rate-changing on the very first bar: a change needs two closes.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RsiDelta {
 	prev_close: Option<f64>,
 	buf: Vec<f64>,
+}
+/// `graph!` builds through `Default` and `main` builds the graph right after `Config::load`, so this
+/// is the first instant a config naming a series the graph does not wire can be rejected — minutes
+/// before the first bar of that series would have closed and reached `advance`.
+impl Default for RsiDelta {
+	fn default() -> Self {
+		let tf = strategy().indies.rsi.timeframe;
+		assert!(
+			[Bar5m::TF, Bar15m::TF, Bar1h::TF, Bar4h::TF].contains(&tf),
+			"indies.rsi.timeframe = {tf}: this graph wires {}/{}/{}/{} bars and no others. Which series an indie runs on is wiring, not a knob.",
+			Bar5m::TF,
+			Bar15m::TF,
+			Bar1h::TF,
+			Bar4h::TF
+		);
+		Self { prev_close: None, buf: Vec::new() }
+	}
 }
 impl Cell for RsiDelta {
 	type Out<'t> = &'t [f64];
@@ -25,13 +42,12 @@ impl Node for RsiDelta {
 
 	fn advance<'t>(&'t mut self, (m5, m15, h1, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
-		let cfg = strategy().indies.rsi;
-		let bars = match cfg.timeframe {
+		let bars = match strategy().indies.rsi.timeframe {
 			Bar5m::TF => m5,
 			Bar15m::TF => m15,
 			Bar1h::TF => h1,
 			Bar4h::TF => h4,
-			_ => panic!("`{cfg}`: the graph wires {}/{}/{}/{} bars and no others", Bar5m::TF, Bar15m::TF, Bar1h::TF, Bar4h::TF),
+			_ => unreachable!("`Default` asserted the timeframe against the series this node wires"),
 		};
 		for b in bars {
 			if let Some(prev) = self.prev_close.replace(b.close) {

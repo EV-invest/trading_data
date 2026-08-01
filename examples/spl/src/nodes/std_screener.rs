@@ -1,18 +1,12 @@
 use trading_data::{Cell, DepOuts, Folding, Horizon, Node, slice_nudge};
 
-use super::{
-	bar::Bar1m,
-	latest,
-	momentum::{MomSnap, Momentum},
-	screened::Screened,
-};
+use super::{bar::Bar1m, latest, momentum::Momentum, screened::Screened};
 use crate::config::{Screen, strategy};
 
-/// Pine's overvalued zone at both of momentum's legs. The slow leg is vacuously satisfied when the
-/// config names no slow timeframe.
+/// Pine's overvalued zone at momentum's leg.
 #[derive(Clone, Default)]
 pub struct StdScreener {
-	momentum: Option<MomSnap>,
+	momentum: Option<f64>,
 	buf: Vec<Option<Screened>>,
 }
 impl Cell for StdScreener {
@@ -32,14 +26,7 @@ impl Node for StdScreener {
 		};
 		latest(&mut self.momentum, momentum, bars.len());
 		for b in bars {
-			self.buf.push(self.momentum.and_then(|m| {
-				// The vacuous slow leg must come from `indies.momentum.slow` and nothing else: `Momentum`
-				// declines to publish at all when a configured slow leg is degenerate, so an absent Sharpe
-				// here would otherwise let a wiring bug read as an unconditional hit.
-				assert_eq!(m.slow.is_some(), strategy().indies.momentum.slow.is_some(), "a slow Sharpe disagrees with indies.momentum.slow");
-				let slow = m.slow.is_none_or(|x| x > c.slow_overvalued);
-				(slow && m.fast > c.fast_overvalued).then_some(Screened { ts_ns: b.close_ns(Bar1m::TF) })
-			}));
+			self.buf.push(self.momentum.filter(|&m| m > c.fast_overvalued).map(|_| Screened { ts_ns: b.close_ns(Bar1m::TF) }));
 		}
 		&self.buf
 	}

@@ -1,14 +1,9 @@
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Flat, Folding, Glance, Horizon, Node, Plot, slice_nudge};
+use trading_data::{Armed, Cell, DepOuts, Episode, Episodic, Flat, Glance, Node, Plot, TriggerOut, slice_nudge};
 use trading_data_core::Side;
 
-use super::{
-	atr::Atr,
-	book_top::{BookTop, BookTopSnap},
-	classify::Classify,
-	latest,
-};
+use super::{atr::Atr, book_top::BookTop, classify::Classify, latest};
 use crate::config::strategy;
 
 /// SPL's `execution::RISK_FRACTION`: fraction of equity committed per entry.
@@ -71,10 +66,6 @@ impl TrailingStop {
 #[derive(Clone, Copy, Debug)]
 pub struct Intent {
 	pub ts_ns: i64,
-	/// Which Idle→Active episode this tick belongs to — SPL's per-`Degrader` `Uuid`, as a counter.
-	/// Two episodes can be adjacent in the intent stream (a classification can land between two book
-	/// ticks), so this is the only thing that separates them.
-	pub episode: u64,
 	pub side: Side,
 	pub base_q: f64,
 	pub target_q: f64,
@@ -112,15 +103,29 @@ impl Flat for Intent {
 }
 structural_bump!(Intent);
 
+impl Episode for Intent {
+	fn terminal(&self) -> bool {
+		self.terminal
+	}
+}
+
 impl Glance for Intent {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "{:?} q {:.4}/{:.4}{}", self.side, self.target_q, self.base_q, if self.draining { " draining" } else { "" })
 	}
 }
 
+/// SPL's `ExecutorState` + `Degrader`, one for one. Entry mid-prices off the book (not the last
+/// trade — on thin instruments that lags by whole percents and centres the envelope on a phantom);
+/// every book tick then reduces one weighted ATR-envelope lambda against the trailing term.
+#[derive(Clone, Default)]
+pub struct Deprecator {
+	state: State,
+	last_atr: Option<f64>,
+	buf: Vec<Option<Intent>>,
+}
 #[derive(Clone)]
 struct Active {
-	episode: u64,
 	side: Side,
 	base_q: f64,
 	entry_price: f64,
@@ -136,28 +141,16 @@ enum State {
 	Active(Active),
 }
 
-/// SPL's `ExecutorState` + `Degrader`, one for one. Entry mid-prices off the book (not the last
-/// trade — on thin instruments that lags by whole percents and centres the envelope on a phantom);
-/// every book tick then reduces one weighted ATR-envelope lambda against the trailing term.
-#[derive(Clone, Default)]
-pub struct Deprecator {
-	state: State,
-	episodes: u64,
-	last_atr: Option<f64>,
-	last_top: Option<BookTopSnap>,
-	buf: Vec<Option<Intent>>,
-}
 impl Cell for Deprecator {
 	type Out<'t> = &'t [Option<Intent>];
 }
 impl Node for Deprecator {
-	/// An open episode outlives every one of its inputs: the entry it was taken on, the ATR level it
-	/// last saw, and the extreme its trail has ratcheted over every book tick since.
-	type Deps = (
-		Folding<Classify, { Horizon::Unbounded }>,
-		Folding<Atr, { Horizon::Unbounded }>,
-		Folding<BookTop, { Horizon::Unbounded }>,
-	);
+	/// Bare, which a gated node's deps must be: the latch resets this node on commutation, so an
+	/// episode carries nothing across the dark and every input is read at this tick's batch. What the
+	/// reset costs is `last_atr`, which the next 1m publish refills — the episode's head declines
+	/// until then.
+	type Deps = (Classify, Atr, BookTop);
+	type When = (Armed<Deprecator>,);
 
 	const PLOTS: &'static [Plot] = &[
 		Plot {
@@ -177,28 +170,6 @@ impl Node for Deprecator {
 		let liq = &strategy().classification.liquidations;
 		self.buf.clear();
 		latest(&mut self.last_atr, atr, top.len());
-		// Classification is honored only while Idle; once Active we drive solely off book ticks. No
-		// book yet ⇒ don't enter — the screener keeps firing, so the next classification retries.
-		if matches!(self.state, State::Idle)
-			&& classify.is_some()
-			&& let Some(book) = self.last_top
-		{
-			let entry_price = book.mid();
-			//TODO: real selection over the full distribution; derive the side from the classification
-			// context (e.g. cascade direction) rather than pinning it here.
-			let side = Side::Buy;
-			self.episodes += 1;
-			self.state = State::Active(Active {
-				episode: self.episodes,
-				side,
-				//TODO: scale RISK_FRACTION by certainty × quality via a historic-returns lookup.
-				// SPL sizes off live portfolio equity; the simulated venue's seed is the honest stand-in.
-				base_q: RISK_FRACTION * crate::config::config().backtest.starting_balance / entry_price,
-				entry_price,
-				trail: TrailingStop::new(side, entry_price * *liq.trail_pct, *liq.trail_severity),
-				drain_deadline_ns: None,
-			});
-		}
 
 		// Rate-preserving over `top`, so the two zip by index — that is how a consumer recovers the
 		// tick's mid price for an intent without it being copied into one.
@@ -207,7 +178,24 @@ impl Node for Deprecator {
 				self.buf.push(None);
 				continue;
 			};
-			self.last_top = Some(*d);
+			// Entry prices off *this* tick's book rather than a cached one: the latch resets the node on
+			// commutation, so a cache would be cold on exactly the tick the arming classification lands.
+			// Classification is honored only while Idle; once Active we drive solely off book ticks.
+			if matches!(self.state, State::Idle) && classify.is_some() {
+				let entry_price = d.mid();
+				//TODO: real selection over the full distribution; derive the side from the classification
+				// context (e.g. cascade direction) rather than pinning it here.
+				let side = Side::Buy;
+				self.state = State::Active(Active {
+					side,
+					//TODO: scale RISK_FRACTION by certainty × quality via a historic-returns lookup.
+					// SPL sizes off live portfolio equity; the simulated venue's seed is the honest stand-in.
+					base_q: RISK_FRACTION * crate::config::config().backtest.starting_balance / entry_price,
+					entry_price,
+					trail: TrailingStop::new(side, entry_price * *liq.trail_pct, *liq.trail_severity),
+					drain_deadline_ns: None,
+				});
+			}
 			// Management needs `target_q` off the ATR envelope; skip until the first ATR lands.
 			let (State::Active(a), Some(atr)) = (&mut self.state, self.last_atr) else {
 				self.buf.push(None);
@@ -236,7 +224,6 @@ impl Node for Deprecator {
 			let terminal = a.drain_deadline_ns.is_some_and(|dl| d.ts_ns >= dl);
 			self.buf.push(Some(Intent {
 				ts_ns: d.ts_ns,
-				episode: a.episode,
 				side: a.side,
 				base_q: a.base_q,
 				target_q: if draining { 0.0 } else { a.base_q * eval },
@@ -257,3 +244,11 @@ impl Node for Deprecator {
 	}
 }
 slice_nudge!(Deprecator, Option<Intent>);
+
+impl Episodic for Deprecator {
+	type Trigger = Classify;
+
+	fn arms<'t>(c: TriggerOut<'t, Self>) -> bool {
+		c.is_some()
+	}
+}

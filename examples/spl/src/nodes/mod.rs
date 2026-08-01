@@ -90,7 +90,7 @@ pub use classify::{Category, Classified, Classify, Quality};
 pub use deprecator::{Deprecator, Intent, TrailingStop};
 pub use imbalance::Imbalance;
 pub use market_cap::{MarketCap, McSnap};
-pub use momentum::{MOM_PERIODS, MomSnap, Momentum, mom_cap};
+pub use momentum::{MOM_PERIODS, Momentum, mom_cap};
 pub use oi_delta::{OiDelta5m, OiDelta15m};
 pub use rsi::{Rsi, RsiValues};
 pub use rsi_delta::RsiDelta;
@@ -98,7 +98,7 @@ pub use rsi_screener::RsiScreener;
 pub use screened::Screened;
 pub use spread::Spread;
 pub use std_screener::StdScreener;
-use trading_data::{Book, BookAnchors, BookDeltas, BookShape, Buffer, DeltaFrame, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
+use trading_data::{Armed, Book, BookAnchors, BookDeltas, BookShape, Buffer, DeltaFrame, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
 pub use volume_1h::Volume1h;
 pub use volume_1m::Volume1m;
 pub use volume_4h::Volume4h;
@@ -123,6 +123,7 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape], oi: OiRoot[Oi], mc: McRoot[Mc] };
 	out TickOut;
+	latch { armed: Armed<Deprecator> }
 	bar_1m: Bar1m,
 	bar_5m: Bar5m,
 	bar_15m: Bar15m,
@@ -147,13 +148,14 @@ trading_data::graph! {
 	oi_delta_5m: OiDelta5m,
 	oi_delta_15m: OiDelta15m,
 	market_cap: MarketCap,
+	rsi_screener: RsiScreener,
+	std_screener: StdScreener,
+	classify: Classify,
+	armed: Armed<Deprecator>,
 	book: Book,
 	book_top: BookTop,
 	imbalance: Imbalance,
 	spread: Spread,
-	rsi_screener: RsiScreener,
-	std_screener: StdScreener,
-	classify: Classify,
 	deprecator: Deprecator,
 }
 

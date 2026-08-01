@@ -225,12 +225,14 @@ pub fn graph(input: TokenStream) -> TokenStream {
 		}
 
 		const _: () = {
+			const LATCHES: &[&str] = &[#(#dag::node_name::<#latch_tys>()),*];
 			const METAS: &[#dag::NodeMeta] = &[#(
 				#dag::NodeMeta {
 					name: #dag::node_name::<#node_tys>(),
 					deps: <<#node_tys as #dag::Node>::Deps as #dag::DepSet>::NAMES,
 					reach: <<#node_tys as #dag::Node>::Deps as #dag::DepSet>::REACH,
 					gates: <<#node_tys as #dag::Node>::When as #dag::GateSet>::NAMES,
+					latch: #dag::contains(LATCHES, #dag::node_name::<#node_tys>()),
 				},
 			)*];
 			// the *field*, not the type: a const-generic type name carries braces, and `assert!` reads
@@ -238,6 +240,18 @@ pub fn graph(input: TokenStream) -> TokenStream {
 			#(assert!(
 				!#dag::shadowed(#dag::node_name::<#node_tys>(), METAS),
 				concat!(stringify!(#fields), " is only consumed under a gate: gate it too, or declare a dep at `Horizon::Unbounded`")
+			);)*
+
+			// a latch is cut from within: what it gates must be what cuts it.
+			#(assert!(
+				#dag::contains(<<<#latch_tys as #dag::Latch>::Cut as #dag::Node>::When as #dag::GateSet>::NAMES, #dag::node_name::<#latch_tys>()),
+				concat!(stringify!(#lfields), "'s `Cut` node does not name it in `When` — a latch cut by a node it does not gate never commutates")
+			);)*
+
+			// an internal latch must not gate its own arm.
+			#(assert!(
+				!#dag::deadlocked(#dag::node_name::<#latch_tys>(), <<#latch_tys as #dag::Node>::Deps as #dag::DepSet>::NAMES, METAS),
+				concat!(stringify!(#lfields), " gates its own arm: the arm is dark exactly while the latch is down, so it can never re-arm")
 			);)*
 		};
 
