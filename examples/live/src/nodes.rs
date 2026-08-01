@@ -84,6 +84,9 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape] };
 	out TickOut;
+	outputs { cvd, book_flow }
+	// The viz reads it and nothing else does.
+	observe { spread }
 	book: Book,
 	emit cvd: Cvd,
 	emit book_flow: BookFlow,

@@ -12,6 +12,7 @@ graph! { //~ ERROR: graph! needs at least one node
 	batches Batches;
 	roots { r: Root[u8] };
 	out GOut;
+	outputs { n }
 }
 
 fn main() {}

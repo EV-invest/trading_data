@@ -88,6 +88,7 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape] };
 	out GOut;
+	outputs { mid }
 	hot: Hot,
 	book: GatedBook,
 	mid: Mid,

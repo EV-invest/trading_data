@@ -131,6 +131,8 @@ graph! {
 	batches Batches;
 	roots { trig: Trig[Pulse] };
 	out GOut;
+	outputs { deprec }
+	observe { ticks }
 	latch { live: Live }
 	live: Live,
 	deprec: Deprec,

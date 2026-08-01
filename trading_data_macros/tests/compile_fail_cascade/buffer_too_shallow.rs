@@ -55,6 +55,7 @@ graph! {
 	batches Batches;
 	roots { src: Src[Tick] };
 	out GOut;
+	outputs { deep }
 	hist: Buffer<Src, { Horizon::Elems(3) }>,
 	emit deep: Deep,
 }
