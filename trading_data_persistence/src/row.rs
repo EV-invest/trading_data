@@ -678,7 +678,7 @@ impl Bump for Oi {
 
 impl Glance for Oi {
 	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		write!(f, "oi {}", self.oi)
+		write!(f, "oi {}", v_utils::LargeNumber::new(self.oi))
 	}
 }
 
@@ -705,7 +705,7 @@ impl Bump for Mc {
 
 impl Glance for Mc {
 	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		write!(f, "mc {:.3e}", self.market_cap)
+		write!(f, "mc {}", v_utils::LargeNumber::new(self.market_cap))
 	}
 }
 
