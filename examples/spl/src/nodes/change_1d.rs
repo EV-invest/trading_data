@@ -24,12 +24,12 @@ impl Node for Change1d {
 	fn advance<'t>(&'t mut self, (m1, h1): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for b in m1 {
-			let deadline = b.close_ns(Bar1m::TF);
-			let closed_1h = closed_by(h1.all(), Bar1h::TF, deadline);
+			let deadline = b.ts_close;
+			let closed_1h = closed_by(h1.all(), deadline);
 			let day_ago = deadline - SPAN_1D.duration().as_nanos() as i64;
 			// The close standing a day back is the first one after `day_ago`; index 0 means the retained
 			// run does not reach behind it, so there is nothing a day old to compare against yet.
-			let oldest = closed_1h.iter().position(|h| h.close_ns(Bar1h::TF) > day_ago).filter(|&i| i > 0).map(|i| closed_1h[i].close);
+			let oldest = closed_1h.iter().position(|h| h.ts_close > day_ago).filter(|&i| i > 0).map(|i| closed_1h[i].close);
 			self.buf.push(oldest.filter(|&o| o != 0.0).map(|o| (b.close - o) / o * 100.0));
 		}
 		&self.buf

@@ -1,16 +1,16 @@
 use trading_data::{Cell, DepOuts, Folding, Horizon, Node, slice_nudge};
 
-use super::{bar::Bar1m, latest, momentum::Momentum, screened::Screened};
+use super::{bar::Bar1m, latest, momentum::Momentum};
 use crate::config::{Screen, strategy};
 
 /// Pine's overvalued zone at momentum's leg.
 #[derive(Clone, Default)]
 pub struct StdScreener {
 	momentum: Option<f64>,
-	buf: Vec<Option<Screened>>,
+	buf: Vec<Option<bool>>,
 }
 impl Cell for StdScreener {
-	type Out<'t> = &'t [Option<Screened>];
+	type Out<'t> = &'t [Option<bool>];
 }
 impl Node for StdScreener {
 	/// The cached momentum level stands until the next publish, however many minutes that takes.
@@ -25,10 +25,8 @@ impl Node for StdScreener {
 			return &self.buf;
 		};
 		latest(&mut self.momentum, momentum, bars.len());
-		for b in bars {
-			self.buf.push(self.momentum.filter(|&m| m > c.fast_overvalued).map(|_| Screened { ts_ns: b.close_ns(Bar1m::TF) }));
-		}
+		self.buf.resize(bars.len(), self.momentum.map(|m| m > c.fast_overvalued));
 		&self.buf
 	}
 }
-slice_nudge!(StdScreener, Option<Screened>);
+slice_nudge!(StdScreener, Option<bool>);

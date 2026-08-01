@@ -28,7 +28,7 @@ use trading_data_spl::{
 	asset,
 	config::{self, Config, Screen},
 	day_bounds, ensure_lanes,
-	nodes::{BookTopSnap, Graph, Intent, TrailingStop},
+	nodes::{Bar1m, BookTopSnap, Graph, Intent, TrailingStop},
 	symbol, trading_days, ui,
 };
 use v_utils::utils::tracing::{LogDestination, init_subscriber};
@@ -149,7 +149,8 @@ async fn main() {
 
 				for b in out.bar_1m {
 					viz.bar(BarOut {
-						ts_ms: b.ts_open / 1_000_000,
+						// a candle is keyed by its open.
+						ts_ms: (b.ts_close - Bar1m::TF.duration().as_nanos() as i64) / 1_000_000,
 						open: b.open,
 						high: b.high,
 						low: b.low,
@@ -171,8 +172,8 @@ async fn main() {
 					day.first_momentum_ns.get_or_insert(ts_ns);
 					top(&mut day.max_sharpe_fast, *m);
 				}
-				day.rsi_hits += out.rsi_screener.iter().flatten().count() as u64;
-				day.std_hits += out.std_screener.iter().flatten().count() as u64;
+				day.rsi_hits += out.rsi_screener.iter().flatten().filter(|h| **h).count() as u64;
+				day.std_hits += out.std_screener.iter().flatten().filter(|h| **h).count() as u64;
 				day.classifications += out.classify.is_some() as u64;
 
 				day.top_reads += out.book_top.len() as u64;

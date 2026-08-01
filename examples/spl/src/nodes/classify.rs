@@ -24,7 +24,6 @@ pub enum Quality {
 /// it stands rather than invented over.
 #[derive(Clone, Copy, Debug)]
 pub struct Classified {
-	pub ts_ns: i64,
 	pub probability: f64,
 	pub category: Category,
 	pub quality: Quality,
@@ -39,8 +38,8 @@ impl Glance for Classified {
 }
 
 /// SPL runs exactly one screener per config; both are wired here, so a hit on either classifies.
-/// Classification is a per-hit act rather than a series — everything it reads is in the hit — so the
-/// ticks nothing fired on publish `None`, which is the same channel a gate would have latched.
+/// Classification is a per-hit act rather than a series, so the ticks nothing fired on publish
+/// `None`, which is the same channel a gate would have latched.
 #[derive(Clone, Copy, Default)]
 pub struct Classify;
 impl Cell for Classify {
@@ -51,11 +50,7 @@ impl Node for Classify {
 
 	fn advance<'t>(&'t mut self, (rsi, std): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert_eq!(rsi.len(), std.len(), "RsiScreener/StdScreener rate mismatch");
-		// A batch spanning several bar closes can carry more than one hit; the latest is the one an
-		// entry would act on, and the older ones are already stale by the time this tick publishes.
-		let hit = rsi.iter().zip(std).rev().find_map(|(r, s)| r.or(*s))?;
-		Some(Classified {
-			ts_ns: hit.ts_ns,
+		rsi.iter().chain(std).any(|v| *v == Some(true)).then_some(Classified {
 			probability: 1.0,
 			category: Category::None,
 			quality: Quality::A,

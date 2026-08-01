@@ -17,7 +17,7 @@ impl Node for Volume1h {
 	fn advance<'t>(&'t mut self, (m1, h1): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.buf.clear();
 		for b in m1 {
-			self.buf.push(closed_by(h1.all(), Bar1h::TF, b.close_ns(Bar1m::TF)).last().map(|h| h.vol_base * h.close));
+			self.buf.push(closed_by(h1.all(), b.ts_close).last().map(|h| h.vol_base * h.close));
 		}
 		&self.buf
 	}

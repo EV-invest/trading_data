@@ -3,7 +3,7 @@ use v_utils::{Timeframe, TimeframeDesignator};
 
 use super::bar::Bar1m;
 
-/// Reach behind the change — three minutes, spanned by the opens of the 1m bars inside it.
+/// Reach behind the change — three minutes, spanned by the closes of the 1m bars inside it.
 pub(super) const SPAN_3M: Timeframe = Timeframe::from_naive(3, TimeframeDesignator::Minutes);
 
 /// Percent change over the trailing three minutes, off the closed 1m bars inside it. SPL's backtest
