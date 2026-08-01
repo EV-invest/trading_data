@@ -82,6 +82,26 @@ impl Emit for Split {
 }
 slice_nudge!(Split, Tick);
 
+/// A cross-rate reader: the level standing at its own deadline, one element of slack behind the
+/// batch. Declares a *shallower* reach than the frame buffers, which is the case `all()` has to
+/// answer at the declaration rather than at whatever the frame happens to hold.
+#[derive(Clone, Default)]
+struct Level {
+	seen: Vec<Vec<Tick>>,
+}
+impl Cell for Level {
+	type Out<'t> = &'t [Tick];
+}
+impl Node for Level {
+	type Deps = (Buffering<Src, { Horizon::Elems(1) }>,);
+
+	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		self.seen.push(hist.all().to_vec());
+		hist.fresh()
+	}
+}
+slice_nudge!(Level, Tick);
+
 graph! {
 	struct G;
 	batches Batches;
@@ -90,6 +110,26 @@ graph! {
 	hist: Buffer<Src, { Horizon::Elems(3) }>,
 	emit sum3: Sum3,
 	emit split: Split,
+	level: Level,
+}
+
+/// Two consumers of one series at different reaches. `all()` must answer at the *declared* one, or a
+/// cross-rate reader's results are a function of how deep some unrelated node asked the frame to
+/// buffer — and shrinking that one silently changes this one.
+#[test]
+fn all_answers_at_the_declared_reach_not_the_frame_s() {
+	let mut g = G::default();
+	let (three, one) = ([t(1.0), t(2.0), t(3.0)], [t(4.0)]);
+
+	// nothing stands behind the first batch, so both readers see the same thing: `fresh` is always
+	// wholly in reach, however shallow the declaration.
+	let o = g.tick(Batches { src: &three });
+	assert_eq!(o.hist.all(), &three);
+	assert_eq!(g.level.seen.last().unwrap(), &three);
+
+	let o = g.tick(Batches { src: &one });
+	assert_eq!(o.hist.all(), &[t(1.0), t(2.0), t(3.0), t(4.0)], "the frame retains 3 behind the batch");
+	assert_eq!(g.level.seen.last().unwrap(), &[t(3.0), t(4.0)], "one declared, one behind the batch");
 }
 
 #[test]

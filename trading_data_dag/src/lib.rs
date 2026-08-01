@@ -877,20 +877,41 @@ impl<'t, T> Hist<'t, T> {
 	pub fn fresh(self) -> &'t [T] {
 		&self.all[self.all.len() - self.fresh..]
 	}
-
-	/// What stood behind this tick's batch.
-	pub fn past(self) -> &'t [T] {
-		&self.all[..self.all.len() - self.fresh]
-	}
-
-	/// The whole retained run, `past ++ fresh` — the cross-rate view, for a consumer clocked by some
-	/// faster series that must find the run standing at its own deadline.
-	pub fn all(self) -> &'t [T] {
-		self.all
-	}
 }
 
 impl<'t, T: Stamped> Hist<'t, T> {
+	/// What stood behind this tick's batch, at the declared reach — see [`Hist::all`].
+	pub fn past(self) -> &'t [T] {
+		let all = self.all();
+		&all[..all.len() - self.fresh]
+	}
+
+	/// `past ++ fresh` — the cross-rate view, for a consumer clocked by some faster series that must
+	/// find the run standing at its own deadline.
+	///
+	/// Cut to the *declared* reach by the same predicate [`Buffer`] trims on, so a node reads what a
+	/// frame buffering at exactly its `Buffering<C, H>` would hold. Without the cut, a run is only as
+	/// long as the deepest unrelated consumer of the same series happens to ask for, and shortening
+	/// that one silently changes this one's results.
+	pub fn all(self) -> &'t [T] {
+		let past = self.all.len() - self.fresh;
+		// `fresh` is wholly in reach however shallow the declaration, so nothing behind the batch is
+		// nothing to cut.
+		let Some(newest) = past.checked_sub(1) else { return self.all };
+		let drop = match self.horizon {
+			Horizon::Elems(n) => past.saturating_sub(n),
+			// keyed on the pre-batch newest rather than the batch's own tail — the reference [`Buffer`]
+			// itself trims against, so what a frame retains at `H` and what a consumer reads at `H` are
+			// one statement.
+			Horizon::Span(tf) => {
+				let cut = self.all[newest].ts_ns() - Horizon::ns(tf);
+				self.all[..past].partition_point(|x| x.ts_ns() <= cut)
+			}
+			h => unreachable!("a Buffering is const-asserted bounded, and `narrowed` re-asserts it: {h:?}"),
+		};
+		&self.all[drop..]
+	}
+
 	/// The window ending at `fresh()[i]`, per the declared [`Horizon`]; `None` when it is incomplete
 	/// — fewer than `Elems(n)` retained, or a `Span` reaching past what the buffer has dropped.
 	pub fn trailing_at(self, i: usize) -> Option<&'t [T]> {

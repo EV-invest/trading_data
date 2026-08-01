@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Glance, Node, value_nudge};
+use trading_data::{Cell, DepOuts, Glance, Node, Plot, value_nudge};
 
 use super::Screener;
 
@@ -49,6 +49,12 @@ impl Cell for Classify {
 impl Node for Classify {
 	type Deps = ();
 	type When = (Screener,);
+
+	const PLOTS: &'static [Plot] = &[Plot {
+		range: Some((0.0, 1.0)),
+		bars: true,
+		..Plot::DEFAULT
+	}];
 
 	fn advance<'t>(&'t mut self, (): DepOuts<'t, Self>) -> Self::Out<'t> {
 		Some(Classified {
