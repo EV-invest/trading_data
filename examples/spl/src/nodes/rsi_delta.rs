@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Folding, Horizon, Node, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, Folding, Horizon, slice_nudge};
 
 use super::bar::{Bar1h, Bar4h, Bar5m, Bar15m};
 use crate::config::strategy;
@@ -15,11 +15,10 @@ const PREV: Horizon = Horizon::Elems(1);
 #[derive(Clone)]
 pub struct RsiDelta {
 	prev_close: Option<f64>,
-	buf: Vec<f64>,
 }
 /// `graph!` builds through `Default` and `main` builds the graph right after `Config::load`, so this
 /// is the first instant a config naming a series the graph does not wire can be rejected — minutes
-/// before the first bar of that series would have closed and reached `advance`.
+/// before the first bar of that series would have closed and reached `emit`.
 impl Default for RsiDelta {
 	fn default() -> Self {
 		let tf = strategy().indies.rsi.timeframe;
@@ -31,17 +30,16 @@ impl Default for RsiDelta {
 			Bar1h::TF,
 			Bar4h::TF
 		);
-		Self { prev_close: None, buf: Vec::new() }
+		Self { prev_close: None }
 	}
 }
 impl Cell for RsiDelta {
 	type Out<'t> = &'t [f64];
 }
-impl Node for RsiDelta {
+impl Emit for RsiDelta {
 	type Deps = (Folding<Bar5m, PREV>, Folding<Bar15m, PREV>, Folding<Bar1h, PREV>, Folding<Bar4h, PREV>);
 
-	fn advance<'t>(&'t mut self, (m5, m15, h1, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (m5, m15, h1, h4): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		let bars = match strategy().indies.rsi.timeframe {
 			Bar5m::TF => m5,
 			Bar15m::TF => m15,
@@ -51,10 +49,9 @@ impl Node for RsiDelta {
 		};
 		for b in bars {
 			if let Some(prev) = self.prev_close.replace(b.close) {
-				self.buf.push(b.close - prev);
+				out.push(b.close - prev);
 			}
 		}
-		&self.buf
 	}
 }
 slice_nudge!(RsiDelta, f64);

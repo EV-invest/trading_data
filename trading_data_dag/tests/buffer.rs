@@ -3,7 +3,7 @@
 //! irregular stream, and a latch commutation that resets a consumer while leaving the buffer whole —
 //! the point of engine-owned retention.
 
-use trading_data_dag::{Buffer, Buffering, Bump, Cell, DepOuts, Episode, Fire, Flat, Gate, Glance, Horizon, Latch, Node, Observer, Stamped, graph, slice_nudge};
+use trading_data_dag::{Buffer, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Fire, Flat, Gate, Glance, Horizon, Latch, Node, Observer, Stamped, graph, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 /// A retained element is stamped: that is what a [`Horizon`] indexes by. One unit of `v` is one
@@ -50,19 +50,15 @@ slice_nudge!(Src, Tick);
 
 /// Reads a 3-deep window per fresh element: rate-preserving, `None` while short.
 #[derive(Clone, Default)]
-struct Sum3 {
-	buf: Vec<Option<f64>>,
-}
+struct Sum3;
 impl Cell for Sum3 {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for Sum3 {
+impl Emit for Sum3 {
 	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
 
-	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
-		self.buf.extend(hist.trailing().map(|w| w.map(|w| w.iter().map(|x| x.v).sum())));
-		&self.buf
+	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+		out.extend(hist.trailing().map(|w| w.map(|w| w.iter().map(|x| x.v).sum())));
 	}
 }
 slice_nudge!(Sum3, Option<f64>);
@@ -72,19 +68,16 @@ slice_nudge!(Sum3, Option<f64>);
 #[derive(Clone, Default)]
 struct Split {
 	seen: Vec<(usize, usize)>,
-	buf: Vec<Tick>,
 }
 impl Cell for Split {
 	type Out<'t> = &'t [Tick];
 }
-impl Node for Split {
+impl Emit for Split {
 	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
 
-	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Tick>) {
 		self.seen.push((hist.past().len(), hist.fresh().len()));
-		self.buf.clear();
-		self.buf.extend_from_slice(hist.fresh());
-		&self.buf
+		out.extend_from_slice(hist.fresh());
 	}
 }
 slice_nudge!(Split, Tick);
@@ -95,8 +88,8 @@ graph! {
 	roots { src: Src[f64] };
 	out GOut;
 	hist: Buffer<Src, { Horizon::Elems(3) }>,
-	sum3: Sum3,
-	split: Split,
+	emit sum3: Sum3,
+	emit split: Split,
 }
 
 #[test]

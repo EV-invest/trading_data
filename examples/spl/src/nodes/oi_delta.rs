@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, DepOuts, Hist, Horizon, Node, Oi, OiRoot, Stamped as _, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Horizon, Oi, OiRoot, Stamped as _, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 /// Bybit's open-interest publish cadence: every leg reads the publish standing a whole number of
@@ -23,23 +23,19 @@ fn delta_back(hist: &Hist<'_, Oi>, i: usize, steps: i64) -> Option<f64> {
 macro_rules! oi_deltas {
 	($($ty:ident = $steps:literal @ $name:literal),+ $(,)?) => { $(
 		#[derive(Clone, Default)]
-		pub struct $ty {
-			buf: Vec<Option<f64>>,
-		}
+		pub struct $ty;
 		impl Cell for $ty {
 			type Out<'t> = &'t [Option<f64>];
 
 			const NAME: &'static str = concat!("OiDelta:", $name);
 		}
-		impl Node for $ty {
+		impl Emit for $ty {
 			type Deps = (Buffering<OiRoot, OI_REACH>,);
 
-			fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
-				self.buf.clear();
+			fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 				for i in 0..hist.fresh().len() {
-					self.buf.push(delta_back(&hist, i, $steps));
+					out.push(delta_back(&hist, i, $steps));
 				}
-				&self.buf
 			}
 		}
 		slice_nudge!($ty, Option<f64>);

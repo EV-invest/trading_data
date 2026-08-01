@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, DepOuts, Horizon, Node, Plot, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, Plot, slice_nudge};
 use v_utils::Timeframe;
 
 use super::bar::{Bar, Bar4h, Bar5m};
@@ -22,9 +22,7 @@ pub const fn mom_cap(tf: Timeframe) -> Horizon {
 /// `None` means the one thing it should: the window is not full, or its returns were all identical.
 /// Pine's second, slower leg is not ported — see the commit that removed it.
 #[derive(Clone)]
-pub struct Momentum {
-	buf: Vec<Option<f64>>,
-}
+pub struct Momentum;
 /// Sharpe over a window of `lookback + 1` closes, per `bullmart_sri.pine`. `None` when stdev is
 /// zero — all returns identical is degenerate, not corrupt.
 fn sharpe(window: &[Bar]) -> Option<f64> {
@@ -55,13 +53,13 @@ impl Default for Momentum {
 			Bar5m::TF,
 			Bar4h::TF
 		);
-		Self { buf: Vec::new() }
+		Self
 	}
 }
 impl Cell for Momentum {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for Momentum {
+impl Emit for Momentum {
 	type Deps = (Buffering<Bar5m, { mom_cap(Bar5m::TF) }>, Buffering<Bar4h, { mom_cap(Bar4h::TF) }>);
 
 	const PLOTS: &'static [Plot] = &[Plot {
@@ -69,8 +67,7 @@ impl Node for Momentum {
 		..Plot::DEFAULT
 	}];
 
-	fn advance<'t>(&'t mut self, (m5, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (m5, h4): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		let cfg = strategy().indies.momentum;
 		let series = match cfg.fast {
 			Bar5m::TF => m5,
@@ -78,8 +75,7 @@ impl Node for Momentum {
 			_ => unreachable!("`Default` asserted the leg against the series this node buffers"),
 		};
 		// the lookback is a runtime knob, so the window is narrowed off the retained reach here.
-		self.buf.extend(series.narrowed(Horizon::Elems(cfg.lookback + 1)).trailing().map(|w| w.and_then(sharpe)));
-		&self.buf
+		out.extend(series.narrowed(Horizon::Elems(cfg.lookback + 1)).trailing().map(|w| w.and_then(sharpe)));
 	}
 }
 slice_nudge!(Momentum, Option<f64>);

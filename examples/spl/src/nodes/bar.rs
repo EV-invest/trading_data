@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Exact, Folding, Glance, Horizon, Node, Stamped, Trades, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, Exact, Folding, Glance, Horizon, Stamped, Trades, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 #[derive(Clone, Copy, Debug)]
@@ -29,45 +29,36 @@ impl Stamped for Bar {
 }
 
 /// Trades → OHLCV bars at one period. Rate-changing: one non-optional bar per boundary crossed, so
-/// a batch spanning two periods emits two; a partial period emits none (its bar stays in `acc`).
+/// a batch spanning two periods emits two; a partial period emits none (it stays in `state`).
 /// Shared by every series: only the period and the name are per-type.
-#[derive(Clone, Default)]
-pub struct BarAcc {
-	acc: Option<Bar>,
-	buf: Vec<Bar>,
-}
-impl BarAcc {
-	fn advance<'t>(&'t mut self, trades: <Trades as Cell>::Out<'_>, tf: Timeframe) -> &'t [Bar] {
-		self.buf.clear();
-		// precision is the run's, so the two scales are hoisted once instead of read per trade.
-		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
-		let step = Exact::from_nanos(tf.duration().as_nanos() as i64);
-		for (i, exec) in trades.exec().iter().enumerate() {
-			let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
-			let ts_close = exec.floor(step).as_nanos() + step.as_nanos();
-			match &mut self.acc {
-				Some(b) if b.ts_close == ts_close => {
-					b.high = b.high.max(price);
-					b.low = b.low.min(price);
-					b.close = price;
-					b.vol_base += qty;
+fn accumulate(state: &mut Option<Bar>, trades: <Trades as Cell>::Out<'_>, tf: Timeframe, out: &mut Vec<Bar>) {
+	// precision is the run's, so the two scales are hoisted once instead of read per trade.
+	let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
+	let step = Exact::from_nanos(tf.duration().as_nanos() as i64);
+	for (i, exec) in trades.exec().iter().enumerate() {
+		let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
+		let ts_close = exec.floor(step).as_nanos() + step.as_nanos();
+		match &mut *state {
+			Some(b) if b.ts_close == ts_close => {
+				b.high = b.high.max(price);
+				b.low = b.low.min(price);
+				b.close = price;
+				b.vol_base += qty;
+			}
+			acc => {
+				if let Some(done) = acc.take() {
+					out.push(done);
 				}
-				acc => {
-					if let Some(done) = acc.take() {
-						self.buf.push(done);
-					}
-					*acc = Some(Bar {
-						ts_close,
-						open: price,
-						high: price,
-						low: price,
-						close: price,
-						vol_base: qty,
-					});
-				}
+				*acc = Some(Bar {
+					ts_close,
+					open: price,
+					high: price,
+					low: price,
+					close: price,
+					vol_base: qty,
+				});
 			}
 		}
-		&self.buf
 	}
 }
 
@@ -107,7 +98,7 @@ const fn tf(s: &str) -> Timeframe {
 macro_rules! bars {
 	($($ty:ident = $tf:literal),+ $(,)?) => { $(
 		#[derive(Clone, Default)]
-		pub struct $ty(BarAcc);
+		pub struct $ty(Option<Bar>);
 		impl $ty {
 			pub const TF: Timeframe = tf($tf);
 		}
@@ -116,13 +107,13 @@ macro_rules! bars {
 
 			const NAME: &'static str = concat!("Bar:", $tf);
 		}
-		impl Node for $ty {
+		impl Emit for $ty {
 			/// The partial bar is the whole of the state, so the trades it holds reach back exactly
 			/// one period.
 			type Deps = (Folding<Trades, { Horizon::Span(Self::TF) }>,);
 
-			fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
-				self.0.advance(trades, Self::TF)
+			fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Bar>) {
+				accumulate(&mut self.0, trades, Self::TF, out);
 			}
 		}
 		slice_nudge!($ty, Bar);

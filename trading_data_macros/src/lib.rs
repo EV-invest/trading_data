@@ -19,6 +19,7 @@ mod kw {
 	syn::custom_keyword!(out);
 	syn::custom_keyword!(latch);
 	syn::custom_keyword!(diff);
+	syn::custom_keyword!(emit);
 }
 
 /// `field: Ty [Event]` — a root cell and the event type its slice carries.
@@ -39,17 +40,24 @@ impl Parse for Root {
 	}
 }
 
-/// `field: Ty` — a node field or a latch field.
+/// `field: Ty` — a node field or a latch field. `emit field: Ty` marks an `Emit`, whose buffer the
+/// engine owns: the graph field becomes an `Emitter<Ty>`, but `Ty` is still the frame's cell.
 struct FieldNode {
 	field: Ident,
 	ty: Type,
+	emit: bool,
 }
 impl Parse for FieldNode {
 	fn parse(input: ParseStream) -> syn::Result<Self> {
+		// `emit foo: Ty` — the peek2 rules out a field literally named `emit`.
+		let emit = input.peek(kw::emit) && !input.peek2(Token![:]);
+		if emit {
+			input.parse::<kw::emit>()?;
+		}
 		let field = input.parse()?;
 		input.parse::<Token![:]>()?;
 		let ty = input.parse()?;
-		Ok(FieldNode { field, ty })
+		Ok(FieldNode { field, ty, emit })
 	}
 }
 
@@ -133,9 +141,13 @@ impl Parse for GraphDef {
 ///     roots { trades: Trades[Trade], oi: OiRoot[Oi] };
 ///     out TickOut;
 ///     latch { live: Live }                   // optional
-///     bar: Bar1m, cvd: Cvd, ...
+///     emit bar: Bar1m, cvd: Cvd, ...
 /// }
 /// ```
+///
+/// The `emit` prefix marks an `Emit` — a node whose out is a run the *engine* buffers. The field
+/// becomes an `Emitter<Ty>`, which `Deref`s to `Ty`, so reads of the graph field are unchanged; the
+/// frame is still keyed on `Ty` itself, so deps name it bare. Everything else is a `Node`.
 ///
 /// `Batches<'t>` gets one field per root, of that root cell's `Out<'t>`. It is deliberately not
 /// `Default`: every field is filled explicitly from a woven step, and a silently-empty root is a
@@ -174,11 +186,42 @@ pub fn graph(input: TokenStream) -> TokenStream {
 	let fields: Vec<&Ident> = nodes.iter().map(|n| &n.field).collect();
 	let node_tys: Vec<&Type> = nodes.iter().map(|n| &n.ty).collect();
 
+	// The four metadata reads that live on the node trait rather than on the cell — `Emit` and `Node`
+	// declare the same ones, so only the trait naming them differs per field.
+	let decls: Vec<_> = nodes.iter().map(|n| if n.emit { quote!(#dag::Emit) } else { quote!(#dag::Node) }).collect();
+	let node_deps: Vec<_> = nodes
+		.iter()
+		.zip(&decls)
+		.map(|(n, d)| {
+			let ty = &n.ty;
+			quote!(<#ty as #d>::Deps)
+		})
+		.collect();
+	let node_whens: Vec<_> = nodes
+		.iter()
+		.zip(&decls)
+		.map(|(n, d)| {
+			let ty = &n.ty;
+			quote!(<#ty as #d>::When)
+		})
+		.collect();
+	// an `emit` field stores the engine's buffer next to the node; the frame is still keyed on `ty`.
+	let node_fields: Vec<_> = nodes
+		.iter()
+		.map(|n| {
+			let (field, ty) = (&n.field, &n.ty);
+			if n.emit { quote!(#field: #dag::Emitter<#ty>) } else { quote!(#field: #ty) }
+		})
+		.collect();
+
 	// `diff { }` fields sweep via `step_exact` (exact partials + formula + derivatives); the rest
-	// keep the FD-only `step_obs`. Same choke point, one extra reading for the routed fields.
+	// keep the FD-only `step_obs`, or `step_emit_obs` where the engine owns the buffer. Same choke
+	// point, one extra reading for the routed fields.
 	let steps = nodes.iter().map(|n| {
 		let field = &n.field;
-		if diffs.iter().any(|d| d.field == n.field) {
+		if n.emit {
+			quote!(let f = #dag::step_emit_obs(f, #field, obs);)
+		} else if diffs.iter().any(|d| d.field == n.field) {
 			quote!(let f = #dag::step_exact(f, #field, obs);)
 		} else {
 			quote!(let f = #dag::step_obs(f, #field, obs);)
@@ -191,14 +234,14 @@ pub fn graph(input: TokenStream) -> TokenStream {
 		let lfield = &l.field;
 		let latch_ty = &l.ty;
 		let fields = &fields;
-		let node_tys = &node_tys;
+		let node_whens = &node_whens;
 		quote! {
 			if self.__pending.#lfield {
 				self.__pending.#lfield = false;
 				<#latch_ty as #dag::Latch>::commutate(&mut self.#lfield);
 				#(
 					if const {
-						#dag::contains(<<#node_tys as #dag::Node>::When as #dag::GateSet>::NAMES, #dag::node_name::<#latch_ty>())
+						#dag::contains(<#node_whens as #dag::GateSet>::NAMES, #dag::node_name::<#latch_ty>())
 					} {
 						self.#fields = ::core::default::Default::default();
 					}
@@ -220,7 +263,7 @@ pub fn graph(input: TokenStream) -> TokenStream {
 
 		#[derive(Default)]
 		#vis struct #graph {
-			#(#fields: #node_tys,)*
+			#(#node_fields,)*
 			__pending: __Pending,
 		}
 
@@ -229,9 +272,9 @@ pub fn graph(input: TokenStream) -> TokenStream {
 			const METAS: &[#dag::NodeMeta] = &[#(
 				#dag::NodeMeta {
 					name: #dag::node_name::<#node_tys>(),
-					deps: <<#node_tys as #dag::Node>::Deps as #dag::DepSet>::NAMES,
-					reach: <<#node_tys as #dag::Node>::Deps as #dag::DepSet>::REACH,
-					gates: <<#node_tys as #dag::Node>::When as #dag::GateSet>::NAMES,
+					deps: <#node_deps as #dag::DepSet>::NAMES,
+					reach: <#node_deps as #dag::DepSet>::REACH,
+					gates: <#node_whens as #dag::GateSet>::NAMES,
 					latch: #dag::contains(LATCHES, #dag::node_name::<#node_tys>()),
 				},
 			)*];
@@ -265,7 +308,7 @@ pub fn graph(input: TokenStream) -> TokenStream {
 		impl #dag::Roots for #graph {
 			/// `TypeId`s of the events whose root is consumed by some node (the dep tree).
 			fn required_events() -> #dag::MacroVec<::core::any::TypeId> {
-				const NAMES: &[&[&str]] = &[#(<<#node_tys as #dag::Node>::Deps as #dag::DepSet>::NAMES),*];
+				const NAMES: &[&[&str]] = &[#(<#node_deps as #dag::DepSet>::NAMES),*];
 				let mut out = #dag::MacroVec::new();
 				#(
 					if NAMES.iter().any(|ns| #dag::contains(ns, #dag::node_name::<#root_tys>())) {

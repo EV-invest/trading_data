@@ -1,12 +1,12 @@
 //! SPL replica graph, batch-native: two roots (Trades, OiRoot) weave into
 //! Bar1m → (Cvd, Rsi14, Atr14, Momentum, VolUsd1h, Lambda1m) → Screener → Classify, plus an
-//! Oi-consuming OiChange node. Every node buffers its per-tick emissions and lends `&self.buf`;
-//! rate is slice length, firing is element `Option`-ness. The `graph!` field order is topo order.
+//! Oi-consuming OiChange node. Rate is slice length, firing is element `Option`-ness. The `graph!`
+//! field order is topo order.
 
 use core::fmt;
 
 use trading_data::{
-	Buffer, Buffering, Bump, Cell, DepOuts, Exact, Expr, Flat, Glance, Guide, Horizon, Ink, Lanes, Node, Oi, OiRoot, Plot, Stamped, Symbolic, TradeCols, Trades, Vars, WilderAtr,
+	Buffer, Buffering, Bump, Cell, Emit, EmitOuts, Exact, Expr, Flat, Glance, Guide, Horizon, Ink, Lanes, Oi, OiRoot, Plot, Stamped, Symbolic, TradeCols, Trades, Vars, WilderAtr,
 	WilderAvgGainLoss, constant, rsi, slice_nudge,
 };
 use trading_data_core::Side;
@@ -130,16 +130,14 @@ impl Glance for Dist {
 #[derive(Clone, Default)]
 pub struct Bar1m {
 	acc: Option<Bar>,
-	buf: Vec<Bar>,
 }
 impl Cell for Bar1m {
 	type Out<'t> = &'t [Bar];
 }
-impl Node for Bar1m {
+impl Emit for Bar1m {
 	type Deps = (Trades,);
 
-	fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Bar>) {
 		// precision is the run's, so the two scales are hoisted once instead of read per trade.
 		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
 		for (i, exec) in trades.exec().iter().enumerate() {
@@ -155,7 +153,7 @@ impl Node for Bar1m {
 				}
 				acc => {
 					if let Some(done) = acc.take() {
-						self.buf.push(done);
+						out.push(done);
 					}
 					*acc = Some(Bar {
 						ts_open,
@@ -169,7 +167,6 @@ impl Node for Bar1m {
 				}
 			}
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Bar1m, Bar);
@@ -178,22 +175,19 @@ slice_nudge!(Bar1m, Bar);
 #[derive(Clone, Default)]
 pub struct Cvd {
 	sum: f64,
-	buf: Vec<f64>,
 }
 impl Cell for Cvd {
 	type Out<'t> = &'t [f64];
 }
-impl Node for Cvd {
+impl Emit for Cvd {
 	type Deps = (Trades,);
 
-	fn advance<'t>(&'t mut self, (trades,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
 		for i in 0..trades.len() {
 			self.sum += signed(trades.side[i], (trades.price[i] as f64 / ps) * (trades.qty[i] as f64 / qs));
-			self.buf.push(self.sum);
+			out.push(self.sum);
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Cvd, f64);
@@ -202,20 +196,16 @@ slice_nudge!(Cvd, f64);
 #[derive(Clone)]
 pub struct Rsi14 {
 	rsi: WilderAvgGainLoss,
-	buf: Vec<Option<f64>>,
 }
 impl Default for Rsi14 {
 	fn default() -> Self {
-		Self {
-			rsi: WilderAvgGainLoss::new(14),
-			buf: Vec::new(),
-		}
+		Self { rsi: WilderAvgGainLoss::new(14) }
 	}
 }
 impl Cell for Rsi14 {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for Rsi14 {
+impl Emit for Rsi14 {
 	type Deps = (Bar1m,);
 
 	const PLOTS: &'static [Plot] = &[Plot {
@@ -235,12 +225,10 @@ impl Node for Rsi14 {
 		..Plot::DEFAULT
 	}];
 
-	fn advance<'t>(&'t mut self, (bars,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (bars,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for b in bars {
-			self.buf.push(self.rsi.update(b.close).map(|(g, l)| rsi(g, l)));
+			out.push(self.rsi.update(b.close).map(|(g, l)| rsi(g, l)));
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Rsi14, Option<f64>);
@@ -248,28 +236,22 @@ slice_nudge!(Rsi14, Option<f64>);
 #[derive(Clone)]
 pub struct Atr14 {
 	atr: WilderAtr,
-	buf: Vec<Option<f64>>,
 }
 impl Default for Atr14 {
 	fn default() -> Self {
-		Self {
-			atr: WilderAtr::new(14),
-			buf: Vec::new(),
-		}
+		Self { atr: WilderAtr::new(14) }
 	}
 }
 impl Cell for Atr14 {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for Atr14 {
+impl Emit for Atr14 {
 	type Deps = (Bar1m,);
 
-	fn advance<'t>(&'t mut self, (bars,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (bars,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for b in bars {
-			self.buf.push(self.atr.update(b.high, b.low, b.close));
+			out.push(self.atr.update(b.high, b.low, b.close));
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Atr14, Option<f64>);
@@ -277,19 +259,15 @@ slice_nudge!(Atr14, Option<f64>);
 /// Sharpe-like `mean/stdev * √n` of the `MOM_WINDOW` returns spanned by a `MOM_WINDOW + 1` close
 /// window. A degenerate (zero-variance) window is flat, not corrupt.
 #[derive(Clone, Default)]
-pub struct Momentum {
-	buf: Vec<Option<f64>>,
-}
+pub struct Momentum;
 impl Cell for Momentum {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for Momentum {
+impl Emit for Momentum {
 	type Deps = (Buffering<Bar1m, { Horizon::Elems(MOM_WINDOW + 1) }>,);
 
-	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
-		self.buf.extend(hist.trailing().map(|w| w.map(sharpe)));
-		&self.buf
+	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+		out.extend(hist.trailing().map(|w| w.map(sharpe)));
 	}
 }
 fn sharpe(closes: &[Bar]) -> f64 {
@@ -304,19 +282,15 @@ slice_nudge!(Momentum, Option<f64>);
 /// Rolling 60-bar quote volume. `None` until the hour is whole — a partial sum compared against a
 /// threshold is a lie, not a warmup.
 #[derive(Clone, Default)]
-pub struct VolUsd1h {
-	buf: Vec<Option<f64>>,
-}
+pub struct VolUsd1h;
 impl Cell for VolUsd1h {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for VolUsd1h {
+impl Emit for VolUsd1h {
 	type Deps = (Buffering<Bar1m, { Horizon::Elems(60) }>,);
 
-	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
-		self.buf.extend(hist.trailing().map(|w| w.map(|w| w.iter().map(|b| b.vol_quote).sum())));
-		&self.buf
+	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+		out.extend(hist.trailing().map(|w| w.map(|w| w.iter().map(|b| b.vol_quote).sum())));
 	}
 }
 slice_nudge!(VolUsd1h, Option<f64>);
@@ -324,19 +298,15 @@ slice_nudge!(VolUsd1h, Option<f64>);
 /// Kyle's λ: through-origin OLS of per-bar Δclose on signed flow, `λ = Σ(Δp·f) / Σ(f²)`, over the
 /// `LAMBDA_WINDOW` deltas spanned by a `LAMBDA_WINDOW + 1` bar window.
 #[derive(Clone, Default)]
-pub struct Lambda1m {
-	buf: Vec<Option<f64>>,
-}
+pub struct Lambda1m;
 impl Cell for Lambda1m {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for Lambda1m {
+impl Emit for Lambda1m {
 	type Deps = (Buffering<Bar1m, { Horizon::Elems(LAMBDA_WINDOW + 1) }>,);
 
-	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
-		self.buf.extend(hist.trailing().map(|w| w.map(kyle_lambda)));
-		&self.buf
+	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+		out.extend(hist.trailing().map(|w| w.map(kyle_lambda)));
 	}
 }
 fn kyle_lambda(bars: &[Bar]) -> f64 {
@@ -353,20 +323,17 @@ slice_nudge!(Lambda1m, Option<f64>);
 #[derive(Clone, Default)]
 pub struct OiChange {
 	prev: Option<f64> = None,
-	buf: Vec<Option<f64>> = Vec::new(),
 }
 impl Cell for OiChange {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for OiChange {
+impl Emit for OiChange {
 	type Deps = (OiRoot,);
 
-	fn advance<'t>(&'t mut self, (ois,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (ois,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for o in ois {
-			self.buf.push(self.prev.replace(o.oi).map(|p| o.oi / p - 1.0));
+			out.push(self.prev.replace(o.oi).map(|p| o.oi / p - 1.0));
 		}
-		&self.buf
 	}
 }
 slice_nudge!(OiChange, Option<f64>);
@@ -376,29 +343,26 @@ slice_nudge!(OiChange, Option<f64>);
 #[derive(Clone, Default)]
 pub struct Screener {
 	streak: u32,
-	buf: Vec<bool>,
 }
 impl Cell for Screener {
 	type Out<'t> = &'t [bool];
 }
-impl Node for Screener {
+impl Emit for Screener {
 	type Deps = (Momentum, Rsi14, VolUsd1h);
 
-	fn advance<'t>(&'t mut self, (mom, rsi, vol): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn emit(&mut self, (mom, rsi, vol): EmitOuts<'_, Self>, out: &mut Vec<bool>) {
 		assert_eq!(mom.len(), rsi.len(), "Momentum/Rsi14 rate mismatch");
 		assert_eq!(mom.len(), vol.len(), "Momentum/VolUsd1h rate mismatch");
-		self.buf.clear();
 		for i in 0..mom.len() {
 			// not-warm = closed; streak preserved across not-warm bars.
 			let Some(((m, r), v)) = mom[i].zip(rsi[i]).zip(vol[i]) else {
-				self.buf.push(false);
+				out.push(false);
 				continue;
 			};
 			let hit = m.abs() > MOM_TH && !(RSI_LO..=RSI_HI).contains(&r) && v > VOL_TH;
 			self.streak = if hit { self.streak + 1 } else { 0 };
-			self.buf.push(self.streak >= STREAK_N);
+			out.push(self.streak >= STREAK_N);
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Screener, bool);
@@ -406,13 +370,11 @@ slice_nudge!(Screener, bool);
 /// Per-bar 4-way distribution, gated (as a plain zip, not `When`) on the same-rate Screener: a
 /// `Some` where the screener fired, `None` otherwise.
 #[derive(Clone, Default)]
-pub struct Classify {
-	buf: Vec<Option<Dist>>,
-}
+pub struct Classify;
 impl Cell for Classify {
 	type Out<'t> = &'t [Option<Dist>];
 }
-impl Node for Classify {
+impl Emit for Classify {
 	type Deps = (Screener, Momentum);
 
 	// Element order is the [`Dist`] wire order.
@@ -421,11 +383,10 @@ impl Node for Classify {
 		..Plot::DEFAULT
 	}];
 
-	fn advance<'t>(&'t mut self, (screener, mom): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn emit(&mut self, (screener, mom): EmitOuts<'_, Self>, out: &mut Vec<Option<Dist>>) {
 		assert_eq!(screener.len(), mom.len(), "Screener/Momentum rate mismatch");
-		self.buf.clear();
 		for i in 0..screener.len() {
-			self.buf.push(screener[i].then(|| {
+			out.push(screener[i].then(|| {
 				let m = mom[i].expect("Screener only fires once Momentum is warm");
 				let category = if m.abs() > MOM_HIGH_BAND {
 					Category::Manipulation
@@ -438,31 +399,26 @@ impl Node for Classify {
 				Dist([Category::None, Category::Liquidations, Category::MmClosing, Category::Manipulation].map(|c| if c == category { 0.6 } else { rest }))
 			}));
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Classify, Option<Dist>);
 
 /// Price-denominated trailing stop `close - K·ATR`, rendered on the candle pane (overlay).
 #[derive(Clone, Default)]
-pub struct AtrStop {
-	buf: Vec<Option<f64>>,
-}
+pub struct AtrStop;
 impl Cell for AtrStop {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for AtrStop {
+impl Emit for AtrStop {
 	type Deps = (Bar1m, Atr14);
 
 	const PLOTS: &'static [Plot] = &[Plot { overlay: true, ..Plot::DEFAULT }];
 
-	fn advance<'t>(&'t mut self, (bars, atr): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn emit(&mut self, (bars, atr): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		assert_eq!(bars.len(), atr.len(), "Bar1m/Atr14 rate mismatch");
-		self.buf.clear();
 		for i in 0..bars.len() {
-			self.buf.push(atr[i].map(|a| bars[i].close - ATR_STOP_K * a));
+			out.push(atr[i].map(|a| bars[i].close - ATR_STOP_K * a));
 		}
-		&self.buf
 	}
 }
 slice_nudge!(AtrStop, Option<f64>);
@@ -491,20 +447,20 @@ trading_data::graph! {
 	roots { trades: Trades[TradeCols], oi: OiRoot[Oi] };
 	out TickOut;
 	diff { signal: Signal }
-	bar: Bar1m,
+	emit bar: Bar1m,
 	// 61 = the deepest request (Momentum/Lambda1m's `window + 1`); VolUsd1h's 60 rides along.
 	bar_hist: Buffer<Bar1m, { Horizon::Elems(61) }>,
-	cvd: Cvd,
-	rsi: Rsi14,
-	atr: Atr14,
-	atr_stop: AtrStop,
-	momentum: Momentum,
-	vol_usd_1h: VolUsd1h,
-	lambda: Lambda1m,
-	oi_change: OiChange,
+	emit cvd: Cvd,
+	emit rsi: Rsi14,
+	emit atr: Atr14,
+	emit atr_stop: AtrStop,
+	emit momentum: Momentum,
+	emit vol_usd_1h: VolUsd1h,
+	emit lambda: Lambda1m,
+	emit oi_change: OiChange,
 	signal: Signal,
-	screener: Screener,
-	classified: Classify,
+	emit screener: Screener,
+	emit classified: Classify,
 }
 
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it

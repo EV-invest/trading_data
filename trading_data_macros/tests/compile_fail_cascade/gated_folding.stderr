@@ -5,8 +5,8 @@ error[E0080]: evaluation panicked: a gated node cannot hold its own reach: a clo
   |
     ::: $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
-LL |         reject_gated_folding!(N);
-  |         ------------------------ in this macro invocation
+LL |         reject_gated_folding!(<N as Node>::Deps, Self);
+  |         ---------------------------------------------- in this macro invocation
   |
      = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `reject_gated_folding` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -15,14 +15,14 @@ note: erroneous constant encountered
   |
 LL | / ...   const {
 LL | | ...       assert!(
-LL | | ...           !<<$N as Node>::Deps as DepSet>::FOLDED,
+LL | | ...           <$G as GateSet>::NAMES.is_empty() || !<$D as DepSet>::FOLDED,
 LL | | ...           "a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain i...
 LL | | ...       )
 LL | | ...   }
   | |_______^
 ...
-LL |   ...   reject_gated_folding!(N);
-  |         ------------------------ in this macro invocation
+LL |   ...   reject_gated_folding!(<N as Node>::Deps, Self);
+  |         ---------------------------------------------- in this macro invocation
   |
      = note: this note originates in the macro `reject_gated_folding` (in Nightly builds, run with -Z macro-backtrace for more info)
 

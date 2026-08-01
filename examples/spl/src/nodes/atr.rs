@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Folding, Horizon, Node, WilderAtr, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, Folding, Horizon, WilderAtr, slice_nudge};
 
 use super::bar::Bar1m;
 use crate::config::strategy;
@@ -8,29 +8,25 @@ use crate::config::strategy;
 #[derive(Clone)]
 pub struct Atr {
 	atr: WilderAtr,
-	buf: Vec<Option<f64>>,
 }
 impl Default for Atr {
 	fn default() -> Self {
 		Self {
 			atr: WilderAtr::new(strategy().indies.atr.period),
-			buf: Vec::new(),
 		}
 	}
 }
 impl Cell for Atr {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for Atr {
+impl Emit for Atr {
 	/// A Wilder recurrence reaches to the start of the run.
 	type Deps = (Folding<Bar1m, { Horizon::Unbounded }>,);
 
-	fn advance<'t>(&'t mut self, (bars,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (bars,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for b in bars {
-			self.buf.push(self.atr.update(b.high, b.low, b.close));
+			out.push(self.atr.update(b.high, b.low, b.close));
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Atr, Option<f64>);

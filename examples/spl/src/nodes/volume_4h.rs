@@ -1,24 +1,20 @@
-use trading_data::{Buffering, Cell, DepOuts, Horizon, Node, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, slice_nudge};
 
 use super::bar::{Bar1m, Bar4h, closed_by};
 
 /// Notional of the newest 4h bar to have closed by each 1m close.
 #[derive(Clone, Default)]
-pub struct Volume4h {
-	buf: Vec<Option<f64>>,
-}
+pub struct Volume4h;
 impl Cell for Volume4h {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for Volume4h {
+impl Emit for Volume4h {
 	type Deps = (Bar1m, Buffering<Bar4h, { Horizon::Elems(1) }>);
 
-	fn advance<'t>(&'t mut self, (m1, h4): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (m1, h4): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for b in m1 {
-			self.buf.push(closed_by(h4.all(), b.ts_close).last().map(|h| h.vol_base * h.close));
+			out.push(closed_by(h4.all(), b.ts_close).last().map(|h| h.vol_base * h.close));
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Volume4h, Option<f64>);

@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Book, BookDeltas, Cell, DepOuts, Glance, Node, Plot, slice_nudge};
+use trading_data::{Book, BookDeltas, Cell, Emit, EmitOuts, Glance, Plot, slice_nudge};
 
 use crate::DEPTH;
 
@@ -35,13 +35,11 @@ impl Glance for BookTopSnap {
 ///
 /// A batch is collapsed to the one read at its end, so the out is never longer than a single tick.
 #[derive(Clone, Default)]
-pub struct BookTop {
-	buf: Vec<Option<BookTopSnap>>,
-}
+pub struct BookTop;
 impl Cell for BookTop {
 	type Out<'t> = &'t [Option<BookTopSnap>];
 }
-impl Node for BookTop {
+impl Emit for BookTop {
 	type Deps = (Book, BookDeltas);
 
 	const PLOTS: &'static [Plot] = &[Plot {
@@ -49,10 +47,9 @@ impl Node for BookTop {
 		..Plot::DEFAULT
 	}];
 
-	fn advance<'t>(&'t mut self, (book, frame): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
-		let Some(&ts) = frame.cols().exec().last() else { return &self.buf };
-		self.buf.push(book.and_then(|b| {
+	fn emit(&mut self, (book, frame): EmitOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) {
+		let Some(&ts) = frame.cols().exec().last() else { return };
+		out.push(book.and_then(|b| {
 			let (ps, qs) = (b.prec().price.scale(), b.prec().qty.scale());
 			let (bid, ask) = (b.best_bid()?, b.best_ask()?);
 			let usd = |&(p, q): &(i32, u32)| (p as f64 / ps) * (q as f64 / qs);
@@ -64,7 +61,6 @@ impl Node for BookTop {
 				top20_ask_depth_usd: b.asks().iter().take(DEPTH).map(usd).sum(),
 			})
 		}));
-		&self.buf
 	}
 }
 slice_nudge!(BookTop, Option<BookTopSnap>);

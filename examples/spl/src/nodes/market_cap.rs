@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Flat, Glance, McRoot, Node, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, Flat, Glance, McRoot, slice_nudge};
 
 #[derive(Clone, Copy, Debug)]
 pub struct McSnap {
@@ -25,24 +25,20 @@ impl Glance for McSnap {
 }
 
 #[derive(Clone, Default)]
-pub struct MarketCap {
-	buf: Vec<Option<McSnap>>,
-}
+pub struct MarketCap;
 impl Cell for MarketCap {
 	type Out<'t> = &'t [Option<McSnap>];
 }
-impl Node for MarketCap {
+impl Emit for MarketCap {
 	type Deps = (McRoot,);
 
-	fn advance<'t>(&'t mut self, (mcs,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (mcs,): EmitOuts<'_, Self>, out: &mut Vec<Option<McSnap>>) {
 		for m in mcs {
-			self.buf.push(Some(McSnap {
+			out.push(Some(McSnap {
 				market_cap: m.market_cap,
 				rank: m.rank,
 			}));
 		}
-		&self.buf
 	}
 }
 slice_nudge!(MarketCap, Option<McSnap>);

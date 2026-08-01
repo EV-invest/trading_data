@@ -1,7 +1,7 @@
 //! The declared reach must serve every request: `Buffering<Src, Elems(5)>` against a
 //! `Buffer<Src, Elems(3)>`. The assert is a monomorphization-time one, so the graph has to be ticked
 //! for it to bite — which every real graph does.
-use trading_data_dag::{Buffer, Buffering, Bump, Cell, DepOuts, Flat, Glance, Horizon, Node, Stamped, slice_nudge};
+use trading_data_dag::{Buffer, Buffering, Bump, Cell, Emit, EmitOuts, Flat, Glance, Horizon, Stamped, slice_nudge};
 use trading_data_macros::graph;
 
 #[derive(Clone, Copy, Debug)]
@@ -37,19 +37,15 @@ impl Cell for Src {
 slice_nudge!(Src, Tick);
 
 #[derive(Clone, Default)]
-struct Deep {
-	buf: Vec<Tick>,
-}
+struct Deep;
 impl Cell for Deep {
 	type Out<'t> = &'t [Tick];
 }
-impl Node for Deep {
+impl Emit for Deep {
 	type Deps = (Buffering<Src, { Horizon::Elems(5) }>,);
 
-	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
-		self.buf.extend_from_slice(hist.fresh());
-		&self.buf
+	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Tick>) {
+		out.extend_from_slice(hist.fresh());
 	}
 }
 slice_nudge!(Deep, Tick);
@@ -60,7 +56,7 @@ graph! {
 	roots { src: Src[Tick] };
 	out GOut;
 	hist: Buffer<Src, { Horizon::Elems(3) }>,
-	deep: Deep,
+	emit deep: Deep,
 }
 
 fn main() {

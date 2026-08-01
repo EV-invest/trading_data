@@ -2,24 +2,22 @@
 //! notional per trade), BookFlow (running signed level qty, market activity only) and Spread off
 //! the folded `Book`. 1m bars won't close in 15s, so the proof rides on these per-event outputs.
 
-use trading_data::{Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaFrame, DepOuts, Folding, Horizon, Lanes, Node, TradeCols, Trades, slice_nudge};
+use trading_data::{Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaFrame, Emit, EmitOuts, Folding, Horizon, Lanes, TradeCols, Trades, slice_nudge};
 use trading_data_core::Side;
 
 /// Cumulative volume delta: running Σ signed notional, one element per trade.
 #[derive(Clone, Default)]
 pub struct Cvd {
 	sum: f64,
-	buf: Vec<f64>,
 }
 impl Cell for Cvd {
 	type Out<'t> = &'t [f64];
 }
-impl Node for Cvd {
+impl Emit for Cvd {
 	/// A running sum reaches to the start of the run.
 	type Deps = (Folding<Trades, { Horizon::Unbounded }>,);
 
-	fn advance<'t>(&'t mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (t,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		let (ps, qs) = (t.prec.price.scale(), t.prec.qty.scale());
 		for i in 0..t.len() {
 			let notional = (t.price[i] as f64 / ps) * (t.qty[i] as f64 / qs);
@@ -27,9 +25,8 @@ impl Node for Cvd {
 				Side::Buy => notional,
 				Side::Sell => -notional,
 			};
-			self.buf.push(self.sum);
+			out.push(self.sum);
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Cvd, f64);
@@ -39,20 +36,18 @@ slice_nudge!(Cvd, f64);
 #[derive(Clone, Default)]
 pub struct BookFlow {
 	sum: f64,
-	buf: Vec<f64>,
 }
 impl Cell for BookFlow {
 	type Out<'t> = &'t [f64];
 }
-impl Node for BookFlow {
+impl Emit for BookFlow {
 	/// A running sum reaches to the start of the run.
 	type Deps = (Folding<BookDeltas, { Horizon::Unbounded }>,);
 
-	fn advance<'t>(&'t mut self, (frame,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (frame,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		// A correction is a dropped websocket packet, not market activity: folding one into flow
 		// fabricates signal. The enum is what makes ignoring that impossible to do by accident.
-		let DeltaFrame::Update(d) = frame else { return &self.buf };
+		let DeltaFrame::Update(d) = frame else { return };
 		let qs = d.prec.qty.scale();
 		for i in 0..d.len() {
 			let q = d.qty[i] as f64 / qs;
@@ -60,31 +55,26 @@ impl Node for BookFlow {
 				Side::Buy => q,
 				Side::Sell => -q,
 			};
-			self.buf.push(self.sum);
+			out.push(self.sum);
 		}
-		&self.buf
 	}
 }
 slice_nudge!(BookFlow, f64);
 
 /// The book read as a level: `None` until it is synced, which is also what makes it gateable.
 #[derive(Clone, Default)]
-pub struct Spread {
-	buf: Vec<Option<f64>>,
-}
+pub struct Spread;
 impl Cell for Spread {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for Spread {
+impl Emit for Spread {
 	type Deps = (Book,);
 
-	fn advance<'t>(&'t mut self, (book,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
-		self.buf.push(book.and_then(|b| {
+	fn emit(&mut self, (book,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+		out.push(book.and_then(|b| {
 			let (bid, ask) = (b.best_bid()?, b.best_ask()?);
 			Some((ask.0 - bid.0).as_f64())
 		}));
-		&self.buf
 	}
 }
 slice_nudge!(Spread, Option<f64>);
@@ -95,9 +85,9 @@ trading_data::graph! {
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape] };
 	out TickOut;
 	book: Book,
-	cvd: Cvd,
-	book_flow: BookFlow,
-	spread: Spread,
+	emit cvd: Cvd,
+	emit book_flow: BookFlow,
+	emit spread: Spread,
 }
 
 impl<'t> From<Lanes<'t>> for Batches<'t> {

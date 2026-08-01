@@ -7,7 +7,7 @@
 //! batch whose terminal element is *not* last still commutates (`Episode for &[T]` is `any`, not
 //! `last`).
 
-use trading_data_dag::{Armed, Bump, Cell, DepOuts, Episode, Episodic, Flat, Gate, Glance, Horizon, Node, NodeMeta, TriggerOut, graph, shadowed, slice_nudge, value_nudge};
+use trading_data_dag::{Armed, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Episodic, Flat, Gate, Glance, Horizon, Node, NodeMeta, TriggerOut, graph, shadowed, slice_nudge, value_nudge};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Pulse;
@@ -153,25 +153,23 @@ impl Episodic for Deprec {
 	}
 }
 
-/// A second leg gated on the same latch — batch-out too, to pin that `Latent for &[T]` is what
-/// darkness reads as.
+/// A second leg gated on the same latch, batch-out too — but an [`Emit`], where `Deprec` above is a
+/// [`Node`]. Dark reads `&[]` either way: here because nothing filled the run, there because
+/// `Latent for &[T]` says so. The two paths must be indistinguishable from outside.
 #[derive(Clone, Default)]
 struct Leg {
 	calls: u32,
-	buf: Vec<Option<Pulse>>,
 }
 impl Cell for Leg {
 	type Out<'t> = &'t [Option<Pulse>];
 }
-impl Node for Leg {
+impl Emit for Leg {
 	type Deps = (Feed,);
 	type When = (Armed<Deprec>,);
 
-	fn advance<'t>(&'t mut self, (feed,): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn emit(&mut self, (feed,): EmitOuts<'_, Self>, out: &mut Vec<Option<Pulse>>) {
 		self.calls += 1;
-		self.buf.clear();
-		self.buf.extend(feed.iter().copied().map(Some));
-		&self.buf
+		out.extend(feed.iter().copied().map(Some));
 	}
 }
 slice_nudge!(Leg, Option<Pulse>);
@@ -203,7 +201,7 @@ graph! {
 	classify: Classify,
 	armed: Armed<Deprec>,
 	deprec: Deprec,
-	leg: Leg,
+	emit leg: Leg,
 	ticks: Ticks,
 }
 

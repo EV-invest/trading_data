@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Node, Plot, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, Plot, slice_nudge};
 
 use super::book_top::BookTop;
 
@@ -6,13 +6,11 @@ use super::book_top::BookTop;
 /// honest reading of a book that shows nothing, and the depths are already published for anyone who
 /// needs to tell that from a balanced one.
 #[derive(Clone, Default)]
-pub struct Imbalance {
-	buf: Vec<Option<f64>>,
-}
+pub struct Imbalance;
 impl Cell for Imbalance {
 	type Out<'t> = &'t [Option<f64>];
 }
-impl Node for Imbalance {
+impl Emit for Imbalance {
 	type Deps = (BookTop,);
 
 	const PLOTS: &'static [Plot] = &[Plot {
@@ -20,15 +18,13 @@ impl Node for Imbalance {
 		..Plot::DEFAULT
 	}];
 
-	fn advance<'t>(&'t mut self, (top,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
+	fn emit(&mut self, (top,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for d in top {
-			self.buf.push(d.map(|d| {
+			out.push(d.map(|d| {
 				let total = d.top20_bid_depth_usd + d.top20_ask_depth_usd;
 				if total > 0.0 { (d.top20_bid_depth_usd - d.top20_ask_depth_usd) / total } else { 0.0 }
 			}));
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Imbalance, Option<f64>);

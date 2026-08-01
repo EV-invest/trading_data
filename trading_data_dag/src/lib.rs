@@ -7,11 +7,10 @@
 //! # Batches, not events
 //!
 //! A router slices the merged timeline into runs of same-type events; the graph consumes and
-//! produces *batches* natively. An event-emitting node holds a `Vec<T>` buffer, clears it as
-//! [`Node::advance`]'s first act, appends its emissions, and returns `&self.buf` — its
-//! `Cell::Out<'t>` is `&'t [T]`. Because `advance<'t>(&'t mut self, ..)` lends the node for the
-//! whole tick, the frame transitively holds those borrows; the "nodes are Copy values" doctrine
-//! is dead. Level (state-view) nodes may still return plain `Copy` values.
+//! produces *batches* natively. An event-emitting node is an [`Emit`]: the engine owns the run and
+//! lends it as `&mut Vec<T>`, so the node struct holds only what it remembers between ticks, and its
+//! `Cell::Out<'t>` is `&'t [T]`. The frame transitively holds those borrows, so the "nodes are Copy
+//! values" doctrine is dead. Level (state-view) nodes are [`Node`]s returning plain `Copy` values.
 //!
 //! **Rate is slice length, firing is element `Option`-ness.** A rate-*preserving* node emits
 //! exactly one element per element of its driving dep, `Option`-valued where it can decline
@@ -27,8 +26,9 @@
 //! - **Node identity = its type.** Two instances of one node type in a frame make [`Has`]
 //!   resolution ambiguous — a compile error. Distinguish via newtypes or const generics.
 //! - **A gate is scalar-out; a gated node may be batch-out.** A [`Gate`] outputs plain `bool`; nodes
-//!   naming it in [`Node::When`] are not advanced while it is false. The gate resolves once per tick,
-//!   so a gated batch node's episode boundary is quantized to its batch window.
+//!   naming it in [`Node::When`] / [`Emit::When`] are not advanced while it is false — a [`Node`]
+//!   reads [`Latent::latent`], a dark [`Emit`] is simply the empty run. The gate resolves once per
+//!   tick, so a gated batch node's episode boundary is quantized to its batch window.
 //! - **Horizon.** Reach is stated per *dep*, because "how far back must this be looked at" is a
 //!   question about an input: a bare dep reaches [`Horizon::Unit`] (this tick's batch), a
 //!   [`Buffering`] dep names the reach the *engine* retains for it, and a [`Folding`] dep names the
@@ -40,8 +40,9 @@
 //!   on it to `Default` — deferred to the *next* tick's start (the frame still borrows batch
 //!   fields at end-of-tick, so the reset can't run in place).
 //!
-//! Impls that write concrete dep types hit E0195 (lifetime binder mismatch); use [`DepOuts`]
-//! so every impl is uniformly `fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>`.
+//! Impls that write concrete dep types hit E0195 (lifetime binder mismatch); use [`DepOuts`] so
+//! every impl is uniformly `fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>`,
+//! and [`EmitOuts`] so every [`Emit`] is `fn emit(&mut self, deps: EmitOuts<'_, Self>, out: ..)`.
 //!
 //! ```
 //! use trading_data_dag::{Cell, Cons, DepOuts, Nil, Node, step};
@@ -357,6 +358,9 @@ pub struct Plot {
 	pub inks: &'static [Ink],
 	/// Draw on the price pane instead of an own indicator pane; price-denominated.
 	pub overlay: bool,
+	/// Draw as bars (stacked, when the plot has several slots) instead of lines. For discrete,
+	/// sparse acts — a continuous series drawn this way is a wall of ink that hides its neighbours.
+	pub bars: bool,
 }
 
 impl Plot {
@@ -367,6 +371,7 @@ impl Plot {
 		labels: &[],
 		inks: &[],
 		overlay: false,
+		bars: false,
 	};
 
 	/// `[]` slots means "every slot", which two plots cannot both claim.
@@ -532,6 +537,77 @@ pub trait Node: Cell {
 	type When: GateSet = ();
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
+}
+
+/// A node whose out is the run of items it fills each tick. The engine owns the run, so the struct
+/// holds only what it remembers between ticks — and `emit` cannot read what it wrote last tick,
+/// which [`Node::advance`]'s `self.buf.clear()` convention could only ask for. `&mut self`, not
+/// `&'t mut self`: the node is not lent for the tick, only the engine's buffer is.
+///
+/// A gated one goes dark by emitting nothing, so it needs no [`Latent`] reading — not emitting *is*
+/// the latent reading.
+///
+/// [`Series`]' where-clause is an obligation at each use of the bound, not an implied one (see
+/// [`Episodic`]), so it is repeated wherever this bound is used.
+pub trait Emit: Series
+where
+	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
+	type Deps: DepSet;
+	type When: GateSet = ();
+	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
+	fn emit<'t>(&mut self, deps: EmitOuts<'t, Self>, out: &mut alloc::vec::Vec<Self::Item>);
+}
+
+/// Uniform binder-correct dep-tuple type for [`Emit::emit`] impls, as [`DepOuts`] is for `advance`.
+pub type EmitOuts<'t, E> = <<E as Emit>::Deps as DepSet>::Outs<'t>;
+
+/// The engine-owned buffer an [`Emit`] fills, and the node itself. Never typed by a human —
+/// [`graph!`]'s `emit` keyword wraps the declared node type in one, and [`Deref`](core::ops::Deref)
+/// makes the wrapper invisible to every read of the graph field.
+#[doc(hidden)]
+pub struct Emitter<E: Emit>
+where
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>, {
+	node: E,
+	buf: alloc::vec::Vec<E::Item>,
+}
+
+// hand-written: `derive` would demand `E::Item: Default`, which no buffer needs.
+impl<E: Emit + Default> Default for Emitter<E>
+where
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+{
+	fn default() -> Self {
+		Self {
+			node: E::default(),
+			buf: alloc::vec::Vec::new(),
+		}
+	}
+}
+
+/// The buffer is not cloned: [`step_emit`] clears it before `emit` runs and `emit` only ever sees
+/// `&mut Vec`, so prior contents are unreachable by construction.
+impl<E: Emit + Clone> Clone for Emitter<E>
+where
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+{
+	fn clone(&self) -> Self {
+		Self {
+			node: self.node.clone(),
+			buf: alloc::vec::Vec::new(),
+		}
+	}
+}
+
+impl<E: Emit> core::ops::Deref for Emitter<E>
+where
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+{
+	type Target = E;
+
+	fn deref(&self) -> &E {
+		&self.node
+	}
 }
 
 /// A scalar-out node whose per-tick value is a pure [`Expr`] of its (scalar / last-element) deps —
@@ -1154,23 +1230,62 @@ impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg, H 
 /// reach that survives it is the one the frame holds. A macro and not a shared `const`, because
 /// `assert!` reads its message as a format string and so demands a literal.
 macro_rules! reject_gated_folding {
-	($N:ty) => {
+	($D:ty, $G:ty) => {
 		const {
 			assert!(
-				!<<$N as Node>::Deps as DepSet>::FOLDED,
+				<$G as GateSet>::NAMES.is_empty() || !<$D as DepSet>::FOLDED,
 				"a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (a `Buffer<C, K>` field, and the dep as `Buffering<C, H>`), or drop `When`"
 			)
 		}
 	};
 }
 
-/// [`step`]'s evaluation dispatch, keyed on the node's [`Node::When`]: ungated nodes advance
-/// unconditionally; gated nodes advance only while every gate reads true in the frame,
-/// yielding [`Latent::latent`] otherwise — deps not pulled. `I`/`J` are inferred index paths.
-pub trait Drive<'t, N: Node, F, I, J>: GateSet {
+/// Whether every gate in this set reads true in the frame. Split from [`Drive`] because gate
+/// resolution never touches the node: [`step_emit`] needs it without an `N` at all. `J` is the
+/// inferred index path.
+pub trait Open<'t, F, J>: GateSet {
 	fn open(f: &F) -> bool
 	where
 		F: 't;
+}
+
+impl<'t, F> Open<'t, F, ()> for () {
+	fn open(_: &F) -> bool
+	where
+		F: 't, {
+		true
+	}
+}
+
+impl<'t, F, A, Ia> Open<'t, F, (Ia,)> for (A,)
+where
+	A: Gate,
+	F: Has<'t, A, Ia>,
+{
+	fn open(f: &F) -> bool
+	where
+		F: 't, {
+		Has::<'t, A, Ia>::get(f)
+	}
+}
+
+impl<'t, F, A, Ia, B, Ib> Open<'t, F, (Ia, Ib)> for (A, B)
+where
+	A: Gate,
+	B: Gate,
+	F: Has<'t, A, Ia> + Has<'t, B, Ib>,
+{
+	fn open(f: &F) -> bool
+	where
+		F: 't, {
+		Has::<'t, A, Ia>::get(f) && Has::<'t, B, Ib>::get(f)
+	}
+}
+
+/// [`step`]'s evaluation dispatch, keyed on the node's [`Node::When`]: ungated nodes advance
+/// unconditionally; gated nodes advance only while [`Open`] reads true in the frame, yielding
+/// [`Latent::latent`] otherwise — deps not pulled. `I`/`J` are inferred index paths.
+pub trait Drive<'t, N: Node, F, I, J>: Open<'t, F, J> {
 	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't;
@@ -1181,12 +1296,6 @@ where
 	N: Node<When = ()>,
 	N::Deps: Pull<'t, F, I>,
 {
-	fn open(_: &F) -> bool
-	where
-		F: 't, {
-		true
-	}
-
 	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't, {
@@ -1202,17 +1311,11 @@ where
 	F: Has<'t, A, Ia>,
 	for<'x> N::Out<'x>: Latent,
 {
-	fn open(f: &F) -> bool
-	where
-		F: 't, {
-		Has::<'t, A, Ia>::get(f)
-	}
-
 	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't, {
-		reject_gated_folding!(N);
-		if !<Self as Drive<'t, N, F, I, (Ia,)>>::open(f) {
+		reject_gated_folding!(<N as Node>::Deps, Self);
+		if !<Self as Open<'t, F, (Ia,)>>::open(f) {
 			return Latent::latent();
 		}
 		node.advance(<N::Deps as Pull<'t, F, I>>::pull(f))
@@ -1228,17 +1331,11 @@ where
 	F: Has<'t, A, Ia> + Has<'t, B, Ib>,
 	for<'x> N::Out<'x>: Latent,
 {
-	fn open(f: &F) -> bool
-	where
-		F: 't, {
-		Has::<'t, A, Ia>::get(f) && Has::<'t, B, Ib>::get(f)
-	}
-
 	fn drive(node: &'t mut N, f: &F) -> N::Out<'t>
 	where
 		F: 't, {
-		reject_gated_folding!(N);
-		if !<Self as Drive<'t, N, F, I, (Ia, Ib)>>::open(f) {
+		reject_gated_folding!(<N as Node>::Deps, Self);
+		if !<Self as Open<'t, F, (Ia, Ib)>>::open(f) {
 			return Latent::latent();
 		}
 		node.advance(<N::Deps as Pull<'t, F, I>>::pull(f))
@@ -1254,6 +1351,24 @@ where
 	F: 't, {
 	let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
 	Cons { out, tail: frame }
+}
+
+/// [`step`] for an [`Emit`]: clear the engine's buffer, let the node fill it, push it as the frame's
+/// out. The frame is keyed on `E` itself — the [`Emitter`] is storage, not a cell — so a dep naming
+/// `E` resolves through the ordinary [`Has`] impl.
+pub fn step_emit<'t, E, F, I, J>(frame: F, e: &'t mut Emitter<E>) -> Cons<'t, E, F>
+where
+	E: Emit,
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+	E::Deps: Pull<'t, F, I>,
+	E::When: Open<'t, F, J>,
+	F: 't, {
+	reject_gated_folding!(<E as Emit>::Deps, <E as Emit>::When);
+	e.buf.clear();
+	if <E::When as Open<'t, F, J>>::open(&frame) {
+		e.node.emit(<E::Deps as Pull<'t, F, I>>::pull(&frame), &mut e.buf);
+	}
+	Cons { out: &e.buf, tail: frame }
 }
 
 /// One node firing, flattened: values and the finite-difference local Jacobian wrt its deps,
@@ -1316,16 +1431,17 @@ impl<A: Observer, B: Observer> Observer for (A, B) {
 /// the dep actually applied. Isolated from [`step_obs`] so the re-advance lifetime is purely local
 /// — the clone and its nudged deps never escape, which keeps the self-borrowing `advance` from
 /// pinning them to the caller's tick lifetime.
-fn fd_col<'d, N>(pre: &N, deps: DepOuts<'d, N>, slot: usize, h: f64, bumped: &mut [f64]) -> (bool, f64)
+/// `scratch` is the caller's: [`DepFlat::stage`] overwrites it wholly for every dep on every call,
+/// so allocating one per column would be dead work.
+fn fd_col<'d, N>(pre: &N, deps: DepOuts<'d, N>, scratch: &mut <N::Deps as DepFlat>::Scratch, slot: usize, h: f64, bumped: &mut [f64]) -> (bool, f64)
 where
 	N: Node + Clone,
 	N::Deps: DepFlat,
 	DepOuts<'d, N>: Copy,
 	for<'x> N::Out<'x>: Flat, {
-	let mut scratch = <N::Deps as DepFlat>::Scratch::default();
-	let dh = <N::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
+	let dh = <N::Deps as DepFlat>::stage(deps, scratch, slot, h);
 	let mut clone = pre.clone();
-	(clone.advance(<N::Deps as DepFlat>::view(&scratch)).flat(bumped), dh)
+	(clone.advance(<N::Deps as DepFlat>::view(scratch)).flat(bumped), dh)
 }
 
 /// The full finite-difference Jacobian: one [`fd_col`] per dep element, NaN columns where a dep is
@@ -1339,6 +1455,7 @@ where
 	let (out_len, dep_len) = (out_buf.len(), dep_buf.len());
 	let mut jac = alloc::vec![f64::NAN; out_len * dep_len];
 	let mut bumped = alloc::vec![f64::NAN; out_len];
+	let mut scratch = <N::Deps as DepFlat>::Scratch::default();
 	for slot in 0..dep_len {
 		let x = dep_buf[slot];
 		if x.is_nan() {
@@ -1347,7 +1464,7 @@ where
 		let h = (x.abs() * 1e-6).max(1e-9);
 		// `dh`, not `h`: a quantized dep moves in whole ticks, and dividing by a step it never took
 		// is a fabricated slope. `0.0` ⇒ the slot has no derivative at all.
-		let (fired, dh) = fd_col::<N>(pre, deps, slot, h, &mut bumped);
+		let (fired, dh) = fd_col::<N>(pre, deps, &mut scratch, slot, h, &mut bumped);
 		if !fired || dh == 0.0 {
 			continue; // bump crossed a firing branch, or the slot is discrete — column stays NaN
 		}
@@ -1379,7 +1496,7 @@ where
 	}
 
 	// gate closed: no advance, no dep flatten, no FD — an unfired `Fire` is the honest view.
-	if !<N::When as Drive<'t, N, F, I, J>>::open(&frame) {
+	if !<N::When as Open<'t, F, J>>::open(&frame) {
 		let out = <N::When as Drive<'t, N, F, I, J>>::drive(node, &frame);
 		obs.on(
 			N::NAME,
@@ -1430,6 +1547,127 @@ where
 			fires,
 			vals: fired.then_some(out_buf.as_slice()),
 			dep_dims: <N::Deps as DepFlat>::DIMS,
+			jac: jac.as_deref(),
+			exact_jac: None,
+			formula: None,
+			deriv: None,
+			trace: None,
+		},
+	);
+	Cons { out, tail: frame }
+}
+
+/// [`fd_jac`] for an [`Emit`]: same columns, but the re-`emit` needs no lifetime isolation (`&mut
+/// self` never lends the node), so the column body is inline and both scratches — the deps' and the
+/// clone's output run — are hoisted across the slot loop.
+fn fd_jac_emit<'d, E>(pre: &E, deps: EmitOuts<'d, E>, dep_buf: &[f64], out_buf: &[f64]) -> alloc::vec::Vec<f64>
+where
+	E: Emit + Clone,
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+	E::Item: Flat,
+	E::Deps: DepFlat,
+	EmitOuts<'d, E>: Copy, {
+	let (out_len, dep_len) = (out_buf.len(), dep_buf.len());
+	let mut jac = alloc::vec![f64::NAN; out_len * dep_len];
+	let mut bumped = alloc::vec![f64::NAN; out_len];
+	let mut scratch = <E::Deps as DepFlat>::Scratch::default();
+	let mut emitted = alloc::vec::Vec::new();
+	for slot in 0..dep_len {
+		let x = dep_buf[slot];
+		if x.is_nan() {
+			continue;
+		}
+		let h = (x.abs() * 1e-6).max(1e-9);
+		// `dh`, not `h`: a quantized dep moves in whole ticks, and dividing by a step it never took
+		// is a fabricated slope. `0.0` ⇒ the slot has no derivative at all.
+		let dh = <E::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
+		emitted.clear();
+		let mut clone = pre.clone();
+		clone.emit(<E::Deps as DepFlat>::view(&scratch), &mut emitted);
+		if !emitted.as_slice().flat(&mut bumped) || dh == 0.0 {
+			continue; // bump crossed a firing branch, or the slot is discrete — column stays NaN
+		}
+		for i in 0..out_len {
+			jac[i * dep_len + slot] = (bumped[i] - out_buf[i]) / dh;
+		}
+	}
+	jac
+}
+
+/// [`step_emit`] + [`Observer::on`] before the push — [`step_obs`]'s sibling, with the engine's
+/// buffer standing in for the node's out. A gate-closed emit node is simply the empty run.
+pub fn step_emit_obs<'t, E, F, I, J, O: Observer>(frame: F, e: &'t mut Emitter<E>, obs: &mut O) -> Cons<'t, E, F>
+where
+	E: Emit + Clone,
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+	E::Item: Flat + core::fmt::Debug + Glance,
+	E::Deps: Pull<'t, F, I> + DepFlat,
+	E::When: Open<'t, F, J>,
+	EmitOuts<'t, E>: Copy,
+	F: 't, {
+	const { assert!(Plot::coherent(<E as Emit>::PLOTS), "a multi-plot node must name each plot's slots; `[]` claims all of them") }
+	reject_gated_folding!(<E as Emit>::Deps, <E as Emit>::When);
+	e.buf.clear();
+
+	// gate closed: no emit, no dep flatten, no FD — the empty run is the honest view.
+	if !<E::When as Open<'t, F, J>>::open(&frame) {
+		let out: &'t [E::Item] = &e.buf;
+		if O::ACTIVE {
+			obs.on(
+				E::NAME,
+				<E::Deps as DepSet>::NAMES,
+				<E::When as GateSet>::NAMES,
+				Fire {
+					debug: &out,
+					glance: &out,
+					dims: <E::Item as Flat>::DIMS,
+					plots: <E as Emit>::PLOTS,
+					fires: 0,
+					vals: None,
+					dep_dims: <E::Deps as DepFlat>::DIMS,
+					jac: None,
+					exact_jac: None,
+					formula: None,
+					deriv: None,
+					trace: None,
+				},
+			);
+		}
+		return Cons { out, tail: frame };
+	}
+
+	if !O::ACTIVE {
+		e.node.emit(<E::Deps as Pull<'t, F, I>>::pull(&frame), &mut e.buf);
+		return Cons { out: &e.buf, tail: frame };
+	}
+
+	let pre = e.node.clone();
+	let deps = <E::Deps as Pull<'t, F, I>>::pull(&frame);
+	e.node.emit(deps, &mut e.buf);
+	let out: &'t [E::Item] = &e.buf;
+
+	let out_len = <E::Item as Flat>::LEN;
+	let mut out_buf = alloc::vec![f64::NAN; out_len];
+	let fired = out.flat(&mut out_buf);
+
+	let dep_len = <E::Deps as DepFlat>::LEN;
+	let mut dep_buf = alloc::vec![f64::NAN; dep_len];
+	<E::Deps as DepFlat>::flat(&deps, &mut dep_buf);
+
+	let jac = fired.then(|| fd_jac_emit::<E>(&pre, deps, &dep_buf, &out_buf));
+
+	obs.on(
+		E::NAME,
+		<E::Deps as DepSet>::NAMES,
+		<E::When as GateSet>::NAMES,
+		Fire {
+			debug: &out,
+			glance: &out,
+			dims: <E::Item as Flat>::DIMS,
+			plots: <E as Emit>::PLOTS,
+			fires: out.len(),
+			vals: fired.then_some(out_buf.as_slice()),
+			dep_dims: <E::Deps as DepFlat>::DIMS,
 			jac: jac.as_deref(),
 			exact_jac: None,
 			formula: None,
@@ -1685,9 +1923,14 @@ pub const fn deadlocked(latch: &'static str, arms: &'static [&'static str], node
 ///     batches Batches;                       // name of the generated root-slices struct
 ///     roots { trades: Trades[Trade], oi: OiRoot[Oi] };
 ///     out TickOut;
-///     bar: Bar1m, cvd: Cvd, ...
+///     emit bar: Bar1m, cvd: Cvd, ...
 /// }
 /// ```
+///
+/// The `emit` prefix marks an [`Emit`] — a node whose out is a run the *engine* buffers. The field
+/// becomes an [`Emitter<Ty>`](Emitter), which [`Deref`](core::ops::Deref)s to `Ty`, so reads of the
+/// graph field are unchanged; the frame is still keyed on `Ty` itself, so deps name it bare.
+/// Everything else is a [`Node`].
 ///
 /// `Batches<'t>` gets one field per root, of that root cell's `Out<'t>` — deliberately not
 /// `Default`: every field is filled explicitly from a woven step, and a silently-empty root is a

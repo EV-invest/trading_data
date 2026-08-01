@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Folding, Glance, Horizon, Node, Plot, rsi, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, Folding, Glance, Horizon, Plot, rsi, slice_nudge};
 
 use super::{avg_gain::AvgGain, avg_loss::AvgLoss};
 use crate::config::strategy;
@@ -25,7 +25,6 @@ impl Glance for RsiValues {
 #[derive(Clone)]
 pub struct Rsi {
 	smooth: Ema,
-	buf: Vec<Option<RsiValues>>,
 }
 /// Nautilus's `ExponentialMovingAverage`: seeded on the first sample, warm after `period` of them.
 #[derive(Clone)]
@@ -52,14 +51,13 @@ impl Default for Rsi {
 	fn default() -> Self {
 		Self {
 			smooth: Ema::new(strategy().indies.rsi.smooth_len),
-			buf: Vec::new(),
 		}
 	}
 }
 impl Cell for Rsi {
 	type Out<'t> = &'t [Option<RsiValues>];
 }
-impl Node for Rsi {
+impl Emit for Rsi {
 	/// The smoothing EMA is a recurrence over both legs, so it reaches to the start of the run.
 	type Deps = (Folding<AvgGain, { Horizon::Unbounded }>, Folding<AvgLoss, { Horizon::Unbounded }>);
 
@@ -71,16 +69,14 @@ impl Node for Rsi {
 		..Plot::DEFAULT
 	}];
 
-	fn advance<'t>(&'t mut self, (gain, loss): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn emit(&mut self, (gain, loss): EmitOuts<'_, Self>, out: &mut Vec<Option<RsiValues>>) {
 		assert_eq!(gain.len(), loss.len(), "AvgGain/AvgLoss rate mismatch");
-		self.buf.clear();
 		for (g, l) in gain.iter().zip(loss) {
-			self.buf.push(g.zip(*l).and_then(|(g, l)| {
+			out.push(g.zip(*l).and_then(|(g, l)| {
 				let actual = rsi(g, l);
 				self.smooth.update(actual).map(|smooth| RsiValues { actual, smooth })
 			}));
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Rsi, Option<RsiValues>);
