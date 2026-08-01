@@ -282,12 +282,26 @@ pub fn graph(input: TokenStream) -> TokenStream {
 		}
 	});
 
+	// an `Emitter` resets through its own method: `Default::default()` on the wrapper would drop the
+	// buffer's capacity, which the next episode only has to earn back.
+	let resets: Vec<_> = nodes
+		.iter()
+		.map(|n| {
+			let field = &n.field;
+			if n.emit {
+				quote!(self.#field.reset())
+			} else {
+				quote!(self.#field = ::core::default::Default::default())
+			}
+		})
+		.collect();
+
 	// deferred commutation, inlined per latch: reset every field gated on the commutated latch.
 	// (The cross-product latch × field is a plain nested loop here — no tt-muncher needed.)
 	let apply_pending = latches.iter().map(|l| {
 		let lfield = &l.field;
 		let latch_ty = &l.ty;
-		let fields = &fields;
+		let resets = &resets;
 		let node_whens = &node_whens;
 		quote! {
 			if self.__pending.#lfield {
@@ -297,7 +311,7 @@ pub fn graph(input: TokenStream) -> TokenStream {
 					if const {
 						#dag::contains(<#node_whens as #dag::GateSet>::NAMES, #dag::node_name::<#latch_ty>())
 					} {
-						self.#fields = ::core::default::Default::default();
+						#resets;
 					}
 				)*
 			}
@@ -360,7 +374,7 @@ pub fn graph(input: TokenStream) -> TokenStream {
 
 			// a latch is cut from within: what it gates must be what cuts it.
 			#(assert!(
-				#dag::contains(<<<#latch_tys as #dag::Latch>::Cut as #dag::Node>::When as #dag::GateSet>::NAMES, #dag::node_name::<#latch_tys>()),
+				#dag::cut_gated(#dag::node_name::<<#latch_tys as #dag::Latch>::Cut>(), #dag::node_name::<#latch_tys>(), METAS),
 				concat!(stringify!(#lfields), "'s `Cut` node does not name it in `When` — a latch cut by a node it does not gate never commutates")
 			);)*
 

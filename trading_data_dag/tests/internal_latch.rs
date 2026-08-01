@@ -1,7 +1,7 @@
 //! The *internal* latch: same dynamics as `latch.rs`, but the arm is a graph node rather than a
 //! root. `Episodic` + `Armed<N>` seal the loop — the gate a node arms is the gate its own terminal
-//! out cuts — and the episode is batch-out, which `Latent`/`Episode for &[T]` are what make
-//! expressible.
+//! out cuts — and the episode is an `Emit`: the engine owns its run, so dark is the empty one and
+//! commutation hands back a buffer rather than a fresh allocation.
 //!
 //! The load-bearing pins: an arm leg going dark mid-episode does not cut the latch, and a terminal
 //! batch whose terminal element is *not* last still commutates (`Episode for &[T]` is `any`, not
@@ -118,29 +118,26 @@ struct Deprec {
 	t: u32,
 	idle: bool,
 	calls: u32,
-	buf: Vec<Option<Phase>>,
 }
 impl Cell for Deprec {
 	type Out<'t> = &'t [Option<Phase>];
 }
-impl Node for Deprec {
+impl Emit for Deprec {
 	type Deps = (Classify, Feed);
 	type When = (Armed<Deprec>,);
 
-	fn advance<'t>(&'t mut self, (_, feed): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn emit(&mut self, (_, feed): EmitOuts<'_, Self>, out: &mut Vec<Option<Phase>>) {
 		self.calls += 1;
-		self.buf.clear();
 		for _ in feed {
 			if self.idle {
-				self.buf.push(None);
+				out.push(None);
 				continue;
 			}
 			self.t += 1;
 			let phase = if self.t >= 3 { Phase::Done } else { Phase::Degrading(self.t) };
 			self.idle = phase.terminal();
-			self.buf.push(Some(phase));
+			out.push(Some(phase));
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Deprec, Option<Phase>);
@@ -153,9 +150,8 @@ impl Episodic for Deprec {
 	}
 }
 
-/// A second leg gated on the same latch, batch-out too — but an [`Emit`], where `Deprec` above is a
-/// [`Node`]. Dark reads `&[]` either way: here because nothing filled the run, there because
-/// `Latent for &[T]` says so. The two paths must be indistinguishable from outside.
+/// A second leg gated on the same latch, and not the one that cuts it: commutation resets every
+/// gated field, not just the `Cut`.
 #[derive(Clone, Default)]
 struct Leg {
 	calls: u32,
@@ -202,7 +198,7 @@ graph! {
 	open: Open,
 	classify: Classify,
 	armed: Armed<Deprec>,
-	deprec: Deprec,
+	emit deprec: Deprec,
 	emit leg: Leg,
 	ticks: Ticks,
 }

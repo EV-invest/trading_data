@@ -612,6 +612,20 @@ where
 	}
 }
 
+impl<E: Emit + Default> Emitter<E>
+where
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+{
+	/// [`graph!`]'s commutation reset, where a plain field takes `Default::default()`. The buffer is
+	/// cleared rather than replaced: an episode's run length is about what the last one's was, and
+	/// the capacity is the one thing worth carrying across the dark.
+	#[doc(hidden)]
+	pub fn reset(&mut self) {
+		self.node = E::default();
+		self.buf.clear();
+	}
+}
+
 impl<E: Emit> core::ops::Deref for Emitter<E>
 where
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
@@ -733,9 +747,10 @@ pub trait Latch: Gate
 where
 	for<'t> Self: Cell<Out<'t> = bool>,
 	for<'t> <Self::Cut as Cell>::Out<'t>: Episode, {
-	/// The gated node whose terminal out commutates this latch. A [`Node`], not a bare [`Cell`]: a
-	/// root cannot be gated, so it could never be cut from within.
-	type Cut: Node;
+	/// The gated cell whose terminal out commutates this latch. That it *is* gated on this latch is
+	/// [`cut_gated`]'s to say — a bound here could only ask for [`Node`], which names the cut's gates
+	/// through one of the two traits that declare them and rules out an [`Emit`] for nothing.
+	type Cut: Cell;
 	fn commutate(&mut self);
 }
 
@@ -744,7 +759,7 @@ where
 /// out drops the contact. Where a hand-written [`Latch`] leaves the loop open (nothing checks that
 /// the gate you armed is the gate your episode cuts), this closes it in the type: [`Armed<Self>`] is
 /// the only gate it can be.
-pub trait Episodic: Node
+pub trait Episodic: Cell
 where
 	for<'t> <Self as Cell>::Out<'t>: Episode, {
 	type Trigger: Cell;
@@ -2064,6 +2079,21 @@ pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 			}
 		}
 		g += 1;
+	}
+	false
+}
+
+/// A latch is cut from within, so its [`Cut`](Latch::Cut) must be a stepped field naming it in the
+/// gates. Absent from the manifest ⇒ a root, and a root is never gated — which is exactly what the
+/// old `Cut: Node` bound stood in for, minus its blindness to an [`Emit`].
+#[doc(hidden)]
+pub const fn cut_gated(cut: &'static str, latch: &'static str, nodes: &[NodeMeta]) -> bool {
+	let mut i = 0;
+	while i < nodes.len() {
+		if str_eq(nodes[i].name, cut) {
+			return contains(nodes[i].gates, latch);
+		}
+		i += 1;
 	}
 	false
 }

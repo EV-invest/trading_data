@@ -158,7 +158,7 @@ trading_data::graph! {
 	emit book_top: BookTop,
 	emit imbalance: Imbalance,
 	emit spread: Spread,
-	deprecator: Deprecator,
+	emit deprecator: Deprecator,
 }
 
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it

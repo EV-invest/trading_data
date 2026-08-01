@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Armed, Cell, DepOuts, Episode, Episodic, Flat, Glance, Node, Plot, TriggerOut, slice_nudge};
+use trading_data::{Armed, Cell, Emit, EmitOuts, Episode, Episodic, Flat, Glance, Plot, TriggerOut, slice_nudge};
 use trading_data_core::Side;
 
 use super::{atr::Atr, book_top::BookTop, classify::Classify, latest};
@@ -122,7 +122,6 @@ impl Glance for Intent {
 pub struct Deprecator {
 	state: State,
 	last_atr: Option<f64>,
-	buf: Vec<Option<Intent>>,
 }
 #[derive(Clone)]
 struct Active {
@@ -144,7 +143,7 @@ enum State {
 impl Cell for Deprecator {
 	type Out<'t> = &'t [Option<Intent>];
 }
-impl Node for Deprecator {
+impl Emit for Deprecator {
 	type Deps = (Classify, Atr, BookTop);
 	type When = (Armed<Deprecator>,);
 
@@ -162,14 +161,13 @@ impl Node for Deprecator {
 		},
 	];
 
-	fn advance<'t>(&'t mut self, (classify, atr, top): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn emit(&mut self, (classify, atr, top): EmitOuts<'_, Self>, out: &mut Vec<Option<Intent>>) {
 		let liq = &strategy().classification.liquidations;
-		self.buf.clear();
 		latest(&mut self.last_atr, atr, top.len());
 
 		for d in top {
 			let Some(d) = d else {
-				self.buf.push(None);
+				out.push(None);
 				continue;
 			};
 			//TODO: unreachable — see `Lanes`. `classify` is only `Some` on a trade-clocked tick and this
@@ -191,7 +189,7 @@ impl Node for Deprecator {
 			}
 			// Management needs `target_q` off the ATR envelope; skip until the first ATR lands.
 			let (State::Active(a), Some(atr)) = (&mut self.state, self.last_atr) else {
-				self.buf.push(None);
+				out.push(None);
 				continue;
 			};
 			let mid = d.mid();
@@ -215,7 +213,7 @@ impl Node for Deprecator {
 			}
 			let draining = a.drain_deadline_ns.is_some();
 			let terminal = a.drain_deadline_ns.is_some_and(|dl| d.ts_ns >= dl);
-			self.buf.push(Some(Intent {
+			out.push(Some(Intent {
 				ts_ns: d.ts_ns,
 				side: a.side,
 				base_q: a.base_q,
@@ -233,7 +231,6 @@ impl Node for Deprecator {
 				self.state = State::Idle;
 			}
 		}
-		&self.buf
 	}
 }
 slice_nudge!(Deprecator, Option<Intent>);
