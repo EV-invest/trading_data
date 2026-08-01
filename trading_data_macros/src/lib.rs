@@ -375,7 +375,7 @@ pub fn graph(input: TokenStream) -> TokenStream {
 			// a latch is cut from within: what it gates must be what cuts it.
 			#(assert!(
 				#dag::cut_gated(#dag::node_name::<<#latch_tys as #dag::Latch>::Cut>(), #dag::node_name::<#latch_tys>(), METAS),
-				concat!(stringify!(#lfields), "'s `Cut` node does not name it in `When` — a latch cut by a node it does not gate never commutates")
+				concat!(stringify!(#lfields), "'s `Cut` is no field of this graph naming it in `When` — a latch cut by something it does not gate never commutates")
 			);)*
 
 			// an internal latch must not gate its own arm.
