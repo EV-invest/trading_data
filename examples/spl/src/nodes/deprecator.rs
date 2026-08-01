@@ -3,13 +3,7 @@ use core::fmt;
 use trading_data::{Armed, Cell, DepOuts, Episode, Episodic, Flat, Glance, Horizon, Node, Plot, TriggerOut, slice_nudge};
 use trading_data_core::Side;
 
-use super::{
-	atr::Atr,
-	bar::Bar1m,
-	book_top::BookTop,
-	classify::Classify,
-	latest,
-};
+use super::{atr::Atr, bar::Bar1m, book_top::BookTop, classify::Classify, latest};
 use crate::config::strategy;
 
 /// SPL's `execution::RISK_FRACTION`: fraction of equity committed per entry.
@@ -121,6 +115,15 @@ impl Glance for Intent {
 	}
 }
 
+/// SPL's `ExecutorState` + `Degrader`, one for one. Entry mid-prices off the book (not the last
+/// trade — on thin instruments that lags by whole percents and centres the envelope on a phantom);
+/// every book tick then reduces one weighted ATR-envelope lambda against the trailing term.
+#[derive(Clone, Default)]
+pub struct Deprecator {
+	state: State,
+	last_atr: Option<f64>,
+	buf: Vec<Option<Intent>>,
+}
 #[derive(Clone)]
 struct Active {
 	side: Side,
@@ -138,15 +141,6 @@ enum State {
 	Active(Active),
 }
 
-/// SPL's `ExecutorState` + `Degrader`, one for one. Entry mid-prices off the book (not the last
-/// trade — on thin instruments that lags by whole percents and centres the envelope on a phantom);
-/// every book tick then reduces one weighted ATR-envelope lambda against the trailing term.
-#[derive(Clone, Default)]
-pub struct Deprecator {
-	state: State,
-	last_atr: Option<f64>,
-	buf: Vec<Option<Intent>>,
-}
 impl Cell for Deprecator {
 	type Out<'t> = &'t [Option<Intent>];
 }

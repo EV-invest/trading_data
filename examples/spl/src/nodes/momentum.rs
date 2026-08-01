@@ -16,6 +16,15 @@ pub const fn mom_cap(tf: Timeframe) -> Horizon {
 	Horizon::Span(Timeframe(MOM_PERIODS * tf.0))
 }
 
+/// Sharpe on the timeframe `indies.momentum.fast` names. Both wired series are candidate inputs,
+/// which is why both are deps; the config picks which one.
+///
+/// `None` means the one thing it should: the window is not full, or its returns were all identical.
+/// Pine's second, slower leg is not ported — see the commit that removed it.
+#[derive(Clone)]
+pub struct Momentum {
+	buf: Vec<Option<f64>>,
+}
 /// Sharpe over a window of `lookback + 1` closes, per `bullmart_sri.pine`. `None` when stdev is
 /// zero — all returns identical is degenerate, not corrupt.
 fn sharpe(window: &[Bar]) -> Option<f64> {
@@ -34,15 +43,6 @@ fn sharpe(window: &[Bar]) -> Option<f64> {
 	Some((mean * PINE_PERIODS_PER_YEAR - strategy().indies.momentum.risk_free_rate) / stdev_ann)
 }
 
-/// Sharpe on the timeframe `indies.momentum.fast` names. Both wired series are candidate inputs,
-/// which is why both are deps; the config picks which one.
-///
-/// `None` means the one thing it should: the window is not full, or its returns were all identical.
-/// Pine's second, slower leg is not ported — see the commit that removed it.
-#[derive(Clone)]
-pub struct Momentum {
-	buf: Vec<Option<f64>>,
-}
 /// `graph!` builds through `Default` and `main` builds the graph right after `Config::load`, so this
 /// is the first instant a config naming a series no momentum window is retained over can be
 /// rejected — rather than at the first close of whichever series *is* wired.
