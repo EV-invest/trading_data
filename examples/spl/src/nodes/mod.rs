@@ -13,7 +13,8 @@
 //! — needed only because a msgbus has no static knowledge of who reads what. Here `type Deps` *is*
 //! that list, and the compiler checks it. So there are no tiers: every node names exactly the inputs
 //! it reads, and warmth is per-input rather than the union of a tier's. What `config.nix` still
-//! decides is *which screener runs*, not which indie is registered to be readable.
+//! decides is the screener's *thresholds*; which arm runs is [`Screener`], because `Node::When` is a
+//! type and there is no runtime gate selection.
 
 /// `Flat` + `Bump` for a record whose observed slots are plain `f64` fields, in the order given.
 macro_rules! flat_fields {
@@ -97,6 +98,11 @@ pub use rsi_screener::RsiScreener;
 pub use spread::Spread;
 pub use std_screener::StdScreener;
 use trading_data::{Armed, Book, BookAnchors, BookDeltas, BookShape, Buffer, DeltaFrame, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
+
+/// The compiled screener — the gate `Classify` and everything under it hangs dormant off. The other
+/// arm stays written and unwired: naming it here is the whole of switching, and nothing pulls the
+/// indies it reads on its behalf meanwhile.
+pub type Screener = StdScreener;
 pub use volume_1h::Volume1h;
 pub use volume_1m::Volume1m;
 pub use volume_4h::Volume4h;
@@ -146,8 +152,7 @@ trading_data::graph! {
 	oi_delta_5m: OiDelta5m,
 	oi_delta_15m: OiDelta15m,
 	market_cap: MarketCap,
-	rsi_screener: RsiScreener,
-	std_screener: StdScreener,
+	std_screener: Screener,
 	classify: Classify,
 	armed: Armed<Deprecator>,
 	book: Book,

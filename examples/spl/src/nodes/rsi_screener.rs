@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Folding, Horizon, Node, slice_nudge};
+use trading_data::{Cell, DepOuts, Folding, Gate, Horizon, Node, value_nudge};
 
 use super::{
 	bar::Bar1m,
@@ -9,14 +9,14 @@ use super::{
 use crate::config::{Screen, strategy};
 
 /// Top gainer: overbought on 4h while up on the day. [`Bar1m`] is the screening clock, so a
-/// verdict is reached once a minute exactly as in SPL — the rate comes from this node's own inputs.
+/// verdict is reached once a minute exactly as in SPL — the rate comes from this node's own inputs,
+/// and a tick that closed no bar has screened nothing.
 #[derive(Clone, Default)]
 pub struct RsiScreener {
 	rsi: Option<RsiValues>,
-	buf: Vec<Option<bool>>,
 }
 impl Cell for RsiScreener {
-	type Out<'t> = &'t [Option<bool>];
+	type Out<'t> = bool;
 }
 impl Node for RsiScreener {
 	/// The cached RSI level stands until the next publish, however many minutes that takes.
@@ -24,21 +24,13 @@ impl Node for RsiScreener {
 
 	fn advance<'t>(&'t mut self, (bars, change_1d, rsi): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert_eq!(bars.len(), change_1d.len(), "Bar1m/Change1d rate mismatch");
-		self.buf.clear();
-		// Inert unless configured, but still rate-preserving: `Classify` reads the two screeners as one
-		// signal, so an empty slice here would read as a rate mismatch rather than as "no hits".
 		let Screen::Rsi(c) = strategy().screen else {
-			self.buf.resize(bars.len(), None);
-			return &self.buf;
+			panic!("the graph is wired for RsiScreener; config.nix names {:?}", strategy().screen)
 		};
 		latest(&mut self.rsi, rsi, bars.len());
-		for change in change_1d {
-			self.buf.push(match (change, self.rsi) {
-				(Some(change), Some(rsi)) => Some(rsi.actual > c.rsi_threshold && *change > *c.price_percent),
-				_ => None,
-			});
-		}
-		&self.buf
+		let Some(rsi) = self.rsi else { return false };
+		rsi.actual > c.rsi_threshold && change_1d.iter().flatten().any(|change| *change > *c.price_percent)
 	}
 }
-slice_nudge!(RsiScreener, Option<bool>);
+impl Gate for RsiScreener {}
+value_nudge!(RsiScreener);

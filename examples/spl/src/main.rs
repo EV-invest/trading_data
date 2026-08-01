@@ -26,7 +26,7 @@ use trading_data::{BatchWindow, Exact, Feed, LatencyConfig, Replay, Ts, read_mc,
 use trading_data_core::{ExchangeName, Side, Venue};
 use trading_data_spl::{
 	asset,
-	config::{self, Config, Screen},
+	config::{self, Config},
 	day_bounds, ensure_lanes,
 	nodes::{Bar1m, BookTopSnap, Graph, Intent, TrailingStop},
 	symbol, trading_days, ui,
@@ -172,8 +172,7 @@ async fn main() {
 					day.first_momentum_ns.get_or_insert(ts_ns);
 					top(&mut day.max_sharpe_fast, *m);
 				}
-				day.rsi_hits += out.rsi_screener.iter().flatten().filter(|h| **h).count() as u64;
-				day.std_hits += out.std_screener.iter().flatten().filter(|h| **h).count() as u64;
+				day.std_hits += out.std_screener as u64;
 				day.classifications += out.classify.is_some() as u64;
 
 				day.top_reads += out.book_top.len() as u64;
@@ -202,9 +201,12 @@ async fn main() {
 		ui::finish_run(&pb, format!("{} ticks, {} book reads, {} episodes{}", day.ticks, day.top, day.episodes, day.violations_msg()));
 
 		println!(
-			"traded: rsi={} price={} momentum={} top={}/{} rsi_hits={} std_hits={} classifications={} episodes={} intents={}",
-			day.rsi_snaps, day.price_snaps, day.momentum_snaps, day.top, day.top_reads, day.rsi_hits, day.std_hits, day.classifications, day.episodes, day.intents
+			"traded: rsi={} price={} momentum={} top={}/{} std_hits={} classifications={} episodes={} intents={}",
+			day.rsi_snaps, day.price_snaps, day.momentum_snaps, day.top, day.top_reads, day.std_hits, day.classifications, day.episodes, day.intents
 		);
+		// The screener *is* `Classify`'s gate, so the two counts are the same event read twice — once at
+		// its source and once past the gate. Divergence means the gate fired out of step with it.
+		flag!(day, day.classifications == day.std_hits, "{} classifications against {} screener hits", day.classifications, day.std_hits);
 		// What the window bought, and what it cost: the FD observer runs per node per tick, so wall-clock
 		// is the binding constraint on how fine `MEASURED_WINDOW` can go.
 		println!("{} ticks in {:.1}s at a {MEASURED_WINDOW_MS}ms batch window", day.ticks, began.elapsed().as_secs_f64());
@@ -236,16 +238,12 @@ async fn main() {
 			seen(day.max_sharpe_fast)
 		);
 
-		// Only the configured screener's own inputs have to warm. Checking all three would re-impose
-		// the union the shallow tier used to demand — under `Screen::Std` nothing reads `Rsi` at all.
-		let (needed, warm) = match cfg.strategy.screen {
-			Screen::Rsi(_) => ("price+rsi", day.price_snaps > 0 && day.rsi_snaps > 0),
-			Screen::Std(_) => ("momentum", day.momentum_snaps > 0),
-		};
+		// Only the compiled screener's own inputs have to warm. Checking all three would re-impose the
+		// union the shallow tier used to demand — under `StdScreener` nothing reads `Rsi` at all.
 		flag!(
 			day,
-			warm,
-			"the configured screener's inputs ({needed}) never warmed in the trading window: rsi={} price={} momentum={}",
+			day.momentum_snaps > 0,
+			"the compiled screener's inputs (momentum) never warmed in the trading window: rsi={} price={} momentum={}",
 			day.rsi_snaps,
 			day.price_snaps,
 			day.momentum_snaps
@@ -303,7 +301,6 @@ struct Day {
 	blind_over_10s: u64,
 	blind_total_ms: i64,
 	max_tape_divergence: Option<f64>,
-	rsi_hits: u64,
 	std_hits: u64,
 	classifications: u64,
 	ticks: u64,

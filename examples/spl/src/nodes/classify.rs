@@ -2,7 +2,7 @@ use core::fmt;
 
 use trading_data::{Cell, DepOuts, Glance, Node, value_nudge};
 
-use super::{rsi_screener::RsiScreener, std_screener::StdScreener};
+use super::Screener;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Category {
@@ -37,20 +37,21 @@ impl Glance for Classified {
 	}
 }
 
-/// SPL runs exactly one screener per config; both are wired here, so a hit on either classifies.
-/// Classification is a per-hit act rather than a series, so the ticks nothing fired on publish
-/// `None`, which is the same channel a gate would have latched.
+/// The seat of the classification subtree, and the anchor it hangs off: [`Screener`] is its gate, so
+/// everything that grows here is dormant on the ticks nothing fired, and `shadowed` will force each
+/// new node onto that same gate as it appears. Reads nothing — the gate *is* the hit.
+//TODO: real selection over the full distribution.
 #[derive(Clone, Copy, Default)]
 pub struct Classify;
 impl Cell for Classify {
 	type Out<'t> = Option<Classified>;
 }
 impl Node for Classify {
-	type Deps = (RsiScreener, StdScreener);
+	type Deps = ();
+	type When = (Screener,);
 
-	fn advance<'t>(&'t mut self, (rsi, std): DepOuts<'t, Self>) -> Self::Out<'t> {
-		assert_eq!(rsi.len(), std.len(), "RsiScreener/StdScreener rate mismatch");
-		rsi.iter().chain(std).any(|v| *v == Some(true)).then_some(Classified {
+	fn advance<'t>(&'t mut self, (): DepOuts<'t, Self>) -> Self::Out<'t> {
+		Some(Classified {
 			probability: 1.0,
 			category: Category::None,
 			quality: Quality::A,

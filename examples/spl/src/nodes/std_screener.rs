@@ -1,32 +1,29 @@
-use trading_data::{Cell, DepOuts, Folding, Horizon, Node, slice_nudge};
+use trading_data::{Cell, DepOuts, Folding, Gate, Horizon, Node, value_nudge};
 
 use super::{bar::Bar1m, latest, momentum::Momentum};
 use crate::config::{Screen, strategy};
 
-/// Pine's overvalued zone at momentum's leg.
+/// Pine's overvalued zone at momentum's leg. The verdict is per *closed 1m bar*, so a tick that
+/// closed none has screened nothing — which is the empty-batch guard below, and the reason this is
+/// not a bare read of the cached level.
 #[derive(Clone, Default)]
 pub struct StdScreener {
 	momentum: Option<f64>,
-	buf: Vec<Option<bool>>,
 }
 impl Cell for StdScreener {
-	type Out<'t> = &'t [Option<bool>];
+	type Out<'t> = bool;
 }
 impl Node for StdScreener {
 	/// The cached momentum level stands until the next publish, however many minutes that takes.
 	type Deps = (Bar1m, Folding<Momentum, { Horizon::Unbounded }>);
 
 	fn advance<'t>(&'t mut self, (bars, momentum): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.buf.clear();
-		// Inert unless configured, but still rate-preserving: `Classify` reads the two screeners as one
-		// signal, so an empty slice here would read as a rate mismatch rather than as "no hits".
 		let Screen::Std(c) = strategy().screen else {
-			self.buf.resize(bars.len(), None);
-			return &self.buf;
+			panic!("the graph is wired for StdScreener; config.nix names {:?}", strategy().screen)
 		};
 		latest(&mut self.momentum, momentum, bars.len());
-		self.buf.resize(bars.len(), self.momentum.map(|m| m > c.fast_overvalued));
-		&self.buf
+		!bars.is_empty() && self.momentum.is_some_and(|m| m > c.fast_overvalued)
 	}
 }
-slice_nudge!(StdScreener, Option<bool>);
+impl Gate for StdScreener {}
+value_nudge!(StdScreener);
