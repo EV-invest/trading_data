@@ -74,8 +74,6 @@ mod deprecator;
 #[macro_use]
 mod imbalance;
 #[macro_use]
-mod market_cap;
-#[macro_use]
 mod momentum;
 #[macro_use]
 mod oi_delta;
@@ -101,7 +99,6 @@ pub use change_3m::Change3m;
 pub use classify::{Category, Classified, Classify, Quality};
 pub use deprecator::{Deprecator, Intent, TrailingStop};
 pub use imbalance::Imbalance;
-pub use market_cap::{MarketCap, McSnap};
 pub use momentum::{MOM_PERIODS, Momentum, mom_cap};
 pub use oi_delta::{OiDelta5m, OiDelta15m};
 pub use rsi::{AvgGain, AvgLoss, Rsi, RsiDelta, RsiSeries};
@@ -143,7 +140,7 @@ trading_data::graph! {
 	// a legitimate reason for a node to exist and a bad one to leave implicit.
 	observe {
 		bar_1m: Bar1m, bar_5m: Bar5m, change_1d: Change1d, change_3m: Change3m, volume_1m: Volume1m, volume_1h: Volume1h, volume_4h: Volume4h, rsi_delta: RsiDelta,
-		avg_gain: AvgGain, avg_loss: AvgLoss, rsi: Rsi, atr: Atr, momentum: Momentum, oi_delta_5m: OiDelta5m, oi_delta_15m: OiDelta15m, market_cap: MarketCap,
+		avg_gain: AvgGain, avg_loss: AvgLoss, rsi: Rsi, atr: Atr, momentum: Momentum, oi_delta_5m: OiDelta5m, oi_delta_15m: OiDelta15m,
 		std_screener: Screener, classify: Classify, armed: Armed<Deprecator>, book_top: BookTop, imbalance: Imbalance, spread: Spread
 	}
 }

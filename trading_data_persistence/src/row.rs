@@ -683,23 +683,28 @@ impl Glance for Oi {
 }
 
 impl Flat for Mc {
-	const DIMS: &'static [usize] = &[1];
+	const DIMS: &'static [usize] = &[2];
 
 	fn flat(&self, out: &mut [f64]) -> bool {
-		out[0] = self.market_cap;
+		out.copy_from_slice(&[self.market_cap, self.rank.map_or(f64::NAN, f64::from)]);
 		true
 	}
 }
 
 impl Bump for Mc {
-	fn bump(self, _slot: usize, h: f64) -> (Self, f64) {
-		(
-			Self {
-				market_cap: self.market_cap + h,
-				..self
-			},
-			h,
-		)
+	fn bump(self, slot: usize, h: f64) -> (Self, f64) {
+		// a rank is a label, not a quantity: its column stays NaN rather than a fabricated zero.
+		match slot {
+			0 => (
+				Self {
+					market_cap: self.market_cap + h,
+					..self
+				},
+				h,
+			),
+			1 => (self, 0.0),
+			s => panic!("Mc has two slots, bumped {s}"),
+		}
 	}
 }
 
@@ -730,5 +735,9 @@ slice_nudge!(OiRoot, Oi);
 pub struct McRoot;
 impl Cell for McRoot {
 	type Out<'t> = &'t [Mc];
+
+	/// What the lane *is*, for everything that reads the graph rather than writes it. The type keeps
+	/// the `…Root` spelling it shares with [`OiRoot`].
+	const NAME: &'static str = "MarketCap";
 }
 slice_nudge!(McRoot, Mc);
