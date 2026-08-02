@@ -22,8 +22,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use exec_viz::{Viz, api_types::BarOut};
-use trading_data::{BatchWindow, Exact, Feed, LatencyConfig, Replay, Ts, read_mc, read_oi, required_lanes};
-use trading_data_core::{ExchangeName, Side, Venue};
+use trading_data::{BatchWindow, Exact, ExchangeName, Feed, LatencyConfig, Replay, Side, Ts, Venue, read_mc, read_oi, required_lanes};
 use trading_data_spl::{
 	asset,
 	config::{self, Config},

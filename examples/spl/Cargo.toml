@@ -22,9 +22,6 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 trading_data.workspace = true
-trading_data_core.workspace = true
-# graph! expands to `::trading_data_dag` paths, so consumers need it in scope.
-trading_data_dag.workspace = true
 ureq.workspace = true
 v_utils.workspace = true
 zip.workspace = true

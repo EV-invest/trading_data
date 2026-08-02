@@ -1,6 +1,7 @@
 //! The macros that turn `type Deps` into a frame. `#[node]` leaves each cell's dep tokens where a
 //! macro can read them, `graph!` states the roots and the outputs, and `__graph_resolve!` walks the
-//! one from the other. Generated code targets `::trading_data_dag`.
+//! one from the other. Generated code reaches the dag through whichever path the invoking crate has
+//! it under — resolved once, in `graph!`, and carried in the driver state from there.
 
 use proc_macro::TokenStream;
 

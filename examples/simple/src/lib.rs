@@ -12,8 +12,7 @@ use std::{
 	str::FromStr as _,
 };
 
-use trading_data::{Catalog, Feather, Row as _, Trade, TradeBuf, read_trades};
-use trading_data_core::{ExchangeName, Instrument, Pair, Precision, PrecisionPriceQty, Side, Symbol, Ts, Venue};
+use trading_data::{Catalog, ExchangeName, Feather, Instrument, Pair, Precision, PrecisionPriceQty, Row as _, Side, Symbol, Trade, TradeBuf, Ts, Venue, read_trades};
 
 const DAY: &str = "2025-01-03";
 const BYBIT_SYMBOL: &str = "TAOUSDT";

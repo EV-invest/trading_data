@@ -10,10 +10,6 @@ use crate::{
 	ty::{self, Wrap},
 };
 
-fn dag() -> TokenStream {
-	quote!(::trading_data_dag)
-}
-
 enum Answer {
 	Node {
 		emit: bool,
@@ -121,7 +117,8 @@ fn ask(st: &State, shim: &TokenStream, cell: &Type) -> TokenStream {
 		let s = ty::shim_path(&a, "__td_node_").unwrap_or_else(|_| quote!(crate::__td_not_a_cell));
 		quote!({ #s } { #a })
 	});
-	quote! { #shim ! { ::trading_data_dag::__graph_resolve, [ #(#args),* ], @state #st } }
+	let dag = &st.cfg.dag;
+	quote! { #shim ! { #dag::__graph_resolve, [ #(#args),* ], @state #st } }
 }
 
 /// Walks one edge. `Ok(Some(..))` is a question only the compiler can answer: emit it and pause.
@@ -131,6 +128,8 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 	let key = ty::norm(&cell);
 
 	if let Wrap::Buf(reach) = wrap {
+		let dag = &st.cfg.dag;
+		let reach = reach.unwrap_or_else(|| quote!(#dag::Horizon::Unit));
 		let bkey = format!("Buffer<{key}>");
 		match st.bufs.iter_mut().find(|b| b.key == bkey) {
 			Some(b) => b.reaches.push(reach),
@@ -173,7 +172,8 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 		let inner = ty::sole_arg(&cell).ok_or_else(|| syn::Error::new(Span::call_site(), "`Armed` without an episode"))?;
 		let shim = ty::shim_path(&inner, "__td_trigger_")?;
 		st.awaiting = Awaiting::Trigger(key, cell.to_token_stream());
-		return Ok(Some(quote! { #shim ! { ::trading_data_dag::__graph_resolve, [], @state #st } }));
+		let dag = &st.cfg.dag;
+		return Ok(Some(quote! { #shim ! { #dag::__graph_resolve, [], @state #st } }));
 	}
 
 	st.awaiting = Awaiting::Node(key, cell.to_token_stream());
@@ -220,8 +220,8 @@ fn field_of(key: &str) -> Ident {
 }
 
 fn emit(st: State) -> syn::Result<TokenStream> {
-	let dag = dag();
 	let c = &st.cfg;
+	let dag = &c.dag;
 	let (vis, graph, batches, out) = (&c.vis, &c.graph, &c.batches, &c.out);
 
 	let rfields: Vec<&Ident> = c.roots.iter().map(|r| &r.field).collect();

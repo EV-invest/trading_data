@@ -145,6 +145,8 @@ pub enum Awaiting {
 }
 
 pub struct Cfg {
+	/// The path the invoking crate reaches the dag under, resolved once by `graph!`.
+	pub dag: TokenStream,
 	pub vis: TokenStream,
 	pub graph: Ident,
 	pub batches: Ident,
@@ -168,6 +170,7 @@ pub struct State {
 
 impl State {
 	pub fn parse(r: &mut Reader) -> State {
+		let dag = r.brace();
 		let vis = r.brace();
 		let graph = r.ident();
 		let batches = r.ident();
@@ -246,6 +249,7 @@ impl State {
 
 		State {
 			cfg: Cfg {
+				dag,
 				vis,
 				graph,
 				batches,
@@ -266,6 +270,7 @@ impl State {
 impl ToTokens for State {
 	fn to_tokens(&self, ts: &mut TokenStream) {
 		let c = &self.cfg;
+		ts.append(brace(&c.dag));
 		ts.append(brace(&c.vis));
 		ts.append(c.graph.clone());
 		ts.append(c.batches.clone());

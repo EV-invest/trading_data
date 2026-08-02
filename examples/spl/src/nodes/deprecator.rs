@@ -1,7 +1,6 @@
 use core::fmt;
 
-use trading_data::{Armed, Cell, Emit, EmitOuts, Episode, Episodic, Flat, Gating, Glance, Plot, TriggerOut, node, slice_nudge};
-use trading_data_core::Side;
+use trading_data::{Armed, Cell, Emit, EmitOuts, Episode, Episodic, Flat, Gating, Glance, Plot, Side, TriggerOut, node, slice_nudge};
 
 use super::{
 	atr::Atr,

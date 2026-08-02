@@ -59,6 +59,7 @@ insta = "^1"
 jiff = { version = "^0.2", features = ["serde"] }
 miette = { version = "^7.6.0", features = ["fancy", "serde", "syntect-highlighter"] }
 parquet = { version = "59", features = ["arrow", "snap", "zstd"] }
+proc-macro-crate = "^3"
 proc-macro2 = "^1"
 quote = "^1"
 serde = { version = "^1", features = ["derive"] }

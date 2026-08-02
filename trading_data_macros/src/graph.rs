@@ -1,7 +1,8 @@
 //! `graph!` — the declaration. It states the roots, the outputs and what else is worth reading; the
 //! node set, its order, its buffers and their sizes are the driver's job.
 
-use proc_macro2::TokenStream;
+use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, quote};
 use syn::{
 	Ident, Token, Type, Visibility, braced, bracketed,
@@ -115,8 +116,29 @@ impl Parse for GraphDef {
 	}
 }
 
+/// Where the invoking crate reaches the dag: either it depends on `trading_data_dag` outright, or on
+/// the facade, which re-exports it. Resolved here because `graph!` is the one entry point — from here
+/// it rides in the driver state, which a `macro_rules!` shim can pass back but not re-derive.
+fn dag_path() -> syn::Result<TokenStream> {
+	let reach = |name: &str, item: TokenStream| match crate_name(name) {
+		Ok(FoundCrate::Itself) => Some(quote!(crate #item)),
+		Ok(FoundCrate::Name(n)) => {
+			let n = Ident::new(&n, Span::call_site());
+			Some(quote!(::#n #item))
+		}
+		Err(_) => None,
+	};
+	reach("trading_data_dag", quote!()).or_else(|| reach("trading_data", quote!(::__dag))).ok_or_else(|| {
+		syn::Error::new(
+			Span::call_site(),
+			"`graph!` expands to dag paths: this crate depends on neither `trading_data` nor `trading_data_dag`",
+		)
+	})
+}
+
 pub fn graph(input: TokenStream) -> syn::Result<TokenStream> {
 	let def: GraphDef = syn::parse2(input)?;
+	let dag = dag_path()?;
 
 	let queue: Vec<Dep> = def
 		.named
@@ -131,6 +153,7 @@ pub fn graph(input: TokenStream) -> syn::Result<TokenStream> {
 
 	let st = State {
 		cfg: Cfg {
+			dag: dag.clone(),
 			vis: def.vis.to_token_stream(),
 			graph: def.graph,
 			batches: def.batches,
@@ -161,5 +184,5 @@ pub fn graph(input: TokenStream) -> syn::Result<TokenStream> {
 		queue,
 	};
 
-	Ok(quote! { ::trading_data_dag::__graph_resolve! { @state #st } })
+	Ok(quote! { #dag::__graph_resolve! { @state #st } })
 }

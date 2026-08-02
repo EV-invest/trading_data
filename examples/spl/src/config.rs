@@ -9,8 +9,7 @@
 use std::{path::Path, process::Command, sync::OnceLock};
 
 use serde::Deserialize;
-use trading_data::LatencyConfig;
-use trading_data_core::PrecisionPriceQty;
+use trading_data::{LatencyConfig, PrecisionPriceQty};
 use v_utils::{Timeframe, macros::CompactFormatNamed, percent::PercentU};
 
 /// Panics if read before [`Config::load`] — a node running without its configuration is a wiring

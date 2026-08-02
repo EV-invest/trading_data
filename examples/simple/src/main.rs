@@ -10,8 +10,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use exec_viz::{Viz, api_types::BarOut};
-use trading_data::{Bar1m, BatchWindow, Exact, Feed, Fire, LatencyConfig, Observer, Replay, required_lanes};
-use trading_data_core::ExchangeName;
+use trading_data::{Bar1m, BatchWindow, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, Replay, required_lanes};
 use trading_data_simple::{day_bounds, ensure_catalog, nodes::Graph, symbol};
 
 /// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a

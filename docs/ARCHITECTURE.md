@@ -21,7 +21,8 @@ trading_data_core           the shared parse boundary both v_exchanges and persi
                             columnar lane holders, the Book fold + ShadowBook, and (orphan rules) their dag impls
 trading_data_persistence    arrow/parquet — catalog, lanes, feather writer, and `sync`: the central replay/live weaver
 trading_data_macros         proc-macro home of `#[node]` and `graph!`: the first leaves a node's `Deps` where a
-                            macro can read them, the second walks them into the `step` chain over `::trading_data_dag`
+                            macro can read them, the second walks them into the `step` chain over whichever path the
+                            invoking crate reaches the dag under — its own, or the facade's `__dag`
         ▲          ▲          ▲
         └──────────┴──────────┘
              trading_data            facade/prelude; `required_lanes<G>()` maps a graph's dep tree to source lanes
@@ -30,6 +31,9 @@ trading_data_macros         proc-macro home of `#[node]` and `graph!`: the first
     trading_data_live_example (examples/live)   real Bybit trades+book recorded then replayed identically
     trading_data_spl (examples/spl)     a whole strategy (scam_pump_liqs); its bus plumbing becomes `type Deps`
 ```
+
+What each arrow may and may not be — and why an example is allowed exactly one of them — is stated
+in [docs/spec/boundaries.md](spec/boundaries.md).
 
 `trading_data_core` sits below both persistence and the external `v_exchanges` bridge, so a live ws
 `BatchTrades` extends the lane columns and the parquet writer in one pass — no exchange type leaks

@@ -3,6 +3,10 @@
 
 use std::any::TypeId;
 
+// r[impl boundaries.examples.facade-only]
+pub use trading_data_core::{Asset, ExchangeName, Instrument, Pair, Symbol};
+#[doc(hidden)]
+pub use trading_data_dag as __dag;
 pub use trading_data_dag::{
 	__graph_resolve, Abs, Add, Armed, Ast, Buffer, Buffering, Bump, Cell, Cons, Const, DepOuts, Diff, Div, Emit, EmitOuts, Episode, Episodic, Ex, Expr, Fire, Flat, Folding, Gate, Gating,
 	Glance, Guide, Hist, Horizon, Ink, Latch, Mul, Neg, Nil, Node, Nudge, Observer, Plot, Roots, Series, Square, Stamped, Sub, Sum, Symbolic, Trace, TriggerOut, Var, Vars, abs, constant,

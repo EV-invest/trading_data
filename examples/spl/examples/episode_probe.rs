@@ -3,8 +3,7 @@
 
 use std::path::PathBuf;
 
-use trading_data::{BatchWindow, Exact, Feed as _, LatencyConfig, Replay, required_lanes};
-use trading_data_core::ExchangeName;
+use trading_data::{BatchWindow, Exact, ExchangeName, Feed as _, LatencyConfig, Replay, required_lanes};
 use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, symbol, trading_days};
 
 fn main() {

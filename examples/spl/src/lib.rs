@@ -26,9 +26,9 @@ use std::{
 
 use indicatif::{MultiProgress, ProgressBar};
 use trading_data::{
-	Aggregate, BatchWindow, BookShape, BookUpdate, Catalog, Clock, Exact, Feather, Feed as _, Live, Mc, Oi, Row as _, Sink, Span, Trade, TradeBuf, read_mc, read_oi, read_trades,
+	Aggregate, Asset, BatchWindow, BookShape, BookUpdate, Catalog, Clock, Exact, ExchangeName, Feather, Feed as _, Instrument, Live, Local, Mc, Oi, Pair, PrecisionPriceQty, Row as _, Side,
+	Sink, Span, Symbol, Trade, TradeBuf, Ts, Venue, read_mc, read_oi, read_trades,
 };
-use trading_data_core::{Asset, ExchangeName, Instrument, Local, Pair, PrecisionPriceQty, Side, Symbol, Ts, Venue};
 
 use crate::config::Situation;
 

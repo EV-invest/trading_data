@@ -2,8 +2,7 @@
 //! notional per trade), BookFlow (running signed level qty, market activity only) and Spread off
 //! the folded `Book`. 1m bars won't close in 15s, so the proof rides on these per-event outputs.
 
-use trading_data::{BookAnchors, BookDeltas, BookShape, Cell, DeltaFrame, Emit, EmitOuts, Folding, Horizon, Lanes, TradeCols, Trades, node, slice_nudge};
-use trading_data_core::Side;
+use trading_data::{BookAnchors, BookDeltas, BookShape, Cell, DeltaFrame, Emit, EmitOuts, Folding, Horizon, Lanes, Side, TradeCols, Trades, node, slice_nudge};
 
 /// Cumulative volume delta: running Σ signed notional, one element per trade.
 #[derive(Clone, Default)]

@@ -6,9 +6,8 @@
 use core::fmt;
 
 use trading_data::{
-	Buffering, Bump, Cell, Emit, EmitOuts, Exact, Expr, Flat, Folding, Glance, Horizon, Lanes, RsiSpec, Stamped, Symbolic, TradeCols, Trades, Vars, constant, node, slice_nudge,
+	Buffering, Bump, Cell, Emit, EmitOuts, Exact, Expr, Flat, Folding, Glance, Horizon, Lanes, RsiSpec, Side, Stamped, Symbolic, TradeCols, Trades, Vars, constant, node, slice_nudge,
 };
-use trading_data_core::Side;
 
 // the graph reaches every cell through a shim keyed on its name, and a bare `use` leaves no shim
 // behind — so the two series this example imports are aliased rather than imported.

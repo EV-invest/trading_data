@@ -9,8 +9,10 @@ use syn::{GenericArgument, PathArguments, Type, TypePath};
 pub enum Wrap {
 	Bare,
 	Fold,
-	/// The reach the *engine* is asked to retain, which is what a `Buffer` field is sized on.
-	Buf(TokenStream),
+	/// The reach the *engine* is asked to retain, which is what a `Buffer` field is sized on. `None`
+	/// where the dep omitted it: the default is `Horizon::Unit`, and only the driver knows the dag's
+	/// path to spell it under.
+	Buf(Option<TokenStream>),
 	Gate,
 }
 
@@ -38,10 +40,7 @@ pub fn unwrap_dep(ty: &Type) -> (Type, Wrap) {
 	match seg.ident.to_string().as_str() {
 		"Folding" => (cell.clone(), Wrap::Fold),
 		"Gating" => (cell.clone(), Wrap::Gate),
-		"Buffering" | "Buffer" => match reach {
-			Some(h) => (cell.clone(), Wrap::Buf(h.to_token_stream())),
-			None => (cell.clone(), Wrap::Buf(quote!(::trading_data_dag::Horizon::Unit))),
-		},
+		"Buffering" | "Buffer" => (cell.clone(), Wrap::Buf(reach.map(ToTokens::to_token_stream))),
 		_ => (ty.clone(), Wrap::Bare),
 	}
 }

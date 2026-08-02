@@ -12,6 +12,7 @@ keywords = ["trading", "finance", "market-data"]
 categories = ["finance"]
 
 [dependencies]
+trading_data_core.workspace = true
 trading_data_dag.workspace = true
 trading_data_derivatives.workspace = true
 trading_data_persistence.workspace = true

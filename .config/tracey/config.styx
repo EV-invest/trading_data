@@ -7,8 +7,8 @@ specs (
     impls (
       {
         name rust
-        include (trading_data*/**/*.rs examples/**/*.rs)
-        exclude (**/target/**)
+        include (**/*.rs)
+        exclude (**/target/** tmp/**)
       }
     )
   }
