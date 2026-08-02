@@ -80,7 +80,7 @@ trading_data_persistence = { path = "trading_data_persistence", version = "0.3.0
 ui_test = "0.30"
 ureq = "^3"
 v_exchanges = { path = "../../v_exchanges/v_exchanges" }
-v_utils = { version = "^2.17.0", features = ["io", "macros", "cli", "distributions"] }
+v_utils = { version = "^2.17.1", features = ["io", "macros", "cli", "distributions"] }
 zip = "^8"
 
 [patch.crates-io]
@@ -88,6 +88,3 @@ zip = "^8"
 # `[patch]` is only honored from the top-level workspace, so the redirect has to live here or those
 # graphs resolve to an incompatible second copy of the shared parse-boundary types.
 trading_data_core = { path = "trading_data_core" }
-
-# drop once v_utils 2.17.0 (`Timeframe::from_str_const`) is published
-v_utils = { path = "/home/v/s/v_utils/v_utils" }
