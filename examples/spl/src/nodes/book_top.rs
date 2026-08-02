@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{BookDeltas, Cell, Emit, EmitOuts, Glance, Plot, node, slice_nudge};
+use trading_data::{BookDeltas, Cell, Emit, EmitOuts, Folding, Glance, Horizon, Plot, node, slice_nudge};
 
 use crate::DEPTH;
 
@@ -41,7 +41,9 @@ impl Cell for BookTop {
 }
 #[node]
 impl Emit for BookTop {
-	type Deps = (trading_data::Book, BookDeltas);
+	// the book is the accumulation of every delta since its anchor, so a gate closing over it would
+	// lose a state no later tick can rebuild — the reach says so, and nothing may shadow this.
+	type Deps = (Folding<trading_data::Book, { Horizon::Unbounded }>, BookDeltas);
 
 	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &["bid", "ask", "bid_depth$", "ask_depth$"],

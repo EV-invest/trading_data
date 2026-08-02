@@ -8,7 +8,9 @@
 mod bar;
 mod rsi_node;
 
-pub use bar::{Bar, Bar1h, Bar1m, Bar4h, Bar5m, Bar15m, closed_by};
+pub use bar::{
+	Bar, Bar1h, Bar1m, Bar4h, Bar5m, Bar15m, Ohlc, Ohlc1h, Ohlc1m, Ohlc4h, Ohlc5m, Ohlc15m, Vol1h, Vol1m, Vol4h, Vol5m, Vol15m, Volume, closed_by,
+};
 pub use rsi_node::{AvgGain, AvgLoss, Rsi, RsiDelta, RsiSpec, RsiValues};
 
 /// Wilder's running mean (Pine's `rma`).

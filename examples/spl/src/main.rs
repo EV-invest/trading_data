@@ -21,13 +21,13 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use exec_viz::{Viz, api_types::BarOut};
+use exec_viz::Viz;
 use trading_data::{BatchWindow, Exact, ExchangeName, Feed, LatencyConfig, Replay, Side, Ts, read_mc, read_oi, required_lanes};
 use trading_data_spl::{
 	asset,
 	config::{self, Config},
 	day_bounds, ensure_lanes,
-	nodes::{Bar1m, Graph, Intent, TrailingStop},
+	nodes::{Graph, Intent, TrailingStop},
 	symbol, trading_days, ui,
 };
 use v_utils::utils::tracing::{LogDestination, init_subscriber};
@@ -104,7 +104,9 @@ async fn main() {
 	// downstream can read an unwarmed value in the first place.
 	let lanes = required_lanes::<Graph>();
 	println!("required lanes: {lanes:?}");
-	let viz = Viz::new(Some("Bar:1m"), SCROLLBACK, 60_000);
+	// no candles: the 1m bar is no graph output, so nothing feeds `Viz::bar` and the series draws as
+	// an indicator pane like any other node.
+	let viz = Viz::new(None, SCROLLBACK, 60_000);
 	let mut recorder = viz.clone();
 	let mut day = Day::default();
 	let began = std::time::Instant::now();
@@ -140,17 +142,6 @@ async fn main() {
 				}
 				let out = graph.tick_obs(lanes.into(), recorder.at(ts_ns));
 
-				for b in out.bar_1m {
-					viz.bar(BarOut {
-						// a candle is keyed by its open.
-						ts_ms: (b.ts_close - Bar1m::TF.duration().as_nanos() as i64) / 1_000_000,
-						open: b.open,
-						high: b.high,
-						low: b.low,
-						close: b.close,
-						volume: b.vol_base * b.close,
-					});
-				}
 				for intent in out.deprecator {
 					day.check_intent(*intent);
 				}

@@ -1,6 +1,6 @@
-use trading_data::{Cell, Emit, EmitOuts, node, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, Gating, node, slice_nudge};
 
-use super::book_top::BookTop;
+use super::{Screener, book_top::BookTop};
 
 /// Bid-ask spread as a percentage of the bid.
 #[derive(Clone, Default)]
@@ -10,9 +10,10 @@ impl Cell for Spread {
 }
 #[node]
 impl Emit for Spread {
-	type Deps = (BookTop,);
+	type Deps = (Gating<Screener>, BookTop);
 
-	fn emit(&mut self, (top,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+	fn emit(&mut self, (hit, top): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+		assert!(hit, "a gating dep reads true inside `emit`");
 		for d in top {
 			out.push(d.map(|d| (d.best_ask - d.best_bid) / d.best_bid * 100.0));
 		}

@@ -5,8 +5,11 @@ error[E0080]: evaluation panicked: a gated node cannot hold its own reach: a clo
   |
     ::: $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
-LL | impl_arity!(A Ia a sa, B Ib b sb);
-  | --------------------------------- in this macro invocation
+LL | / impl_arity!(@all
+LL | |     A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg, H Ih h sh, J Ij j sj, K Ik k sk,
+LL | |     L Il l sl, M Im m sm, N In n sn
+LL | | );
+  | |_- in this macro invocation
   |
      = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `impl_arity` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -22,8 +25,11 @@ LL | |                     );
 LL | |                 }
   | |_________________^
 ...
-LL |   impl_arity!(A Ia a sa, B Ib b sb);
-  |   --------------------------------- in this macro invocation
+LL | / impl_arity!(@all
+LL | |     A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg, H Ih h sh, J Ij j sj, K Ik k sk,
+LL | |     L Il l sl, M Im m sm, N In n sn
+LL | | );
+  | |_- in this macro invocation
   |
      = note: this note originates in the macro `impl_arity` (in Nightly builds, run with -Z macro-backtrace for more info)
 

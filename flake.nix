@@ -46,15 +46,17 @@
         # from the sibling working tree (path deps span three checkouts), hence the `cd`.
         viz = pkgs.writeShellApplication {
           name = "viz";
-          runtimeInputs = with pkgs; [ rust git nix pkg-config openssl mold ];
+          runtimeInputs = with pkgs; [ rust git nix pkg-config openssl mold psmisc ];
           text = ''
             case "''${1:-spl}" in
-              simple) pkg=trading_data_simple ;;
-              live) pkg=trading_data_live_example ;;
-              spl) pkg=trading_data_spl ;;
+              simple) pkg=trading_data_simple; ordinal=1 ;;
+              live) pkg=trading_data_live_example; ordinal=2 ;;
+              spl) pkg=trading_data_spl; ordinal=3 ;;
               *) echo "usage: viz <simple|live|spl> [-- <app args>]" >&2; exit 1 ;;
             esac
             shift || true
+            # A previous run of ourselves, usually. Whoever it is, the port is ours.
+            fuser -k "$((${toString port_range_base} + ordinal))/tcp" 2>/dev/null || true
             repo="$(git rev-parse --show-toplevel)"
             EXEC_VIZ_WEB_DIR="$(cd "$repo/../exec_viz" && nix run .)"
             export EXEC_VIZ_WEB_DIR

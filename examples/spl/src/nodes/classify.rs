@@ -3,8 +3,7 @@ use core::fmt;
 use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Horizon, Ink, McRoot, Node, OiRoot, Plot, node, value_nudge};
 
 use super::{
-	Bar1m, Bar4h, Bar5m, Bar15m, Screener,
-	change_3m::SPAN_3M,
+	Bar1m, Bar4h, Bar5m, Change1d, Change3m, Imbalance, Screener, Spread, Volume1m, Volume1h,
 	momentum::{self, mom_cap},
 	oi_delta::OI_REACH,
 };
@@ -26,9 +25,21 @@ const MOM_MID_BAND: f64 = 2.0;
 const LARGE_CAP: f64 = 500e6;
 /// A cascade is a drop, not a move: the liquidations trait wants direction, where the OI ratio it
 /// pairs with is signless.
+//TODO: was read over 15m and is now read over 3m — untuned against the shorter span.
 const CASCADE_DROP: f64 = -7.0;
-/// The traits reading open interest and market cap weigh double the momentum bands: they see the
-/// position stack the bands can only infer from price.
+/// A day already this far extended has had its move.
+//TODO: untuned.
+const EXTENDED_1D: f64 = 20.0;
+/// A book this wide and leaning this hard is being worked rather than traded.
+//TODO: untuned.
+const WIDE_SPREAD: f64 = 0.1;
+//TODO: untuned.
+const SKEWED_BOOK: f64 = 0.5;
+/// The minute's notional against the standing hour's own per-minute rate.
+//TODO: untuned.
+const VOLUME_SURGE: f64 = 3.0;
+/// The traits reading open interest, market cap and the book weigh double the momentum bands: they
+/// see the position stack the bands can only infer from price.
 const TRAITS: &[Trait] = &[
 	Trait {
 		category: Category::None,
@@ -70,7 +81,25 @@ const TRAITS: &[Trait] = &[
 		category: Category::Liquidations,
 		relevance: 2,
 		invalidates_others: false,
-		hits: |s| matches!((s.oi_value, s.market_cap), (Some(oi), Some(mc)) if oi > mc / 3.0) && s.change_15m.is_some_and(|c| c < CASCADE_DROP),
+		hits: |s| matches!((s.oi_value, s.market_cap), (Some(oi), Some(mc)) if oi > mc / 3.0) && s.change_3m.is_some_and(|c| c < CASCADE_DROP),
+	},
+	Trait {
+		category: Category::Liquidations,
+		relevance: 1,
+		invalidates_others: false,
+		hits: |s| s.change_1d.is_some_and(|c| c.abs() > EXTENDED_1D),
+	},
+	Trait {
+		category: Category::Manipulation,
+		relevance: 2,
+		invalidates_others: false,
+		hits: |s| s.spread.is_some_and(|x| x > WIDE_SPREAD) && s.imbalance.is_some_and(|x| x.abs() > SKEWED_BOOK),
+	},
+	Trait {
+		category: Category::Momentum,
+		relevance: 2,
+		invalidates_others: false,
+		hits: |s| matches!((s.volume_1m, s.volume_1h), (Some(m), Some(h)) if h > 0.0 && m > h / 60.0 * VOLUME_SURGE),
 	},
 ];
 const LABELS: [&str; OUTCOMES] = [
@@ -169,7 +198,15 @@ struct Situation {
 	/// Bybit reports open interest in base coin; the market cap is USD, so the comparison needs it
 	/// valued.
 	oi_value: Option<f64>,
-	change_15m: Option<f64>,
+	change_1d: Option<f64>,
+	change_3m: Option<f64>,
+	volume_1m: Option<f64>,
+	volume_1h: Option<f64>,
+	/// Book-clocked, where the gate is trades-clocked: `None` on every hit the book did not tick on,
+	/// which is most of them.
+	//TODO: the book legs need a retained reading to be worth voting on.
+	imbalance: Option<f64>,
+	spread: Option<f64>,
 }
 
 /// One named situation, and what its presence is worth. `relevance` is a bare weight rather than a
@@ -214,10 +251,15 @@ impl Cell for Classify {
 impl Node for Classify {
 	type Deps = (
 		Gating<Screener>,
-		Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>,
-		Buffering<Bar15m, { Horizon::Span(Bar15m::TF) }>,
+		Bar1m,
 		Buffering<Bar5m, { mom_cap(Bar5m::TF) }>,
 		Buffering<Bar4h, { mom_cap(Bar4h::TF) }>,
+		Change1d,
+		Change3m,
+		Volume1m,
+		Volume1h,
+		Imbalance,
+		Spread,
 		Buffering<McRoot, { Horizon::Elems(1) }>,
 		Buffering<OiRoot, OI_REACH>,
 	);
@@ -232,17 +274,20 @@ impl Node for Classify {
 		..Plot::DEFAULT
 	}];
 
-	fn advance<'t>(&'t mut self, (hit, m1, m15, m5, h4, mc, oi): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (hit, m1, m5, h4, c1d, c3m, v1m, v1h, imb, spr, mc, oi): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(hit, "a gating dep reads true inside `advance`");
-		let market_cap = mc.all().last().map(|m| m.market_cap);
 		Some(Classified::vote(&Situation {
 			momentum: momentum::standing(m5, h4),
-			market_cap,
+			market_cap: mc.all().last().map(|m| m.market_cap),
 			// the freshest close there is: the ratio against a USD market cap is the reading, and a
 			// stale leg of it would move the threshold rather than the measurement.
-			oi_value: oi.all().last().zip(m1.all().last()).map(|(o, b)| o.oi * b.close),
-			// the last *closed* 15m bar, so the span the change is over is exactly the one named.
-			change_15m: m15.all().last().and_then(|b| (b.open > 0.0).then(|| (b.close - b.open) / b.open * 100.0)),
+			oi_value: oi.all().last().zip(m1.last()).map(|(o, b)| o.oi * b.close),
+			change_1d: c1d.last().copied().flatten(),
+			change_3m: c3m.last().copied().flatten(),
+			volume_1m: v1m.last().copied(),
+			volume_1h: v1h.last().copied().flatten(),
+			imbalance: imb.last().copied().flatten(),
+			spread: spr.last().copied().flatten(),
 		}))
 	}
 }
