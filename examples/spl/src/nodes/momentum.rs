@@ -66,9 +66,7 @@ impl Default for Momentum {
 		let tf = strategy().indies.momentum.fast;
 		assert!(
 			[M5, H4].contains(&tf),
-			"indies.momentum.fast = {tf}, over which no window is retained — the graph buffers {} and {}",
-			M5,
-			H4
+			"indies.momentum.fast = {tf}, over which no window is retained — the graph buffers {M5} and {H4}"
 		);
 		Self
 	}
