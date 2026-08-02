@@ -1366,6 +1366,13 @@ macro_rules! head {
 }
 
 macro_rules! impl_arity {
+	// every arity at once: impl the whole list, then recurse on its tail. Names are macro-local, so a
+	// suffix of the alphabet is as good a type list as a prefix.
+	(@all) => {};
+	(@all $Th:ident $Ih:ident $vh:ident $sh:ident $(, $T:ident $I:ident $v:ident $s:ident)*) => {
+		impl_arity!($Th $Ih $vh $sh $(, $T $I $v $s)*);
+		impl_arity!(@all $($T $I $v $s),*);
+	};
 	($($T:ident $I:ident $v:ident $s:ident),+) => {
 		impl<$($T: Cell),+> DepSet for ($($T,)+) {
 			type Outs<'t> = ($($T::Out<'t>,)+);
@@ -1440,14 +1447,13 @@ macro_rules! impl_arity {
 		}
 	};
 }
-impl_arity!(A Ia a sa);
-impl_arity!(A Ia a sa, B Ib b sb);
-impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc);
-impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd);
-impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se);
-impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg);
-impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg, H Ih h sh);
-impl_arity!(A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg, H Ih h sh, J Ij j sj);
+// 12 is std's ceiling, not ours: `Scratch` is a tuple of the deps' own scratches, and `Default` (like
+// the rest of std's tuple impls) stops at 12. `F` is skipped because it names the frame — type names,
+// unlike bindings, aren't macro-hygienic.
+impl_arity!(@all
+	A Ia a sa, B Ib b sb, C Ic c sc, D Id d sd, E Ie e se, G Ig g sg, H Ih h sh, J Ij j sj, K Ik k sk,
+	L Il l sl, M Im m sm, N In n sn
+);
 
 /// Advances `node` over `frame` and pushes its output — unless a [`Gating`] dep reads false, when
 /// nothing is pulled and the out is the node's [`Dark`] reading. The `Pull` bound is the engine's
