@@ -4,8 +4,8 @@
 [<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs&style=flat-square" height="20">](https://docs.rs/trading_data)
 ![Lines Of Code](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/valeratrades/b48e6f02c61942200e7d1e3eeabf9bcb/raw/trading_data-loc.json)
 <br>
-[<img alt="ci errors" src="https://img.shields.io/github/actions/workflow/status/valeratrades/trading_data/errors.yml?branch=main&style=for-the-badge&style=flat-square&label=errors&labelColor=420d09" height="20">](https://github.com/valeratrades/trading_data/actions?query=branch%3Amain) <!--NB: Won't find it if repo is private-->
-[<img alt="ci warnings" src="https://img.shields.io/github/actions/workflow/status/valeratrades/trading_data/warnings.yml?branch=main&style=for-the-badge&style=flat-square&label=warnings&labelColor=d16002" height="20">](https://github.com/valeratrades/trading_data/actions?query=branch%3Amain) <!--NB: Won't find it if repo is private-->
+[<img alt="ci errors" src="https://img.shields.io/github/actions/workflow/status/EV-invest/trading_data/errors.yml?branch=main&style=for-the-badge&style=flat-square&label=errors&labelColor=420d09" height="20">](https://github.com/EV-invest/trading_data/actions?query=branch%3Amain) <!--NB: Won't find it if repo is private-->
+[<img alt="ci warnings" src="https://img.shields.io/github/actions/workflow/status/EV-invest/trading_data/warnings.yml?branch=main&style=for-the-badge&style=flat-square&label=warnings&labelColor=d16002" height="20">](https://github.com/EV-invest/trading_data/actions?query=branch%3Amain) <!--NB: Won't find it if repo is private-->
 
 TODO
 <!-- markdownlint-disable -->
