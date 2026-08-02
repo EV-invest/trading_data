@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Horizon, Oi, OiRoot, Stamped as _, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Horizon, Oi, OiRoot, Stamped as _, node, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 /// Bybit's open-interest publish cadence: every leg reads the publish standing a whole number of
@@ -29,6 +29,7 @@ macro_rules! oi_deltas {
 
 			const NAME: &'static str = concat!("OiDelta:", $name);
 		}
+		#[node]
 		impl Emit for $ty {
 			type Deps = (Buffering<OiRoot, OI_REACH>,);
 

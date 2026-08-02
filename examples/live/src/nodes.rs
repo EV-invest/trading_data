@@ -2,7 +2,7 @@
 //! notional per trade), BookFlow (running signed level qty, market activity only) and Spread off
 //! the folded `Book`. 1m bars won't close in 15s, so the proof rides on these per-event outputs.
 
-use trading_data::{Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaFrame, Emit, EmitOuts, Folding, Horizon, Lanes, TradeCols, Trades, slice_nudge};
+use trading_data::{BookAnchors, BookDeltas, BookShape, Cell, DeltaFrame, Emit, EmitOuts, Folding, Horizon, Lanes, TradeCols, Trades, node, slice_nudge};
 use trading_data_core::Side;
 
 /// Cumulative volume delta: running Σ signed notional, one element per trade.
@@ -13,6 +13,7 @@ pub struct Cvd {
 impl Cell for Cvd {
 	type Out<'t> = &'t [f64];
 }
+#[node]
 impl Emit for Cvd {
 	/// A running sum reaches to the start of the run.
 	type Deps = (Folding<Trades, { Horizon::Unbounded }>,);
@@ -40,6 +41,7 @@ pub struct BookFlow {
 impl Cell for BookFlow {
 	type Out<'t> = &'t [f64];
 }
+#[node]
 impl Emit for BookFlow {
 	/// A running sum reaches to the start of the run.
 	type Deps = (Folding<BookDeltas, { Horizon::Unbounded }>,);
@@ -67,8 +69,9 @@ pub struct Spread;
 impl Cell for Spread {
 	type Out<'t> = &'t [Option<f64>];
 }
+#[node]
 impl Emit for Spread {
-	type Deps = (Book,);
+	type Deps = (trading_data::Book,);
 
 	fn emit(&mut self, (book,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.push(book.and_then(|b| {
@@ -84,13 +87,9 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape] };
 	out TickOut;
-	outputs { cvd, book_flow }
-	// The viz reads it and nothing else does.
-	observe { spread }
-	book: Book,
-	emit cvd: Cvd,
-	emit book_flow: BookFlow,
-	emit spread: Spread,
+	outputs { cvd: Cvd, book_flow: BookFlow }
+	// The viz reads the spread and nothing else does; `book` is what the live≡replay check compares.
+	observe { spread: Spread, book: trading_data::Book }
 }
 
 impl<'t> From<Lanes<'t>> for Batches<'t> {

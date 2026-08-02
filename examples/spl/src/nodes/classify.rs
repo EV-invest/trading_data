@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Horizon, Ink, McRoot, Node, OiRoot, Plot, value_nudge};
+use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Horizon, Ink, McRoot, Node, OiRoot, Plot, node, value_nudge};
 
 use super::{
 	Bar1m, Bar4h, Bar5m, Bar15m, Screener,
@@ -187,6 +187,7 @@ impl Glance for Classified {
 impl Cell for Classify {
 	type Out<'t> = Option<Classified>;
 }
+#[node]
 impl Node for Classify {
 	type Deps = (
 		Gating<Screener>,

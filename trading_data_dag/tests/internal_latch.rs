@@ -8,7 +8,7 @@
 //! `last`).
 
 use trading_data_dag::{
-	Armed, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Episodic, Flat, Gate, Gating, Glance, Horizon, Node, NodeMeta, TriggerOut, graph, shadowed, slice_nudge, value_nudge,
+	Armed, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Episodic, Flat, Gate, Gating, Glance, Horizon, Node, NodeMeta, TriggerOut, graph, node, shadowed, slice_nudge, value_nudge,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -46,35 +46,62 @@ impl Cell for Feed {
 }
 slice_nudge!(Feed, Pulse);
 
-/// A plain gate on the arm leg. Closing it mid-episode is the original ask: the latch must hold.
+/// Drives the gate on the arm leg. Closing it mid-episode is the original ask: the latch must hold.
+struct Sw;
+impl Cell for Sw {
+	type Out<'t> = &'t [bool];
+}
+slice_nudge!(Sw, bool);
+
 #[derive(Clone, Default)]
 struct Open(bool);
 impl Cell for Open {
 	type Out<'t> = bool;
 }
+#[node]
 impl Node for Open {
-	type Deps = ();
+	type Deps = (Sw,);
 
-	fn advance<'t>(&'t mut self, (): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (sw,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		if let Some(&b) = sw.last() {
+			self.0 = b;
+		}
 		self.0
 	}
 }
 impl Gate for Open {}
 
+/// Witnesses whether the arm leg ran: gated exactly as `Classify` is, and `None` is what dark looks
+/// like — a count that stops climbing is the only thing telling a skipped node from an empty one.
+#[derive(Clone, Default)]
+struct Beat(f64);
+impl Cell for Beat {
+	type Out<'t> = Option<f64>;
+}
+#[node]
+impl Node for Beat {
+	type Deps = (Gating<Open>,);
+
+	fn advance<'t>(&'t mut self, (open,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		assert!(open, "a gating dep reads true inside `advance`");
+		self.0 += 1.0;
+		Some(self.0)
+	}
+}
+value_nudge!(Beat);
+
 /// The arm leg: gated on `Open`, so it can go dark while the episode runs.
 #[derive(Clone, Default)]
-struct Classify {
-	calls: u32,
-}
+struct Classify;
 impl Cell for Classify {
 	type Out<'t> = Option<Pulse>;
 }
+#[node]
 impl Node for Classify {
 	type Deps = (Gating<Open>, Trig);
 
 	fn advance<'t>(&'t mut self, (open, trig): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(open, "a gating dep reads true inside `advance`");
-		self.calls += 1;
 		trig.first().copied()
 	}
 }
@@ -119,16 +146,15 @@ impl Glance for Phase {
 struct Deprec {
 	t: u32,
 	idle: bool,
-	calls: u32,
 }
 impl Cell for Deprec {
 	type Out<'t> = &'t [Option<Phase>];
 }
+#[node]
 impl Emit for Deprec {
 	type Deps = (Gating<Armed<Deprec>>, Classify, Feed);
 
 	fn emit(&mut self, (_, _, feed): EmitOuts<'_, Self>, out: &mut Vec<Option<Phase>>) {
-		self.calls += 1;
 		for _ in feed {
 			if self.idle {
 				out.push(None);
@@ -143,6 +169,7 @@ impl Emit for Deprec {
 }
 slice_nudge!(Deprec, Option<Phase>);
 
+#[node]
 impl Episodic for Deprec {
 	type Trigger = Classify;
 
@@ -154,17 +181,15 @@ impl Episodic for Deprec {
 /// A second leg gated on the same latch, and not the one that cuts it: commutation resets every
 /// gated field, not just the `Cut`.
 #[derive(Clone, Default)]
-struct Leg {
-	calls: u32,
-}
+struct Leg;
 impl Cell for Leg {
 	type Out<'t> = &'t [Option<Pulse>];
 }
+#[node]
 impl Emit for Leg {
 	type Deps = (Gating<Armed<Deprec>>, Feed);
 
 	fn emit(&mut self, (_, feed): EmitOuts<'_, Self>, out: &mut Vec<Option<Pulse>>) {
-		self.calls += 1;
 		out.extend(feed.iter().copied().map(Some));
 	}
 }
@@ -178,6 +203,7 @@ struct Ticks {
 impl Cell for Ticks {
 	type Out<'t> = f64;
 }
+#[node]
 impl Node for Ticks {
 	type Deps = (Feed,);
 
@@ -190,41 +216,30 @@ impl Node for Ticks {
 graph! {
 	struct G;
 	batches Batches;
-	roots { trig: Trig[Pulse], feed: Feed[Pulse] };
+	roots { trig: Trig[Pulse], feed: Feed[Pulse], sw: Sw[bool] };
 	out GOut;
-	outputs { deprec }
-	observe { leg, ticks }
-	latch { armed: Armed<Deprec> }
-	open: Open,
-	classify: Classify,
-	armed: Armed<Deprec>,
-	emit deprec: Deprec,
-	emit leg: Leg,
-	ticks: Ticks,
+	outputs { deprec: Deprec }
+	observe { armed: Armed<Deprec>, leg: Leg, ticks: Ticks, beat: Beat }
 }
 
-/// One tick's out, owned: `tick` lends the graph for the out's whole lifetime, so the call counters
-/// — the only witness that a dark node was skipped rather than merely emptied — can only be read
-/// once it is done.
+/// One tick's out, owned: `tick` lends the graph for the out's whole lifetime.
 #[derive(Debug)]
 struct Snap {
 	armed: bool,
 	deprec: Vec<Option<Phase>>,
 	leg: Vec<Option<Pulse>>,
 	ticks: f64,
-	/// `(classify, deprec, leg)`.
-	calls: (u32, u32, u32),
+	beat: Option<f64>,
 }
 
-fn tick(g: &mut G, trig: &[Pulse], feed: &[Pulse]) -> Snap {
-	let o = g.tick(Batches { trig, feed });
-	let (armed, deprec, leg, ticks) = (o.armed, o.deprec.to_vec(), o.leg.to_vec(), o.ticks);
+fn tick(g: &mut G, trig: &[Pulse], feed: &[Pulse], sw: &[bool]) -> Snap {
+	let o = g.tick(Batches { trig, feed, sw });
 	Snap {
-		armed,
-		deprec,
-		leg,
-		ticks,
-		calls: (g.classify.calls, g.deprec.calls, g.leg.calls),
+		armed: o.armed,
+		deprec: o.deprec.to_vec(),
+		leg: o.leg.to_vec(),
+		ticks: o.ticks,
+		beat: o.beat,
 	}
 }
 
@@ -233,50 +248,53 @@ const IDLE: &[Pulse] = &[];
 /// Three feed elements in one tick, so a single batch carries the whole episode tail:
 /// `[Done, None, None]`.
 const WIDE: &[Pulse] = &[Pulse, Pulse, Pulse];
+const OPEN: &[bool] = &[true];
+const SHUT: &[bool] = &[false];
+/// No switch this tick: the gate keeps whatever it was set to.
+const HOLD: &[bool] = &[];
 
 #[test]
 fn arm_from_a_node_hold_through_a_dark_arm_cut_from_within() {
-	let mut g = G { open: Open(true), ..G::default() };
+	let mut g = G::default();
 
 	// idle: latch down, both gated legs dark — and dark is `&[]`, not a fabricated zero. The arm leg
 	// is not gated on the latch, so it advanced.
-	let s = tick(&mut g, IDLE, PULSE);
+	let s = tick(&mut g, IDLE, PULSE, OPEN);
 	assert!(!s.armed);
 	assert_eq!((s.deprec.as_slice(), s.leg.as_slice()), (&[][..], &[][..]));
-	assert_eq!(s.calls, (1, 0, 0));
+	assert_eq!(s.beat, Some(1.0));
 
 	// the arm fires: both gated legs come live, from `Default`.
-	let s = tick(&mut g, PULSE, PULSE);
+	let s = tick(&mut g, PULSE, PULSE, HOLD);
 	assert!(s.armed);
 	assert_eq!(s.deprec, [Some(Phase::Degrading(1))]);
 	assert_eq!(s.leg, [Some(Pulse)]);
-	assert_eq!(s.calls, (2, 1, 1));
+	assert_eq!(s.beat, Some(2.0));
 
 	// the arm's own gate closes mid-episode — the arm goes dark, the latch must hold.
-	g.open = Open(false);
-	let s = tick(&mut g, IDLE, PULSE);
+	let s = tick(&mut g, IDLE, PULSE, SHUT);
 	assert!(s.armed);
 	assert_eq!(s.deprec, [Some(Phase::Degrading(2))]);
-	assert_eq!(s.calls, (2, 2, 2), "the arm leg is dark: its gate is closed");
+	assert_eq!(s.beat, None, "the arm leg is dark: its gate is closed");
 
 	// a trigger during the episode is absorbed, not a restart.
-	g.open = Open(true);
-	let s = tick(&mut g, PULSE, WIDE);
+	let s = tick(&mut g, PULSE, WIDE, OPEN);
 	assert!(s.armed);
 	// the terminal element is *not* last: `Episode for &[T]` must read `any`, not `last`.
 	assert_eq!(s.deprec, [Some(Phase::Done), None, None]);
 	assert_eq!(s.leg.len(), 3);
 
 	// commutated: latch down, both legs dark, and the during-episode trigger did not re-arm.
-	let s = tick(&mut g, IDLE, PULSE);
+	let s = tick(&mut g, IDLE, PULSE, HOLD);
 	assert!(!s.armed, "the terminal element cut the latch — under `.last()` semantics this never fires");
 	assert_eq!((s.deprec.as_slice(), s.leg.as_slice()), (&[][..], &[][..]));
 
-	// re-arm: fresh episode from `Default` — the reset is observable as the counters restarting at 1.
-	let s = tick(&mut g, PULSE, PULSE);
+	// re-arm: fresh episode from `Default` — the reset is observable as the episode restarting at 1,
+	// while the ungated `beat` kept climbing across the one tick it was dark for.
+	let s = tick(&mut g, PULSE, PULSE, HOLD);
 	assert!(s.armed);
 	assert_eq!(s.deprec, [Some(Phase::Degrading(1))]);
-	assert_eq!(s.calls, (5, 1, 1), "six ticks, one of them with the arm leg dark");
+	assert_eq!(s.beat, Some(5.0), "six ticks, one of them with the arm leg dark");
 
 	// ungated bystander: never reset, counted every tick.
 	assert_eq!(s.ticks, 6.0);

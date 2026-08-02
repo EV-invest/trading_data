@@ -1,4 +1,6 @@
 #![feature(default_field_values)]
+// the graph resolves its node set by trampolining between `#[node]` shims and the driver.
+#![recursion_limit = "512"]
 //! The end-to-end live proof: 15s of real Bybit BTC-USDT perp trades + book streamed through the
 //! graph *concurrently* (the graph consumes on a blocking thread while ws pumps feed it — bounded
 //! memory, no end-of-stream buffering), recorded (reception stamped at ingest), then replayed from

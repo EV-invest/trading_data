@@ -3,7 +3,7 @@
 //! `Cell`/`Node` are the dag's and these types are ours, so orphan rules make this the only crate
 //! that may write these impls. Nothing else here knows the dag exists.
 
-use trading_data_dag::{Cell, DepOuts, Folding, Horizon, Node, Nudge};
+use trading_data_dag::{Cell, DepOuts, Folding, Horizon, Node, Nudge, node};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 use crate::{Book, BookShape, DeltaBuf, DeltaFrame, TradeBuf, TradeCols};
@@ -73,6 +73,7 @@ impl Cell for Book {
 	type Out<'t> = Option<&'t Book>;
 }
 
+#[node]
 impl Node for Book {
 	/// The fold reaches back over the deltas exactly one checkpoint interval — a book re-warms from a
 	/// checkpoint, so gating it off and back on costs one desync and one resync, not a warmup it can

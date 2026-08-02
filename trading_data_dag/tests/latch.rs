@@ -6,7 +6,7 @@
 //! The root is batch (`&[Pulse]`); the gate/latch/episode nodes stay scalar-out. `None` becomes
 //! an empty root slice, `Some(Pulse)` a one-element slice.
 
-use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Latch, Node, graph, slice_nudge};
+use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Latch, Node, graph, node, slice_nudge};
 
 #[derive(Clone, Copy, Debug)]
 struct Pulse;
@@ -74,6 +74,7 @@ struct Live {
 impl Cell for Live {
 	type Out<'t> = bool;
 }
+#[node(latch)]
 impl Node for Live {
 	type Deps = (Trig,);
 
@@ -99,6 +100,7 @@ struct Deprec {
 impl Cell for Deprec {
 	type Out<'t> = Option<Phase>;
 }
+#[node]
 impl Node for Deprec {
 	type Deps = (Gating<Live>, Trig);
 
@@ -117,6 +119,7 @@ struct Ticks {
 impl Cell for Ticks {
 	type Out<'t> = f64;
 }
+#[node]
 impl Node for Ticks {
 	type Deps = (Trig,);
 
@@ -131,12 +134,8 @@ graph! {
 	batches Batches;
 	roots { trig: Trig[Pulse] };
 	out GOut;
-	outputs { deprec }
-	observe { ticks }
-	latch { live: Live }
-	live: Live,
-	deprec: Deprec,
-	ticks: Ticks,
+	outputs { deprec: Deprec }
+	observe { live: Live, ticks: Ticks }
 }
 
 const PULSE: &[Pulse] = &[Pulse];

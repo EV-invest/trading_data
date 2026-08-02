@@ -20,6 +20,9 @@ pub fn parse_type(ts: &TokenStream) -> syn::Result<Type> {
 
 /// `Folding<C, H>` / `Buffering<C, H>` / `Gating<C>` → `C` plus which of them it was. Matched on the
 /// last path segment, so a wrapper named through any path spelling still reads as one.
+///
+/// `Buffer<C, H>` named outright reads as the request it is: the frame holds one buffer per series,
+/// so asking for it by its type and asking for it through a dep must land on the same field.
 pub fn unwrap_dep(ty: &Type) -> (Type, Wrap) {
 	let Type::Path(p) = ty else { return (ty.clone(), Wrap::Bare) };
 	let Some(seg) = p.path.segments.last() else { return (ty.clone(), Wrap::Bare) };
@@ -35,7 +38,7 @@ pub fn unwrap_dep(ty: &Type) -> (Type, Wrap) {
 	match seg.ident.to_string().as_str() {
 		"Folding" => (cell.clone(), Wrap::Fold),
 		"Gating" => (cell.clone(), Wrap::Gate),
-		"Buffering" => match reach {
+		"Buffering" | "Buffer" => match reach {
 			Some(h) => (cell.clone(), Wrap::Buf(h.to_token_stream())),
 			None => (cell.clone(), Wrap::Buf(quote!(::trading_data_dag::Horizon::Unit))),
 		},
@@ -93,11 +96,11 @@ fn dollar_crate() -> TokenStream {
 	TokenStream::from_iter([TokenTree::Punct(Punct::new('$', Spacing::Alone)), TokenTree::Ident(Ident::new("crate", Span::call_site()))])
 }
 
-/// Where the `macro_rules!` answering for `ty` lives. A shim is a macro written *by* a macro, and
-/// rust#52234 leaves those unreachable through a path within their own crate — so a cell named
-/// without a crate is asked for unqualified, textually, which is why every node's impl must precede
-/// the `graph!` reaching it and why a crate importing another's cells needs `#[macro_use]` on it.
-/// A cell named *through* its crate keeps that crate: cross-crate the path resolution works.
+/// Where the `macro_rules!` answering for `ty` lives. A shim is written by a macro, and rust#52234
+/// leaves those unreachable by absolute path within their own crate — so a cell named without a
+/// crate is asked for unqualified, textually, which is why a node's impl must precede the `graph!`
+/// reaching it and why a module of cells is declared `#[macro_use]`. A cell named *through* its
+/// crate keeps that crate: cross-crate the path resolution works.
 pub fn shim_path(ty: &Type, prefix: &str) -> syn::Result<TokenStream> {
 	let Type::Path(TypePath { qself, path, .. }) = ty else {
 		return Err(syn::Error::new_spanned(ty, "a dep is a named cell: this is not a path type"));

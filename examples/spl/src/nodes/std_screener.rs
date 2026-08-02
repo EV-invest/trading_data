@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Folding, Gate, Horizon, Node, value_nudge};
+use trading_data::{Cell, DepOuts, Folding, Gate, Horizon, Node, node, value_nudge};
 
 use super::{Bar1m, latest, momentum::Momentum};
 use crate::config::{Screen, strategy};
@@ -13,6 +13,7 @@ pub struct StdScreener {
 impl Cell for StdScreener {
 	type Out<'t> = bool;
 }
+#[node]
 impl Node for StdScreener {
 	/// The cached momentum level stands until the next publish, however many minutes that takes.
 	type Deps = (Bar1m, Folding<Momentum, { Horizon::Unbounded }>);

@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Folding, Gate, Horizon, Node, value_nudge};
+use trading_data::{Cell, DepOuts, Folding, Gate, Horizon, Node, node, value_nudge};
 
 use super::{Bar1m, Rsi, RsiValues, change_1d::Change1d, latest};
 use crate::config::{Screen, strategy};
@@ -13,6 +13,7 @@ pub struct RsiScreener {
 impl Cell for RsiScreener {
 	type Out<'t> = bool;
 }
+#[node]
 impl Node for RsiScreener {
 	/// The cached RSI level stands until the next publish, however many minutes that takes.
 	type Deps = (Bar1m, Change1d, Folding<Rsi, { Horizon::Unbounded }>);

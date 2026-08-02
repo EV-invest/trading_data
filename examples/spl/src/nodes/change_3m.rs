@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, node, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 use super::Bar1m;
@@ -13,6 +13,7 @@ pub struct Change3m;
 impl Cell for Change3m {
 	type Out<'t> = &'t [Option<f64>];
 }
+#[node]
 impl Emit for Change3m {
 	type Deps = (Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>,);
 

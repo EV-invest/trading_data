@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Armed, Cell, Emit, EmitOuts, Episode, Episodic, Flat, Gating, Glance, Plot, TriggerOut, slice_nudge};
+use trading_data::{Armed, Cell, Emit, EmitOuts, Episode, Episodic, Flat, Gating, Glance, Plot, TriggerOut, node, slice_nudge};
 use trading_data_core::Side;
 
 use super::{
@@ -149,6 +149,7 @@ enum State {
 impl Cell for Deprecator {
 	type Out<'t> = &'t [Option<Intent>];
 }
+#[node]
 impl Emit for Deprecator {
 	type Deps = (Gating<Armed<Deprecator>>, Classify, Atr, BookTop);
 
@@ -249,6 +250,7 @@ impl Emit for Deprecator {
 }
 slice_nudge!(Deprecator, Option<Intent>);
 
+#[node]
 impl Episodic for Deprecator {
 	type Trigger = Classify;
 

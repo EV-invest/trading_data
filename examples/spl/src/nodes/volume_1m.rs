@@ -1,4 +1,4 @@
-use trading_data::{Cell, Emit, EmitOuts, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, node, slice_nudge};
 
 use super::Bar1m;
 
@@ -9,6 +9,7 @@ pub struct Volume1m;
 impl Cell for Volume1m {
 	type Out<'t> = &'t [f64];
 }
+#[node]
 impl Emit for Volume1m {
 	type Deps = (Bar1m,);
 

@@ -1,4 +1,4 @@
-use trading_data::{Cell, Emit, EmitOuts, Plot, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, Plot, node, slice_nudge};
 
 use super::book_top::BookTop;
 
@@ -10,6 +10,7 @@ pub struct Imbalance;
 impl Cell for Imbalance {
 	type Out<'t> = &'t [Option<f64>];
 }
+#[node]
 impl Emit for Imbalance {
 	type Deps = (BookTop,);
 

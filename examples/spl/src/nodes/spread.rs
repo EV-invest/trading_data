@@ -1,4 +1,4 @@
-use trading_data::{Cell, Emit, EmitOuts, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, node, slice_nudge};
 
 use super::book_top::BookTop;
 
@@ -8,6 +8,7 @@ pub struct Spread;
 impl Cell for Spread {
 	type Out<'t> = &'t [Option<f64>];
 }
+#[node]
 impl Emit for Spread {
 	type Deps = (BookTop,);
 

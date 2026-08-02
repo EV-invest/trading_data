@@ -1,7 +1,7 @@
 use core::fmt;
 
 use trading_data_core::{Exact, TradeCols, Trades};
-use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Horizon, Stamped, slice_nudge};
+use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Horizon, Stamped, node, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 #[derive(Clone, Copy, Debug)]
@@ -122,6 +122,7 @@ macro_rules! bars {
 
 			const NAME: &'static str = concat!("Bar:", $tf);
 		}
+		#[node]
 		impl Emit for $ty {
 			/// The partial bar is the whole of the state, so the trades it holds reach back exactly
 			/// one period.

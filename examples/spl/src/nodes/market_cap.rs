@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Cell, Emit, EmitOuts, Flat, Glance, McRoot, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, Flat, Glance, McRoot, node, slice_nudge};
 
 #[derive(Clone, Copy, Debug)]
 pub struct McSnap {
@@ -29,6 +29,7 @@ pub struct MarketCap;
 impl Cell for MarketCap {
 	type Out<'t> = &'t [Option<McSnap>];
 }
+#[node]
 impl Emit for MarketCap {
 	type Deps = (McRoot,);
 

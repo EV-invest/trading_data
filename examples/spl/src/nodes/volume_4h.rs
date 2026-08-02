@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, closed_by, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, closed_by, node, slice_nudge};
 
 use super::{Bar1m, Bar4h};
 
@@ -8,6 +8,7 @@ pub struct Volume4h;
 impl Cell for Volume4h {
 	type Out<'t> = &'t [Option<f64>];
 }
+#[node]
 impl Emit for Volume4h {
 	type Deps = (Bar1m, Buffering<Bar4h, { Horizon::Elems(1) }>);
 

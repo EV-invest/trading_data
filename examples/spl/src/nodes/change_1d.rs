@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, closed_by, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, closed_by, node, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 use super::{Bar1h, Bar1m};
@@ -16,6 +16,7 @@ pub struct Change1d;
 impl Cell for Change1d {
 	type Out<'t> = &'t [Option<f64>];
 }
+#[node]
 impl Emit for Change1d {
 	type Deps = (Bar1m, Buffering<Bar1h, REACH_1D>);
 

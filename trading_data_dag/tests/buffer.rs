@@ -3,7 +3,9 @@
 //! irregular stream, and a latch commutation that resets a consumer while leaving the buffer whole —
 //! the point of engine-owned retention.
 
-use trading_data_dag::{Buffer, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Node, Observer, Stamped, graph, slice_nudge};
+use trading_data_dag::{
+	Buffer, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Node, Observer, Stamped, graph, node, slice_nudge,
+};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 /// A retained element is stamped: that is what a [`Horizon`] indexes by. One unit of `v` is one
@@ -15,6 +17,10 @@ struct Tick {
 }
 fn t(v: f64) -> Tick {
 	Tick { ts: (v * 1e9) as i64, v }
+}
+/// The shape `Split` reports: past count in `ts`, fresh count in `v`.
+fn split(past: i64, fresh: f64) -> Tick {
+	Tick { ts: past, v: fresh }
 }
 impl Stamped for Tick {
 	fn ts_ns(&self) -> i64 {
@@ -54,6 +60,7 @@ struct Sum3;
 impl Cell for Sum3 {
 	type Out<'t> = &'t [Option<f64>];
 }
+#[node]
 impl Emit for Sum3 {
 	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
 
@@ -63,21 +70,22 @@ impl Emit for Sum3 {
 }
 slice_nudge!(Sum3, Option<f64>);
 
-/// Records the past/fresh split it saw, so the test can assert on the *shape* of the dep out and
-/// not merely on a derived number.
+/// Reports the past/fresh split it saw, so the test can assert on the *shape* of the dep out and
+/// not merely on a derived number: one element per batch, `ts` the past count and `v` the fresh one.
 #[derive(Clone, Default)]
-struct Split {
-	seen: Vec<(usize, usize)>,
-}
+struct Split;
 impl Cell for Split {
 	type Out<'t> = &'t [Tick];
 }
+#[node]
 impl Emit for Split {
 	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
 
 	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Tick>) {
-		self.seen.push((hist.past().len(), hist.fresh().len()));
-		out.extend_from_slice(hist.fresh());
+		out.push(Tick {
+			ts: hist.past().len() as i64,
+			v: hist.fresh().len() as f64,
+		});
 	}
 }
 slice_nudge!(Split, Tick);
@@ -87,17 +95,19 @@ slice_nudge!(Split, Tick);
 /// answer at the declaration rather than at whatever the frame happens to hold.
 #[derive(Clone, Default)]
 struct Level {
-	seen: Vec<Vec<Tick>>,
+	all: Vec<Tick>,
 }
 impl Cell for Level {
 	type Out<'t> = &'t [Tick];
 }
+#[node]
 impl Node for Level {
 	type Deps = (Buffering<Src, { Horizon::Elems(1) }>,);
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		self.seen.push(hist.all().to_vec());
-		hist.fresh()
+		self.all.clear();
+		self.all.extend_from_slice(hist.all());
+		&self.all
 	}
 }
 slice_nudge!(Level, Tick);
@@ -107,12 +117,9 @@ graph! {
 	batches Batches;
 	roots { src: Src[f64] };
 	out GOut;
-	outputs { sum3 }
-	observe { split, level }
-	hist: Buffer<Src, { Horizon::Elems(3) }>,
-	emit sum3: Sum3,
-	emit split: Split,
-	level: Level,
+	outputs { sum3: Sum3 }
+	// the frame's retention is the join of every read of it, and `Elems(3)` is the deepest here.
+	observe { split: Split, level: Level, hist: Buffer<Src, { Horizon::Elems(3) }> }
 }
 
 /// Two consumers of one series at different reaches. `all()` must answer at the *declared* one, or a
@@ -127,11 +134,11 @@ fn all_answers_at_the_declared_reach_not_the_frame_s() {
 	// wholly in reach, however shallow the declaration.
 	let o = g.tick(Batches { src: &three });
 	assert_eq!(o.hist.all(), &three);
-	assert_eq!(g.level.seen.last().unwrap(), &three);
+	assert_eq!(o.level, &three);
 
 	let o = g.tick(Batches { src: &one });
 	assert_eq!(o.hist.all(), &[t(1.0), t(2.0), t(3.0), t(4.0)], "the frame retains 3 behind the batch");
-	assert_eq!(g.level.seen.last().unwrap(), &[t(3.0), t(4.0)], "one declared, one behind the batch");
+	assert_eq!(o.level, &[t(3.0), t(4.0)], "one declared, one behind the batch");
 }
 
 #[test]
@@ -144,6 +151,7 @@ fn past_fresh_split_and_trailing() {
 	assert_eq!(o.sum3, &[None]);
 	assert_eq!(o.hist.past(), &[] as &[Tick]);
 	assert_eq!(o.hist.fresh(), &one);
+	assert_eq!(o.split, &[split(0, 1.0)]);
 
 	// a batch carrying several elements: `past` is what stood behind the *whole* batch, so the
 	// per-element cursors each see their own trailing window.
@@ -151,11 +159,13 @@ fn past_fresh_split_and_trailing() {
 	assert_eq!(o.hist.past(), &one);
 	assert_eq!(o.hist.fresh(), &three);
 	assert_eq!(o.sum3, &[None, Some(6.0), Some(9.0)]);
+	assert_eq!(o.split, &[split(1, 3.0)]);
 
 	// trim happens before the append, and keeps 3 elements behind.
 	let o = g.tick(Batches { src: &five });
 	assert_eq!(o.hist.past(), &three);
 	assert_eq!(o.sum3, &[Some(12.0)]);
+	assert_eq!(o.split, &[split(3, 1.0)]);
 
 	// an empty batch still advances the buffer, and a whole window survives it — that is what a
 	// cross-rate reader of `all()` rests on.
@@ -163,8 +173,7 @@ fn past_fresh_split_and_trailing() {
 	assert_eq!(o.hist.all(), &[t(3.0), t(4.0), t(5.0)]);
 	assert_eq!(o.hist.fresh(), &[] as &[Tick]);
 	assert_eq!(o.sum3, &[] as &[Option<f64>]);
-
-	assert_eq!(g.split.seen, &[(0, 1), (1, 3), (3, 1), (3, 0)]);
+	assert_eq!(o.split, &[split(3, 0.0)]);
 }
 
 /// `Flat`/`Glance` see `fresh` only — a buffer must be indistinguishable from the series it retains.
@@ -209,8 +218,7 @@ mod span {
 		batches SBatches;
 		roots { src: Src[f64] };
 		out SOut;
-		outputs { hist }
-		hist: Buffer<Src, { Horizon::Span(Timeframe::from_naive(10, TimeframeDesignator::Seconds)) }>,
+		outputs { hist: Buffer<Src, { Horizon::Span(Timeframe::from_naive(10, TimeframeDesignator::Seconds)) }> }
 	}
 
 	#[test]
@@ -246,8 +254,10 @@ mod revive {
 	}
 	slice_nudge!(Trig, f64);
 
+	/// `(tick within the episode, elements the window stood at)` — the second is what makes a *cold*
+	/// buffer observable from outside the graph.
 	#[derive(Clone, Copy, Debug, PartialEq)]
-	struct Phase(u32);
+	struct Phase(u32, usize);
 	impl Episode for Phase {
 		fn terminal(&self) -> bool {
 			self.0 >= 2
@@ -279,6 +289,7 @@ mod revive {
 	impl Cell for Live {
 		type Out<'t> = bool;
 	}
+	#[node(latch)]
 	impl Node for Live {
 		type Deps = (Trig,);
 
@@ -296,23 +307,23 @@ mod revive {
 		}
 	}
 
-	/// The revivable consumer: `t` makes a reset observable, `seen` makes a *cold* buffer observable.
+	/// The revivable consumer: `t` makes a reset observable, the window length it reports makes a
+	/// *cold* buffer observable.
 	#[derive(Clone, Default)]
 	struct Episodic {
 		t: u32,
-		seen: Vec<usize>,
 	}
 	impl Cell for Episodic {
 		type Out<'t> = Option<Phase>;
 	}
+	#[node]
 	impl Node for Episodic {
 		type Deps = (Gating<Live>, Buffering<Src, { Horizon::Elems(3) }>);
 
 		fn advance<'t>(&'t mut self, (live, hist): DepOuts<'t, Self>) -> Self::Out<'t> {
 			assert!(live, "a gating dep reads true inside `advance`");
 			self.t += 1;
-			self.seen.push(hist.trailing_at(0).map_or(0, <[Tick]>::len));
-			Some(Phase(self.t))
+			Some(Phase(self.t, hist.trailing_at(0).map_or(0, <[Tick]>::len)))
 		}
 	}
 
@@ -321,11 +332,8 @@ mod revive {
 		batches LBatches;
 		roots { src: Src[f64], trig: Trig[u32] };
 		out LOut;
-		outputs { episodic }
-		latch { live: Live }
-		hist: Buffer<Src, { Horizon::Elems(3) }>,
-		live: Live,
-		episodic: Episodic,
+		outputs { episodic: Episodic }
+		observe { hist: Buffer<Src, { Horizon::Elems(3) }> }
 	}
 
 	const ARM: &[f64] = &[1.0];
@@ -341,24 +349,21 @@ mod revive {
 			let o = l.tick(LBatches { src: x, trig: IDLE });
 			assert_eq!(o.episodic, None);
 		}
-		assert_eq!(l.episodic.seen, &[] as &[usize]);
 
 		// armed: full window on its very first tick back, no re-warm.
 		let o = l.tick(LBatches { src: &src[3], trig: ARM });
-		assert_eq!(o.episodic, Some(Phase(1)));
+		assert_eq!(o.episodic, Some(Phase(1, 3)));
 		assert_eq!(o.hist.all(), &[t(1.0), t(2.0), t(3.0), t(4.0)]);
 		let o = l.tick(LBatches { src: &src[4], trig: IDLE });
-		assert_eq!(o.episodic, Some(Phase(2)));
-		assert_eq!(l.episodic.seen, &[3, 3]);
+		assert_eq!(o.episodic, Some(Phase(2, 3)));
 
 		// commutated: consumer reset to Default, buffer untouched.
 		let o = l.tick(LBatches { src: &src[5], trig: IDLE });
 		assert_eq!(o.episodic, None);
 		assert_eq!(o.hist.all(), &[t(3.0), t(4.0), t(5.0), t(6.0)]);
 
-		// revived: `t` and `seen` restarted from Default, the window did not.
+		// revived: `t` restarted from Default, the window did not.
 		let o = l.tick(LBatches { src: &src[6], trig: ARM });
-		assert_eq!(o.episodic, Some(Phase(1)));
-		assert_eq!(l.episodic.seen, &[3], "revived warm — a client-owned window would read 0 here");
+		assert_eq!(o.episodic, Some(Phase(1, 3)), "revived warm — a client-owned window would read 0 here");
 	}
 }

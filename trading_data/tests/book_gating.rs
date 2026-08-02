@@ -11,6 +11,7 @@
 
 use trading_data::{
 	Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaBuf, DeltaFrame, DepOuts, FrameKind, Gate, Gating, Node, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades, Ts,
+	node,
 };
 
 const PREC: PrecisionPriceQty = PrecisionPriceQty {
@@ -41,6 +42,7 @@ impl Nudge for GatedBook {
 		s.as_ref()
 	}
 }
+#[node]
 impl Node for GatedBook {
 	type Deps = (Gating<Hot>, BookAnchors, BookDeltas);
 
@@ -56,6 +58,7 @@ struct Hot;
 impl Cell for Hot {
 	type Out<'t> = bool;
 }
+#[node]
 impl Node for Hot {
 	type Deps = (Trades,);
 
@@ -71,6 +74,7 @@ struct Mid;
 impl Cell for Mid {
 	type Out<'t> = Option<f64>;
 }
+#[node]
 impl Node for Mid {
 	type Deps = (Gating<Hot>, GatedBook);
 
@@ -86,10 +90,8 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape] };
 	out GOut;
-	outputs { mid }
-	hot: Hot,
-	book: GatedBook,
-	mid: Mid,
+	outputs { mid: Mid }
+	observe { book: GatedBook }
 }
 
 fn anchor(bids: &[(i32, u32)], asks: &[(i32, u32)]) -> BookShape {

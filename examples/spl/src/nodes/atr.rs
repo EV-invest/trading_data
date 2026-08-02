@@ -1,4 +1,4 @@
-use trading_data::{Cell, Emit, EmitOuts, Folding, Horizon, WilderAtr, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, Folding, Horizon, WilderAtr, node, slice_nudge};
 
 use super::Bar1m;
 use crate::config::strategy;
@@ -19,6 +19,7 @@ impl Default for Atr {
 impl Cell for Atr {
 	type Out<'t> = &'t [Option<f64>];
 }
+#[node]
 impl Emit for Atr {
 	/// A Wilder recurrence reaches to the start of the run.
 	type Deps = (Folding<Bar1m, { Horizon::Unbounded }>,);

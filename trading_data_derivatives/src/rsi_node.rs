@@ -1,6 +1,6 @@
 use core::{fmt, marker::PhantomData};
 
-use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Horizon, Plot, Series, slice_nudge};
+use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Horizon, Plot, Series, node, slice_nudge};
 
 use crate::{Wilder, bar::Bar, rsi};
 
@@ -41,6 +41,7 @@ impl<B> Default for RsiDelta<B> {
 impl<B: Series<Item = Bar>> Cell for RsiDelta<B> {
 	type Out<'t> = &'t [f64];
 }
+#[node]
 impl<B: Series<Item = Bar>> Emit for RsiDelta<B> {
 	type Deps = (Folding<B, PREV>,);
 
@@ -83,9 +84,10 @@ macro_rules! wilder_half {
 		impl<B: Series<Item = Bar>, S: RsiSpec> Cell for $ty<B, S> {
 			type Out<'t> = &'t [Option<f64>];
 		}
+		#[node]
 		impl<B: Series<Item = Bar>, S: RsiSpec> Emit for $ty<B, S> {
 			/// A Wilder recurrence reaches to the start of the run.
-			type Deps = (Folding<RsiDelta<B>, { Horizon::Unbounded }>,);
+			type Deps = (Folding<crate::RsiDelta<B>, { Horizon::Unbounded }>,);
 
 			fn emit(&mut self, (deltas,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 				out.extend(deltas.iter().map(|d| self.avg.update(($sign * d).max(0.0))));
@@ -171,9 +173,10 @@ impl<B, S: RsiSpec> Default for Rsi<B, S> {
 impl<B: Series<Item = Bar>, S: RsiSpec> Cell for Rsi<B, S> {
 	type Out<'t> = &'t [Option<RsiValues>];
 }
+#[node]
 impl<B: Series<Item = Bar>, S: RsiSpec> Emit for Rsi<B, S> {
 	/// The smoothing EMA is a recurrence over both legs, so it reaches to the start of the run.
-	type Deps = (Folding<AvgGain<B, S>, { Horizon::Unbounded }>, Folding<AvgLoss<B, S>, { Horizon::Unbounded }>);
+	type Deps = (Folding<crate::AvgGain<B, S>, { Horizon::Unbounded }>, Folding<crate::AvgLoss<B, S>, { Horizon::Unbounded }>);
 
 	// No threshold guide: whoever wires this owns the trigger and `Plot` is a const, so drawing one
 	// here would pin a number the wiring is free to move.

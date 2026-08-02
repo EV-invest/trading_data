@@ -1,4 +1,6 @@
 #![feature(default_field_values)]
+// the graph resolves its node set by trampolining between `#[node]` shims and the driver.
+#![recursion_limit = "1024"]
 //! Idempotent SPL data layer over the window `config.nix` names: Bybit trades for every day of it,
 //! and — for the trading days only, matching SPL's situation-gated Deep tier — the L20 book off the
 //! historic ob200 archive plus OI and market cap. Each step is skipped if its artifact exists; any

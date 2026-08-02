@@ -6,18 +6,20 @@
 use core::fmt;
 
 use trading_data::{
-	AvgGain, AvgLoss, Bar1m, Buffer, Buffering, Bump, Cell, Emit, EmitOuts, Exact, Expr, Flat, Folding, Glance, Horizon, Lanes, Rsi, RsiSpec, Stamped, Symbolic, TradeCols, Trades, Vars,
-	constant, slice_nudge,
+	Buffering, Bump, Cell, Emit, EmitOuts, Exact, Expr, Flat, Folding, Glance, Horizon, Lanes, RsiSpec, Stamped, Symbolic, TradeCols, Trades, Vars, constant, node, slice_nudge,
 };
 use trading_data_core::Side;
+
+// the graph reaches every cell through a shim keyed on its name, and a bare `use` leaves no shim
+// behind — so the two series this example imports are aliased rather than imported.
+trading_data::node_alias! { pub Bar1m = trading_data::Bar1m; }
+trading_data::node_alias! { pub Rsi14 = trading_data::Rsi<Bar1m, Len14>; }
 
 /// λ's window, in minutes.
 pub const LAMBDA_WINDOW: usize = 60;
 /// The reach both windowed readings are served from: λ's `window + 1`, which the hour of volume
 /// rides along inside.
 const REACH: Horizon = Horizon::Elems(LAMBDA_WINDOW + 1);
-pub type RsiDelta = trading_data::RsiDelta<Bar1m>;
-pub type Rsi14 = Rsi<Bar1m, Len14>;
 /// Wilder's own lengths, and the whole of what this graph configures.
 pub struct Len14;
 impl RsiSpec for Len14 {
@@ -72,6 +74,7 @@ fn signed(side: Side, notional: f64) -> f64 {
 impl Cell for Cvd {
 	type Out<'t> = &'t [f64];
 }
+#[node]
 impl Emit for Cvd {
 	type Deps = (Trades,);
 
@@ -113,6 +116,7 @@ impl Stamped for Flow {
 impl Cell for Flow1m {
 	type Out<'t> = &'t [Flow];
 }
+#[node]
 impl Emit for Flow1m {
 	/// The partial minute is the whole of the state, so the trades it holds reach back exactly one.
 	type Deps = (Folding<Trades, { Horizon::Span(Bar1m::TF) }>,);
@@ -148,6 +152,7 @@ slice_nudge!(Flow1m, Flow);
 impl Cell for Lambda1m {
 	type Out<'t> = &'t [Option<f64>];
 }
+#[node]
 impl Emit for Lambda1m {
 	type Deps = (Buffering<Flow1m, REACH>,);
 
@@ -167,6 +172,7 @@ slice_nudge!(Lambda1m, Option<f64>);
 impl Cell for VolUsd1h {
 	type Out<'t> = &'t [Option<f64>];
 }
+#[node]
 impl Emit for VolUsd1h {
 	type Deps = (Buffering<Bar1m, REACH>,);
 
@@ -179,6 +185,7 @@ slice_nudge!(VolUsd1h, Option<f64>);
 impl Cell for Signal {
 	type Out<'t> = f64;
 }
+#[node]
 impl Symbolic for Signal {
 	type Deps = (Lambda1m, VolUsd1h, Cvd);
 
@@ -193,22 +200,9 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols] };
 	out TickOut;
-	outputs { rsi }
+	outputs { rsi: Rsi14 }
 	// `main.rs`'s day-end levels and the exact/FD witness — nothing downstream reads either.
-	observe { signal }
-	diff { signal: Signal }
-	emit bar: Bar1m,
-	bar_hist: Buffer<Bar1m, REACH>,
-	emit flow: Flow1m,
-	flow_hist: Buffer<Flow1m, REACH>,
-	emit cvd: Cvd,
-	emit vol_usd_1h: VolUsd1h,
-	emit lambda: Lambda1m,
-	emit rsi_delta: RsiDelta,
-	emit avg_gain: AvgGain<Bar1m, Len14>,
-	emit avg_loss: AvgLoss<Bar1m, Len14>,
-	emit rsi: Rsi14,
-	signal: Signal,
+	observe { bar: Bar1m, cvd: Cvd, lambda: Lambda1m, vol_usd_1h: VolUsd1h, signal: Signal }
 }
 
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it

@@ -65,6 +65,20 @@ fn signature(item: &ItemImpl, prefix: &str) -> syn::Result<Sig> {
 	})
 }
 
+/// Where a *shim body* spells the shim answering for one of its deps, and the one place the two
+/// readings of an unqualified cell part ways. rust#52234 leaves a macro-expanded `macro_export`
+/// macro unreachable by absolute path *within its own crate*, so a bare cell is asked for
+/// textually — which is why a graph reaching it must live in the crate that declares it. A cell
+/// written `crate::C` says the opposite: it is asked for through `$crate::`, which resolves only
+/// once the shim is pasted into a graph elsewhere.
+fn dep_shim(ty: &Type, prefix: &str) -> syn::Result<TokenStream> {
+	let mac = ty::shim_path(ty, prefix)?;
+	match ty {
+		Type::Path(p) if p.path.segments.first().is_some_and(|s| s.ident == "crate") => Ok(ty::shimify(quote!(crate::#mac), &[], &TokenStream::new())),
+		_ => Ok(mac),
+	}
+}
+
 fn matcher(sig: &Sig) -> TokenStream {
 	let args = sig.params.iter().map(|p| {
 		let shim = Ident::new(&format!("__shim_{p}"), p.span());
@@ -90,7 +104,7 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 
 	if trait_name == "Episodic" {
 		let trigger = assoc(&item, "Trigger").ok_or_else(|| syn::Error::new_spanned(&item, "`impl Episodic` without `type Trigger`"))?;
-		let shim = ty::shim_path(trigger, "__td_node_")?;
+		let shim = dep_shim(trigger, "__td_node_")?;
 		let tty = ty::shimify(quote!(#trigger), &sig.params, &self_subst);
 		let name = signature(&item, "__td_trigger_")?.name;
 		let m = matcher(&sig);
@@ -130,7 +144,7 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 					let m = Ident::new(&format!("__shim_{}", p.path.get_ident().expect("just matched")), Span::call_site());
 					quote!($#m)
 				}
-				_ => ty::shim_path(&cell, "__td_node_")?,
+				_ => dep_shim(&cell, "__td_node_")?,
 			};
 			let dty = ty::shimify(quote!(#d), &sig.params, &self_subst);
 			Ok(quote!({ #shim } { #dty }))
@@ -181,7 +195,16 @@ pub fn node_alias(input: TokenStream) -> syn::Result<TokenStream> {
 	if !matches!(ty::unwrap_dep(&ty).1, Wrap::Bare) {
 		return Err(syn::Error::new_spanned(&ty, "a `node_alias!` names a cell, not a dep-position wrapper"));
 	}
-	let target = ty::shim_path(&ty, "__td_node_")?;
+	let target = dep_shim(&ty, "__td_node_")?;
+	// the alias is concrete, so the aliased cell's own parameters are filled in here rather than by
+	// whoever names the alias.
+	let args = ty::type_args(&ty)
+		.into_iter()
+		.map(|a| {
+			let s = dep_shim(&a, "__td_node_")?;
+			Ok(quote!({ #s } { #a }))
+		})
+		.collect::<syn::Result<Vec<_>>>()?;
 	let shim = Ident::new(&format!("__td_node_{name}"), name.span());
 	Ok(quote! {
 		#(#attrs)*
@@ -191,7 +214,7 @@ pub fn node_alias(input: TokenStream) -> syn::Result<TokenStream> {
 		#[doc(hidden)]
 		macro_rules! #shim {
 			($__driver:path, [], @state $($__state:tt)*) => {
-				#target! { $__driver, [], @state $($__state)* }
+				#target! { $__driver, [ #(#args),* ], @state $($__state)* }
 			};
 		}
 	})

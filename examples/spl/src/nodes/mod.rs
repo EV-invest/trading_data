@@ -57,22 +57,41 @@ macro_rules! structural_bump {
 	};
 }
 
+// each declares a cell, and a cell's dep shim is textually scoped — `graph!` below reaches them
+// under the same unqualified names their deps are written in.
+#[macro_use]
 mod atr;
+#[macro_use]
 mod book_top;
+#[macro_use]
 mod change_1d;
+#[macro_use]
 mod change_3m;
+#[macro_use]
 mod classify;
+#[macro_use]
 mod deprecator;
+#[macro_use]
 mod imbalance;
+#[macro_use]
 mod market_cap;
+#[macro_use]
 mod momentum;
+#[macro_use]
 mod oi_delta;
+#[macro_use]
 mod rsi;
+#[macro_use]
 mod rsi_screener;
+#[macro_use]
 mod spread;
+#[macro_use]
 mod std_screener;
+#[macro_use]
 mod volume_1h;
+#[macro_use]
 mod volume_1m;
+#[macro_use]
 mod volume_4h;
 
 pub use atr::Atr;
@@ -89,17 +108,29 @@ pub use rsi::{AvgGain, AvgLoss, Rsi, RsiDelta, RsiSeries};
 pub use rsi_screener::RsiScreener;
 pub use spread::Spread;
 pub use std_screener::StdScreener;
-use trading_data::{Armed, Book, BookAnchors, BookDeltas, BookShape, Buffer, DeltaFrame, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
-pub use trading_data::{Bar, Bar1h, Bar1m, Bar4h, Bar5m, Bar15m, RsiValues};
+use trading_data::{Armed, BookAnchors, BookDeltas, BookShape, DeltaFrame, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
+pub use trading_data::{Bar, RsiValues};
 
-/// The compiled screener — the gate `Classify` and everything under it hangs dormant off. The other
-/// arm stays written and unwired: naming it here is the whole of switching, and nothing pulls the
-/// indies it reads on its behalf meanwhile.
-pub type Screener = StdScreener;
+// the graph reaches every cell through a shim keyed on its name, and a bare `use` leaves no shim
+// behind — so the series this strategy runs on are aliased rather than imported.
+trading_data::node_alias! { pub Bar1m = trading_data::Bar1m; }
+trading_data::node_alias! { pub Bar5m = trading_data::Bar5m; }
+trading_data::node_alias! { pub Bar15m = trading_data::Bar15m; }
+trading_data::node_alias! { pub Bar1h = trading_data::Bar1h; }
+trading_data::node_alias! { pub Bar4h = trading_data::Bar4h; }
+
+trading_data::node_alias! {
+	/// The compiled screener — the gate `Classify` and everything under it hangs dormant off. The
+	/// other arm stays written and unwired: naming it here is the whole of switching, and nothing
+	/// pulls the indies it reads on its behalf meanwhile.
+	pub Screener = StdScreener;
+}
 pub use volume_1h::Volume1h;
 pub use volume_1m::Volume1m;
 pub use volume_4h::Volume4h;
 
+// a buffer's reach is written where the dep is, and lands here — so what those reaches are spelled
+// in has to be in scope here too.
 use crate::nodes::{change_1d::REACH_1D, change_3m::SPAN_3M, oi_delta::OI_REACH};
 
 /// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that
@@ -115,45 +146,14 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape], oi: OiRoot[Oi], mc: McRoot[Mc] };
 	out TickOut;
-	outputs { deprecator }
+	outputs { deprecator: Deprecator }
 	// Nothing downstream of `target_q` reads these: they are `main.rs`'s checks and the viz, which is
 	// a legitimate reason for a node to exist and a bad one to leave implicit.
-	observe { bar_1m, change_1d, change_3m, volume_1m, volume_1h, volume_4h, rsi, momentum, oi_delta_5m, oi_delta_15m, market_cap, book_top, imbalance, spread }
-	latch { armed: Armed<Deprecator> }
-	emit bar_1m: Bar1m,
-	emit bar_5m: Bar5m,
-	emit bar_15m: Bar15m,
-	emit bar_1h: Bar1h,
-	emit bar_4h: Bar4h,
-	bar_1m_hist: Buffer<Bar1m, { Horizon::Span(SPAN_3M) }>,
-	bar_5m_hist: Buffer<Bar5m, { mom_cap(Bar5m::TF) }>,
-	bar_15m_hist: Buffer<Bar15m, { Horizon::Span(Bar15m::TF) }>,
-	bar_1h_hist: Buffer<Bar1h, REACH_1D>,
-	bar_4h_hist: Buffer<Bar4h, { mom_cap(Bar4h::TF) }>,
-	oi_hist: Buffer<OiRoot, OI_REACH>,
-	mc_hist: Buffer<McRoot, { Horizon::Elems(1) }>,
-	emit change_3m: Change3m,
-	emit change_1d: Change1d,
-	emit volume_1m: Volume1m,
-	emit volume_1h: Volume1h,
-	emit volume_4h: Volume4h,
-	emit rsi_delta: RsiDelta,
-	emit avg_gain: AvgGain,
-	emit avg_loss: AvgLoss,
-	emit rsi: Rsi,
-	emit atr: Atr,
-	emit momentum: Momentum,
-	emit oi_delta_5m: OiDelta5m,
-	emit oi_delta_15m: OiDelta15m,
-	emit market_cap: MarketCap,
-	std_screener: Screener,
-	classify: Classify,
-	armed: Armed<Deprecator>,
-	book: Book,
-	emit book_top: BookTop,
-	emit imbalance: Imbalance,
-	emit spread: Spread,
-	emit deprecator: Deprecator,
+	observe {
+		bar_1m: Bar1m, bar_5m: Bar5m, change_1d: Change1d, change_3m: Change3m, volume_1m: Volume1m, volume_1h: Volume1h, volume_4h: Volume4h, rsi_delta: RsiDelta,
+		avg_gain: AvgGain, avg_loss: AvgLoss, rsi: Rsi, atr: Atr, momentum: Momentum, oi_delta_5m: OiDelta5m, oi_delta_15m: OiDelta15m, market_cap: MarketCap,
+		std_screener: Screener, classify: Classify, armed: Armed<Deprecator>, book_top: BookTop, imbalance: Imbalance, spread: Spread
+	}
 }
 
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it

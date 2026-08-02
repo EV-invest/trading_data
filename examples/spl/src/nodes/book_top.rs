@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Book, BookDeltas, Cell, Emit, EmitOuts, Glance, Plot, slice_nudge};
+use trading_data::{BookDeltas, Cell, Emit, EmitOuts, Glance, Plot, node, slice_nudge};
 
 use crate::DEPTH;
 
@@ -39,8 +39,9 @@ pub struct BookTop;
 impl Cell for BookTop {
 	type Out<'t> = &'t [Option<BookTopSnap>];
 }
+#[node]
 impl Emit for BookTop {
-	type Deps = (Book, BookDeltas);
+	type Deps = (trading_data::Book, BookDeltas);
 
 	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &["bid", "ask", "bid_depth$", "ask_depth$"],

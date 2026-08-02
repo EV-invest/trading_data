@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Horizon, Plot, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Horizon, Plot, node, slice_nudge};
 use v_utils::Timeframe;
 
 use super::{Bar, Bar4h, Bar5m};
@@ -76,6 +76,7 @@ impl Default for Momentum {
 impl Cell for Momentum {
 	type Out<'t> = &'t [Option<f64>];
 }
+#[node]
 impl Emit for Momentum {
 	type Deps = (Buffering<Bar5m, { mom_cap(Bar5m::TF) }>, Buffering<Bar4h, { mom_cap(Bar4h::TF) }>);
 
