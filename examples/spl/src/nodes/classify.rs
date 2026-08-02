@@ -33,36 +33,43 @@ const TRAITS: &[Trait] = &[
 	Trait {
 		category: Category::None,
 		relevance: 1,
+		invalidates_others: false,
 		hits: |s| s.momentum.is_none(),
 	},
 	Trait {
 		category: Category::Manipulation,
 		relevance: 1,
+		invalidates_others: false,
 		hits: |s| s.momentum.is_some_and(|m| m.abs() > MOM_HIGH_BAND),
 	},
 	Trait {
 		category: Category::Liquidations,
 		relevance: 1,
+		invalidates_others: false,
 		hits: |s| s.momentum.is_some_and(|m| m.abs() > MOM_MID_BAND && m.abs() <= MOM_HIGH_BAND),
 	},
 	Trait {
 		category: Category::MmClosing,
 		relevance: 1,
+		invalidates_others: false,
 		hits: |s| s.momentum.is_some_and(|m| m.abs() <= MOM_MID_BAND),
 	},
 	Trait {
 		category: Category::Momentum,
 		relevance: 2,
+		invalidates_others: true,
 		hits: |s| s.market_cap.is_some_and(|mc| mc > LARGE_CAP),
 	},
 	Trait {
 		category: Category::Manipulation,
 		relevance: 2,
+		invalidates_others: false,
 		hits: |s| matches!((s.oi_value, s.market_cap), (Some(oi), Some(mc)) if oi > mc),
 	},
 	Trait {
 		category: Category::Liquidations,
 		relevance: 2,
+		invalidates_others: false,
 		hits: |s| matches!((s.oi_value, s.market_cap), (Some(oi), Some(mc)) if oi > mc / 3.0) && s.change_15m.is_some_and(|c| c < CASCADE_DROP),
 	},
 ];
@@ -118,10 +125,22 @@ impl Classified {
 	fn vote(s: &Situation) -> Self {
 		let mut w = [0.0; CATEGORIES.len()];
 		for t in TRAITS {
-			if (t.hits)(s) {
-				w[CATEGORIES.iter().position(|c| *c == t.category).expect("CATEGORIES is the wire order")] += f64::from(t.relevance);
+			if !(t.hits)(s) {
+				continue;
+			}
+			let own = CATEGORIES.iter().position(|c| *c == t.category).expect("CATEGORIES is the wire order");
+			let r = f64::from(t.relevance);
+			for (c, x) in w.iter_mut().enumerate() {
+				*x += if c == own {
+					r
+				} else if t.invalidates_others {
+					-r
+				} else {
+					0.0
+				};
 			}
 		}
+		let w = w.map(|x| x.max(0.0));
 		let total: f64 = w.iter().sum();
 		assert!(total > 0.0, "the None trait votes on exactly the reads no other trait can be evaluated against");
 		let q = QUALITIES.iter().position(|x| *x == PINNED).expect("QUALITIES is the wire order");
@@ -159,6 +178,10 @@ struct Situation {
 struct Trait {
 	category: Category,
 	relevance: u8,
+	/// The read argues *against* every other category as hard as it argues for its own — a large cap
+	/// is not evidence for momentum so much as evidence the rest are the wrong story. Floored at
+	/// zero, so a category talked down past nothing is simply out.
+	invalidates_others: bool,
 	hits: fn(&Situation) -> bool,
 }
 
