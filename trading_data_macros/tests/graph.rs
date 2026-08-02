@@ -292,3 +292,22 @@ fn one_buffer_joins_both_reaches() {
 
 	assert!(BG::NODES.iter().any(|n| n.starts_with("Buffer<")), "the buffered series is a node of the frame: {:?}", BG::NODES);
 }
+
+/// The same node library asked for one output, and a root nothing reaches.
+graph! {
+	struct SmallG;
+	batches SBatches;
+	roots { src: Src[Tick], trig: Trig[Pulse] };
+	out SOut;
+	outputs { last: Last }
+}
+
+#[test]
+fn an_output_nobody_reaches_is_not_built() {
+	// the whole graph: `Sum3` and `Ratio` are not upstream of `Last`, so they are not built, and the
+	// buffer they shared is sized off the one consumer left asking.
+	assert_eq!(SmallG::NODES, ["Buffer<Src>", "Last"]);
+
+	// the second root is declared, is a field of `SBatches`, and is never loaded.
+	assert_eq!(SmallG::required_events(), vec![TypeId::of::<Tick>()]);
+}

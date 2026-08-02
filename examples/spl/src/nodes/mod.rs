@@ -101,7 +101,7 @@ pub use deprecator::{Deprecator, Intent, TrailingStop};
 pub use imbalance::Imbalance;
 pub use momentum::{MOM_PERIODS, Momentum, mom_cap};
 pub use oi_delta::{OiDelta5m, OiDelta15m};
-pub use rsi::{AvgGain, AvgLoss, Rsi, RsiDelta, RsiSeries};
+pub use rsi::{AvgGain, AvgLoss, Knobs, Rsi, RsiDelta, RsiSeries};
 pub use rsi_screener::RsiScreener;
 pub use spread::Spread;
 pub use std_screener::StdScreener;
@@ -128,20 +128,15 @@ pub use volume_4h::Volume4h;
 
 // a buffer's reach is written where the dep is, and lands here — so what those reaches are spelled
 // in has to be in scope here too.
-use crate::nodes::{change_3m::SPAN_3M, oi_delta::OI_REACH};
+use crate::nodes::{change_1d::REACH_1D, change_3m::SPAN_3M, oi_delta::OI_REACH};
 
 trading_data::graph! {
 	pub struct Graph;
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape], oi: OiRoot[Oi], mc: McRoot[Mc] };
 	out TickOut;
-	// `target_q`, and the price it is read against.
-	outputs { deprecator: Deprecator, bar_1m: Bar1m }
+	outputs { deprecator: Deprecator, rsi: Rsi }
 }
-
-// declared last: a dep shim is textually scoped, and a child module sees the ones already in scope
-// where it is declared.
-pub mod closure;
 
 /// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that
 /// declined this tick is not a publish, so the cached level stands.
