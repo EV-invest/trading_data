@@ -199,9 +199,8 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols] };
 	out TickOut;
-	outputs { rsi: Rsi14 }
-	// `main.rs`'s day-end levels and the exact/FD witness — nothing downstream reads either.
-	observe { bar: Bar1m, cvd: Cvd, lambda: Lambda1m, vol_usd_1h: VolUsd1h, signal: Signal }
+	// `main.rs` reads every one of these: the day-end levels, and `Signal` through the exact/FD witness.
+	outputs { rsi: Rsi14, bar: Bar1m, cvd: Cvd, lambda: Lambda1m, vol_usd_1h: VolUsd1h, signal: Signal }
 }
 
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it

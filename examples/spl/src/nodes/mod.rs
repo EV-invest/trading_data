@@ -128,21 +128,15 @@ pub use volume_4h::Volume4h;
 
 // a buffer's reach is written where the dep is, and lands here — so what those reaches are spelled
 // in has to be in scope here too.
-use crate::nodes::{change_1d::REACH_1D, change_3m::SPAN_3M, oi_delta::OI_REACH};
+use crate::nodes::{change_3m::SPAN_3M, oi_delta::OI_REACH};
 
 trading_data::graph! {
 	pub struct Graph;
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape], oi: OiRoot[Oi], mc: McRoot[Mc] };
 	out TickOut;
-	outputs { deprecator: Deprecator }
-	// Nothing downstream of `target_q` reads these: they are `main.rs`'s checks and the viz, which is
-	// a legitimate reason for a node to exist and a bad one to leave implicit.
-	observe {
-		bar_1m: Bar1m, bar_5m: Bar5m, change_1d: Change1d, change_3m: Change3m, volume_1m: Volume1m, volume_1h: Volume1h, volume_4h: Volume4h, rsi_delta: RsiDelta,
-		avg_gain: AvgGain, avg_loss: AvgLoss, rsi: Rsi, atr: Atr, momentum: Momentum, oi_delta_5m: OiDelta5m, oi_delta_15m: OiDelta15m,
-		std_screener: Screener, classify: Classify, armed: Armed<Deprecator>, book_top: BookTop, imbalance: Imbalance, spread: Spread
-	}
+	// `target_q`, and the price it is read against.
+	outputs { deprecator: Deprecator, bar_1m: Bar1m }
 }
 
 // declared last: a dep shim is textually scoped, and a child module sees the ones already in scope

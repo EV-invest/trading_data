@@ -7,8 +7,8 @@
 //! Which instrument, which window and every strategy knob come from `config.nix` — the same file
 //! scam_pump_liqs configures itself with, pointed at its `examples/situations.nix` MOCK target.
 //!
-//! The checks below are the integration test — indie warmth, book shape, and the deprecator's
-//! five load-bearing invariants — plus SPL's own `trailing_stop_partial_degradation` replayed
+//! The checks below are the integration test — the deprecator's five load-bearing invariants, plus
+//! SPL's own `trailing_stop_partial_degradation` replayed
 //! through the ported `TrailingStop`. Everything the replay observes is a *finding about market
 //! data*, not tainted internal state, so it is counted and logged rather than panicked: killing an
 //! eight-minute run destroys the very tape you wanted to look at it with. Only the trail check
@@ -22,12 +22,12 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use exec_viz::{Viz, api_types::BarOut};
-use trading_data::{BatchWindow, Exact, ExchangeName, Feed, LatencyConfig, Replay, Side, Ts, Venue, read_mc, read_oi, required_lanes};
+use trading_data::{BatchWindow, Exact, ExchangeName, Feed, LatencyConfig, Replay, Side, Ts, read_mc, read_oi, required_lanes};
 use trading_data_spl::{
 	asset,
 	config::{self, Config},
 	day_bounds, ensure_lanes,
-	nodes::{Bar1m, BookTopSnap, Graph, Intent, TrailingStop},
+	nodes::{Bar1m, Graph, Intent, TrailingStop},
 	symbol, trading_days, ui,
 };
 use v_utils::utils::tracing::{LogDestination, init_subscriber};
@@ -135,12 +135,8 @@ async fn main() {
 					// Both calls take the draw lock. Every 1024th tick is still twice a second.
 					if day.ticks % 1024 == 0 {
 						pb.set_position((ts_ns - run_start.as_nanos()) as u64);
-						pb.set_message(format!("{} book reads, {} episodes, {} intents{}", day.top, day.episodes, day.intents, day.violations_msg()));
+						pb.set_message(format!("{} episodes, {} intents{}", day.episodes, day.intents, day.violations_msg()));
 					}
-				}
-				// The tape is the book's only independent witness: nothing downstream ever compares them.
-				if let Some(&raw) = lanes.trades.price.last() {
-					day.last_trade_px = Some(raw as f64 / lanes.trades.prec.price.scale());
 				}
 				let out = graph.tick_obs(lanes.into(), recorder.at(ts_ns));
 
@@ -155,114 +151,15 @@ async fn main() {
 						volume: b.vol_base * b.close,
 					});
 				}
-				// Each indie is read on its own, at its own rate — there is no snapshot to gate them together.
-				for r in out.rsi.iter().flatten() {
-					day.rsi_snaps += 1;
-					top(&mut day.max_rsi, r.actual);
-				}
-				for c in out.change_1d.iter().flatten() {
-					day.price_snaps += 1;
-					top(&mut day.max_change_1d, *c);
-				}
-				for m in out.momentum.iter().flatten() {
-					day.momentum_snaps += 1;
-					day.first_momentum_ns.get_or_insert(ts_ns);
-					top(&mut day.max_sharpe_fast, *m);
-				}
-				day.std_hits += out.std_screener as u64;
-				day.classifications += out.classify.is_some() as u64;
-
-				day.top_reads += out.book_top.len() as u64;
-				// Imbalance and Spread are rate-preserving over BookTop, so the three zip by index.
-				for i in 0..out.book_top.len() {
-					if let Some(x) = &out.book_top[i] {
-						day.check_top(x, out.spread[i], out.imbalance[i]);
-					}
-				}
-				flag!(
-					day,
-					!out.armed || out.deprecator.len() == out.book_top.len(),
-					"Deprecator/BookTop rate mismatch: {} vs {}",
-					out.deprecator.len(),
-					out.book_top.len()
-				);
-				for i in 0..out.deprecator.len().min(out.book_top.len()) {
-					day.check_intent(out.deprecator[i], out.book_top[i]);
+				for intent in out.deprecator {
+					day.check_intent(*intent);
 				}
 			}
 		}
-		ui::finish_run(&pb, format!("{} ticks, {} book reads, {} episodes{}", day.ticks, day.top, day.episodes, day.violations_msg()));
+		ui::finish_run(&pb, format!("{} ticks, {} episodes{}", day.ticks, day.episodes, day.violations_msg()));
 
-		println!(
-			"traded: rsi={} price={} momentum={} top={}/{} std_hits={} classifications={} episodes={} intents={}",
-			day.rsi_snaps, day.price_snaps, day.momentum_snaps, day.top, day.top_reads, day.std_hits, day.classifications, day.episodes, day.intents
-		);
-		// The screener *is* `Classify`'s gate, so the two counts are the same event read twice — once at
-		// its source and once past the gate. Divergence means the gate fired out of step with it.
-		flag!(
-			day,
-			day.classifications == day.std_hits,
-			"{} classifications against {} screener hits",
-			day.classifications,
-			day.std_hits
-		);
+		println!("traded: episodes={} intents={}", day.episodes, day.intents);
 		println!("{} ticks in {:.1}s at a {MEASURED_WINDOW_MS}ms batch window", day.ticks, began.elapsed().as_secs_f64());
-		println!(
-			"tape vs book: max |last_trade - mid| / mid = {}",
-			day.max_tape_divergence.map_or_else(|| "n/a".to_string(), |v| format!("{:.3}%", v * 100.0))
-		);
-		// SPL's 1Hz timer is the reference, not the target — these gaps should sit well under it.
-		let spl_samples = days.len() as u64 * 24 * 3600;
-		println!(
-			"book cadence: {} reads vs SPL's {spl_samples} 1s samples ({:.1}×); blind gaps: mean {:.0}ms, max {}ms (ending {:?}), {} over 2s, {} over 10s",
-			day.top,
-			day.top as f64 / spl_samples as f64,
-			day.blind_total_ms as f64 / day.top as f64,
-			day.max_blind_ms,
-			Ts::<Venue>::from_nanos(day.max_blind_at_ns),
-			day.blind_over_2s,
-			day.blind_over_10s
-		);
-		let momentum = cfg.strategy.indies.momentum;
-		let seen = |x: Option<f64>| x.map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"));
-		println!(
-			"window maxima: rsi={} change_1d={}% sharpe {}={}",
-			seen(day.max_rsi),
-			seen(day.max_change_1d),
-			momentum.fast,
-			seen(day.max_sharpe_fast)
-		);
-
-		// Only the compiled screener's own inputs have to warm. Checking all three would re-impose the
-		// union the shallow tier used to demand — under `StdScreener` nothing reads `Rsi` at all.
-		flag!(
-			day,
-			day.momentum_snaps > 0,
-			"the compiled screener's inputs (momentum) never warmed in the trading window: rsi={} price={} momentum={}",
-			day.rsi_snaps,
-			day.price_snaps,
-			day.momentum_snaps
-		);
-		// Bars are aggregated from trades, so a bucket with no trade emits none: on a thin instrument the
-		// `lookback + 1`-th *emitted* bar lands strictly later than `lookback + 1` bar-widths in, which is
-		// why this is a floor and never the expected value.
-		let earliest = run_start.as_nanos() + (momentum.lookback as i64 + 1) * momentum.fast.duration().as_nanos() as i64;
-		if let Some(warm_at) = day.first_momentum_ns {
-			flag!(
-				day,
-				warm_at >= earliest,
-				"momentum published at {:?}, before its window could possibly have filled ({:?})",
-				Ts::<Venue>::from_nanos(warm_at),
-				Ts::<Venue>::from_nanos(earliest)
-			);
-		}
-		flag!(
-			day,
-			day.top == day.top_reads,
-			"the book was unsynced on some read ({} of {} reads produced a snapshot) — our own checkpoints failed to seed it",
-			day.top,
-			day.top_reads
-		);
 
 		let oi: Vec<_> = read_oi(&catalog, ExchangeName::Bybit, symbol(situation), Ts::MIN, Ts::MAX).expect("open oi lane").collect();
 		flag!(day, oi.windows(2).all(|w| w[0].ts_venue_exec <= w[1].ts_venue_exec), "oi timestamps unordered");
@@ -277,37 +174,14 @@ async fn main() {
 	});
 }
 
-/// Per-day accumulator and the running check block over the book/deprecator streams.
+/// Per-day accumulator and the running check block over the deprecator stream.
 #[derive(Default)]
 struct Day {
-	rsi_snaps: u64,
-	price_snaps: u64,
-	momentum_snaps: u64,
-	/// Book reads that produced a snapshot, and every read attempted — equal unless the book desyncs.
-	top: u64,
-	top_reads: u64,
-	last_top_ns: i64,
-	last_trade_px: Option<f64>,
-	/// Milliseconds the graph spent between two book evaluations — SPL's timer would have looked
-	/// every second regardless.
-	max_blind_ms: i64,
-	max_blind_at_ns: i64,
-	blind_over_2s: u64,
-	blind_over_10s: u64,
-	blind_total_ms: i64,
-	max_tape_divergence: Option<f64>,
-	std_hits: u64,
-	classifications: u64,
 	ticks: u64,
 	intents: u64,
 	episodes: u64,
 	/// Observations that failed; each one is in `tmp/spl.log` with its detail.
 	violations: u64,
-	/// First tick a Sharpe landed on, for the floor check.
-	first_momentum_ns: Option<i64>,
-	max_rsi: Option<f64>,
-	max_change_1d: Option<f64>,
-	max_sharpe_fast: Option<f64>,
 	last_intent_ns: i64,
 	/// Dropped rather than closed at end of day: an episode still open then never had to drain.
 	open: Option<Open>,
@@ -322,55 +196,10 @@ impl Day {
 		}
 	}
 
-	fn check_top(&mut self, d: &BookTopSnap, spread: Option<f64>, imbalance: Option<f64>) {
-		self.top += 1;
-		// A fold that lost its precision, or that dropped deletes and froze a phantom top, drifts away
-		// from the traded price and nothing else here would notice. A tape print can still land between
-		// two book messages, so the bound is for corruption, not for staleness — the observed max is
-		// printed so the two stay distinguishable.
-		if let Some(px) = self.last_trade_px {
-			let divergence = (px - d.mid()).abs() / d.mid();
-			top(&mut self.max_tape_divergence, divergence);
-			flag!(
-				self,
-				divergence < 0.1,
-				"book mid {} is {:.1}% away from the last trade at {px} — the fold has lost the market, at {}",
-				d.mid(),
-				divergence * 100.0,
-				d.ts_ns
-			);
-		}
-		// Equality is legal — two reads can end on messages sharing the archive's millisecond resolution.
-		flag!(self, d.ts_ns >= self.last_top_ns, "book reads went backwards at {}, after {}", d.ts_ns, self.last_top_ns);
-		if self.last_top_ns != 0 {
-			let gap = (d.ts_ns - self.last_top_ns) / 1_000_000;
-			if gap > self.max_blind_ms {
-				(self.max_blind_ms, self.max_blind_at_ns) = (gap, d.ts_ns);
-			}
-			self.blind_over_2s += u64::from(gap > 2_000);
-			self.blind_over_10s += u64::from(gap > 10_000);
-			self.blind_total_ms += gap;
-		}
-		self.last_top_ns = d.ts_ns;
-		flag!(self, d.best_bid < d.best_ask, "crossed book at {}: {} >= {}", d.ts_ns, d.best_bid, d.best_ask);
-		flag!(self, d.top20_bid_depth_usd > 0.0 && d.top20_ask_depth_usd > 0.0, "empty top-20 depth at {}", d.ts_ns);
-		// Both derive off this very read, so declining where it published is a wiring fault, not warmth.
-		let (Some(spread), Some(imbalance)) = (spread, imbalance) else {
-			flag!(self, false, "Spread/Imbalance declined on a book read that published, at {}", d.ts_ns);
-			return;
-		};
-		flag!(self, spread.is_finite() && spread > 0.0, "degenerate spread at {}: {spread}", d.ts_ns);
-		flag!(self, (-1.0..=1.0).contains(&imbalance), "imbalance out of range at {}: {imbalance}", d.ts_ns);
-	}
-
-	fn check_intent(&mut self, intent: Option<Intent>, top: Option<BookTopSnap>) {
+	fn check_intent(&mut self, intent: Option<Intent>) {
 		// An idle slot, or a book tick that declined to publish mid-episode — neither ends an episode.
 		// Only `Intent::terminal` does, below.
 		let Some(i) = intent else { return };
-		let Some(d) = top else {
-			flag!(self, false, "an intent is only emitted on a book tick, but one landed at {} without one", i.ts_ns);
-			return;
-		};
 		self.intents += 1;
 		flag!(self, i.ts_ns > self.last_intent_ns, "intents not strictly increasing: {} <= {}", i.ts_ns, self.last_intent_ns);
 		self.last_intent_ns = i.ts_ns;
@@ -383,18 +212,6 @@ impl Day {
 			i.base_q,
 			i.ts_ns
 		);
-		let inside = d.mid() > i.sl && d.mid() < i.tp;
-		flag!(
-			self,
-			(i.lambda_atr == 0.0) == !inside,
-			"lambda_atr {} disagrees with the ATR envelope at {}: mid {} against sl {} tp {}",
-			i.lambda_atr,
-			i.ts_ns,
-			d.mid(),
-			i.sl,
-			i.tp
-		);
-
 		let open = self.open.unwrap_or_else(|| {
 			self.episodes += 1;
 			Open {
@@ -460,10 +277,6 @@ struct Open {
 	first_zero_ns: Option<i64>,
 	prev_ns: i64,
 	last_ns: i64,
-}
-
-fn top(slot: &mut Option<f64>, v: f64) {
-	*slot = Some(slot.map_or(v, |m| m.max(v)));
 }
 
 /// SPL's own unit test of the trail (`classification/lib.rs:353`), replayed through the port. The

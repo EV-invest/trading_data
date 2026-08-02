@@ -62,33 +62,13 @@ impl Emit for BookFlow {
 }
 slice_nudge!(BookFlow, f64);
 
-/// The book read as a level: `None` until it is synced, which is also what makes it gateable.
-#[derive(Clone, Default)]
-pub struct Spread;
-impl Cell for Spread {
-	type Out<'t> = &'t [Option<f64>];
-}
-#[node]
-impl Emit for Spread {
-	type Deps = (trading_data::Book,);
-
-	fn emit(&mut self, (book,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
-		out.push(book.and_then(|b| {
-			let (bid, ask) = (b.best_bid()?, b.best_ask()?);
-			Some((ask.0 - bid.0).as_f64())
-		}));
-	}
-}
-slice_nudge!(Spread, Option<f64>);
-
 trading_data::graph! {
 	pub struct Graph;
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape] };
 	out TickOut;
-	outputs { cvd: Cvd, book_flow: BookFlow }
-	// The viz reads the spread and nothing else does; `book` is what the live≡replay check compares.
-	observe { spread: Spread, book: trading_data::Book }
+	// `book` is what the live≡replay check compares.
+	outputs { cvd: Cvd, book_flow: BookFlow, book: trading_data::Book }
 }
 
 impl<'t> From<Lanes<'t>> for Batches<'t> {

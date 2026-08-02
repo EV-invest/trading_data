@@ -218,8 +218,7 @@ graph! {
 	batches Batches;
 	roots { trig: Trig[Pulse], feed: Feed[Pulse], sw: Sw[bool] };
 	out GOut;
-	outputs { deprec: Deprec }
-	observe { armed: Armed<Deprec>, leg: Leg, ticks: Ticks, beat: Beat }
+	outputs { deprec: Deprec, armed: Armed<Deprec>, leg: Leg, ticks: Ticks, beat: Beat }
 }
 
 /// One tick's out, owned: `tick` lends the graph for the out's whole lifetime.

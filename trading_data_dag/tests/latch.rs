@@ -134,8 +134,7 @@ graph! {
 	batches Batches;
 	roots { trig: Trig[Pulse] };
 	out GOut;
-	outputs { deprec: Deprec }
-	observe { live: Live, ticks: Ticks }
+	outputs { deprec: Deprec, live: Live, ticks: Ticks }
 }
 
 const PULSE: &[Pulse] = &[Pulse];

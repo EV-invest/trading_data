@@ -26,7 +26,6 @@ fn out(r: syn::Result<proc_macro2::TokenStream>) -> TokenStream {
 ///     roots { trades: Trades[Trade], oi: OiRoot[Oi] };
 ///     out TickOut;
 ///     outputs { cvd: Cvd }                   // what the graph is for
-///     observe { bar: Bar1m }                 // read by the app or the viz only
 /// }
 /// ```
 ///

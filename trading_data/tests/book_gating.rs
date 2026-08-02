@@ -90,8 +90,7 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape] };
 	out GOut;
-	outputs { mid: Mid }
-	observe { book: GatedBook }
+	outputs { mid: Mid, book: GatedBook }
 }
 
 fn anchor(bids: &[(i32, u32)], asks: &[(i32, u32)]) -> BookShape {

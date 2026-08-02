@@ -107,7 +107,7 @@ pub struct Root {
 	pub event: TokenStream,
 }
 
-/// A `outputs`/`observe` entry: the name the app reads it under, and the cell.
+/// An `outputs` entry: the name the app reads it under, and the cell.
 pub struct Named {
 	pub field: Ident,
 	pub ty: TokenStream,
@@ -164,7 +164,7 @@ pub struct State {
 	/// Post-order — the topological order the sweep is emitted in.
 	pub order: Vec<String>,
 	pub bufs: Vec<Buf>,
-	/// The `outputs`/`observe` cells not yet seeded into the walk.
+	/// The `outputs` cells not yet seeded into the walk.
 	pub queue: Vec<Dep>,
 }
 

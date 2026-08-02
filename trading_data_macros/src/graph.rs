@@ -1,5 +1,5 @@
-//! `graph!` — the declaration. It states the roots, the outputs and what else is worth reading; the
-//! node set, its order, its buffers and their sizes are the driver's job.
+//! `graph!` — the declaration. It states the roots and the outputs; the node set, its order, its
+//! buffers and their sizes are the driver's job.
 
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream};
@@ -8,7 +8,6 @@ use syn::{
 	Ident, Token, Type, Visibility, braced, bracketed,
 	parse::{Parse, ParseStream},
 	punctuated::Punctuated,
-	token,
 };
 
 use crate::{
@@ -21,7 +20,6 @@ mod kw {
 	syn::custom_keyword!(roots);
 	syn::custom_keyword!(out);
 	syn::custom_keyword!(outputs);
-	syn::custom_keyword!(observe);
 }
 
 /// `field: Ty [Event]` — a root cell and the event type its slice carries.
@@ -90,19 +88,12 @@ impl Parse for GraphDef {
 		input.parse::<kw::outputs>()?;
 		let content;
 		braced!(content in input);
-		let mut named: Vec<NamedDef> = Punctuated::<NamedDef, Token![,]>::parse_terminated(&content)?.into_iter().collect();
+		let named: Vec<NamedDef> = Punctuated::<NamedDef, Token![,]>::parse_terminated(&content)?.into_iter().collect();
 		if named.is_empty() {
 			return Err(syn::Error::new(
 				input.span(),
 				"graph! needs at least one output: a graph that produces nothing is built out of nothing",
 			));
-		}
-
-		if input.peek(kw::observe) && input.peek2(token::Brace) {
-			input.parse::<kw::observe>()?;
-			let content;
-			braced!(content in input);
-			named.extend(Punctuated::<NamedDef, Token![,]>::parse_terminated(&content)?);
 		}
 
 		Ok(GraphDef {

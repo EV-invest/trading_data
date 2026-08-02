@@ -117,9 +117,8 @@ graph! {
 	batches Batches;
 	roots { src: Src[f64] };
 	out GOut;
-	outputs { sum3: Sum3 }
 	// the frame's retention is the join of every read of it, and `Elems(3)` is the deepest here.
-	observe { split: Split, level: Level, hist: Buffer<Src, { Horizon::Elems(3) }> }
+	outputs { sum3: Sum3, split: Split, level: Level, hist: Buffer<Src, { Horizon::Elems(3) }> }
 }
 
 /// Two consumers of one series at different reaches. `all()` must answer at the *declared* one, or a
@@ -332,8 +331,7 @@ mod revive {
 		batches LBatches;
 		roots { src: Src[f64], trig: Trig[u32] };
 		out LOut;
-		outputs { episodic: Episodic }
-		observe { hist: Buffer<Src, { Horizon::Elems(3) }> }
+		outputs { episodic: Episodic, hist: Buffer<Src, { Horizon::Elems(3) }> }
 	}
 
 	const ARM: &[f64] = &[1.0];
