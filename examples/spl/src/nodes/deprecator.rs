@@ -1,17 +1,14 @@
 use core::fmt;
 
-use trading_data::{Armed, Cell, Emit, EmitOuts, Episode, Episodic, Flat, Gating, Glance, Plot, Side, TriggerOut, node, slice_nudge};
+use trading_data::{Armed, Cell, Direction, Emit, EmitOuts, Episode, Episodic, Flat, Gating, Glance, Plot, Side, TriggerOut, node, slice_nudge};
 
 use super::{
 	atr::Atr,
 	book_top::BookTop,
-	classify::{Classified, Classify},
+	decision::{Decided, Decision},
 	latest,
 };
 use crate::config::strategy;
-
-/// SPL's `execution::RISK_FRACTION`: fraction of equity committed per entry.
-const RISK_FRACTION: f64 = 0.03;
 
 /// Per-book-tick trailing term: ratchets the favourable extreme and degrades linearly with the retrace
 /// from it — certainty 0.0 at the extreme, 1.0 at `distance`. Certainty itself ratchets, so
@@ -126,7 +123,7 @@ impl Glance for Intent {
 pub struct Deprecator {
 	state: State,
 	last_atr: Option<f64>,
-	last_classify: Option<Classified>,
+	last_decision: Option<Decided>,
 }
 #[derive(Clone)]
 struct Active {
@@ -150,7 +147,7 @@ impl Cell for Deprecator {
 }
 #[node]
 impl Emit for Deprecator {
-	type Deps = (Gating<Armed<Deprecator>>, Classify, Atr, BookTop);
+	type Deps = (Gating<Armed<Deprecator>>, Decision, Atr, BookTop);
 
 	const PLOTS: &'static [Plot] = &[
 		Plot {
@@ -166,16 +163,16 @@ impl Emit for Deprecator {
 		},
 	];
 
-	fn emit(&mut self, (armed, classify, atr, top): EmitOuts<'_, Self>, out: &mut Vec<Option<Intent>>) {
+	fn emit(&mut self, (armed, decision, atr, top): EmitOuts<'_, Self>, out: &mut Vec<Option<Intent>>) {
 		assert!(armed, "a gating dep reads true inside `emit`");
 		let liq = &strategy().classification.liquidations;
 		latest(&mut self.last_atr, atr, top.len());
-		// The arming tick and the ticks that act on it are different lanes: `Classify` is trade-clocked,
+		// The arming tick and the ticks that act on it are different lanes: `Decision` is trade-clocked,
 		// and every book tick that could enter on it is a later one. The latch carries the *fact* of the
 		// hit across them, this carries its content — and the commutation reset drops both together, so
-		// no episode enters on the classification of the one before it.
-		if classify.is_some() {
-			self.last_classify = classify;
+		// no episode enters on the decision of the one before it.
+		if decision.is_some_and(|d| d.direction != Direction::Flat) {
+			self.last_decision = decision;
 		}
 
 		for d in top {
@@ -183,19 +180,12 @@ impl Emit for Deprecator {
 				out.push(None);
 				continue;
 			};
-			//TODO: unreachable — see `Lanes`. `classify` is only `Some` on a trade-clocked tick and this
-			// loop only runs on a book-clocked one, so `State::Idle` never flips.
-			//REVIEW
-			if matches!(self.state, State::Idle) && self.last_classify.is_some() {
+			if let (State::Idle, Some(dec)) = (&self.state, self.last_decision) {
 				let entry_price = d.mid();
-				//TODO: real selection over the full distribution; derive the side from the classification
-				// context (e.g. cascade direction) rather than pinning it here.
-				let side = Side::Buy;
+				let side = Side::try_from(dec.direction).expect("the latch arms on a non-flat direction");
 				self.state = State::Active(Active {
 					side,
-					//TODO: scale RISK_FRACTION by certainty × quality via a historic-returns lookup.
-					// SPL sizes off live portfolio equity; the simulated venue's seed is the honest stand-in.
-					base_q: RISK_FRACTION * crate::config::config().backtest.starting_balance / entry_price,
+					base_q: *dec.size / entry_price,
 					entry_price,
 					trail: TrailingStop::new(side, entry_price * *liq.trail_pct, *liq.trail_severity),
 					drain_deadline_ns: None,
@@ -251,9 +241,9 @@ slice_nudge!(Deprecator, Option<Intent>);
 
 #[node]
 impl Episodic for Deprecator {
-	type Trigger = Classify;
+	type Trigger = Decision;
 
-	fn arms<'t>(c: TriggerOut<'t, Self>) -> bool {
-		c.is_some()
+	fn arms<'t>(d: TriggerOut<'t, Self>) -> bool {
+		d.is_some_and(|d| d.direction != Direction::Flat)
 	}
 }

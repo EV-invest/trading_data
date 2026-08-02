@@ -58,6 +58,37 @@ impl<'de> Deserialize<'de> for Side {
 	}
 }
 
+/// A position's sign. `Flat` is a decision — that there is nothing here — where `None` upstream is
+/// the absence of one.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum Direction {
+	Long,
+	#[default]
+	Flat,
+	Short,
+}
+
+impl From<Side> for Direction {
+	fn from(s: Side) -> Self {
+		match s {
+			Side::Buy => Direction::Long,
+			Side::Sell => Direction::Short,
+		}
+	}
+}
+
+impl TryFrom<Direction> for Side {
+	type Error = String;
+
+	fn try_from(d: Direction) -> Result<Self, Self::Error> {
+		match d {
+			Direction::Long => Ok(Side::Buy),
+			Direction::Short => Ok(Side::Sell),
+			Direction::Flat => Err("Flat has no side".to_owned()),
+		}
+	}
+}
+
 impl std::ops::Not for Side {
 	type Output = Side;
 

@@ -16,7 +16,7 @@ use std::sync::{
 
 use tempfile::tempdir;
 use trading_data_core::{Aggregate, ExchangeName, InnerTrade, Instrument, Local, Precision, PrecisionPriceQty, Price, Qty, Side, Span, Symbol, Ts, Venue};
-use trading_data_persistence::{BatchTrades, BatchWindow, Book, BookShape, BookUpdate, Catalog, Clock, DeltaFrame, Exact, Feed, LaneKind, LatencyConfig, Live, Oi, Replay};
+use trading_data_persistence::{BatchTrades, Book, BookShape, BookUpdate, Catalog, Clock, DeltaFrame, Exact, Feed, LaneKind, LatencyConfig, Live, Oi, ReadClock, Replay};
 
 /// Monotonic synthetic clock: each read advances 1ms, so live arrival stamps are strictly
 /// increasing across lanes and the recording replays deterministically.
@@ -34,7 +34,7 @@ const PREC: PrecisionPriceQty = PrecisionPriceQty {
 const LANES: &[LaneKind] = &[LaneKind::Trades, LaneKind::BookDeltas, LaneKind::BookAnchors, LaneKind::Oi];
 /// A few clock ticks (`EventClock` steps 1ms a read), so runs group more than one message but stay
 /// short — a short run weaves across lanes more often, which is what these asserts are about.
-const WINDOW: BatchWindow = BatchWindow::from(Exact::from_nanos(5_000_000));
+const CLOCK: ReadClock = ReadClock::from(Exact::from_nanos(5_000_000));
 
 fn symbol() -> Symbol {
 	Symbol::new("BTC-USDT".try_into().expect("static pair"), Instrument::Perp)
@@ -126,7 +126,7 @@ fn main() {
 
 	// --- record a live session ---
 	let live_summary = {
-		let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(), PREC, true, clock.clone(), WINDOW);
+		let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(), PREC, true, clock.clone(), CLOCK);
 		let sink = live.sink();
 
 		// interleave lanes so the weaver actually merges non-trivially.
@@ -158,7 +158,7 @@ fn main() {
 		p997: std::time::Duration::from_millis(90),
 		seed: 1,
 	};
-	let mut replay = Replay::new(&catalog, ExchangeName::Bybit, symbol(), Ts::from_nanos(0), Ts::from_nanos(i64::MAX), LANES, latency, WINDOW);
+	let mut replay = Replay::new(&catalog, ExchangeName::Bybit, symbol(), Ts::from_nanos(0), Ts::from_nanos(i64::MAX), LANES, latency, CLOCK);
 	let replay_summary = collect(&mut replay);
 
 	assert_eq!(live_summary, replay_summary, "live and replay streams diverged");
@@ -187,7 +187,7 @@ fn concurrent_streaming_matches_replay() {
 	let catalog = Catalog::new(dir.path());
 	let clock = Arc::new(EventClock(AtomicI64::new(1_000_000_000)));
 
-	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(), PREC, true, clock, WINDOW);
+	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(), PREC, true, clock, CLOCK);
 	let sink = live.sink();
 	let producer = thread::spawn(move || {
 		for i in 0..40u64 {
@@ -217,7 +217,7 @@ fn concurrent_streaming_matches_replay() {
 		Ts::from_nanos(i64::MAX),
 		&[LaneKind::Trades, LaneKind::Oi],
 		latency,
-		WINDOW,
+		CLOCK,
 	);
 	let replay_flat = flat(&mut replay);
 

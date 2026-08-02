@@ -70,6 +70,8 @@ mod change_3m;
 #[macro_use]
 mod classify;
 #[macro_use]
+mod decision;
+#[macro_use]
 mod deprecator;
 #[macro_use]
 mod imbalance;
@@ -97,6 +99,7 @@ pub use book_top::{BookTop, BookTopSnap};
 pub use change_1d::Change1d;
 pub use change_3m::Change3m;
 pub use classify::{Category, Classified, Classify, Quality};
+pub use decision::{Decided, Decision};
 pub use deprecator::{Deprecator, Intent, TrailingStop};
 pub use imbalance::Imbalance;
 pub use momentum::{MOM_PERIODS, Momentum, mom_cap};

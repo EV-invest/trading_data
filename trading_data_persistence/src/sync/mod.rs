@@ -19,7 +19,7 @@ use std::sync::{
 };
 
 use trading_data_core::{
-	Arrival, Asset, BatchTrades, BatchWindow, BookShape, BookUpdate, DeltaBuf, DeltaFrame, Exact, ExchangeName, Local, PrecisionPriceQty, ShadowBook, Symbol, TradeBuf, TradeCols, Ts, Venue,
+	Arrival, Asset, BatchTrades, BookShape, BookUpdate, DeltaBuf, DeltaFrame, Exact, ExchangeName, Local, PrecisionPriceQty, ReadClock, ShadowBook, Symbol, TradeBuf, TradeCols, Ts, Venue,
 };
 use v_utils::distributions::LatencyConfig;
 
@@ -48,7 +48,6 @@ pub enum LaneKind {
 	Mc,
 }
 
-//TODO!!!!!!!: exactly one lane is non-empty per step, so trades and deltas can never share a tick — measured over a 2-day replay: 2736 ticks carried a 1m bar, 729100 carried a book read, 0 carried both — which silently makes unsatisfiable any node condition that reads two lanes at once, and `Deprecator`'s entry (a classification off the trade clock, an entry price off the book) is exactly that, so it has been emitting zero intents against 310 screener hits; a batch window cannot fix this because it caps a run rather than merging lanes, and neither can widening `Lanes`, because a push feed decides *for* the graph what a tick contains — we need to go fully pull-based, where a node asks each input for its value at the tick it is being advanced over and a rate is something the node declares rather than something the weaver happens to deliver.
 pub struct Lanes<'a> {
 	pub arrival: Arrival,
 	pub ts_venue: Ts<Venue>,
@@ -210,12 +209,12 @@ struct Weaver {
 	/// carried into the range sorts before everything), so an epoch-defaulted watermark would read
 	/// the very first emission as out-of-order.
 	prev_emit: Arrival = Arrival::MIN,
-	window: BatchWindow,
+	clock: ReadClock,
 }
 
 impl Weaver {
-	fn new(window: BatchWindow) -> Self {
-		Self { window, ..Self::default() }
+	fn new(clock: ReadClock) -> Self {
+		Self { clock, ..Self::default() }
 	}
 
 	fn is_empty(&self) -> bool {
@@ -237,7 +236,9 @@ impl Weaver {
 		let bound = (0..heads.len()).filter(|&i| i != winner).filter_map(|i| heads[i]).min().unwrap_or(Arrival::from_nanos(i64::MAX));
 		assert!(win_ts >= self.prev_emit, "weaver emitted out of arrival order: {win_ts:?} < {:?}", self.prev_emit);
 
-		let bound = bound.min((self.prev_emit + self.window).max(win_ts));
+		// The cell is `win_ts`'s own, not one measured off the last emission: a run must group the same
+		// way whether the feed was busy or idle before it.
+		let bound = bound.min(self.clock.cell_end(win_ts));
 
 		let (mut t, mut d, mut a, mut o, mut m) = ((0, 0), (0, 0), (0, 0), (0, 0), (0, 0));
 		let ts_venue = match winner {
@@ -315,8 +316,8 @@ impl Replay {
 	/// Each parameter is a distinct thing the caller has to state; a config struct would only rename
 	/// the same eight.
 	#[allow(clippy::too_many_arguments)]
-	pub fn new(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: Ts<Venue>, end: Ts<Venue>, lanes: &[LaneKind], latency: LatencyConfig, window: BatchWindow) -> Self {
-		let mut weaver = Weaver::new(window);
+	pub fn new(catalog: &Catalog, exchange: ExchangeName, symbol: Symbol, start: Ts<Venue>, end: Ts<Venue>, lanes: &[LaneKind], latency: LatencyConfig, read: ReadClock) -> Self {
+		let mut weaver = Weaver::new(read);
 		let sampler = |lane: LaneKind| Some(latency.sampler(&format!("{lane:?}:{symbol}")));
 		// No file under any of `keys` leaves the lane's precision unknown, and a default would scale
 		// every raw price and qty by 1 — wrong by whole orders of magnitude, on output that still
@@ -474,7 +475,7 @@ pub struct Live {
 }
 
 impl Live {
-	pub fn new(catalog: Catalog, exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, record: bool, clock: Arc<dyn Clock>, window: BatchWindow) -> Self {
+	pub fn new(catalog: Catalog, exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, record: bool, clock: Arc<dyn Clock>, read: ReadClock) -> Self {
 		let (tx, rx) = channel();
 		let record = record.then(|| {
 			let asset = Asset::new(symbol.pair.base().to_string());
@@ -487,7 +488,7 @@ impl Live {
 				catalog,
 			}
 		});
-		let mut weaver = Weaver::new(window);
+		let mut weaver = Weaver::new(read);
 		weaver.trades.buf.prec = prec;
 		weaver.deltas.buf.prec = prec;
 		Self {

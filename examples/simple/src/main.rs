@@ -10,7 +10,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use exec_viz::{Viz, api_types::BarOut};
-use trading_data::{BatchWindow, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, Replay, required_lanes};
+use trading_data::{Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, ReadClock, Replay, required_lanes};
 use trading_data_simple::{
 	day_bounds, ensure_catalog,
 	nodes::{Graph, M1},
@@ -25,7 +25,7 @@ const ORDINAL: u16 = 1;
 const SCROLLBACK: usize = 20_000;
 /// Coarse on purpose: nothing here is cadence-sensitive, and the FD observer runs per node per tick
 /// — this example's cost driver is how often it looks, not how finely.
-const WINDOW: BatchWindow = BatchWindow::from(Exact::from_nanos(60_000_000_000));
+const CLOCK: ReadClock = ReadClock::from(Exact::from_nanos(60_000_000_000));
 
 #[tokio::main]
 async fn main() {
@@ -41,7 +41,7 @@ async fn main() {
 		seed: 0,
 	};
 	let (day_start, day_end) = day_bounds();
-	let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), day_start, day_end, &lanes, latency, WINDOW);
+	let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), day_start, day_end, &lanes, latency, CLOCK);
 
 	let mut graph = Graph::default();
 	let viz = Viz::new(Some("Bar:1m"), SCROLLBACK, 60_000);

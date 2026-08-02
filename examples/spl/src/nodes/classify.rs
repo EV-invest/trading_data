@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Horizon, Ink, McRoot, Node, OiRoot, Plot, node, value_nudge};
+use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Horizon, Ink, McRoot, Node, OiRoot, Plot, Usd, node, value_nudge};
 
 use super::{
 	Bar1m, Bar4h, Bar5m, Change1d, Change3m, H4, Imbalance, M5, Screener, Spread, Volume1h, Volume1m,
@@ -16,27 +16,20 @@ const OUTCOMES: usize = CATEGORIES.len() * QUALITIES.len();
 /// this classifier can currently do at all — the value is pinned and every share lands in one
 /// column. Held rather than dropped: sizing reads the quality, and a distribution with no quality
 /// axis has nowhere to put the grader when it arrives.
-//TODO: grade the hit.
 const PINNED: Quality = Quality::A;
-/// The momentum bands, as they stood before there was anything else to read.
 const MOM_HIGH_BAND: f64 = 3.0;
 const MOM_MID_BAND: f64 = 2.0;
 /// Above this a pump is the market moving, not an instrument being worked.
 const LARGE_CAP: f64 = 500e6;
 /// A cascade is a drop, not a move: the liquidations trait wants direction, where the OI ratio it
 /// pairs with is signless.
-//TODO: was read over 15m and is now read over 3m — untuned against the shorter span.
 const CASCADE_DROP: f64 = -7.0;
 /// A day already this far extended has had its move.
-//TODO: untuned.
 const EXTENDED_1D: f64 = 20.0;
 /// A book this wide and leaning this hard is being worked rather than traded.
-//TODO: untuned.
 const WIDE_SPREAD: f64 = 0.1;
-//TODO: untuned.
 const SKEWED_BOOK: f64 = 0.5;
 /// The minute's notional against the standing hour's own per-minute rate.
-//TODO: untuned.
 const VOLUME_SURGE: f64 = 3.0;
 /// The traits reading open interest, market cap and the book weigh double the momentum bands: they
 /// see the position stack the bands can only infer from price.
@@ -144,6 +137,13 @@ pub enum Quality {
 	D,
 	E,
 }
+impl Quality {
+	/// Exactly exponential, as the doc above says: one grade down is one `e` less committed.
+	pub fn scale(self, max: Usd) -> Usd {
+		let steps = QUALITIES.iter().position(|q| *q == self).expect("QUALITIES is the wire order");
+		max * (-(steps as f64)).exp()
+	}
+}
 
 /// SPL's `ProbabilisticDistribution<Classification>` — a probability per `(category, quality)`,
 /// totalling 1. Dense where SPL is sparse: the flattening has to place every slot regardless, so an
@@ -179,6 +179,13 @@ impl Classified {
 		}
 		Self(p)
 	}
+
+	/// The likeliest slot and what it is worth — the one read anything acting on the distribution
+	/// takes off it.
+	pub fn modal(&self) -> (Category, Quality, f64) {
+		let (i, p) = self.0.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).expect("OUTCOMES > 0");
+		(CATEGORIES[i / QUALITIES.len()], QUALITIES[i % QUALITIES.len()], *p)
+	}
 }
 
 /// The seat of the classification subtree, and the anchor it hangs off: [`Screener`] is its gate, so
@@ -186,7 +193,6 @@ impl Classified {
 /// new node onto that same gate as it appears. The rest of the deps are the situation the traits
 /// read — buffered rather than folded, because a gated node cannot own a fold it would miss the
 /// ticks of.
-//TODO: real selection over the full distribution.
 #[derive(Clone, Copy, Default)]
 pub struct Classify;
 /// What the traits are read against. Every field is optional because every one of them can be
@@ -202,9 +208,6 @@ struct Situation {
 	change_3m: Option<f64>,
 	volume_1m: Option<f64>,
 	volume_1h: Option<f64>,
-	/// Book-clocked, where the gate is trades-clocked: `None` on every hit the book did not tick on,
-	/// which is most of them.
-	//TODO: the book legs need a retained reading to be worth voting on.
 	imbalance: Option<f64>,
 	spread: Option<f64>,
 }
@@ -239,8 +242,8 @@ impl Bump for Classified {
 
 impl Glance for Classified {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		let (i, p) = self.0.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).expect("OUTCOMES > 0");
-		write!(f, "{:?}/{:?} {:.0}%", CATEGORIES[i / QUALITIES.len()], QUALITIES[i % QUALITIES.len()], p * 100.0)
+		let (c, q, p) = self.modal();
+		write!(f, "{c:?}/{q:?} {:.0}%", p * 100.0)
 	}
 }
 

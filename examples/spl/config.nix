@@ -37,6 +37,7 @@
     };
 
     classification = {
+      max_size = 20000.0;
       drain_grace = "1m";
       liquidations = {
         atr_sl_x = 2.5;
@@ -48,10 +49,13 @@
   };
 
   backtest = {
-    starting_balance = 100000.0;
     # SPL's `backtest.latency` is *order-command* latency for its simulated venue — execution, which
     # this port stops short of. What a `Replay` needs instead is the arrival latency it hangs on rows
     # that carry no recorded reception, so that is what this is. Same shape, different quantity.
     arrival_latency = { p68 = "25ms"; p95 = "60ms"; p997 = "150ms"; };
+
+    # How coarsely arrival time is cut before the graph is stepped over it. Everything landing in one
+    # cell is handed over as a single tick; the reader never waits for a cell to fill.
+    read_clock = "100ms";
   };
 }

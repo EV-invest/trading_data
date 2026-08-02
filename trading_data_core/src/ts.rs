@@ -119,28 +119,39 @@ impl Arrival {
 	}
 }
 
-/// The most arrival-time one batch may group. Always set — grouping is a property a feed declares,
-/// not one that falls out of which other lane happened to tick.
+/// The rate a feed is read at. Arrival time is cut into cells of this length, and one tick carries
+/// at most one cell: the reader never *waits* for a cell to fill, so a cell that already holds data
+/// is handed over as it stands rather than batched further.
 ///
-/// A newtype rather than a bare [`Exact`] so that offsetting an [`Arrival`] forward by a declared
-/// window is the *only* arithmetic an arrival admits.
+/// Cells are absolute — floored from the epoch, not from the last emission — so which cell an event
+/// falls in is a property of the event alone, identical across runs and independent of what the
+/// feed did before it. Always set: the rate a graph is stepped at is a thing the caller states, not
+/// one that falls out of which lane happened to tick.
+///
+/// A newtype rather than a bare [`Exact`] so that quantizing an [`Arrival`] is the *only*
+/// arithmetic an arrival admits.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub struct BatchWindow(Exact);
+pub struct ReadClock(Exact);
 
-impl BatchWindow {
-	/// One venue message per batch: the degenerate case, not a special path.
-	pub const ZERO: Self = Self(Exact(0));
+impl ReadClock {
+	/// The feed's own rate: every distinct arrival is its own cell. The degenerate case, not a
+	/// special path.
+	pub const EVENT: Self = Self(Exact(0));
 
 	pub const fn from(e: Exact) -> Self {
 		Self(e)
 	}
-}
 
-impl Add<BatchWindow> for Arrival {
-	type Output = Self;
-
-	fn add(self, rhs: BatchWindow) -> Self {
-		Self(self.0.saturating_add(rhs.0.0))
+	/// The last arrival still inside `a`'s cell — the inclusive end of a tick that opens at `a`.
+	/// Saturating, because [`Arrival::MIN`] is a real key (state carried in ahead of a range) and
+	/// flooring it must not wrap.
+	pub fn cell_end(self, a: Arrival) -> Arrival {
+		let step = self.0.0;
+		assert!(step >= 0, "a read clock cannot run backwards, got {step}ns");
+		if step == 0 {
+			return a;
+		}
+		Arrival(a.0.saturating_sub(a.0.rem_euclid(step)).saturating_add(step - 1))
 	}
 }
 
@@ -413,6 +424,18 @@ pub fn to_local(ts: Ts<Venue>, o: Offset<Venue>) -> Bounded {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The pre-range anchor is keyed at [`Arrival::MIN`], so every replay that folds a book quantizes
+	/// it on its first tick.
+	#[test]
+	fn cells_are_absolute_and_survive_the_extremes() {
+		let second = ReadClock::from(Exact::from_nanos(1_000_000_000));
+		let a = Arrival::from_nanos(1_500_000_000);
+		assert_eq!(second.cell_end(a), Arrival::from_nanos(1_999_999_999));
+		assert_eq!(second.cell_end(Arrival::from_nanos(1_999_999_999)), Arrival::from_nanos(1_999_999_999));
+		assert!(second.cell_end(Arrival::MIN) < Arrival::from_nanos(0));
+		assert_eq!(ReadClock::EVENT.cell_end(a), a, "an event-rate clock groups nothing");
+	}
 
 	#[test]
 	fn floor_buckets_below_and_is_idempotent() {

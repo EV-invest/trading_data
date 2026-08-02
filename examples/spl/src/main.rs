@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use exec_viz::Viz;
-use trading_data::{BatchWindow, Exact, ExchangeName, Feed, LatencyConfig, Replay, Side, Ts, read_mc, read_oi, required_lanes};
+use trading_data::{Exact, ExchangeName, Feed, LatencyConfig, ReadClock, Replay, Side, Ts, read_mc, read_oi, required_lanes};
 use trading_data_spl::{
 	asset,
 	config::{self, Config},
@@ -56,8 +56,6 @@ const PORT_BASE: u16 = 59990;
 const SCROLLBACK: usize = 20_000;
 const HOUR_NS: i64 = 3600 * 1_000_000_000;
 const DAY_NS: i64 = 24 * HOUR_NS;
-const MEASURED_WINDOW_MS: i64 = 100;
-const MEASURED_WINDOW: BatchWindow = BatchWindow::from(Exact::from_nanos(MEASURED_WINDOW_MS * 1_000_000));
 #[derive(Parser)]
 #[command(about = "scam_pump_liqs as a trading_data graph", long_about = None)]
 struct Cli {
@@ -98,6 +96,7 @@ async fn main() {
 	let catalog = ensure_lanes(&cache, situation);
 
 	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
+	let read_clock = ReadClock::from(Exact::from(cfg.backtest.read_clock.duration()));
 
 	// Every lane, every day, recorded. There is no warmup phase and no horizon to size: a node that
 	// has not seen enough history emits `None`, the same channel it declines on when warm, so nothing
@@ -126,7 +125,7 @@ async fn main() {
 			// new connections stall for that long once per day. Chunking the window across successive
 			// `Replay`s (see the module doc) fixes it, but resets the per-lane latency seed at each
 			// boundary, which moves the run's numbers.
-			let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency, MEASURED_WINDOW);
+			let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency, read_clock);
 			while let Some(lanes) = feed.next() {
 				day.ticks += 1;
 				let ts_ns = lanes.ts_venue.as_nanos();
@@ -150,7 +149,7 @@ async fn main() {
 		ui::finish_run(&pb, format!("{} ticks, {} episodes{}", day.ticks, day.episodes, day.violations_msg()));
 
 		println!("traded: episodes={} intents={}", day.episodes, day.intents);
-		println!("{} ticks in {:.1}s at a {MEASURED_WINDOW_MS}ms batch window", day.ticks, began.elapsed().as_secs_f64());
+		println!("{} ticks in {:.1}s on a {} read clock", day.ticks, began.elapsed().as_secs_f64(), cfg.backtest.read_clock);
 
 		let oi: Vec<_> = read_oi(&catalog, ExchangeName::Bybit, symbol(situation), Ts::MIN, Ts::MAX).expect("open oi lane").collect();
 		flag!(day, oi.windows(2).all(|w| w[0].ts_venue_exec <= w[1].ts_venue_exec), "oi timestamps unordered");
@@ -194,7 +193,6 @@ impl Day {
 		self.intents += 1;
 		flag!(self, i.ts_ns > self.last_intent_ns, "intents not strictly increasing: {} <= {}", i.ts_ns, self.last_intent_ns);
 		self.last_intent_ns = i.ts_ns;
-		flag!(self, i.side == Side::Buy, "the ported classification stub hardcodes Buy, got {:?} at {}", i.side, i.ts_ns);
 		flag!(
 			self,
 			(0.0..=i.base_q).contains(&i.target_q),

@@ -26,7 +26,7 @@ use std::{
 
 use indicatif::{MultiProgress, ProgressBar};
 use trading_data::{
-	Aggregate, Asset, BatchWindow, BookShape, BookUpdate, Catalog, Clock, Exact, ExchangeName, Feather, Feed as _, Instrument, Live, Local, Mc, Oi, Pair, PrecisionPriceQty, Row as _, Side,
+	Aggregate, Asset, BookShape, BookUpdate, Catalog, Clock, Exact, ExchangeName, Feather, Feed as _, Instrument, Live, Local, Mc, Oi, Pair, PrecisionPriceQty, ReadClock, Row as _, Side,
 	Sink, Span, Symbol, Trade, TradeBuf, Ts, Venue, read_mc, read_oi, read_trades,
 };
 
@@ -167,9 +167,9 @@ fn ensure_book(cache: &Path, catalog: &Catalog, s: &Situation, mp: &MultiProgres
 	});
 	let prec = s.precision;
 	// The tee writes per ingest, not per weave, so nothing recorded depends on how this session
-	// groups — the coarse window just spares the drain loop an iteration per message.
-	let window = BatchWindow::from(Exact::from_nanos(60_000_000_000));
-	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(s), prec, true, clock.clone(), window);
+	// groups — the coarse clock just spares the drain loop an iteration per message.
+	let read = ReadClock::from(Exact::from_nanos(60_000_000_000));
+	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(s), prec, true, clock.clone(), read);
 	let sink = live.sink();
 	let pump = {
 		let clock = clock.clone();
@@ -293,16 +293,9 @@ fn ensure_mc(catalog: &Catalog, s: &Situation, pb: &ProgressBar) {
 }
 
 /// The pump's cursor over archive time, read by [`Live`] on the consuming thread, plus the
-/// consumer's own cursor so the pump can be held to it.
-///
-/// ponytail: the two threads are unsynchronised, so a fast pump can leave the clock a few emissions
-/// ahead of the event being stamped. Harmless — replay reorders on the *recorded* reception, which
-/// is the stamp itself, so live≡replay holds regardless; the lead only jitters the 60s checkpoint
-/// cadence. Rendezvous the two if that ever needs to be exact.
-//REVIEW: it needs to be exact. The lead is not a few emissions — the pump runs the archive to its
-// end while the consumer is still minutes behind, and every backlogged event is then stamped with
-// the same final reading. Arrivals stop being archive time and become thread scheduling, which is
-// exactly what a declared `BatchWindow` cannot be applied to. Hence `PUMP_LEAD_NS`.
+/// consumer's own cursor so the pump can be held to it: unheld, the pump runs the archive to its end
+/// while the consumer is minutes behind, and every backlogged event is stamped with the same final
+/// reading — arrivals become thread scheduling rather than archive time.
 struct ArchiveClock {
 	pump: AtomicI64,
 	consumed: AtomicI64,

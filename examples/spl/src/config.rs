@@ -9,7 +9,7 @@
 use std::{path::Path, process::Command, sync::OnceLock};
 
 use serde::Deserialize;
-use trading_data::{LatencyConfig, PrecisionPriceQty};
+use trading_data::{LatencyConfig, PrecisionPriceQty, Usd};
 use v_utils::{Timeframe, macros::CompactFormatNamed, percent::PercentU};
 
 /// Panics if read before [`Config::load`] — a node running without its configuration is a wiring
@@ -134,6 +134,8 @@ pub struct StdScreen {
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Classification {
+	/// What a top-grade, certain call commits; every lesser one is a fraction of it.
+	pub max_size: Usd,
 	pub drain_grace: Timeframe,
 	pub liquidations: Liquidations,
 }
@@ -148,10 +150,9 @@ pub struct Liquidations {
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Backtest {
-	/// Equity the position sizes off. SPL reads live portfolio equity; the simulated venue's seed is
-	/// the honest stand-in.
-	pub starting_balance: f64,
 	pub arrival_latency: ArrivalLatency,
+	/// The rate the graph is stepped at — see [`trading_data::ReadClock`].
+	pub read_clock: Timeframe,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
