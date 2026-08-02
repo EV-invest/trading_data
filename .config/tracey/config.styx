@@ -1,0 +1,15 @@
+@schema {id crate:tracey-config@1, cli tracey}
+
+specs (
+  {
+    name trading_data
+    include (docs/spec/**/*.md)
+    impls (
+      {
+        name rust
+        include (trading_data*/**/*.rs examples/**/*.rs)
+        exclude (**/target/**)
+      }
+    )
+  }
+)
