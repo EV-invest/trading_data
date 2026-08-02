@@ -101,20 +101,28 @@ pub use deprecator::{Deprecator, Intent, TrailingStop};
 pub use imbalance::Imbalance;
 pub use momentum::{MOM_PERIODS, Momentum, mom_cap};
 pub use oi_delta::{OiDelta5m, OiDelta15m};
-pub use rsi::{AvgGain, AvgLoss, Knobs, Rsi, RsiDelta, RsiSeries};
+pub use rsi::{AvgGain, AvgLoss, Knobs, RSI_TF, Rsi, RsiDelta, RsiSeries};
 pub use rsi_screener::RsiScreener;
 pub use spread::Spread;
 pub use std_screener::StdScreener;
 use trading_data::{Armed, BookAnchors, BookDeltas, BookShape, DeltaFrame, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
 pub use trading_data::{Bar, RsiValues};
+use v_utils::Timeframe;
 
 // the graph reaches every cell through a shim keyed on its name, and a bare `use` leaves no shim
 // behind — so the series this strategy runs on are aliased rather than imported.
-trading_data::node_alias! { pub Bar1m = trading_data::Bar1m; }
-trading_data::node_alias! { pub Bar5m = trading_data::Bar5m; }
-trading_data::node_alias! { pub Bar15m = trading_data::Bar15m; }
-trading_data::node_alias! { pub Bar1h = trading_data::Bar1h; }
-trading_data::node_alias! { pub Bar4h = trading_data::Bar4h; }
+/// The clocks this strategy runs on, and the whole of what makes its series the periods they are.
+pub const M1: Timeframe = Timeframe::from_str_const("1m");
+pub const M5: Timeframe = Timeframe::from_str_const("5m");
+pub const M15: Timeframe = Timeframe::from_str_const("15m");
+pub const H1: Timeframe = Timeframe::from_str_const("1h");
+pub const H4: Timeframe = Timeframe::from_str_const("4h");
+
+trading_data::node_alias! { pub Bar1m = trading_data::Bars<M1>; }
+trading_data::node_alias! { pub Bar5m = trading_data::Bars<M5>; }
+trading_data::node_alias! { pub Bar15m = trading_data::Bars<M15>; }
+trading_data::node_alias! { pub Bar1h = trading_data::Bars<H1>; }
+trading_data::node_alias! { pub Bar4h = trading_data::Bars<H4>; }
 
 trading_data::node_alias! {
 	/// The compiled screener — the gate `Classify` and everything under it hangs dormant off. The

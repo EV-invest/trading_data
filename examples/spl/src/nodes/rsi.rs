@@ -1,7 +1,12 @@
 use trading_data::RsiSpec;
+use v_utils::Timeframe;
 
-use super::Bar5m;
+use super::{Bar5m, M5};
 use crate::config::strategy;
+
+/// The period [`RsiSeries`] is wired on. `indies.rsi.timeframe` is checked against it rather than
+/// dispatched on — see the alias below.
+pub const RSI_TF: Timeframe = M5;
 
 trading_data::node_alias! {
 	/// Which series the RSI chain runs on. `indies.rsi.timeframe` still *names* it — the timeframe is

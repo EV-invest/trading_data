@@ -38,7 +38,7 @@ pub fn unwrap_dep(ty: &Type) -> (Type, Wrap) {
 		return (ty.clone(), Wrap::Bare);
 	};
 	match seg.ident.to_string().as_str() {
-		"Folding" => (cell.clone(), Wrap::Fold),
+		"Folding" | "Spanning" => (cell.clone(), Wrap::Fold),
 		"Gating" => (cell.clone(), Wrap::Gate),
 		"Buffering" | "Buffer" => (cell.clone(), Wrap::Buf(reach.map(ToTokens::to_token_stream))),
 		_ => (ty.clone(), Wrap::Bare),

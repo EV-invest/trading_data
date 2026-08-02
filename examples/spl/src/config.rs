@@ -53,9 +53,9 @@ impl Config {
 		let tf = parsed.strategy.indies.rsi.timeframe;
 		assert_eq!(
 			tf,
-			crate::nodes::RsiSeries::TF,
+			crate::nodes::RSI_TF,
 			"indies.rsi.timeframe = {tf}, where the RSI chain is wired onto {}",
-			crate::nodes::RsiSeries::TF
+			crate::nodes::RSI_TF
 		);
 		assert!(CONFIG.set(parsed).is_ok(), "Config::load runs once");
 		config()

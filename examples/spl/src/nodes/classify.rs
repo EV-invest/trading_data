@@ -3,7 +3,7 @@ use core::fmt;
 use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Horizon, Ink, McRoot, Node, OiRoot, Plot, node, value_nudge};
 
 use super::{
-	Bar1m, Bar4h, Bar5m, Change1d, Change3m, Imbalance, Screener, Spread, Volume1m, Volume1h,
+	Bar1m, Bar4h, Bar5m, Change1d, Change3m, H4, Imbalance, M5, Screener, Spread, Volume1h, Volume1m,
 	momentum::{self, mom_cap},
 	oi_delta::OI_REACH,
 };
@@ -252,8 +252,8 @@ impl Node for Classify {
 	type Deps = (
 		Gating<Screener>,
 		Bar1m,
-		Buffering<Bar5m, { mom_cap(Bar5m::TF) }>,
-		Buffering<Bar4h, { mom_cap(Bar4h::TF) }>,
+		Buffering<Bar5m, { mom_cap(M5) }>,
+		Buffering<Bar4h, { mom_cap(H4) }>,
 		Change1d,
 		Change3m,
 		Volume1m,

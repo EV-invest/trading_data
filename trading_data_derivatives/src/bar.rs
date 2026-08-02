@@ -1,7 +1,7 @@
 use core::fmt;
 
 use trading_data_core::{Exact, TradeCols, Trades};
-use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Horizon, Stamped, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Glance, Spanning, Stamped, Tag, node, slice_nudge};
 use v_utils::Timeframe;
 
 #[derive(Clone, Copy, Debug)]
@@ -113,14 +113,7 @@ impl Stamped for Bar {
 /// Trades → one item per period *closed*. Rate-changing: a batch spanning two periods emits two, a
 /// partial period emits none (it stays in `state`). The whole of an accumulator is this boundary
 /// walk — `open` and `fold` are all that tells one apart from another.
-fn accumulate<T: Stamped>(
-	state: &mut Option<T>,
-	trades: TradeCols<'_>,
-	tf: Timeframe,
-	out: &mut Vec<T>,
-	open: impl Fn(i64, f64, f64) -> T,
-	fold: impl Fn(&mut T, f64, f64),
-) {
+fn accumulate<T: Stamped>(state: &mut Option<T>, trades: TradeCols<'_>, tf: Timeframe, out: &mut Vec<T>, open: impl Fn(i64, f64, f64) -> T, fold: impl Fn(&mut T, f64, f64)) {
 	// precision is the run's, so the two scales are hoisted once instead of read per trade.
 	let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
 	let step = Exact::from_nanos(tf.duration().as_nanos() as i64);
@@ -170,93 +163,81 @@ pub fn closed_by(bars: &[Bar], deadline: i64) -> &[Bar] {
 	&bars[..bars.partition_point(|b| b.ts_ns() <= deadline)]
 }
 
-/// One named series per timeframe, in three: the two accumulators over trades, and the bar that is
-/// their join. A distinct type per period is what the graph already demands (node identity *is* its
-/// type); naming it after the timeframe is what makes the period legible everywhere the name
-/// surfaces — DAG cards, dep edges, `step_until`. The period is stated once per row here, which is
-/// what makes "same timeframe" a property of the wiring rather than of a consumer's care.
-macro_rules! bars {
-	($($ohlc:ident + $vol:ident => $bars:ident = $tf:literal),+ $(,)?) => { $(
-		#[derive(Clone, Default)]
-		pub struct $ohlc(Option<Ohlc>);
-		impl $ohlc {
-			pub const TF: Timeframe = Timeframe::from_str_const($tf);
-		}
-		impl Cell for $ohlc {
-			type Out<'t> = &'t [Ohlc];
-
-			const NAME: &'static str = concat!("Ohlc:", $tf);
-		}
-		#[node]
-		impl Emit for $ohlc {
-			/// The partial bar is the whole of the state, so the trades it holds reach back exactly
-			/// one period.
-			type Deps = (Folding<Trades, { Horizon::Span(Self::TF) }>,);
-
-			fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Ohlc>) {
-				ohlc(&mut self.0, trades, Self::TF, out);
-			}
-		}
-		slice_nudge!($ohlc, Ohlc);
-
-		#[derive(Clone, Default)]
-		pub struct $vol(Option<Volume>);
-		impl $vol {
-			pub const TF: Timeframe = Timeframe::from_str_const($tf);
-		}
-		impl Cell for $vol {
-			type Out<'t> = &'t [Volume];
-
-			const NAME: &'static str = concat!("Vol:", $tf);
-		}
-		#[node]
-		impl Emit for $vol {
-			type Deps = (Folding<Trades, { Horizon::Span(Self::TF) }>,);
-
-			fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Volume>) {
-				volume(&mut self.0, trades, Self::TF, out);
-			}
-		}
-		slice_nudge!($vol, Volume);
-
-		/// Stateless: both accumulators close a period on the same trade, so the join is this tick's
-		/// two batches zipped.
-		#[derive(Clone, Default)]
-		pub struct $bars;
-		impl $bars {
-			pub const TF: Timeframe = Timeframe::from_str_const($tf);
-		}
-		impl Cell for $bars {
-			type Out<'t> = &'t [Bar];
-
-			const NAME: &'static str = concat!("Bar:", $tf);
-		}
-		#[node]
-		impl Emit for $bars {
-			type Deps = (crate::$ohlc, crate::$vol);
-
-			fn emit(&mut self, (ohlc, vol): EmitOuts<'_, Self>, out: &mut Vec<Bar>) {
-				assert_eq!(ohlc.len(), vol.len(), "one Ohlc and one Volume per period closed");
-				out.extend(ohlc.iter().zip(vol).map(|(o, v)| {
-					assert_eq!(o.ts_close, v.ts_close, "the two accumulators walk one boundary");
-					Bar {
-						ts_close: o.ts_close,
-						open: o.open,
-						high: o.high,
-						low: o.low,
-						close: o.close,
-						vol_base: v.base,
-					}
-				}));
-			}
-		}
-		slice_nudge!($bars, Bar);
-	)+ };
+/// The series over a period, in three: the two accumulators over trades, and the bar that is their
+/// join. The period is a parameter rather than a name the framework pre-blessed — a node's identity
+/// is still its type, and `Bars<M1>` is as distinct from `Bars<M5>` as two newtypes were. Only
+/// [`Tag`] is new: the period has to reach [`Cell::NAME`] for the DAG card to keep saying `Bar:1m`.
+#[derive(Clone, Default)]
+pub struct Ohlcs<const TF: Timeframe>(Option<Ohlc>);
+impl<const TF: Timeframe> Ohlcs<TF> {
+	const TAG: Tag = Tag::new("Ohlc:", TF);
 }
-bars!(
-	Ohlc1m + Vol1m => Bar1m = "1m",
-	Ohlc5m + Vol5m => Bar5m = "5m",
-	Ohlc15m + Vol15m => Bar15m = "15m",
-	Ohlc1h + Vol1h => Bar1h = "1h",
-	Ohlc4h + Vol4h => Bar4h = "4h",
-);
+impl<const TF: Timeframe> Cell for Ohlcs<TF> {
+	type Out<'t> = &'t [Ohlc];
+
+	const NAME: &'static str = Self::TAG.as_str();
+}
+#[node]
+impl<const TF: Timeframe> Emit for Ohlcs<TF> {
+	/// The partial bar is the whole of the state, so the trades it holds reach back exactly one
+	/// period.
+	type Deps = (Spanning<Trades, TF>,);
+
+	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Ohlc>) {
+		ohlc(&mut self.0, trades, TF, out);
+	}
+}
+slice_nudge!([const TF: Timeframe] Ohlcs<TF>, Ohlc);
+
+#[derive(Clone, Default)]
+pub struct Volumes<const TF: Timeframe>(Option<Volume>);
+impl<const TF: Timeframe> Volumes<TF> {
+	const TAG: Tag = Tag::new("Vol:", TF);
+}
+impl<const TF: Timeframe> Cell for Volumes<TF> {
+	type Out<'t> = &'t [Volume];
+
+	const NAME: &'static str = Self::TAG.as_str();
+}
+#[node]
+impl<const TF: Timeframe> Emit for Volumes<TF> {
+	type Deps = (Spanning<Trades, TF>,);
+
+	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Volume>) {
+		volume(&mut self.0, trades, TF, out);
+	}
+}
+slice_nudge!([const TF: Timeframe] Volumes<TF>, Volume);
+
+/// Stateless: both accumulators close a period on the same trade, so the join is this tick's two
+/// batches zipped.
+#[derive(Clone, Default)]
+pub struct Bars<const TF: Timeframe>;
+impl<const TF: Timeframe> Bars<TF> {
+	const TAG: Tag = Tag::new("Bar:", TF);
+}
+impl<const TF: Timeframe> Cell for Bars<TF> {
+	type Out<'t> = &'t [Bar];
+
+	const NAME: &'static str = Self::TAG.as_str();
+}
+#[node]
+impl<const TF: Timeframe> Emit for Bars<TF> {
+	type Deps = (crate::Ohlcs<TF>, crate::Volumes<TF>);
+
+	fn emit(&mut self, (ohlc, vol): EmitOuts<'_, Self>, out: &mut Vec<Bar>) {
+		assert_eq!(ohlc.len(), vol.len(), "one Ohlc and one Volume per period closed");
+		out.extend(ohlc.iter().zip(vol).map(|(o, v)| {
+			assert_eq!(o.ts_close, v.ts_close, "the two accumulators walk one boundary");
+			Bar {
+				ts_close: o.ts_close,
+				open: o.open,
+				high: o.high,
+				low: o.low,
+				close: o.close,
+				vol_base: v.base,
+			}
+		}));
+	}
+}
+slice_nudge!([const TF: Timeframe] Bars<TF>, Bar);

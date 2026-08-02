@@ -41,11 +41,20 @@ fn assoc<'i>(item: &'i ItemImpl, name: &str) -> Option<&'i Type> {
 	})
 }
 
-/// The shim's own name, and the metavariables its caller fills: one `{shim} {type}` pair per generic
-/// parameter, so a dep that *is* a parameter can still say where to ask about it.
+/// The shim's own name, and the metavariables its caller fills: one `{shim} {arg}` pair per generic
+/// parameter, in declaration order, so a dep that *is* a parameter can still say where to ask about
+/// it.
 struct Sig {
 	name: Ident,
-	params: Vec<Ident>,
+	params: Vec<(Ident, bool)>,
+}
+
+impl Sig {
+	/// The substitution list `ty::shimify` rewrites against — const parameters included, so a
+	/// `Spanning<Trades, TF>` dep becomes `Spanning<Trades, $TF>`.
+	fn idents(&self) -> Vec<Ident> {
+		self.params.iter().map(|(i, _)| i.clone()).collect()
+	}
 }
 
 fn signature(item: &ItemImpl, prefix: &str) -> syn::Result<Sig> {
@@ -53,15 +62,18 @@ fn signature(item: &ItemImpl, prefix: &str) -> syn::Result<Sig> {
 		return Err(syn::Error::new_spanned(&item.self_ty, "`#[node]` wants a named cell as the self type"));
 	};
 	let last = &p.path.segments.last().expect("a path has a segment").ident;
-	if let Some(g) = item.generics.const_params().next() {
-		return Err(syn::Error::new_spanned(
-			g,
-			"`#[node]` cannot shim a const-generic node: the driver knows the dag's own generics structurally",
-		));
-	}
 	Ok(Sig {
 		name: Ident::new(&format!("{prefix}{last}"), last.span()),
-		params: item.generics.type_params().map(|p| p.ident.clone()).collect(),
+		params: item
+			.generics
+			.params
+			.iter()
+			.filter_map(|p| match p {
+				syn::GenericParam::Type(t) => Some((t.ident.clone(), false)),
+				syn::GenericParam::Const(c) => Some((c.ident.clone(), true)),
+				syn::GenericParam::Lifetime(_) => None,
+			})
+			.collect(),
 	})
 }
 
@@ -80,9 +92,12 @@ fn dep_shim(ty: &Type, prefix: &str) -> syn::Result<TokenStream> {
 }
 
 fn matcher(sig: &Sig) -> TokenStream {
-	let args = sig.params.iter().map(|p| {
+	let args = sig.params.iter().map(|(p, is_const)| {
 		let shim = Ident::new(&format!("__shim_{p}"), p.span());
-		quote!({ $#shim:path } { $#p:ty })
+		// a const argument is exactly one token tree, and a `:ty` fragment is not known to re-parse
+		// there. The shim slot stays for positional alignment; a const parameter's body never uses it.
+		let arg = if *is_const { quote!($#p:tt) } else { quote!($#p:ty) };
+		quote!({ $#shim:path } { #arg })
 	});
 	quote!(($__driver:path, [ #(#args),* ], @state $($__state:tt)*))
 }
@@ -99,13 +114,13 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 	let sig = signature(&item, "__td_node_")?;
 	let sty = &item.self_ty;
 	// `Self` in a dep resolves against the impl's own self type, which the shim pastes elsewhere.
-	let self_ty = ty::shimify(quote!(#sty), &sig.params, &TokenStream::new());
+	let self_ty = ty::shimify(quote!(#sty), &sig.idents(), &TokenStream::new());
 	let self_subst = self_ty.clone();
 
 	if trait_name == "Episodic" {
 		let trigger = assoc(&item, "Trigger").ok_or_else(|| syn::Error::new_spanned(&item, "`impl Episodic` without `type Trigger`"))?;
 		let shim = dep_shim(trigger, "__td_node_")?;
-		let tty = ty::shimify(quote!(#trigger), &sig.params, &self_subst);
+		let tty = ty::shimify(quote!(#trigger), &sig.idents(), &self_subst);
 		let name = signature(&item, "__td_trigger_")?.name;
 		let m = matcher(&sig);
 		return Ok(quote! {
@@ -140,13 +155,13 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 			let (cell, _) = ty::unwrap_dep(d);
 			// a dep that *is* a parameter has no shim until the caller says: it passes one alongside.
 			let shim = match &cell {
-				Type::Path(p) if p.qself.is_none() && p.path.get_ident().is_some_and(|i| sig.params.contains(i)) => {
+				Type::Path(p) if p.qself.is_none() && p.path.get_ident().is_some_and(|i| sig.idents().contains(i)) => {
 					let m = Ident::new(&format!("__shim_{}", p.path.get_ident().expect("just matched")), Span::call_site());
 					quote!($#m)
 				}
 				_ => dep_shim(&cell, "__td_node_")?,
 			};
-			let dty = ty::shimify(quote!(#d), &sig.params, &self_subst);
+			let dty = ty::shimify(quote!(#d), &sig.idents(), &self_subst);
 			Ok(quote!({ #shim } { #dty }))
 		})
 		.collect::<syn::Result<_>>()?;

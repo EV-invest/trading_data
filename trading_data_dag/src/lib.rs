@@ -135,6 +135,53 @@ impl Horizon {
 	}
 }
 
+/// A [`Cell::NAME`] a timeframe parameter can reach. `NAME` is a `const &'static str`, and nothing
+/// that formats at runtime can produce one — so the digits and the designator are spelled into a
+/// fixed buffer, in an *associated* const, whose value outlives the `NAME` borrowing it.
+pub struct Tag {
+	buf: [u8; 32],
+	len: usize,
+}
+
+impl Tag {
+	pub const fn new(prefix: &str, tf: Timeframe) -> Self {
+		let (mut buf, mut len) = ([0u8; 32], 0);
+		let p = prefix.as_bytes();
+		while len < p.len() {
+			buf[len] = p[len];
+			len += 1;
+		}
+		let designator = tf.designator();
+		let (mut digits, mut d, mut n) = ([0u8; 20], 0, tf.0 / designator.as_millis());
+		while {
+			digits[d] = b'0' + (n % 10) as u8;
+			n /= 10;
+			d += 1;
+			n > 0
+		} {}
+		while d > 0 {
+			d -= 1;
+			buf[len] = digits[d];
+			len += 1;
+		}
+		let u = designator.as_str().as_bytes();
+		let mut i = 0;
+		while i < u.len() {
+			buf[len] = u[i];
+			len += 1;
+			i += 1;
+		}
+		Self { buf, len }
+	}
+
+	pub const fn as_str(&self) -> &str {
+		match core::str::from_utf8(self.buf.split_at(self.len).0) {
+			Ok(s) => s,
+			Err(_) => panic!("digits and a designator are ascii"),
+		}
+	}
+}
+
 /// A retained item's own event time. Required of every [`Buffer`]ed item — a history you cannot
 /// index by time is one you can only read at an assumed cadence, which is the bug [`Horizon::Span`]
 /// replaces.
@@ -150,7 +197,7 @@ pub trait Cell {
 	/// What this cell is called wherever a human reads the graph — cards, edges, `step_until`.
 	/// Defaults to the Rust path, which is right for a type whose *identity* is its name. A cell
 	/// parameterised by a bare number overrides it: `Bars<1>` leaves the reader to guess the unit,
-	/// where `Bar:1m` states it.
+	/// where `Bar:1m` states it — see [`Tag`].
 	const NAME: &'static str = core::any::type_name::<Self>();
 
 	/// How far back a consumer naming this in dep position reads. A bare cell is this tick's batch
@@ -1261,6 +1308,38 @@ impl<'t, C: Cell, const H: Horizon, T> Has<'t, Folding<C, H>, Here> for Cons<'t,
 }
 
 impl<C: Nudge, const H: Horizon> Nudge for Folding<C, H> {
+	type Scratch = C::Scratch;
+
+	fn stage<'t>(out: C::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
+		C::stage(out, s, bump, h)
+	}
+
+	fn view<'l>(s: &'l Self::Scratch) -> C::Out<'l> {
+		C::view(s)
+	}
+}
+
+/// [`Folding`] with the span spelled as the period it is — what a node parameterised by a timeframe
+/// writes in dep position. Its own type because `Folding<C, { Horizon::Span(TF) }>` does not parse:
+/// an enum constructor applied to a generic parameter is rejected in const-argument position, so the
+/// construction moves into an associated const, which is a type.
+pub struct Spanning<C: Cell, const TF: Timeframe>(core::marker::PhantomData<C>);
+
+impl<C: Cell, const TF: Timeframe> Cell for Spanning<C, TF> {
+	type Out<'t> = C::Out<'t>;
+
+	const FOLDED: bool = true;
+	const NAME: &'static str = C::NAME;
+	const REACH: Horizon = Horizon::Span(TF);
+}
+
+impl<'t, C: Cell, const TF: Timeframe, T> Has<'t, Spanning<C, TF>, Here> for Cons<'t, C, T> {
+	fn get(&self) -> C::Out<'t> {
+		self.out
+	}
+}
+
+impl<C: Nudge, const TF: Timeframe> Nudge for Spanning<C, TF> {
 	type Scratch = C::Scratch;
 
 	fn stage<'t>(out: C::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {

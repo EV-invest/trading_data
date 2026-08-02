@@ -4479,6 +4479,7 @@ dependencies = [
  "trading_data_dag",
  "trading_data_derivatives",
  "trading_data_persistence",
+ "v_utils",
 ]
 
 [[package]]

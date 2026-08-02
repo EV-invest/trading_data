@@ -1,7 +1,7 @@
 use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Horizon, Plot, node, slice_nudge};
 use v_utils::Timeframe;
 
-use super::{Bar, Bar4h, Bar5m};
+use super::{Bar, Bar4h, Bar5m, H4, M5};
 use crate::config::strategy;
 
 /// Pine's `* 365`, kept verbatim regardless of bar timeframe — which is why the 4h and 5m Sharpe
@@ -44,8 +44,8 @@ fn sharpe(window: &[Bar]) -> Option<f64> {
 /// The leg the config names, of the two every reader has to carry as deps.
 fn leg<'t>(m5: Hist<'t, Bar>, h4: Hist<'t, Bar>) -> Hist<'t, Bar> {
 	match strategy().indies.momentum.fast {
-		Bar5m::TF => m5,
-		Bar4h::TF => h4,
+		M5 => m5,
+		H4 => h4,
 		_ => unreachable!("`Default` asserted the leg against the series this node buffers"),
 	}
 }
@@ -65,10 +65,10 @@ impl Default for Momentum {
 	fn default() -> Self {
 		let tf = strategy().indies.momentum.fast;
 		assert!(
-			[Bar5m::TF, Bar4h::TF].contains(&tf),
+			[M5, H4].contains(&tf),
 			"indies.momentum.fast = {tf}, over which no window is retained — the graph buffers {} and {}",
-			Bar5m::TF,
-			Bar4h::TF
+			M5,
+			H4
 		);
 		Self
 	}
@@ -78,7 +78,7 @@ impl Cell for Momentum {
 }
 #[node]
 impl Emit for Momentum {
-	type Deps = (Buffering<Bar5m, { mom_cap(Bar5m::TF) }>, Buffering<Bar4h, { mom_cap(Bar4h::TF) }>);
+	type Deps = (Buffering<Bar5m, { mom_cap(M5) }>, Buffering<Bar4h, { mom_cap(H4) }>);
 
 	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &["sharpe"],

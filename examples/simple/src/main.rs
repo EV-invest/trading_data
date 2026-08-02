@@ -10,8 +10,12 @@
 use std::{path::PathBuf, time::Duration};
 
 use exec_viz::{Viz, api_types::BarOut};
-use trading_data::{Bar1m, BatchWindow, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, Replay, required_lanes};
-use trading_data_simple::{day_bounds, ensure_catalog, nodes::Graph, symbol};
+use trading_data::{BatchWindow, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, Replay, required_lanes};
+use trading_data_simple::{
+	day_bounds, ensure_catalog,
+	nodes::{Graph, M1},
+	symbol,
+};
 
 /// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a
 /// slot in it, so several can be up at once.
@@ -55,7 +59,7 @@ async fn main() {
 		for b in out.bar {
 			viz.bar(BarOut {
 				// a candle is keyed by its open.
-				ts_ms: (b.ts_close - Bar1m::TF.duration().as_nanos() as i64) / 1_000_000,
+				ts_ms: (b.ts_close - M1.duration().as_nanos() as i64) / 1_000_000,
 				open: b.open,
 				high: b.high,
 				low: b.low,
