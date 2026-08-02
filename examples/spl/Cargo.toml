@@ -10,6 +10,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
+autobenches = false
 
 [dependencies]
 clap.workspace = true

@@ -187,6 +187,13 @@ lanes a backtest later reads — so a live recording replays into the identical 
 round-trip is the invariant test; batching never alters fold order). Node code is identical across
 the two.
 
+`Live` is **zero-cost**: an event is folded into a tick before the feed blocks on the next one, so
+choosing the engine costs nothing hand-rolling the same loop against the raw socket would not have
+cost too. No clock boundary, no timer, no fill level, no waiting on a second lane. This is what
+rules out every grid-shaped batching scheme that has to know a window is *closed* before it can
+emit it — stated, with its consequences, in [docs/spec/feeds.md](spec/feeds.md). A grouping rule
+may exist only if it degenerates to on-arrival under `Live` instead of being switched off there.
+
 Batch boundaries are **declared, not emergent**. Every feed states a `BatchWindow`: the most
 arrival-time one batch may group, measured from the previous batch's end so an idle stretch adds no
 latency. A venue message never splits, so `ZERO` means one message per tick — maximum fidelity is
