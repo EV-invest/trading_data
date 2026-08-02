@@ -9,13 +9,9 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use exec_viz::{Viz, api_types::BarOut};
+use exec_viz::Viz;
 use trading_data::{Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, ReadClock, Replay, required_lanes};
-use trading_data_simple::{
-	day_bounds, ensure_catalog,
-	nodes::{Graph, M1},
-	symbol,
-};
+use trading_data_simple::{day_bounds, ensure_catalog, nodes::Graph, symbol};
 
 /// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a
 /// slot in it, so several can be up at once.
@@ -56,17 +52,6 @@ async fn main() {
 		obs.1.at(lanes.ts_venue.as_nanos());
 		let out = graph.tick_obs(lanes.into(), &mut obs);
 
-		for b in out.bar {
-			viz.bar(BarOut {
-				// a candle is keyed by its open.
-				ts_ms: (b.ts_close - M1.duration().as_nanos() as i64) / 1_000_000,
-				open: b.open,
-				high: b.high,
-				low: b.low,
-				close: b.close,
-				volume: b.vol_base * b.close,
-			});
-		}
 		bars += out.bar.len() as u64;
 		rsi_snaps += out.rsi.iter().flatten().count() as u64;
 		lambda_fires += out.lambda.iter().flatten().count() as u64;
