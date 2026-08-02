@@ -133,14 +133,6 @@ pub use volume_4h::Volume4h;
 // in has to be in scope here too.
 use crate::nodes::{change_1d::REACH_1D, change_3m::SPAN_3M, oi_delta::OI_REACH};
 
-/// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that
-/// declined this tick is not a publish, so the cached level stands.
-fn latest<T: Copy>(slot: &mut Option<T>, dep: &[Option<T>], ticks: usize) {
-	let Some(v) = dep.iter().flatten().last() else { return };
-	assert!(ticks <= 1, "a level published inside a {ticks}-tick batch cannot be placed against those ticks");
-	*slot = Some(*v);
-}
-
 trading_data::graph! {
 	pub struct Graph;
 	batches Batches;
@@ -154,6 +146,18 @@ trading_data::graph! {
 		avg_gain: AvgGain, avg_loss: AvgLoss, rsi: Rsi, atr: Atr, momentum: Momentum, oi_delta_5m: OiDelta5m, oi_delta_15m: OiDelta15m, market_cap: MarketCap,
 		std_screener: Screener, classify: Classify, armed: Armed<Deprecator>, book_top: BookTop, imbalance: Imbalance, spread: Spread
 	}
+}
+
+// declared last: a dep shim is textually scoped, and a child module sees the ones already in scope
+// where it is declared.
+pub mod closure;
+
+/// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that
+/// declined this tick is not a publish, so the cached level stands.
+fn latest<T: Copy>(slot: &mut Option<T>, dep: &[Option<T>], ticks: usize) {
+	let Some(v) = dep.iter().flatten().last() else { return };
+	assert!(ticks <= 1, "a level published inside a {ticks}-tick batch cannot be placed against those ticks");
+	*slot = Some(*v);
 }
 
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it

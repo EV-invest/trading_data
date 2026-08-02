@@ -1390,7 +1390,7 @@ macro_rules! impl_arity {
 					);
 					assert!(
 						!any(<Self as DepSet>::GATES) || !any(<Self as DepSet>::FOLDS),
-						"a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (a `Buffer<C, K>` field, and the dep as `Buffering<C, H>`), or drop the `Gating` dep"
+						"a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (write the dep as `Buffering<C, H>`), or drop the `Gating` dep"
 					);
 				}
 				true $(&& (!<$T::Gates as Bit>::VALUE || $T::opens(Has::<'t, $T, $I>::get(f))))+

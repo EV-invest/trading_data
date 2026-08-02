@@ -20,14 +20,15 @@ trading_data_derivatives    the fundamental primitives: indicator state machines
 trading_data_core           the shared parse boundary both v_exchanges and persistence see: BatchTrades, the raw
                             columnar lane holders, the Book fold + ShadowBook, and (orphan rules) their dag impls
 trading_data_persistence    arrow/parquet — catalog, lanes, feather writer, and `sync`: the central replay/live weaver
-trading_data_macros                  proc-macro home of `graph!` (emits the `step` chain over `::trading_data_dag`)
+trading_data_macros         proc-macro home of `#[node]` and `graph!`: the first leaves a node's `Deps` where a
+                            macro can read them, the second walks them into the `step` chain over `::trading_data_dag`
         ▲          ▲          ▲
         └──────────┴──────────┘
              trading_data            facade/prelude; `required_lanes<G>()` maps a graph's dep tree to source lanes
                    ▲
     trading_data_simple (examples/simple)   one day, one root, one RSI chain — the cheap framework testbed
     trading_data_live_example (examples/live)   real Bybit trades+book recorded then replayed identically
-    trading_data_spl (examples/spl)     a whole strategy (scam_pump_liqs); its bus plumbing becomes graph! field order
+    trading_data_spl (examples/spl)     a whole strategy (scam_pump_liqs); its bus plumbing becomes `type Deps`
 ```
 
 `trading_data_core` sits below both persistence and the external `v_exchanges` bridge, so a live ws
@@ -83,6 +84,13 @@ cannot fabricate signal out of a dropped websocket packet.
 Derived values form a DAG known at compile time. We express the edges in the type system:
 each node names its dependencies as a type, the compiler enforces a valid evaluation order,
 and cycles are unrepresentable — at zero runtime cost.
+
+`type Deps` **is** the graph. A `graph!` states its roots and the handful of nodes an app reads —
+`outputs` and `observe` — and the node set, its topological order and every buffer's size are
+derived from there by walking `Deps` backwards. A node no output reaches is never instantiated:
+unneeded work is not merely unused, it does not exist, and neither does the root lane that would
+have fed it. Types are not resolved at expansion time, so `#[node]` on the impl leaves the dep
+tokens behind as a `macro_rules!` the walk can call back into.
 
 Cells are GAT-shaped and **batch-native**: an out is `&'t [T]` (a run of events) or `&'t Book`, a
 first-class dependency rather than a side-channel context argument. `advance` self-borrows, so a
@@ -154,8 +162,9 @@ Structural rules (enforced by the signatures, not convention):
   `HISTORIC` makes gating one a compile error); never latch-reset (no `Gating` dep, so the window
   outlives the episode); never lets its own upstream be shadowed (it is an ungated in-graph
   consumer); and there is one per series per frame (two make every `Buffering<C, _>` ambiguous, as
-  with any duplicated node type). `K` is declared once by the graph author and const-checked to
-  dominate every consumer's `J`. A buffer replaces a **window**. A *recurrence* (Wilder RSI/ATR,
+  with any duplicated node type). `K` is nobody's to declare: it is the join of every `J` the
+  derived consumer set asks for, so dominating them all is true by construction. A buffer replaces
+  a **window**. A *recurrence* (Wilder RSI/ATR,
   EMA) and a *fold* (a running sum, a partial bar) stay stateful: they must see every element
   exactly once, which a window does not promise.
 - **Universe/cross-sectional ops** are graph composition, not an execution tier: per-symbol graphs

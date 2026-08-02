@@ -1,7 +1,7 @@
-error[E0080]: evaluation panicked: a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (a `Buffer<C, K>` field, and the dep as `Buffering<C, H>`), or drop the `Gating` dep
+error[E0080]: evaluation panicked: a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (write the dep as `Buffering<C, H>`), or drop the `Gating` dep
   --> <sysroot>/library/core/src/panic.rs:LL:CC
   |
-     = note: evaluation of `<(trading_data_dag::Gating<Hot>, trading_data_dag::Folding<Src, trading_data_dag::Horizon::Elems(3)>) as trading_data_dag::Pull<'_, trading_data_dag::Cons<'_, Hot, trading_data_dag::Cons<'_, Src, trading_data_dag::Nil>>, (trading_data_dag::Here, trading_data_dag::There<trading_data_dag::Here>)>>::open::{constant#0}` failed here
+    = note: evaluation of `<(trading_data_dag::Gating<Hot>, trading_data_dag::Folding<Src, trading_data_dag::Horizon::Elems(3)>) as trading_data_dag::Pull<'_, trading_data_dag::Cons<'_, Hot, trading_data_dag::Cons<'_, Src, trading_data_dag::Nil>>, (trading_data_dag::Here, trading_data_dag::There<trading_data_dag::Here>)>>::open::{constant#0}` failed here
   |
     ::: $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
