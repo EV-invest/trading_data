@@ -607,6 +607,15 @@ impl Live {
 	}
 }
 
+/// Draining to `None` is one way a session ends; every other one — an early break, a `?`, a panic
+/// upstream — goes through here, and without it the un-rotated tail of each lane is on the floor.
+/// A no-op after the drained path, since a `Feather` holding no rows writes nothing.
+impl Drop for Live {
+	fn drop(&mut self) {
+		self.final_flush();
+	}
+}
+
 impl Feed for Live {
 	fn next(&mut self) -> Option<Lanes<'_>> {
 		self.tx = None; // drop our own sender so the channel disconnects once external sinks are gone
