@@ -1,6 +1,6 @@
 use trading_data::{Cell, Emit, EmitOuts, Folding, Horizon, WilderAtr, slice_nudge};
 
-use super::bar::Bar1m;
+use super::Bar1m;
 use crate::config::strategy;
 
 /// Wilder ATR(14) on 1m bars. An indie in its own right rather than an execution-owned indicator:

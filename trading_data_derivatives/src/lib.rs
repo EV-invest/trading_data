@@ -1,8 +1,15 @@
-//! Plain embeddable indicator state machines. Deliberately not `Node` impls — callers embed
-//! them inside their own nodes, so this crate never learns about the derivation engine.
+//! The indicator tier: the plain state machines, and the graph nodes that are nothing but those
+//! machines wired to a series. A strategy crate names these rather than re-deriving them; what it
+//! still owns is the wiring — which series, which lengths, which thresholds.
 //!
 //! Wilder semantics throughout: warmup = SMA over the first `period` samples, then
 //! `(prev*(n-1)+x)/n`; `None` until warm.
+
+mod bar;
+mod rsi_node;
+
+pub use bar::{Bar, Bar1h, Bar1m, Bar4h, Bar5m, Bar15m, closed_by};
+pub use rsi_node::{AvgGain, AvgLoss, Rsi, RsiDelta, RsiSpec, RsiValues};
 
 /// Wilder's running mean (Pine's `rma`).
 #[derive(Clone)]

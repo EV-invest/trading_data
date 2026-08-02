@@ -1,6 +1,6 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, closed_by, slice_nudge};
 
-use super::bar::{Bar1h, Bar1m, closed_by};
+use super::{Bar1h, Bar1m};
 
 /// Notional of the newest 1h bar to have closed by each 1m close — the level standing at the
 /// screening clock, retained across the minutes the hour publishes nothing.

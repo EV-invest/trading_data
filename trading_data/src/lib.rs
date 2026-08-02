@@ -8,7 +8,7 @@ pub use trading_data_dag::{
 	Hist, Horizon, Ink, Latch, Mul, Neg, Nil, Node, Nudge, Observer, Plot, Roots, Series, Square, Stamped, Sub, Sum, Symbolic, Trace, TriggerOut, Var, Vars, abs, constant, graph,
 	observe_root, slice_nudge, square, step, step_exact, step_obs, sum, value_nudge,
 };
-pub use trading_data_derivatives::{Wilder, WilderAtr, WilderAvgGainLoss, rsi};
+pub use trading_data_derivatives::{AvgGain, AvgLoss, Bar, Bar1h, Bar1m, Bar4h, Bar5m, Bar15m, Rsi, RsiDelta, RsiSpec, RsiValues, Wilder, WilderAtr, WilderAvgGainLoss, closed_by, rsi};
 pub use trading_data_persistence::{
 	Aggregate, Arrival, BatchTrades, BatchWindow, Book, BookAnchors, BookDeltas, BookShape, BookUpdate, Catalog, CatalogError, Clock, DeltaBuf, DeltaCols, DeltaFrame, Exact, Feather, Feed,
 	FrameKind, InnerTrade, LaneKind, LaneReader, Lanes, LatencyConfig, Live, LiveClock, Local, Mc, McRoot, Oi, OiRoot, Precision, PrecisionPriceQty, Replay, RotationPolicy, Row, ShadowBook,

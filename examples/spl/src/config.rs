@@ -49,6 +49,15 @@ impl Config {
 			lookback + 1,
 			crate::nodes::MOM_PERIODS
 		);
+		// The series an indie runs on is wiring — `RsiSeries` — but the timeframe is half the indie's
+		// signature, so the config still names it and the two have to agree.
+		let tf = parsed.strategy.indies.rsi.timeframe;
+		assert_eq!(
+			tf,
+			crate::nodes::RsiSeries::TF,
+			"indies.rsi.timeframe = {tf}, where the RSI chain is wired onto {}",
+			crate::nodes::RsiSeries::TF
+		);
 		assert!(CONFIG.set(parsed).is_ok(), "Config::load runs once");
 		config()
 	}

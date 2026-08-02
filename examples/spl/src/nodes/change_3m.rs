@@ -1,7 +1,7 @@
 use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
-use super::bar::Bar1m;
+use super::Bar1m;
 
 /// Reach behind the change — three minutes, spanned by the closes of the 1m bars inside it.
 pub(super) const SPAN_3M: Timeframe = Timeframe::from_naive(3, TimeframeDesignator::Minutes);

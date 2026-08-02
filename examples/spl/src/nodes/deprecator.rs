@@ -3,7 +3,12 @@ use core::fmt;
 use trading_data::{Armed, Cell, Emit, EmitOuts, Episode, Episodic, Flat, Gating, Glance, Plot, TriggerOut, slice_nudge};
 use trading_data_core::Side;
 
-use super::{atr::Atr, book_top::BookTop, classify::Classify, latest};
+use super::{
+	atr::Atr,
+	book_top::BookTop,
+	classify::{Classified, Classify},
+	latest,
+};
 use crate::config::strategy;
 
 /// SPL's `execution::RISK_FRACTION`: fraction of equity committed per entry.
@@ -122,6 +127,7 @@ impl Glance for Intent {
 pub struct Deprecator {
 	state: State,
 	last_atr: Option<f64>,
+	last_classify: Option<Classified>,
 }
 #[derive(Clone)]
 struct Active {
@@ -164,6 +170,13 @@ impl Emit for Deprecator {
 		assert!(armed, "a gating dep reads true inside `emit`");
 		let liq = &strategy().classification.liquidations;
 		latest(&mut self.last_atr, atr, top.len());
+		// The arming tick and the ticks that act on it are different lanes: `Classify` is trade-clocked,
+		// and every book tick that could enter on it is a later one. The latch carries the *fact* of the
+		// hit across them, this carries its content — and the commutation reset drops both together, so
+		// no episode enters on the classification of the one before it.
+		if classify.is_some() {
+			self.last_classify = classify;
+		}
 
 		for d in top {
 			let Some(d) = d else {
@@ -172,7 +185,8 @@ impl Emit for Deprecator {
 			};
 			//TODO: unreachable — see `Lanes`. `classify` is only `Some` on a trade-clocked tick and this
 			// loop only runs on a book-clocked one, so `State::Idle` never flips.
-			if matches!(self.state, State::Idle) && classify.is_some() {
+			//REVIEW
+			if matches!(self.state, State::Idle) && self.last_classify.is_some() {
 				let entry_price = d.mid();
 				//TODO: real selection over the full distribution; derive the side from the classification
 				// context (e.g. cascade direction) rather than pinning it here.

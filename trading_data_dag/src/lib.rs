@@ -387,6 +387,10 @@ pub struct Plot {
 	pub inks: &'static [Ink],
 	/// Draw on the price pane instead of an own indicator pane; price-denominated.
 	pub overlay: bool,
+	/// Claim a whole pane, placed under the layer pane this plot would otherwise share. For plots
+	/// whose shape is the point (a sparse bar column, a step wave) and that neighbours bury.
+	/// Meaningless under `overlay`.
+	pub solo: bool,
 	/// Draw as bars (stacked, when the plot has several slots) instead of lines. For discrete,
 	/// sparse acts — a continuous series drawn this way is a wall of ink that hides its neighbours.
 	pub bars: bool,
@@ -400,6 +404,7 @@ impl Plot {
 		labels: &[],
 		inks: &[],
 		overlay: false,
+		solo: false,
 		bars: false,
 	};
 
@@ -495,14 +500,17 @@ pub trait Nudge: Cell {
 /// A slice-out cell's finite-difference witness: copy the batch into `Vec<$E>` scratch, bump the
 /// last element when asked, view it back at the borrow's own lifetime. Also the cell's [`Series`]
 /// declaration — "this out is a run of `$E`" is exactly what both traits need to know.
+///
+/// A generic node writes its parameters (bounds and all) in leading brackets:
+/// `slice_nudge!([B: Series<Item = Bar>] RsiDelta<B>, f64)`.
 #[macro_export]
 macro_rules! slice_nudge {
-	($C:ty, $E:ty) => {
-		impl $crate::Series for $C {
+	([$($g:tt)*] $C:ty, $E:ty) => {
+		impl<$($g)*> $crate::Series for $C {
 			type Item = $E;
 		}
 
-		impl $crate::Nudge for $C {
+		impl<$($g)*> $crate::Nudge for $C {
 			type Scratch = $crate::MacroVec<$E>;
 
 			fn stage<'t>(out: &'t [$E], s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
@@ -522,6 +530,9 @@ macro_rules! slice_nudge {
 				s
 			}
 		}
+	};
+	($C:ty, $E:ty) => {
+		$crate::slice_nudge!([] $C, $E);
 	};
 }
 
@@ -2076,11 +2087,12 @@ const fn latched(m: &NodeMeta, nodes: &[NodeMeta]) -> bool {
 /// has in-graph consumers, and all of them sit behind one common **non-latch** gate (other than
 /// `name` itself) — sampling it while that gate is closed is pure waste, so it must be gated too or
 /// read some dep at [`Horizon::Unbounded`], which is the reach nothing recovers. Leaves (no in-graph
-/// consumers) are graph outputs — exempt.
+/// consumers) are graph outputs — exempt. So is a [`Buffer`]: running under a dark consumer is the
+/// whole of what it is for, and it cannot be gated — its one dep is fixed.
 #[doc(hidden)]
 pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
 	let me = field(name, nodes);
-	if reaches_unbounded(nodes[me].reach) || any(nodes[me].gates) {
+	if reaches_unbounded(nodes[me].reach) || any(nodes[me].gates) || nodes[me].retains {
 		return false;
 	}
 	let mut fc = 0;

@@ -58,9 +58,6 @@ macro_rules! structural_bump {
 }
 
 mod atr;
-mod avg_gain;
-mod avg_loss;
-mod bar;
 mod book_top;
 mod change_1d;
 mod change_3m;
@@ -71,7 +68,6 @@ mod market_cap;
 mod momentum;
 mod oi_delta;
 mod rsi;
-mod rsi_delta;
 mod rsi_screener;
 mod spread;
 mod std_screener;
@@ -80,9 +76,6 @@ mod volume_1m;
 mod volume_4h;
 
 pub use atr::Atr;
-pub use avg_gain::AvgGain;
-pub use avg_loss::AvgLoss;
-pub use bar::{Bar, Bar1h, Bar1m, Bar4h, Bar5m, Bar15m};
 pub use book_top::{BookTop, BookTopSnap};
 pub use change_1d::Change1d;
 pub use change_3m::Change3m;
@@ -92,12 +85,12 @@ pub use imbalance::Imbalance;
 pub use market_cap::{MarketCap, McSnap};
 pub use momentum::{MOM_PERIODS, Momentum, mom_cap};
 pub use oi_delta::{OiDelta5m, OiDelta15m};
-pub use rsi::{Rsi, RsiValues};
-pub use rsi_delta::RsiDelta;
+pub use rsi::{AvgGain, AvgLoss, Rsi, RsiDelta, RsiSeries};
 pub use rsi_screener::RsiScreener;
 pub use spread::Spread;
 pub use std_screener::StdScreener;
 use trading_data::{Armed, Book, BookAnchors, BookDeltas, BookShape, Buffer, DeltaFrame, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
+pub use trading_data::{Bar, Bar1h, Bar1m, Bar4h, Bar5m, Bar15m, RsiValues};
 
 /// The compiled screener — the gate `Classify` and everything under it hangs dormant off. The other
 /// arm stays written and unwired: naming it here is the whole of switching, and nothing pulls the
@@ -134,9 +127,11 @@ trading_data::graph! {
 	emit bar_4h: Bar4h,
 	bar_1m_hist: Buffer<Bar1m, { Horizon::Span(SPAN_3M) }>,
 	bar_5m_hist: Buffer<Bar5m, { mom_cap(Bar5m::TF) }>,
+	bar_15m_hist: Buffer<Bar15m, { Horizon::Span(Bar15m::TF) }>,
 	bar_1h_hist: Buffer<Bar1h, REACH_1D>,
 	bar_4h_hist: Buffer<Bar4h, { mom_cap(Bar4h::TF) }>,
 	oi_hist: Buffer<OiRoot, OI_REACH>,
+	mc_hist: Buffer<McRoot, { Horizon::Elems(1) }>,
 	emit change_3m: Change3m,
 	emit change_1d: Change1d,
 	emit volume_1m: Volume1m,

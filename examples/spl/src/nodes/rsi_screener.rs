@@ -1,11 +1,6 @@
 use trading_data::{Cell, DepOuts, Folding, Gate, Horizon, Node, value_nudge};
 
-use super::{
-	bar::Bar1m,
-	change_1d::Change1d,
-	latest,
-	rsi::{Rsi, RsiValues},
-};
+use super::{Bar1m, Rsi, RsiValues, change_1d::Change1d, latest};
 use crate::config::{Screen, strategy};
 
 /// Top gainer: overbought on 4h while up on the day. [`Bar1m`] is the screening clock, so a

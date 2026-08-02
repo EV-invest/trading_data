@@ -1,7 +1,7 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, closed_by, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
-use super::bar::{Bar1h, Bar1m, closed_by};
+use super::{Bar1h, Bar1m};
 
 /// A day of wall clock, not "24 bars": an hour nothing traded emits no bar, and SPL's own name for
 /// the window is the day.

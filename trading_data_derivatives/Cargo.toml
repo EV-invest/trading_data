@@ -11,6 +11,9 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+trading_data_core.workspace = true
+trading_data_dag.workspace = true
+v_utils.workspace = true
 
 [lints]
 workspace = true

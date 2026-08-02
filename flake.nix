@@ -20,7 +20,7 @@
         manifest = (pkgs.lib.importTOML ./trading_data/Cargo.toml).package;
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
-        # Base of our port range. Each app that listens claims `PORT + <its ordinal>` — demo 1,
+        # Base of our port range. Each app that listens claims `PORT + <its ordinal>` — simple 1,
         # live 2, spl 3 — so they can all be up at once and the URL says which is which.
         port_range_base = 59990;
 
@@ -41,18 +41,18 @@
         };
         combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
 
-        # `viz <demo|live|spl>` — our example owns the runtime, the graph and the port; exec_viz is a
+        # `viz <simple|live|spl>` — our example owns the runtime, the graph and the port; exec_viz is a
         # library plus a bundle builder, so all we take from it is a directory to serve. It builds
         # from the sibling working tree (path deps span three checkouts), hence the `cd`.
         viz = pkgs.writeShellApplication {
           name = "viz";
           runtimeInputs = with pkgs; [ rust git nix pkg-config openssl mold ];
           text = ''
-            case "''${1:-demo}" in
-              demo) pkg=trading_data_demo ;;
+            case "''${1:-spl}" in
+              simple) pkg=trading_data_simple ;;
               live) pkg=trading_data_live_example ;;
               spl) pkg=trading_data_spl ;;
-              *) echo "usage: viz <demo|live|spl> [-- <app args>]" >&2; exit 1 ;;
+              *) echo "usage: viz <simple|live|spl> [-- <app args>]" >&2; exit 1 ;;
             esac
             shift || true
             repo="$(git rev-parse --show-toplevel)"
@@ -69,11 +69,11 @@
           program = pkgs.lib.getExe (pkgs.writeShellScriptBin "help" ''
             cat <<'EOF'
             nix run .          this listing
-            nix run .#demo     examples/demo — replays a cached day  (port ${toString (port_range_base + 1)})
-            nix run .#live     examples/live — 15s of live Bybit     (port ${toString (port_range_base + 2)})
-            nix run .#spl      examples/spl  — scam_pump_liqs port   (port ${toString (port_range_base + 3)})
+            nix run .#simple   examples/simple — one day, one RSI dag (port ${toString (port_range_base + 1)})
+            nix run .#live     examples/live   — 15s of live Bybit    (port ${toString (port_range_base + 2)})
+            nix run .#spl      examples/spl    — scam_pump_liqs port  (port ${toString (port_range_base + 3)})
 
-            `nix develop` adds `viz <demo|live|spl>`, the same runner against your working tree.
+            `nix develop` adds `viz <simple|live|spl>`, the same runner against your working tree.
             Args after `--` reach the app: `nix run .#spl -- --config other.nix`.
             EOF
           '');
@@ -83,7 +83,7 @@
         apps = {
           default = help;
           inherit help;
-          demo = { type = "app"; program = "${pkgs.writeShellScript "demo" ''exec ${viz}/bin/viz demo "$@"''}"; };
+          simple = { type = "app"; program = "${pkgs.writeShellScript "simple" ''exec ${viz}/bin/viz simple "$@"''}"; };
           live = { type = "app"; program = "${pkgs.writeShellScript "live" ''exec ${viz}/bin/viz live "$@"''}"; };
           spl = { type = "app"; program = "${pkgs.writeShellScript "spl" ''exec ${viz}/bin/viz spl "$@"''}"; };
         };

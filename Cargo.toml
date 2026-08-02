@@ -2,8 +2,8 @@ cargo-features = ["codegen-backend"]
 
 [workspace]
 members = [
-    "examples/demo",
     "examples/live",
+    "examples/simple",
     "examples/spl",
     "trading_data",
     "trading_data_core",
@@ -44,7 +44,7 @@ unused_features = "allow"
 
 [workspace.dependencies]
 arrow = "59"
-clap = { version = "^4.6.2", features = ["derive", "env"] }
+clap = { version = "^4.6.5", features = ["derive", "env"] }
 color-eyre = "^0.6.5"
 derive-new = "^0"
 derive_more = { version = "^2.1", features = ["full"] }
@@ -65,7 +65,7 @@ serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
 snapshot_fonts = { version = "^1.3", path = "../../snapshot_fonts" }
 strum = { version = "^0.28", features = ["derive"] }
-syn = { version = "^2", features = ["full", "extra-traits"] }
+syn = { version = "^3", features = ["full", "extra-traits"] }
 tempfile = "3"
 thiserror = "^2.0"
 tokio = { version = "^1", features = ["macros", "rt-multi-thread", "time", "sync"] }
@@ -80,7 +80,7 @@ ui_test = "0.30"
 ureq = "^3"
 v_exchanges = { path = "../../v_exchanges/v_exchanges" }
 v_utils = { version = "^2.16.1", features = ["io", "macros", "cli", "distributions"] }
-zip = "^7"
+zip = "^8"
 
 [patch.crates-io]
 # `trading_data_core` dev-depends on `snapshot_fonts`, and `v_exchanges` names it from crates-io;

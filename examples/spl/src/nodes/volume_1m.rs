@@ -1,6 +1,6 @@
 use trading_data::{Cell, Emit, EmitOuts, slice_nudge};
 
-use super::bar::Bar1m;
+use super::Bar1m;
 
 /// The closed 1m bar's notional, `volume * close` — the close standing in for vwap, as SPL's own
 /// volume indie does. Nothing to warm, so there is no declining.

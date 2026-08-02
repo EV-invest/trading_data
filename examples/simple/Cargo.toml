@@ -1,0 +1,26 @@
+[package]
+name = "trading_data_simple"
+description = "One day, one root, one RSI chain: the cheap graph to answer framework questions against"
+publish = false
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+exec_viz.workspace = true
+flate2.workspace = true
+jiff.workspace = true
+tokio.workspace = true
+trading_data.workspace = true
+trading_data_core.workspace = true
+# graph! expands to `::trading_data_dag` paths, so consumers need it in scope.
+trading_data_dag.workspace = true
+ureq.workspace = true
+
+[lints]
+workspace = true

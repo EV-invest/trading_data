@@ -1,7 +1,7 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, Plot, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Horizon, Plot, slice_nudge};
 use v_utils::Timeframe;
 
-use super::bar::{Bar, Bar4h, Bar5m};
+use super::{Bar, Bar4h, Bar5m};
 use crate::config::strategy;
 
 /// Pine's `* 365`, kept verbatim regardless of bar timeframe — which is why the 4h and 5m Sharpe
@@ -41,6 +41,23 @@ fn sharpe(window: &[Bar]) -> Option<f64> {
 	Some((mean * PINE_PERIODS_PER_YEAR - strategy().indies.momentum.risk_free_rate) / stdev_ann)
 }
 
+/// The leg the config names, of the two every reader has to carry as deps.
+fn leg<'t>(m5: Hist<'t, Bar>, h4: Hist<'t, Bar>) -> Hist<'t, Bar> {
+	match strategy().indies.momentum.fast {
+		Bar5m::TF => m5,
+		Bar4h::TF => h4,
+		_ => unreachable!("`Default` asserted the leg against the series this node buffers"),
+	}
+}
+
+/// The Sharpe standing at this instant rather than one per fresh close — for a reader clocked by
+/// something other than the leg, which has no fresh element of its own to hang a window off.
+pub(super) fn standing(m5: Hist<'_, Bar>, h4: Hist<'_, Bar>) -> Option<f64> {
+	let lookback = strategy().indies.momentum.lookback;
+	let all = leg(m5, h4).all();
+	(all.len() > lookback).then(|| sharpe(&all[all.len() - lookback - 1..])).flatten()
+}
+
 /// `graph!` builds through `Default` and `main` builds the graph right after `Config::load`, so this
 /// is the first instant a config naming a series no momentum window is retained over can be
 /// rejected — rather than at the first close of whichever series *is* wired.
@@ -68,14 +85,9 @@ impl Emit for Momentum {
 	}];
 
 	fn emit(&mut self, (m5, h4): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
-		let cfg = strategy().indies.momentum;
-		let series = match cfg.fast {
-			Bar5m::TF => m5,
-			Bar4h::TF => h4,
-			_ => unreachable!("`Default` asserted the leg against the series this node buffers"),
-		};
 		// the lookback is a runtime knob, so the window is narrowed off the retained reach here.
-		out.extend(series.narrowed(Horizon::Elems(cfg.lookback + 1)).trailing().map(|w| w.and_then(sharpe)));
+		let lookback = strategy().indies.momentum.lookback;
+		out.extend(leg(m5, h4).narrowed(Horizon::Elems(lookback + 1)).trailing().map(|w| w.and_then(sharpe)));
 	}
 }
 slice_nudge!(Momentum, Option<f64>);

@@ -1,6 +1,6 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, closed_by, slice_nudge};
 
-use super::bar::{Bar1m, Bar4h, closed_by};
+use super::{Bar1m, Bar4h};
 
 /// Notional of the newest 4h bar to have closed by each 1m close.
 #[derive(Clone, Default)]

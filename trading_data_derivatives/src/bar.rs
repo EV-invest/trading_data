@@ -1,6 +1,7 @@
 use core::fmt;
 
-use trading_data::{Cell, Emit, EmitOuts, Exact, Folding, Glance, Horizon, Stamped, Trades, slice_nudge};
+use trading_data_core::{Exact, TradeCols, Trades};
+use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Horizon, Stamped, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
 #[derive(Clone, Copy, Debug)]
@@ -10,11 +11,25 @@ pub struct Bar {
 	pub high: f64,
 	pub low: f64,
 	pub close: f64,
-	/// Base-denominated. SPL's volume indie reads `volume * close` — the close standing in for vwap.
+	/// Base-denominated: a volume indie wanting quote reads `vol_base * close`, the close standing in
+	/// for vwap.
 	pub vol_base: f64,
 }
 
-flat_fields!(Bar[open, high, low, close, vol_base]);
+impl Flat for Bar {
+	const DIMS: &'static [usize] = &[5];
+
+	fn flat(&self, out: &mut [f64]) -> bool {
+		out.copy_from_slice(&[self.open, self.high, self.low, self.close, self.vol_base]);
+		true
+	}
+}
+impl Bump for Bar {
+	fn bump(mut self, slot: usize, h: f64) -> (Self, f64) {
+		*[&mut self.open, &mut self.high, &mut self.low, &mut self.close, &mut self.vol_base][slot] += h;
+		(self, h)
+	}
+}
 
 impl Glance for Bar {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -31,7 +46,7 @@ impl Stamped for Bar {
 /// Trades → OHLCV bars at one period. Rate-changing: one non-optional bar per boundary crossed, so
 /// a batch spanning two periods emits two; a partial period emits none (it stays in `state`).
 /// Shared by every series: only the period and the name are per-type.
-fn accumulate(state: &mut Option<Bar>, trades: <Trades as Cell>::Out<'_>, tf: Timeframe, out: &mut Vec<Bar>) {
+fn accumulate(state: &mut Option<Bar>, trades: TradeCols<'_>, tf: Timeframe, out: &mut Vec<Bar>) {
 	// precision is the run's, so the two scales are hoisted once instead of read per trade.
 	let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
 	let step = Exact::from_nanos(tf.duration().as_nanos() as i64);
@@ -63,8 +78,8 @@ fn accumulate(state: &mut Option<Bar>, trades: <Trades as Cell>::Out<'_>, tf: Ti
 }
 
 /// The prefix of a slower series that has *closed* by `deadline` — the cross-rate read a node
-/// clocked by a faster series makes against a [`trading_data::Buffering`] dep.
-pub(super) fn closed_by(bars: &[Bar], deadline: i64) -> &[Bar] {
+/// clocked by a faster series makes against a [`trading_data_dag::Buffering`] dep.
+pub fn closed_by(bars: &[Bar], deadline: i64) -> &[Bar] {
 	&bars[..bars.partition_point(|b| b.ts_ns() <= deadline)]
 }
 

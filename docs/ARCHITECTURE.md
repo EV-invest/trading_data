@@ -15,7 +15,8 @@ recalculated, so recomputing them can't muddy persistence.
 
 ```
 trading_data_dag                     #![no_std], zero deps — domain-free derivation engine
-trading_data_derivatives    zero deps — indicator state machines, embedded inside user Nodes; never learn Cell/Node
+trading_data_derivatives    the fundamental primitives: indicator state machines, and the bar/RSI nodes that are
+                            nothing but those machines wired to a series — every strategy names these
 trading_data_core           the shared parse boundary both v_exchanges and persistence see: BatchTrades, the raw
                             columnar lane holders, the Book fold + ShadowBook, and (orphan rules) their dag impls
 trading_data_persistence    arrow/parquet — catalog, lanes, feather writer, and `sync`: the central replay/live weaver
@@ -24,7 +25,7 @@ trading_data_macros                  proc-macro home of `graph!` (emits the `ste
         └──────────┴──────────┘
              trading_data            facade/prelude; `required_lanes<G>()` maps a graph's dep tree to source lanes
                    ▲
-    trading_data_demo (examples/demo)   end-to-end demo; depends ONLY on the facade (facade-sufficiency test)
+    trading_data_simple (examples/simple)   one day, one root, one RSI chain — the cheap framework testbed
     trading_data_live_example (examples/live)   real Bybit trades+book recorded then replayed identically
     trading_data_spl (examples/spl)     a whole strategy (scam_pump_liqs); its bus plumbing becomes graph! field order
 ```

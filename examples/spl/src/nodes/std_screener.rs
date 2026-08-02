@@ -1,6 +1,6 @@
 use trading_data::{Cell, DepOuts, Folding, Gate, Horizon, Node, value_nudge};
 
-use super::{bar::Bar1m, latest, momentum::Momentum};
+use super::{Bar1m, latest, momentum::Momentum};
 use crate::config::{Screen, strategy};
 
 /// Pine's overvalued zone at momentum's leg. The verdict is per *closed 1m bar*, so a tick that
