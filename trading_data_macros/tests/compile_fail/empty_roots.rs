@@ -12,7 +12,7 @@ graph! {
 	batches Batches;
 	roots {};
 	out GOut; //~ ERROR: graph! needs at least one root
-	n: N,
+	outputs { n: N }
 }
 
 fn main() {}

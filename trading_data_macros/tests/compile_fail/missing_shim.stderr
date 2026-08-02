@@ -1,0 +1,8 @@
+error: cannot find macro `__td_node_Plain` in this scope
+  --> $DIR/trading_data_macros/tests/compile_fail/missing_shim.rs:LL:CC
+  |
+LL |     outputs { plain: Plain }
+  |                      ^^^^^
+
+error: aborting due to 1 previous error
+

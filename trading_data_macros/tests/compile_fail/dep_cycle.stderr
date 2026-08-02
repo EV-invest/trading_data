@@ -1,0 +1,19 @@
+error: dep cycle: A → B → A — a graph is a dag, and a node cannot read what it feeds
+  --> $DIR/trading_data_macros/tests/compile_fail/dep_cycle.rs:LL:CC
+  |
+LL |   #[node]
+  |   ^^^^^^^
+...
+LL | / graph! {
+LL | |     struct G;
+LL | |     batches Batches;
+LL | |     roots { src: Src[u8] };
+LL | |     out GOut;
+LL | |     outputs { a: A }
+LL | | }
+  | |_- in this macro invocation
+  |
+   = note: this error originates in the macro `::trading_data_dag::__graph_resolve` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 1 previous error
+

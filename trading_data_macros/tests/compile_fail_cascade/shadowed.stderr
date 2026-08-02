@@ -1,14 +1,19 @@
-error[E0080]: evaluation panicked: cur is only consumed under a gate: gate it too, or declare a dep at `Horizon::Unbounded`
+error[E0080]: evaluation panicked: __n_Cur is only consumed under a gate: gate it too, or declare a dep at `Horizon::Unbounded`
   --> $DIR/trading_data_macros/tests/compile_fail_cascade/shadowed.rs:LL:CC
   |
+LL |   #[node]
+    = note: evaluation of `_` failed here
+...
 LL | / graph! {
 LL | |     struct G;
 LL | |     batches Batches;
 LL | |     roots { src: Src[Ev] };
-...  |
-LL | |     sink: Sink,
+LL | |     out GOut;
+LL | |     outputs { sink: Sink }
 LL | | }
-  | |_^ evaluation of `_` failed here
+  | |_- in this macro invocation
+  |
+   = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `::trading_data_dag::__graph_resolve` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: aborting due to 1 previous error
 

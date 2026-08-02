@@ -1,12 +1,12 @@
-error: graph! needs at least one node
-  --> $DIR/trading_data_macros/tests/compile_fail/empty_nodes.rs:LL:CC
+error: graph! needs at least one output: a graph that produces nothing is built out of nothing
+  --> $DIR/trading_data_macros/tests/compile_fail/empty_outputs.rs:LL:CC
   |
 LL | / graph! {
 LL | |     struct G;
 LL | |     batches Batches;
 LL | |     roots { r: Root[u8] };
 LL | |     out GOut;
-LL | |     outputs { n }
+LL | |     outputs {}
 LL | | }
   | |_^
   |

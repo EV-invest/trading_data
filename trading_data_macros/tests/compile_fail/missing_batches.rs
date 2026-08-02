@@ -16,7 +16,7 @@ graph! {
 	struct G;
 	roots { r: Root[u8] }; //~ ERROR: expected `batches`
 	out GOut;
-	n: N,
+	outputs { n: N }
 }
 
 fn main() {}

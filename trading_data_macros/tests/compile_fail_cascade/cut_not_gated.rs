@@ -1,9 +1,9 @@
 //! `L`'s `Cut` is a root, which is never gated — so nothing can ever cut `L` from within. The old
-//! `Latch::Cut: Node` bound stood in for this; `cut_gated` reads the manifest instead, and says it
-//! in the graph's own words.
+//! `Latch::Cut: Node` bound stood in for this; `cut_gated` reads the derived node set instead, and
+//! says it in the graph's own words.
 
 use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Latch, Node, slice_nudge, value_nudge};
-use trading_data_macros::graph;
+use trading_data_macros::{graph, node};
 
 #[derive(Clone, Copy, Debug)]
 struct Ev;
@@ -42,6 +42,7 @@ struct L(bool);
 impl Cell for L {
 	type Out<'t> = bool;
 }
+#[node(latch)]
 impl Node for L {
 	type Deps = (Src,);
 
@@ -64,6 +65,7 @@ struct Sink;
 impl Cell for Sink {
 	type Out<'t> = Option<f64>;
 }
+#[node]
 impl Node for Sink {
 	type Deps = (Gating<L>, Src);
 
@@ -78,10 +80,7 @@ graph! {
 	batches Batches;
 	roots { src: Src[Ev] };
 	out GOut;
-	outputs { sink }
-	latch { l: L }
-	l: L,
-	sink: Sink,
+	outputs { sink: Sink }
 }
 
 fn main() {}

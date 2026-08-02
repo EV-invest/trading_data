@@ -115,6 +115,20 @@ impl Horizon {
 		}
 	}
 
+	/// The reach that serves both — what one [`Buffer`] must retain to satisfy every consumer of the
+	/// series. A span outranks any count, which is why the four variants are totally ordered and a
+	/// graph can never ask for two reaches that cannot be met at once.
+	pub const fn join(self, other: Horizon) -> Horizon {
+		match (self, other) {
+			(Horizon::Unbounded, _) | (_, Horizon::Unbounded) => Horizon::Unbounded,
+			(Horizon::Span(a), Horizon::Span(b)) => Horizon::Span(if a.0 >= b.0 { a } else { b }),
+			(Horizon::Span(s), _) | (_, Horizon::Span(s)) => Horizon::Span(s),
+			(Horizon::Elems(a), Horizon::Elems(b)) => Horizon::Elems(if a >= b { a } else { b }),
+			(Horizon::Elems(k), Horizon::Unit) | (Horizon::Unit, Horizon::Elems(k)) => Horizon::Elems(k),
+			(Horizon::Unit, Horizon::Unit) => Horizon::Unit,
+		}
+	}
+
 	/// Only a [`Horizon::Span`] has one; the caller has already matched the variant.
 	const fn ns(tf: Timeframe) -> i64 {
 		(tf.0 * 1_000_000) as i64
@@ -1921,6 +1935,23 @@ const fn str_eq(a: &str, b: &str) -> bool {
 	true
 }
 
+/// Whether every name in `set` occurs once — [`graph!`]'s backstop on its own dedup.
+#[doc(hidden)]
+pub const fn distinct(set: &[&str]) -> bool {
+	let mut i = 0;
+	while i < set.len() {
+		let mut j = i + 1;
+		while j < set.len() {
+			if str_eq(set[i], set[j]) {
+				return false;
+			}
+			j += 1;
+		}
+		i += 1;
+	}
+	true
+}
+
 #[doc(hidden)]
 pub const fn contains(set: &[&str], name: &str) -> bool {
 	let mut i = 0;
@@ -1992,72 +2023,6 @@ pub const fn gates_on(deps: &[&str], gates: &[bool], gate: &str) -> bool {
 		i += 1;
 	}
 	false
-}
-
-/// [`graph!`]'s manifest check: every dep of `name` resolves to a declared field or to a root. What
-/// it catches is a node left out of the list, which otherwise surfaces as an unresolved `Pull` bound
-/// naming everything but the culprit.
-#[doc(hidden)]
-pub const fn closed(name: &'static str, nodes: &[NodeMeta], roots: &[&str]) -> bool {
-	let me = field(name, nodes);
-	let mut d = 0;
-	while d < nodes[me].deps.len() {
-		let want = buffered(nodes[me].reach[d], nodes[me].folds[d]);
-		// a root is a frame seed, never retained — so only a bare or folded dep can land on one.
-		if resolve(nodes[me].deps[d], want, nodes).is_none() && !(!want && contains(roots, nodes[me].deps[d])) {
-			return false;
-		}
-		d += 1;
-	}
-	true
-}
-
-/// [`graph!`]'s manifest check: every dep of `name` is declared before it. `Pull` needs its
-/// deps already in the frame, so declaration order is load-bearing at the type level; this is the
-/// same fact with the offending field named. Says nothing about a dep that resolves to nothing —
-/// that is [`closed`]'s to report, and a root is always ahead of every field.
-#[doc(hidden)]
-pub const fn ordered(name: &'static str, nodes: &[NodeMeta]) -> bool {
-	let me = field(name, nodes);
-	let mut d = 0;
-	while d < nodes[me].deps.len() {
-		if matches!(resolve(nodes[me].deps[d], buffered(nodes[me].reach[d], nodes[me].folds[d]), nodes), Some(j) if j >= me) {
-			return false;
-		}
-		d += 1;
-	}
-	true
-}
-
-/// The fields in the closure of `outputs`, as a bitmask. Deps resolve backwards ([`ordered`]), so
-/// one reverse sweep is the whole fixpoint.
-///
-/// ponytail: a `u128` caps a graph at 128 fields, asserted rather than silently wrapped.
-const fn live(nodes: &[NodeMeta], outputs: &[&str]) -> u128 {
-	assert!(nodes.len() <= 128, "graph! tracks reachability in a u128: this graph has outgrown one");
-	let mut mask = 0u128;
-	let mut i = nodes.len();
-	while i > 0 {
-		i -= 1;
-		let mut j = i + 1;
-		let mut hit = contains(outputs, nodes[i].name);
-		while !hit && j < nodes.len() {
-			hit = mask >> j & 1 == 1 && consumes(&nodes[j], i, nodes);
-			j += 1;
-		}
-		if hit {
-			mask |= 1 << i;
-		}
-	}
-	mask
-}
-
-/// [`graph!`]'s manifest check: `name` is in the closure of the declared `outputs`. A field outside
-/// it is work nobody asked for, done every tick and read by nothing — the one failure here that
-/// nothing else in the type system catches.
-#[doc(hidden)]
-pub const fn reachable(name: &'static str, nodes: &[NodeMeta], outputs: &[&str]) -> bool {
-	live(nodes, outputs) >> field(name, nodes) & 1 == 1
 }
 
 const fn reaches_unbounded(reach: &[Horizon]) -> bool {
@@ -2160,39 +2125,7 @@ pub const fn deadlocked(latch: &'static str, arms: &'static [&'static str], node
 	false
 }
 
-/// Wires a declared node list into a graph struct + typed out-struct + batch-native `tick`. Fields
-/// in topo order — a wrong order fails the existing `Pull`/`Has` bounds at compile time.
-///
-/// ```ignore
-/// graph! {
-///     pub struct Graph;
-///     batches Batches;                       // name of the generated root-slices struct
-///     roots { trades: Trades[Trade], oi: OiRoot[Oi] };
-///     out TickOut;
-///     emit bar: Bar1m, cvd: Cvd, ...
-/// }
-/// ```
-///
-/// The `emit` prefix marks an [`Emit`] — a node whose out is a run the *engine* buffers. The field
-/// becomes an [`Emitter<Ty>`](Emitter), which [`Deref`](core::ops::Deref)s to `Ty`, so reads of the
-/// graph field are unchanged; the frame is still keyed on `Ty` itself, so deps name it bare.
-/// Everything else is a [`Node`].
-///
-/// `Batches<'t>` gets one field per root, of that root cell's `Out<'t>` — deliberately not
-/// `Default`: every field is filled explicitly from a woven step, and a silently-empty root is a
-/// footgun. `tick<'t>(&'t mut self, b: Batches<'t>) -> TickOut<'t>` seeds the frame with every root
-/// out and sweeps. `required_events()` returns the `TypeId`s of the events whose root is consumed
-/// by some node — the dep tree, computed in isolation.
-///
-/// An optional `latch { field: Type, .. }` group names [`Latch`] fields (also in the node list).
-/// A latch whose `Cut` out reads [`Episode::terminal`] is commutated and its gated fields reset
-/// to `Default` at the *next* tick's start (deferred: the frame still borrows batch fields).
-/// **Every gate/latch field must be scalar-out**; a gated field may be batch-out, its episode
-/// boundary then quantized to the batch window.
-///
-/// An optional `diff { field: Type, .. }` group names [`Diff`] fields (also in the node list):
-/// they sweep via [`step_exact`], emitting exact partials + formula + derivatives.
-pub use trading_data_macros::graph;
+pub use trading_data_macros::{__graph_resolve, graph, node, node_alias};
 
 /// The root half of the observation choke point: flatten a seeded root value and emit its
 /// [`Fire`] (no deps, no jac). No-op under an inactive observer.

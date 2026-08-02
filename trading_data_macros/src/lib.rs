@@ -1,436 +1,81 @@
-//! `graph!` — declare a frame's node set and emit the hand-written `step` chain in topological
-//! order. Pure ergonomics: `trading_data_dag`'s `Pull` bound already rejects bad orders and cycles
-//! at compile time, so this only removes wiring noise. The generated code targets
-//! `::trading_data_dag`.
+//! The macros that turn `type Deps` into a frame. `#[node]` leaves each cell's dep tokens where a
+//! macro can read them, `graph!` states the roots and the outputs, and `__graph_resolve!` walks the
+//! one from the other. Generated code targets `::trading_data_dag`.
 
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{
-	Ident, Token, Type, Visibility, braced, bracketed,
-	parse::{Parse, ParseStream},
-	parse_macro_input,
-	punctuated::Punctuated,
-	token,
-};
 
-mod kw {
-	syn::custom_keyword!(batches);
-	syn::custom_keyword!(roots);
-	syn::custom_keyword!(out);
-	syn::custom_keyword!(latch);
-	syn::custom_keyword!(diff);
-	syn::custom_keyword!(emit);
-	syn::custom_keyword!(outputs);
-	syn::custom_keyword!(observe);
+mod graph;
+mod node;
+mod resolve;
+mod state;
+mod ty;
+
+fn out(r: syn::Result<proc_macro2::TokenStream>) -> TokenStream {
+	r.unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-/// `field: Ty [Event]` — a root cell and the event type its slice carries.
-struct Root {
-	field: Ident,
-	ty: Type,
-	event: Type,
-}
-impl Parse for Root {
-	fn parse(input: ParseStream) -> syn::Result<Self> {
-		let field = input.parse()?;
-		input.parse::<Token![:]>()?;
-		let ty = input.parse()?;
-		let content;
-		bracketed!(content in input);
-		let event = content.parse()?;
-		Ok(Root { field, ty, event })
-	}
-}
-
-/// `field: Ty` — a node field or a latch field. `emit field: Ty` marks an `Emit`, whose buffer the
-/// engine owns: the graph field becomes an `Emitter<Ty>`, but `Ty` is still the frame's cell.
-struct FieldNode {
-	field: Ident,
-	ty: Type,
-	emit: bool,
-}
-impl Parse for FieldNode {
-	fn parse(input: ParseStream) -> syn::Result<Self> {
-		// `emit foo: Ty` — the peek2 rules out a field literally named `emit`.
-		let emit = input.peek(kw::emit) && !input.peek2(Token![:]);
-		if emit {
-			input.parse::<kw::emit>()?;
-		}
-		let field = input.parse()?;
-		input.parse::<Token![:]>()?;
-		let ty = input.parse()?;
-		Ok(FieldNode { field, ty, emit })
-	}
-}
-
-struct GraphDef {
-	vis: Visibility,
-	graph: Ident,
-	batches: Ident,
-	roots: Vec<Root>,
-	out: Ident,
-	outputs: Vec<Ident>,
-	observe: Vec<Ident>,
-	latches: Vec<FieldNode>,
-	diffs: Vec<FieldNode>,
-	nodes: Vec<FieldNode>,
-}
-impl Parse for GraphDef {
-	fn parse(input: ParseStream) -> syn::Result<Self> {
-		let vis: Visibility = input.parse()?;
-		input.parse::<Token![struct]>()?;
-		let graph: Ident = input.parse()?;
-		input.parse::<Token![;]>()?;
-
-		input.parse::<kw::batches>()?;
-		let batches: Ident = input.parse()?;
-		input.parse::<Token![;]>()?;
-
-		input.parse::<kw::roots>()?;
-		let content;
-		braced!(content in input);
-		let roots: Punctuated<Root, Token![,]> = Punctuated::parse_terminated(&content)?;
-		input.parse::<Token![;]>()?;
-		if roots.is_empty() {
-			return Err(syn::Error::new(input.span(), "graph! needs at least one root"));
-		}
-
-		input.parse::<kw::out>()?;
-		let out: Ident = input.parse()?;
-		input.parse::<Token![;]>()?;
-
-		input.parse::<kw::outputs>()?;
-		let content;
-		braced!(content in input);
-		let outputs: Punctuated<Ident, Token![,]> = Punctuated::parse_terminated(&content)?;
-		if outputs.is_empty() {
-			return Err(syn::Error::new(
-				input.span(),
-				"graph! needs at least one output: a graph whose every field is unread computes nothing",
-			));
-		}
-
-		let observe = if input.peek(kw::observe) && input.peek2(token::Brace) {
-			input.parse::<kw::observe>()?;
-			let content;
-			braced!(content in input);
-			Punctuated::<Ident, Token![,]>::parse_terminated(&content)?.into_iter().collect()
-		} else {
-			Vec::new()
-		};
-
-		let latches = if input.peek(kw::latch) && input.peek2(token::Brace) {
-			input.parse::<kw::latch>()?;
-			let content;
-			braced!(content in input);
-			Punctuated::<FieldNode, Token![,]>::parse_terminated(&content)?.into_iter().collect()
-		} else {
-			Vec::new()
-		};
-
-		let diffs = if input.peek(kw::diff) && input.peek2(token::Brace) {
-			input.parse::<kw::diff>()?;
-			let content;
-			braced!(content in input);
-			Punctuated::<FieldNode, Token![,]>::parse_terminated(&content)?.into_iter().collect()
-		} else {
-			Vec::new()
-		};
-
-		let nodes: Punctuated<FieldNode, Token![,]> = Punctuated::parse_terminated(input)?;
-		if nodes.is_empty() {
-			return Err(syn::Error::new(input.span(), "graph! needs at least one node"));
-		}
-
-		Ok(GraphDef {
-			vis,
-			graph,
-			batches,
-			roots: roots.into_iter().collect(),
-			out,
-			outputs: outputs.into_iter().collect(),
-			observe,
-			latches,
-			diffs: diffs.into_iter().collect(),
-			nodes: nodes.into_iter().collect(),
-		})
-	}
-}
-
-/// Wires a declared node list into a graph struct + typed out-struct + batch-native `tick`. Fields
-/// in topo order — a wrong order fails the existing `Pull`/`Has` bounds at compile time.
+/// Builds a frame from its outputs: the node set, its topological order, the `Emitter` wrapping, the
+/// latches and the `Buffer`s (each sized to the join of every read taken of it) are all derived from
+/// the annotated `type Deps` of the cells the outputs reach.
 ///
 /// ```ignore
-/// graph! {
+/// trading_data::graph! {
 ///     pub struct Graph;
 ///     batches Batches;                       // name of the generated root-slices struct
 ///     roots { trades: Trades[Trade], oi: OiRoot[Oi] };
 ///     out TickOut;
-///     outputs { cvd }                        // what the graph is for
-///     observe { bar }                        // read by the app or the viz only
-///     latch { live: Live }                   // optional
-///     emit bar: Bar1m, cvd: Cvd, ...
+///     outputs { cvd: Cvd }                   // what the graph is for
+///     observe { bar: Bar1m }                 // read by the app or the viz only
 /// }
 /// ```
 ///
-/// The `emit` prefix marks an `Emit` — a node whose out is a run the *engine* buffers. The field
-/// becomes an `Emitter<Ty>`, which `Deref`s to `Ty`, so reads of the graph field are unchanged; the
-/// frame is still keyed on `Ty` itself, so deps name it bare. Everything else is a `Node`.
+/// Every cell named here, and every cell they reach, must carry [`macro@node`] on its trait impl —
+/// otherwise expansion fails with `cannot find macro __td_node_Foo`, naming the cell that is missing
+/// it. A node no output reaches is not instantiated at all.
 ///
 /// `Batches<'t>` gets one field per root, of that root cell's `Out<'t>`. It is deliberately not
 /// `Default`: every field is filled explicitly from a woven step, and a silently-empty root is a
 /// footgun. `tick<'t>(&'t mut self, b: Batches<'t>) -> TickOut<'t>` seeds the frame with every root
-/// out and sweeps. `required_events()` returns the `TypeId`s of the events whose root is consumed
-/// by some node — the dep tree, computed in isolation.
+/// out and sweeps. `required_events()` returns the `TypeId`s of the events whose root is consumed by
+/// some node, so a declared root nothing reaches is simply never loaded. `Graph::NODES` is the
+/// derived closure in sweep order.
 ///
-/// An optional `latch { field: Type, .. }` group names `Latch` fields (also in the node list). A
-/// latch whose `Cut` out reads `Episode::terminal` is commutated and its gated fields reset to
-/// `Default` at the *next* tick's start (deferred: the frame still borrows batch fields).
-///
-/// An optional `diff { field: Type, .. }` group names `Diff` fields (also in the node list): they
-/// sweep via `step_exact`, emitting exact partials + formula + derivatives alongside the FD view.
-///
-/// The node list is a *manifest*, not a trusted declaration: `closed`, `ordered` and `reachable` are
-/// asserted over it in const position beside `shadowed`. `outputs { .. }` names the fields the graph
-/// exists to produce and `observe { .. }` those an app or the viz reads and nothing else does;
-/// together they are what `reachable` measures against, so a field left wired after a refactor is a
-/// compile error rather than dead work done every tick forever.
+/// A `Latch` field (`#[node(latch)]`, or any `Episodic`'s `Armed<Self>`) whose `Cut` out reads
+/// `Episode::terminal` is commutated and its gated fields reset to `Default` at the *next* tick's
+/// start (deferred: the frame still borrows batch fields).
 #[proc_macro]
 pub fn graph(input: TokenStream) -> TokenStream {
-	let GraphDef {
-		vis,
-		graph,
-		batches,
-		roots,
-		out,
-		outputs,
-		observe,
-		latches,
-		diffs,
-		nodes,
-	} = parse_macro_input!(input as GraphDef);
+	out(graph::graph(input.into()))
+}
 
-	let dag = quote!(::trading_data_dag);
+/// Publishes an impl's `type Deps` to [`macro@graph`], which cannot ask the type system for it.
+///
+/// Goes on `impl Node`/`Emit`/`Symbolic` for the cell, and on `impl Episodic` (which publishes the
+/// arm instead — `Armed<Self>`'s dep is an associated-type projection). `#[node(latch)]` marks a cell
+/// with a hand-written `impl Latch`, and `#[node(diff)]` one with a hand-written `impl Diff`; both
+/// are separate impls, and a cell has one shim.
+#[proc_macro_attribute]
+pub fn node(attr: TokenStream, item: TokenStream) -> TokenStream {
+	out(node::node(attr.into(), item.into()))
+}
 
-	let rfields: Vec<&Ident> = roots.iter().map(|r| &r.field).collect();
-	let root_tys: Vec<&Type> = roots.iter().map(|r| &r.ty).collect();
-	let event_tys: Vec<&Type> = roots.iter().map(|r| &r.event).collect();
+/// A `type` alias to a cell, declared so [`macro@graph`] can follow it.
+///
+/// ```ignore
+/// trading_data::node_alias! { pub Screener = StdScreener; }
+/// ```
+///
+/// Swapping the right-hand side reroutes every graph that names the alias. Both spellings resolve to
+/// one field: the alias reports the cell's own name.
+#[proc_macro]
+pub fn node_alias(input: TokenStream) -> TokenStream {
+	out(node::node_alias(input.into()))
+}
 
-	let lfields: Vec<&Ident> = latches.iter().map(|l| &l.field).collect();
-	let latch_tys: Vec<&Type> = latches.iter().map(|l| &l.ty).collect();
-
-	let fields: Vec<&Ident> = nodes.iter().map(|n| &n.field).collect();
-	let node_tys: Vec<&Type> = nodes.iter().map(|n| &n.ty).collect();
-
-	// The metadata reads that live on the node trait rather than on the cell — `Emit` and `Node`
-	// declare the same ones, so only the trait naming them differs per field.
-	let decls: Vec<_> = nodes.iter().map(|n| if n.emit { quote!(#dag::Emit) } else { quote!(#dag::Node) }).collect();
-	let node_deps: Vec<_> = nodes
-		.iter()
-		.zip(&decls)
-		.map(|(n, d)| {
-			let ty = &n.ty;
-			quote!(<#ty as #d>::Deps)
-		})
-		.collect();
-	// an `emit` field stores the engine's buffer next to the node; the frame is still keyed on `ty`.
-	let node_fields: Vec<_> = nodes
-		.iter()
-		.map(|n| {
-			let (field, ty) = (&n.field, &n.ty);
-			if n.emit { quote!(#field: #dag::Emitter<#ty>) } else { quote!(#field: #ty) }
-		})
-		.collect();
-
-	// `outputs`/`observe` name fields; the const predicates work in cell names, so resolve them here
-	// — where an ident that names no field is a `syn::Error` pointing at it rather than a const panic.
-	let named: Result<Vec<&Type>, syn::Error> = outputs
-		.iter()
-		.chain(&observe)
-		.map(|o| {
-			nodes
-				.iter()
-				.find(|n| n.field == *o)
-				.map(|n| &n.ty)
-				.ok_or_else(|| syn::Error::new(o.span(), "not a field of this graph"))
-		})
-		.collect();
-	let named = match named {
-		Ok(n) => n,
-		Err(e) => return e.to_compile_error().into(),
-	};
-
-	// `diff { }` fields sweep via `step_exact` (exact partials + formula + derivatives); the rest
-	// keep the FD-only `step_obs`, or `step_emit_obs` where the engine owns the buffer. Same choke
-	// point, one extra reading for the routed fields.
-	let steps = nodes.iter().map(|n| {
-		let field = &n.field;
-		if n.emit {
-			quote!(let f = #dag::step_emit_obs(f, #field, obs);)
-		} else if diffs.iter().any(|d| d.field == n.field) {
-			quote!(let f = #dag::step_exact(f, #field, obs);)
-		} else {
-			quote!(let f = #dag::step_obs(f, #field, obs);)
-		}
-	});
-
-	// an `Emitter` resets through its own method: `Default::default()` on the wrapper would drop the
-	// buffer's capacity, which the next episode only has to earn back.
-	let resets: Vec<_> = nodes
-		.iter()
-		.map(|n| {
-			let field = &n.field;
-			if n.emit {
-				quote!(self.#field.reset())
-			} else {
-				quote!(self.#field = ::core::default::Default::default())
-			}
-		})
-		.collect();
-
-	// deferred commutation, inlined per latch: reset every field gated on the commutated latch.
-	// (The cross-product latch × field is a plain nested loop here — no tt-muncher needed.)
-	let apply_pending = latches.iter().map(|l| {
-		let lfield = &l.field;
-		let latch_ty = &l.ty;
-		let resets = &resets;
-		let node_deps = &node_deps;
-		quote! {
-			if self.__pending.#lfield {
-				self.__pending.#lfield = false;
-				<#latch_ty as #dag::Latch>::commutate(&mut self.#lfield);
-				#(
-					if const {
-						#dag::gates_on(
-							<#node_deps as #dag::DepSet>::NAMES,
-							<#node_deps as #dag::DepSet>::GATES,
-							#dag::node_name::<#latch_ty>(),
-						)
-					} {
-						#resets;
-					}
-				)*
-			}
-		}
-	});
-
-	quote! {
-		#vis struct #batches<'t> {
-			#(pub #rfields: <#root_tys as #dag::Cell>::Out<'t>,)*
-		}
-
-		#[derive(Default)]
-		#[doc(hidden)]
-		struct __Pending {
-			#(#lfields: bool,)*
-		}
-
-		#[derive(Default)]
-		#vis struct #graph {
-			#(#node_fields,)*
-			__pending: __Pending,
-		}
-
-		const _: () = {
-			const LATCHES: &[&str] = &[#(#dag::node_name::<#latch_tys>()),*];
-			const ROOTS: &[&str] = &[#(#dag::node_name::<#root_tys>()),*];
-			const NAMED: &[&str] = &[#(#dag::node_name::<#named>()),*];
-			const METAS: &[#dag::NodeMeta] = &[#(
-				#dag::NodeMeta {
-					name: #dag::node_name::<#node_tys>(),
-					deps: <#node_deps as #dag::DepSet>::NAMES,
-					reach: <#node_deps as #dag::DepSet>::REACH,
-					folds: <#node_deps as #dag::DepSet>::FOLDS,
-					gates: <#node_deps as #dag::DepSet>::GATES,
-					retains: !matches!(<#node_tys as #dag::Cell>::REACH, #dag::Horizon::Unit),
-					latch: #dag::contains(LATCHES, #dag::node_name::<#node_tys>()),
-				},
-			)*];
-			// the *field*, not the type: a const-generic type name carries braces, and `assert!` reads
-			// its message as a format string.
-			#(assert!(
-				#dag::closed(#dag::node_name::<#node_tys>(), METAS, ROOTS),
-				concat!(stringify!(#fields), " reads something this graph does not declare: add the missing field, or name it as a root")
-			);)*
-
-			#(assert!(
-				#dag::ordered(#dag::node_name::<#node_tys>(), METAS),
-				concat!(stringify!(#fields), " is declared before something it reads: the list is in topo order, and a step cannot pull a dep the frame has not seen")
-			);)*
-
-			#(assert!(
-				#dag::reachable(#dag::node_name::<#node_tys>(), METAS, NAMED),
-				concat!(stringify!(#fields), " reaches no `outputs` or `observe` field: it is work nobody asked for — unwire it, or declare what reads it")
-			);)*
-
-			#(assert!(
-				!#dag::shadowed(#dag::node_name::<#node_tys>(), METAS),
-				concat!(stringify!(#fields), " is only consumed under a gate: gate it too, or declare a dep at `Horizon::Unbounded`")
-			);)*
-
-			// a latch is cut from within: what it gates must be what cuts it.
-			#(assert!(
-				#dag::cut_gated(#dag::node_name::<<#latch_tys as #dag::Latch>::Cut>(), #dag::node_name::<#latch_tys>(), METAS),
-				concat!(stringify!(#lfields), "'s `Cut` is no field of this graph naming it in a `Gating` dep — a latch cut by something it does not gate never commutates")
-			);)*
-
-			// an internal latch must not gate its own arm.
-			#(assert!(
-				!#dag::deadlocked(#dag::node_name::<#latch_tys>(), <<#latch_tys as #dag::Node>::Deps as #dag::DepSet>::NAMES, METAS),
-				concat!(stringify!(#lfields), " gates its own arm: the arm is dark exactly while the latch is down, so it can never re-arm")
-			);)*
-		};
-
-		#[derive(Clone, Copy, Debug)]
-		#vis struct #out<'t> {
-			#(pub #fields: <#node_tys as #dag::Cell>::Out<'t>,)*
-			#[doc(hidden)]
-			pub __lt: ::core::marker::PhantomData<&'t ()>,
-		}
-
-		impl #dag::Roots for #graph {
-			/// `TypeId`s of the events whose root is consumed by some node (the dep tree).
-			fn required_events() -> #dag::MacroVec<::core::any::TypeId> {
-				const NAMES: &[&[&str]] = &[#(<#node_deps as #dag::DepSet>::NAMES),*];
-				let mut out = #dag::MacroVec::new();
-				#(
-					if NAMES.iter().any(|ns| #dag::contains(ns, #dag::node_name::<#root_tys>())) {
-						out.push(#dag::event_id::<#event_tys>());
-					}
-				)*
-				out
-			}
-		}
-
-		impl #graph {
-			#vis fn tick<'t>(&'t mut self, b: #batches<'t>) -> #out<'t> {
-				self.tick_obs(b, &mut ())
-			}
-
-			#vis fn tick_obs<'t>(&'t mut self, b: #batches<'t>, obs: &mut impl #dag::Observer) -> #out<'t> {
-				// deferred commutation: apply last tick's terminals before anything borrows self.
-				#(#apply_pending)*
-
-				let #batches { #(#rfields,)* } = b;
-				let Self { #(#fields,)* __pending } = self;
-
-				#(#dag::observe_root::<#root_tys, _>(#rfields, obs);)*
-				let f = #dag::Nil;
-				#(let f = #dag::Cons::<#root_tys, _> { out: #rfields, tail: f };)*
-				#(#steps)*
-
-				#(
-					if #dag::Episode::terminal(&#dag::Has::<<#latch_tys as #dag::Latch>::Cut, _>::get(&f)) {
-						__pending.#lfields = true;
-					}
-				)*
-
-				#out {
-					#(#fields: #dag::Has::<#node_tys, _>::get(&f),)*
-					__lt: ::core::marker::PhantomData,
-				}
-			}
-		}
-	}
-	.into()
+/// The [`macro@graph`] driver — one dep-tree step per expansion, ping-ponging with the `#[node]`
+/// shims. Never written by hand.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __graph_resolve(input: TokenStream) -> TokenStream {
+	out(resolve::resolve(input.into()))
 }

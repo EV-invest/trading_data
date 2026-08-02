@@ -5,8 +5,8 @@
 
 use core::any::TypeId;
 
-use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Latch, Node, Roots, slice_nudge};
-use trading_data_macros::graph;
+use trading_data_dag::{Buffering, Bump, Cell, DepOuts, Episode, Expr, Flat, Gate, Gating, Glance, Horizon, Latch, Node, Roots, Stamped, Symbolic, Vars, constant, slice_nudge, value_nudge};
+use trading_data_macros::{graph, node};
 
 #[derive(Clone, Copy, Debug)]
 struct Pulse;
@@ -74,6 +74,7 @@ struct Live {
 impl Cell for Live {
 	type Out<'t> = bool;
 }
+#[node(latch)]
 impl Node for Live {
 	type Deps = (Trig,);
 
@@ -99,6 +100,7 @@ struct Deprec {
 impl Cell for Deprec {
 	type Out<'t> = Option<Phase>;
 }
+#[node]
 impl Node for Deprec {
 	type Deps = (Gating<Live>, Trig);
 
@@ -117,6 +119,7 @@ struct Ticks {
 impl Cell for Ticks {
 	type Out<'t> = f64;
 }
+#[node]
 impl Node for Ticks {
 	type Deps = (Trig,);
 
@@ -131,12 +134,8 @@ graph! {
 	batches Batches;
 	roots { trig: Trig[Pulse] };
 	out GOut;
-	outputs { deprec }
-	observe { ticks }
-	latch { live: Live }
-	live: Live,
-	deprec: Deprec,
-	ticks: Ticks,
+	outputs { deprec: Deprec }
+	observe { live: Live, ticks: Ticks }
 }
 
 const PULSE: &[Pulse] = &[Pulse];
@@ -182,4 +181,116 @@ fn arm_terminal_commutate_rearm() {
 fn required_events_is_the_consumed_root_set() {
 	// every node deps on Trig, so its event is required.
 	assert_eq!(G::required_events(), vec![TypeId::of::<Pulse>()]);
+}
+
+/// A retained element is stamped: that is what a `Horizon` indexes by.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Tick {
+	ts: i64,
+	v: f64,
+}
+fn t(v: f64) -> Tick {
+	Tick { ts: (v * 1e9) as i64, v }
+}
+impl Stamped for Tick {
+	fn ts_ns(&self) -> i64 {
+		self.ts
+	}
+}
+impl Flat for Tick {
+	const DIMS: &'static [usize] = &[];
+
+	fn flat(&self, out: &mut [f64]) -> bool {
+		out[0] = self.v;
+		true
+	}
+}
+impl Bump for Tick {
+	fn bump(mut self, _: usize, h: f64) -> (Self, f64) {
+		self.v += h;
+		(self, h)
+	}
+}
+impl Glance for Tick {
+	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		write!(f, "{}", self.v)
+	}
+}
+
+struct Src;
+impl Cell for Src {
+	type Out<'t> = &'t [Tick];
+}
+slice_nudge!(Src, Tick);
+
+/// The shallow reader of the buffered series.
+#[derive(Clone, Default)]
+struct Last;
+impl Cell for Last {
+	type Out<'t> = f64;
+}
+#[node]
+impl Node for Last {
+	type Deps = (Buffering<Src, { Horizon::Elems(1) }>,);
+
+	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		hist.all().last().map_or(f64::NAN, |t| t.v)
+	}
+}
+value_nudge!(Last);
+
+/// The deep one: the frame must retain the join of the two, and this is it.
+#[derive(Clone, Default)]
+struct Sum3;
+impl Cell for Sum3 {
+	type Out<'t> = f64;
+}
+#[node]
+impl Node for Sum3 {
+	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
+
+	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		hist.all().iter().map(|t| t.v).sum()
+	}
+}
+value_nudge!(Sum3);
+
+#[derive(Clone, Default)]
+struct Ratio;
+impl Cell for Ratio {
+	type Out<'t> = f64;
+}
+#[node]
+impl Symbolic for Ratio {
+	type Deps = (Last, Sum3);
+
+	fn body(&self, v: Vars) -> impl Expr {
+		constant(2.0) * v.get::<0>() + v.get::<1>()
+	}
+}
+
+graph! {
+	struct BG;
+	batches BBatches;
+	roots { src: Src[Tick] };
+	out BOut;
+	outputs { ratio: Ratio }
+	observe { last: Last, sum3: Sum3 }
+}
+
+#[test]
+fn one_buffer_joins_both_reaches() {
+	let mut g = BG::default();
+	let (three, one) = ([t(1.0), t(2.0), t(3.0)], [t(4.0)]);
+	let o = g.tick(BBatches { src: &three });
+	assert_eq!(o.last, 3.0);
+	assert_eq!(o.sum3, 6.0);
+	assert_eq!(o.ratio, 12.0);
+
+	// past + fresh: had the frame been sized to the shallow consumer, only 3 would stand behind the 4.
+	let o = g.tick(BBatches { src: &one });
+	assert_eq!(o.sum3, 10.0);
+	assert_eq!(o.last, 4.0);
+
+	assert!(BG::NODES.iter().any(|n| n.starts_with("Buffer<")), "the buffered series is a node of the frame: {:?}", BG::NODES);
 }
