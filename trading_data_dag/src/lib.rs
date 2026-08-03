@@ -39,6 +39,13 @@
 //!   reach the *node itself* holds. A closed gate pulls no deps, so node-held state cannot survive
 //!   one: a [`Folding`] dep on a gated node is a compile error, and a gated node's reach is
 //!   therefore retained in the frame by construction.
+//! - **Demand.** Gating states what a node needs; demand is the same edge read backwards. [`graph!`]
+//!   derives, per node, the gates that dominate *every* path from it to an output, and skips it
+//!   while any of them is false — so a node whose only readers are shut computes nothing, without
+//!   its author restating their gate. A latch never dominates (it is momentary: what a latch-gated
+//!   node reads must be warm before the episode arms), and nothing that holds history is ever
+//!   skipped: a [`Folding`] dep, a [`Buffer`], a latch, or being a gate all pin a node to every
+//!   tick. A skipped node reads [`Latent::latent`], which is the whole of what it must earn.
 //! - **Latches.** A [`Latch`] is a [`Gate`] armed externally and cut from within: when its `Cut`
 //!   node's out reads [`Episode::terminal`], [`graph!`] commutates it and resets every node gated
 //!   on it to `Default` — deferred to the *next* tick's start (the frame still borrows batch
@@ -675,7 +682,12 @@ pub trait Pull<'t, F, I>: DepSet {
 
 /// The "didn't run" value for gated nodes — `Option` and batch outs only, so gating a node with no
 /// unfired reading is a compile error — no dishonest zeros.
-pub trait Latent: Copy {
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` has no unfired reading — a node read only behind a gate must be able to decline: make its out `Option`-valued, or give it a consumer that is not gated"
+)]
+/// No `Copy` supertrait: a [`Cell::Out`] is `Copy` already, and stating it twice makes every
+/// signature that bounds an out by both this and [`Flat`] ambiguous over which clause proves it.
+pub trait Latent {
 	fn latent() -> Self;
 }
 impl<T: Copy> Latent for Option<T> {
@@ -1586,15 +1598,15 @@ where
 /// [`step`] for an [`Emit`]: clear the engine's buffer, let the node fill it, push it as the frame's
 /// out. The frame is keyed on `E` itself — the [`Emitter`] is storage, not a cell — so a dep naming
 /// `E` resolves through the ordinary [`Has`] impl. A dark one needs no [`Dark`] reading: not
-/// emitting *is* the empty run.
-pub fn step_emit<'t, E, F, I>(frame: F, e: &'t mut Emitter<E>) -> Cons<'t, E, F>
+/// emitting *is* the empty run — which is equally the reading of an undemanded one.
+pub fn step_emit<'t, E, F, I>(frame: F, e: &'t mut Emitter<E>, demanded: bool) -> Cons<'t, E, F>
 where
 	E: Emit,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Deps: Pull<'t, F, I>,
 	F: 't, {
 	e.buf.clear();
-	if <E::Deps as Pull<'t, F, I>>::open(&frame) {
+	if demanded && <E::Deps as Pull<'t, F, I>>::open(&frame) {
 		e.node.emit(<E::Deps as Pull<'t, F, I>>::pull(&frame), &mut e.buf);
 	}
 	Cons { out: &e.buf, tail: frame }
@@ -1719,33 +1731,70 @@ where
 	for<'x> N::Out<'x>: Flat,
 	N::Out<'t>: core::fmt::Debug + Glance + Dark<<N::Deps as DepSet>::Lead>,
 	F: 't, {
+	let run = <N::Deps as Pull<'t, F, I>>::open(&frame);
+	step_seen(frame, node, run, <N::Out<'t> as Dark<<N::Deps as DepSet>::Lead>>::dark, obs)
+}
+
+/// [`step_obs`] for a node the graph derived no standing demand for: it advances only while every
+/// gate dominating its readers is open *and* its own gates are. The bound is [`Latent`] rather than
+/// [`Dark`] because an undemanded node is dark whatever its own `Deps` say — which is precisely the
+/// obligation `graph!` puts on a node it suppresses.
+#[doc(hidden)]
+pub fn step_when_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, demanded: bool, obs: &mut O) -> Cons<'t, N, F>
+where
+	N: Node + Clone,
+	N::Deps: Pull<'t, F, I> + DepFlat,
+	DepOuts<'t, N>: Copy,
+	for<'x> N::Out<'x>: Flat,
+	N::Out<'t>: core::fmt::Debug + Glance + Latent,
+	F: 't, {
+	let run = demanded && <N::Deps as Pull<'t, F, I>>::open(&frame);
+	step_seen(frame, node, run, <N::Out<'t> as Latent>::latent, obs)
+}
+
+/// The observed sweep of one level node, given whether it runs at all and what it reads if it does
+/// not. `unrun` is a thunk rather than a value because [`Dark<No>::dark`](Dark) is unreachable by
+/// construction — an ungated node has no dark branch to evaluate.
+fn step_seen<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, run: bool, unrun: impl FnOnce() -> N::Out<'t>, obs: &mut O) -> Cons<'t, N, F>
+where
+	N: Node + Clone,
+	N::Deps: Pull<'t, F, I> + DepFlat,
+	DepOuts<'t, N>: Copy,
+	for<'x> N::Out<'x>: Flat,
+	N::Out<'t>: core::fmt::Debug + Glance,
+	F: 't, {
 	const { assert!(Plot::coherent(N::PLOTS), "a multi-plot node must name each plot's slots; `[]` claims all of them") }
-	if !O::ACTIVE {
-		return step(frame, node);
+
+	// gate closed or nobody reading: no advance, no dep flatten, no FD — an unfired `Fire` is the
+	// honest view.
+	if !run {
+		let out: N::Out<'t> = unrun();
+		if O::ACTIVE {
+			obs.on(
+				N::NAME,
+				<N::Deps as DepSet>::NAMES,
+				<N::Deps as DepSet>::GATES,
+				Fire {
+					debug: &out,
+					glance: &out,
+					dims: <N::Out<'t> as Flat>::DIMS,
+					plots: N::PLOTS,
+					fires: out.fires(),
+					vals: None,
+					dep_dims: <N::Deps as DepFlat>::DIMS,
+					jac: None,
+					exact_jac: None,
+					formula: None,
+					deriv: None,
+					trace: None,
+				},
+			);
+		}
+		return Cons { out, tail: frame };
 	}
 
-	// gate closed: no advance, no dep flatten, no FD — an unfired `Fire` is the honest view.
-	if !<N::Deps as Pull<'t, F, I>>::open(&frame) {
-		let out: N::Out<'t> = Dark::dark();
-		obs.on(
-			N::NAME,
-			<N::Deps as DepSet>::NAMES,
-			<N::Deps as DepSet>::GATES,
-			Fire {
-				debug: &out,
-				glance: &out,
-				dims: <N::Out<'t> as Flat>::DIMS,
-				plots: N::PLOTS,
-				fires: out.fires(),
-				vals: None,
-				dep_dims: <N::Deps as DepFlat>::DIMS,
-				jac: None,
-				exact_jac: None,
-				formula: None,
-				deriv: None,
-				trace: None,
-			},
-		);
+	if !O::ACTIVE {
+		let out = node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame));
 		return Cons { out, tail: frame };
 	}
 
@@ -1825,8 +1874,9 @@ where
 }
 
 /// [`step_emit`] + [`Observer::on`] before the push — [`step_obs`]'s sibling, with the engine's
-/// buffer standing in for the node's out. A gate-closed emit node is simply the empty run.
-pub fn step_emit_obs<'t, E, F, I, O: Observer>(frame: F, e: &'t mut Emitter<E>, obs: &mut O) -> Cons<'t, E, F>
+/// buffer standing in for the node's out. A gate-closed or undemanded emit node is simply the empty
+/// run, which is why this one needs no [`Latent`] sibling the way [`step_when_obs`] is one.
+pub fn step_emit_obs<'t, E, F, I, O: Observer>(frame: F, e: &'t mut Emitter<E>, demanded: bool, obs: &mut O) -> Cons<'t, E, F>
 where
 	E: Emit + Clone,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
@@ -1837,8 +1887,8 @@ where
 	const { assert!(Plot::coherent(<E as Emit>::PLOTS), "a multi-plot node must name each plot's slots; `[]` claims all of them") }
 	e.buf.clear();
 
-	// gate closed: no emit, no dep flatten, no FD — the empty run is the honest view.
-	if !<E::Deps as Pull<'t, F, I>>::open(&frame) {
+	// gate closed or nobody reading: no emit, no dep flatten, no FD — the empty run is the honest view.
+	if !demanded || !<E::Deps as Pull<'t, F, I>>::open(&frame) {
 		let out: &'t [E::Item] = &e.buf;
 		if O::ACTIVE {
 			obs.on(
@@ -1973,6 +2023,24 @@ where
 		},
 	);
 	Cons { out, tail: frame }
+}
+
+/// [`step_exact`] for a node the graph derived no standing demand for — [`step_when_obs`]'s
+/// [`Diff`] sibling. The exact partials have nothing to state about a tick the node did not take,
+/// so an undemanded one reads exactly as a suppressed level node does.
+#[doc(hidden)]
+pub fn step_exact_when<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, demanded: bool, obs: &mut O) -> Cons<'t, N, F>
+where
+	N: Node + Diff + Clone,
+	N::Deps: Pull<'t, F, I> + DepFlat,
+	DepOuts<'t, N>: Copy,
+	for<'x> N::Out<'x>: Flat,
+	N::Out<'t>: core::fmt::Debug + Glance + Latent,
+	F: 't, {
+	match demanded {
+		true => step_exact(frame, node, obs),
+		false => step_seen(frame, node, false, <N::Out<'t> as Latent>::latent, obs),
+	}
 }
 
 /// The per-dep simplified derivatives of a [`Diff`] node, `∂out/∂dep` one per line — the `deriv`

@@ -5,6 +5,7 @@
 
 use proc_macro::TokenStream;
 
+mod demand;
 mod graph;
 mod node;
 mod resolve;

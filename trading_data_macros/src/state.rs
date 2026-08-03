@@ -164,6 +164,9 @@ pub struct State {
 	/// Post-order — the topological order the sweep is emitted in.
 	pub order: Vec<String>,
 	pub bufs: Vec<Buf>,
+	/// Asked spelling → the key the shim answered under, for every dep named through a
+	/// `node_alias!`. Consumer edges are built from spellings, and a spelling need not be a key.
+	pub aliases: Vec<(String, String)>,
 	/// The `outputs` cells not yet seeded into the walk.
 	pub queue: Vec<Dep>,
 }
@@ -241,6 +244,12 @@ impl State {
 			bufs.push(Buf { key, ty, reaches });
 		}
 
+		let mut alr = r.list();
+		let mut aliases = Vec::new();
+		while !alr.eof() {
+			aliases.push((alr.text(), alr.text()));
+		}
+
 		let mut qr = r.list();
 		let mut queue = Vec::new();
 		while !qr.eof() {
@@ -262,6 +271,7 @@ impl State {
 			stack,
 			order,
 			bufs,
+			aliases,
 			queue,
 		}
 	}
@@ -312,6 +322,10 @@ impl ToTokens for State {
 			let (k, t) = (text(&b.key), brace(&b.ty));
 			let hs = list(&b.reaches, |h| brace(h).into_token_stream());
 			quote!(#k #t #hs)
+		}));
+		ts.append(list(&self.aliases, |(a, k)| {
+			let (a, k) = (text(a), text(k));
+			quote!(#a #k)
 		}));
 		ts.append(list(&self.queue, |d| {
 			let (s, t) = (brace(&d.shim), brace(&d.ty));

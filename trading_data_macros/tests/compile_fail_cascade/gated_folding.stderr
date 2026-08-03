@@ -36,8 +36,8 @@ LL | | );
 note: the above error was encountered while instantiating `fn <(Gating<Hot>, Folding<Src, Elems(3)>) as Pull<'_, ..., ...>>::open`
   --> $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
-LL |     let out = match <N::Deps as Pull<'t, F, I>>::open(&frame) {
-  |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+LL |     let run = <N::Deps as Pull<'t, F, I>>::open(&frame);
+  |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
      = note: the full name for the type has been written to '$DIR/trading_data_macros/target/ui/0/tests/compile_fail_cascade/gated_folding.long-type.txt'
      = note: consider using `--verbose` to print the full type name to the console

@@ -82,8 +82,13 @@ fn accept(st: &mut State, answer: Option<Answer>) -> syn::Result<()> {
 	let awaiting = core::mem::replace(&mut st.awaiting, Awaiting::Nothing);
 	match (awaiting, answer) {
 		(Awaiting::Nothing, None) => Ok(()),
-		(Awaiting::Node(_, req), Some(Answer::Node { emit, diff, latch, self_ty, deps })) => {
+		(Awaiting::Node(asked, req), Some(Answer::Node { emit, diff, latch, self_ty, deps })) => {
 			let (key, _) = key_of(&self_ty)?;
+			// an alias answers under the aliased cell's own key, and every consumer edge naming it by
+			// the alias has to find its way back here.
+			if asked != key && !st.aliases.iter().any(|(a, _)| *a == asked) {
+				st.aliases.push((asked, key.clone()));
+			}
 			record(
 				st,
 				NodeInfo {
@@ -243,6 +248,7 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 		.collect();
 	let fields: Vec<Ident> = nodes.iter().map(|n| field_of(&n.key)).collect();
 	let names: Vec<String> = nodes.iter().map(|n| n.key.clone()).collect();
+	let sup = crate::demand::suppressors(&st)?;
 
 	let latched: Vec<usize> = (0..nodes.len()).filter(|i| nodes[*i].latch).collect();
 	let lfields: Vec<&Ident> = latched.iter().map(|i| &fields[*i]).collect();
@@ -258,10 +264,20 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 		.map(|((n, f), t)| if n.emit { quote!(#f: #dag::Emitter<#t>) } else { quote!(#f: #t) })
 		.collect();
 
-	let steps = nodes.iter().zip(&fields).map(|(n, f)| match (n.emit, n.diff) {
-		(true, _) => quote!(let f = #dag::step_emit_obs(f, #f, obs);),
-		(false, true) => quote!(let f = #dag::step_exact(f, #f, obs);),
-		(false, false) => quote!(let f = #dag::step_obs(f, #f, obs);),
+	// the demand is hoisted into its own binding: as an argument it would sit after `f`, which the
+	// call moves before the gate reads could borrow it.
+	let steps = nodes.iter().zip(&fields).zip(&sup).map(|((n, f), s)| {
+		let gates: Vec<&TokenStream> = s.iter().map(|i| &node_tys[*i]).collect();
+		// a `Gate`'s out *is* the `bool`, and `Gating::opens` is the identity — nothing to unwrap.
+		let demand = quote!(let d = #(#dag::Has::<#gates, _>::get(&f))&&*;);
+		match (n.emit, n.diff, s.is_empty()) {
+			(true, _, true) => quote!(let f = #dag::step_emit_obs(f, #f, true, obs);),
+			(true, _, false) => quote!(#demand let f = #dag::step_emit_obs(f, #f, d, obs);),
+			(false, true, true) => quote!(let f = #dag::step_exact(f, #f, obs);),
+			(false, true, false) => quote!(#demand let f = #dag::step_exact_when(f, #f, d, obs);),
+			(false, false, true) => quote!(let f = #dag::step_obs(f, #f, obs);),
+			(false, false, false) => quote!(#demand let f = #dag::step_when_obs(f, #f, d, obs);),
+		}
 	});
 
 	// an `Emitter` resets through its own method: `Default::default()` on the wrapper would drop the

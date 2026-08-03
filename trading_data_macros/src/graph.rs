@@ -172,6 +172,7 @@ pub fn graph(input: TokenStream) -> syn::Result<TokenStream> {
 		stack: Vec::new(),
 		order: Vec::new(),
 		bufs: Vec::new(),
+		aliases: Vec::new(),
 		queue,
 	};
 

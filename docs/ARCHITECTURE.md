@@ -142,8 +142,8 @@ Structural rules (enforced by the signatures, not convention):
   skipped while it reads false, pulling none of its plain deps. The gate resolves once per tick, so a gated
   batch node's episode boundary is quantized to its batch window. *Historic* nodes (stateful)
   must advance every tick to stay warm: gating one is a compile error; only *current* nodes gate.
-  A current node whose every in-graph consumer sits behind one gate must be gated too — `graph!`
-  rejects the omission at compile time.
+  A node whose readers are all shut is skipped without its author restating their gate — see
+  **Demand** below.
 - **Gateable stateful nodes.** `Book` is the worked example: its out is `Option<&Book>` (hence
   `Latent`, hence gateable) and `HISTORIC = false` is sound because — unlike a recurrence — a book
   **re-warms from a checkpoint**. Gate it off and the frames go by unread; gate it back on and the
@@ -174,6 +174,33 @@ Structural rules (enforced by the signatures, not convention):
   are values; a universe-level graph ticks at bar cadence, its roots seeded from theirs.
 - **Parallelism is across symbols (live) / episodes (backtest) only** — one graph per unit, rayon
   across. Never intra-tick.
+
+### Demand
+
+Gating states what a node *needs*. Demand is the same edge read backwards: whether anyone will read
+what a node produces. Both are in `Deps` already, so neither is the author's to restate — a hand-written
+`Gating<Screener>` on six indicators is six badges in the DAG panel saying what one edge already said.
+
+`graph!` derives, per node, the gates that dominate **every** path from it to a named output, and the
+sweep skips the node while any of them reads false. The pass is a single reverse walk of the derived
+order: a node's suppressors are the intersection, over its consumers, of each consumer's own
+suppressors plus the gates that consumer sits behind. An empty intersection means somebody reads it
+unconditionally, and the node runs every tick.
+
+Two carve-outs, both load-bearing:
+
+- **A latch never dominates.** It is momentary — what a latch-gated node reads must be *warm before
+  the episode arms*, so everything upstream of one is standing demand. Counting `Armed<E>` as a
+  dominator would take the whole graph dark between episodes, which is exactly the strategy bug.
+- **Anything holding history is pinned** — a node with a `Folding`/`Spanning` dep, a `Buffer`, a
+  latch, and a gate itself. Node-held state cannot re-warm through a skip (the same reason
+  `Pull::open` forbids `Gating` + `Folding`), and frame retention must be hole-free. Because a pinned
+  consumer contributes the empty set, retention carries demand upstream in the same pass: a
+  `Buffer<C>` pins `C`, and a folding consumer pins what it folds.
+
+A skipped node reads `Latent::latent` — an `Emit`'s empty run, or `None`. That is the whole
+obligation the derivation puts back on the author, and it asks for the honest *type* rather than a
+gate: an out with no unfired reading cannot be skipped, and says so at compile time.
 
 ## One graph, one router, two feeds
 
