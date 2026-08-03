@@ -28,9 +28,10 @@ use trading_data_spl::nodes::Intent;
 /// `USER_HZ`, the unit `/proc/<pid>/stat` reports CPU time in. Fixed at 100 on Linux regardless of
 /// `CONFIG_HZ` — it is ABI, not a kernel tunable.
 const CLK_TCK: f64 = 100.0;
-/// Fine enough to see a single-threaded run's steady 1.0 and a burst of parallelism inside one
-/// replay day, coarse enough that the sampler itself is not in the measurement.
-const SAMPLE: Duration = Duration::from_millis(20);
+/// `/proc` reports whole `USER_HZ` ticks, so a window resolves cores-busy to `1 / (CLK_TCK * window)`
+/// — at 100ms that is 0.1 of a core, fine enough to tell 1.0 from 1.5 without reading quantisation
+/// noise as parallelism.
+const SAMPLE: Duration = Duration::from_millis(100);
 
 /// Wall clock, CPU time and a cores-busy trace over one timed section.
 pub struct Probe {
@@ -70,7 +71,8 @@ impl Probe {
 		self.stop.store(true, Ordering::Relaxed);
 		let mut cores = self.sampler.join().expect("the sampler only reads procfs");
 		cores.sort_by(f64::total_cmp);
-		let at = |q: f64| cores.get(((cores.len() as f64 * q) as usize).min(cores.len().saturating_sub(1))).copied().unwrap_or(0.0);
+		assert!(!cores.is_empty(), "a timed section shorter than one {SAMPLE:?} window has no parallelism to report");
+		let at = |q: f64| cores[((cores.len() as f64 * q) as usize).min(cores.len() - 1)];
 		(wall, cpu, [at(0.5), at(0.95), at(1.0)])
 	}
 }
