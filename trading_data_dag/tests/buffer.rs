@@ -4,7 +4,7 @@
 //! the point of engine-owned retention.
 
 use trading_data_dag::{
-	Buffer, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Node, Observer, Stamped, graph, node, slice_nudge,
+	Buffer, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Node, Observer, Stamped, Want, graph, node, slice_nudge,
 };
 use v_utils::{Timeframe, TimeframeDesignator};
 
@@ -197,6 +197,10 @@ fn flat_reads_fresh_only() {
 		src: Option<(usize, Vec<f64>)>,
 	}
 	impl Observer for Rec {
+		fn want(&self) -> Want {
+			Want::Vals
+		}
+
 		fn on(&mut self, node: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
 			let slot = if node.contains("Buffer") {
 				&mut self.hist

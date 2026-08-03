@@ -10,7 +10,7 @@ pub use trading_data_dag as __dag;
 pub use trading_data_dag::{
 	__graph_resolve, Abs, Add, Armed, Ast, Buffer, Buffering, Bump, Cell, Cons, Const, DepOuts, Diff, Div, Emit, EmitOuts, Episode, Episodic, Ex, Expr, Fire, Flat, Folding, Gate, Gating,
 	Glance, Guide, Hist, Horizon, Ink, Latch, Latest, Mul, Neg, Nil, Node, Nudge, Observer, Plot, Present, ProbabilisticDistribution, Roots, Sampling, Series, Spanning, Square, Stamped,
-	Sub, Sum, Symbolic, Tag, Trace, TriggerOut, Var, Vars, abs, always_present, constant, graph, node, node_alias, observe_root, slice_nudge, square, step, step_exact, step_obs, sum,
+	Sub, Sum, Symbolic, Tag, Trace, TriggerOut, Var, Vars, Want, abs, always_present, constant, graph, node, node_alias, observe_root, slice_nudge, square, step, step_exact, step_obs, sum,
 	value_nudge,
 };
 pub use trading_data_derivatives::{

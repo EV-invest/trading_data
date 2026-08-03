@@ -1,7 +1,7 @@
 //! Diamond over two multi-rate roots: `None` propagation through the DAG, plus an
 //! inference-stress graph (chain depth 10 + one arity-8 node, zero call-site annotations).
 
-use trading_data_dag::{Cell, Cons, DepOuts, Fire, Nil, Node, Observer, step, step_obs, value_nudge};
+use trading_data_dag::{Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Want, step, step_obs, value_nudge};
 
 struct Trades;
 impl Cell for Trades {
@@ -105,6 +105,10 @@ fn diamond_option_propagation() {
 #[derive(Default)]
 struct Rec(Vec<(&'static str, &'static [&'static str], String)>);
 impl Observer for Rec {
+	fn want(&self) -> Want {
+		Want::Vals
+	}
+
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
 		self.0.push((node, deps, format!("{:?}", fire.debug)));
 	}
@@ -215,6 +219,10 @@ fn inference_stress_depth_10_arity_8() {
 #[derive(Default)]
 struct JacRec(Vec<Option<Vec<f64>>>);
 impl Observer for JacRec {
+	fn want(&self) -> Want {
+		Want::Jac
+	}
+
 	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
 		self.0.push(fire.jac.map(<[f64]>::to_vec));
 	}

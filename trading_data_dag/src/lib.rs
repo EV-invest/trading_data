@@ -2013,39 +2013,65 @@ struct Flats {
 }
 
 impl Flats {
-	/// `fd` is the node's Jacobian over `(dep_buf, out_buf)`; it is asked for only where there is an
-	/// out to differentiate.
+	/// `fd` is the node's Jacobian over `(dep_buf, out_buf)`; `None` is an observer that reads no
+	/// further than [`Want::Vals`], and it is asked for only where there is an out to differentiate.
 	#[inline]
-	fn of<'d, O: Flat, D: DepFlat>(out: &O, deps: &D::Outs<'d>, fd: impl FnOnce(&[f64], &[f64]) -> alloc::vec::Vec<f64>) -> Self {
+	fn of<'d, O: Flat, D: DepFlat>(out: &O, deps: &D::Outs<'d>, fd: Option<impl FnOnce(&[f64], &[f64]) -> alloc::vec::Vec<f64>>) -> Self {
 		let mut vals = alloc::vec![f64::NAN; O::LEN];
 		let fired = out.flat(&mut vals);
 		let mut dep_buf = alloc::vec![f64::NAN; D::LEN];
 		D::flat(deps, &mut dep_buf);
-		let jac = fired.then(|| fd(&dep_buf, &vals));
+		let jac = fd.filter(|_| fired).map(|fd| fd(&dep_buf, &vals));
 		Flats { fired, vals, deps: dep_buf, jac }
 	}
+}
+
+/// How much of a fire the observer reads. Everything above [`Want::Vals`] is second order — the
+/// Jacobian is one `clone_from` plus one re-`advance` per scalar dep slot, and a [`Diff`] node's
+/// exact partials need the pre-advance node too — so it is priced per tick, never per build.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Want {
+	Nothing,
+	Vals,
+	Jac,
 }
 
 /// Sees every [`step_obs`] as it happens: one interpretation choke point, many interpretations.
 /// Step order IS topo order, so the observed sequence doubles as the graph's static topology; dep
 /// names never seen as stepped nodes are roots — apps seed root activations via [`observe_root`].
 pub trait Observer {
-	/// Gates all flattening/FD work in [`step_obs`]; monomorphized away when `false`.
-	const ACTIVE: bool = true;
+	/// Asked once per step. No default: an observer that has not said what it reads is one nobody
+	/// priced, and the answer costs the graph a re-advance per dep slot.
+	fn want(&self) -> Want;
 	/// `gates` is [`DepSet::GATES`]: positional with `deps`, marking the ones that are control edges
 	/// rather than data. All-`false` for ungated nodes, empty for roots.
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>);
 }
 
 impl Observer for () {
-	const ACTIVE: bool = false;
+	fn want(&self) -> Want {
+		Want::Nothing
+	}
 
 	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], _: Fire<'_>) {}
 }
 
+/// So a long-lived observer can be composed into a per-tick pair without being moved into it.
+impl<O: Observer + ?Sized> Observer for &mut O {
+	fn want(&self) -> Want {
+		(**self).want()
+	}
+
+	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
+		(**self).on(node, deps, gates, fire);
+	}
+}
+
 /// Two interpretations of the same sweep — e.g. an app's own assertions next to a viz recorder.
 impl<A: Observer, B: Observer> Observer for (A, B) {
-	const ACTIVE: bool = A::ACTIVE || B::ACTIVE;
+	fn want(&self) -> Want {
+		self.0.want().max(self.1.want())
+	}
 
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
 		self.0.on(node, deps, gates, fire);
@@ -2161,26 +2187,32 @@ where
 		)
 	}
 
+	let want = obs.want();
+
 	// gate closed or nobody reading: no advance, no dep flatten, no FD — an unfired `Fire` is the
 	// honest view.
 	if !run {
 		let out: N::Out<'t> = unrun();
-		if O::ACTIVE {
+		if want != Want::Nothing {
 			let fire = Fire::of(&out, N::PLOTS, <N::Deps as DepFlat>::DIMS, None);
 			obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
 	}
 
-	if !O::ACTIVE {
+	if want == Want::Nothing {
 		let out = node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame));
 		return Cons { out, tail: frame };
 	}
 
-	let pre = node.clone();
+	let pre = (want == Want::Jac).then(|| node.clone());
 	let deps = <N::Deps as Pull<'t, F, I>>::pull(&frame);
 	let out = node.advance(deps);
-	let flat = Flats::of::<_, N::Deps>(&out, &deps, |dep_buf, out_buf| fd_jac::<N>(&pre, deps, dep_buf, out_buf));
+	let flat = Flats::of::<_, N::Deps>(
+		&out,
+		&deps,
+		pre.as_ref().map(|pre| move |dep_buf: &[f64], out_buf: &[f64]| fd_jac::<N>(pre, deps, dep_buf, out_buf)),
+	);
 
 	let fire = Fire::of(&out, N::PLOTS, <N::Deps as DepFlat>::DIMS, Some(&flat));
 	obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
@@ -2229,28 +2261,33 @@ where
 		)
 	}
 	e.buf.clear();
+	let want = obs.want();
 
 	// gate closed, nobody reading, or the period still running: no emit, no dep flatten, no FD — the
 	// empty run is the honest view.
 	if !demanded || !<E::Deps as Pull<'t, F, I>>::open(&frame) || !e.opens(ts) {
 		let out: &'t [E::Item] = &e.buf;
-		if O::ACTIVE {
+		if want != Want::Nothing {
 			let fire = Fire::of(&out, <E as Emit>::PLOTS, <E::Deps as DepFlat>::DIMS, None);
 			obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
 	}
 
-	if !O::ACTIVE {
+	if want == Want::Nothing {
 		e.node.emit(<E::Deps as Pull<'t, F, I>>::pull(&frame), &mut e.buf);
 		return Cons { out: &e.buf, tail: frame };
 	}
 
-	let pre = e.node.clone();
+	let pre = (want == Want::Jac).then(|| e.node.clone());
 	let deps = <E::Deps as Pull<'t, F, I>>::pull(&frame);
 	e.node.emit(deps, &mut e.buf);
 	let out: &'t [E::Item] = &e.buf;
-	let flat = Flats::of::<_, E::Deps>(&out, &deps, |dep_buf, out_buf| fd_jac_emit::<E>(&pre, deps, dep_buf, out_buf));
+	let flat = Flats::of::<_, E::Deps>(
+		&out,
+		&deps,
+		pre.as_ref().map(|pre| move |dep_buf: &[f64], out_buf: &[f64]| fd_jac_emit::<E>(pre, deps, dep_buf, out_buf)),
+	);
 
 	let fire = Fire::of(&out, <E as Emit>::PLOTS, <E::Deps as DepFlat>::DIMS, Some(&flat));
 	obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
@@ -2274,33 +2311,47 @@ where
 			"a `diff` node is ungated: its exact partials are stated over deps it pulls every tick"
 		)
 	}
-	if !O::ACTIVE {
+	let want = obs.want();
+	if want == Want::Nothing {
 		let out = node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame));
 		return Cons { out, tail: frame };
 	}
 
-	let pre = node.clone();
+	let pre = (want == Want::Jac).then(|| node.clone());
 	let deps = <N::Deps as Pull<'t, F, I>>::pull(&frame);
 	let out = node.advance(deps);
-	let flat = Flats::of::<_, N::Deps>(&out, &deps, |dep_buf, out_buf| fd_jac::<N>(&pre, deps, dep_buf, out_buf));
+	let flat = Flats::of::<_, N::Deps>(
+		&out,
+		&deps,
+		pre.as_ref().map(|pre| move |dep_buf: &[f64], out_buf: &[f64]| fd_jac::<N>(pre, deps, dep_buf, out_buf)),
+	);
 
-	let dep_len = <N::Deps as DepFlat>::LEN;
-	// zeroed, not NaN-filled: `grad` accumulates (`+=`) into it, and an absent var's partial is 0.
-	let mut exact = alloc::vec![0.0f64; <N::Out<'t> as Flat>::LEN * dep_len];
-	pre.exact_jac(deps, &mut exact);
-	let formula = pre.formula();
-	let deriv = Derivs {
-		names: <N::Deps as DepSet>::NAMES,
-		parts: (0..dep_len).map(|i| formula.diff(i).simplify()).collect(),
-	};
-	let trace = formula.trace(&flat.deps);
+	// the exact partials read off the *pre*-advance node, so they belong to the same want as the FD:
+	// asking for them under `Vals` would reintroduce the clone the level this exists to skip.
+	let exacts = pre.map(|pre| {
+		let dep_len = <N::Deps as DepFlat>::LEN;
+		// zeroed, not NaN-filled: `grad` accumulates (`+=`) into it, and an absent var's partial is 0.
+		let mut exact = alloc::vec![0.0f64; <N::Out<'t> as Flat>::LEN * dep_len];
+		pre.exact_jac(deps, &mut exact);
+		let formula = pre.formula();
+		let deriv = Derivs {
+			names: <N::Deps as DepSet>::NAMES,
+			parts: (0..dep_len).map(|i| formula.diff(i).simplify()).collect(),
+		};
+		let trace = formula.trace(&flat.deps);
+		(exact, formula, deriv, trace)
+	});
 
-	let fire = Fire {
-		exact_jac: Some(&exact),
-		formula: Some(&formula),
-		deriv: Some(&deriv),
-		trace: Some(&trace),
-		..Fire::of(&out, N::PLOTS, <N::Deps as DepFlat>::DIMS, Some(&flat))
+	let base = Fire::of(&out, N::PLOTS, <N::Deps as DepFlat>::DIMS, Some(&flat));
+	let fire = match &exacts {
+		Some((exact, formula, deriv, trace)) => Fire {
+			exact_jac: Some(exact),
+			formula: Some(formula),
+			deriv: Some(deriv),
+			trace: Some(trace),
+			..base
+		},
+		None => base,
 	};
 	obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
@@ -2508,7 +2559,7 @@ where
 	C: Cell,
 	C::Out<'t>: Flat + core::fmt::Debug + Glance,
 	O: Observer, {
-	if !O::ACTIVE {
+	if obs.want() == Want::Nothing {
 		return;
 	}
 	let mut vals = alloc::vec![f64::NAN; <C::Out<'t> as Flat>::LEN];

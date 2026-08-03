@@ -10,7 +10,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use exec_viz::Viz;
-use trading_data::{Cell, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, ReadClock, Replay, required_lanes};
+use trading_data::{Cell, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, ReadClock, Replay, Want, required_lanes};
 use trading_data_simple::{day_bounds, ensure_catalog, nodes::Graph, symbol};
 use v_utils::*;
 
@@ -43,7 +43,8 @@ async fn main() {
 	let mut graph = Graph::default();
 	let viz = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000);
 	// `Signal`'s exact/FD agreement check and the viz recording are two readings of one sweep.
-	let mut obs = (SignalDoc::default(), viz.clone());
+	let mut doc = SignalDoc::default();
+	let mut recorder = viz.clone();
 	let (mut n_trades, mut bars, mut rsi_snaps, mut lambda_fires) = (0u64, 0u64, 0u64, 0u64);
 	let (mut cvd, mut vol1h) = (0.0f64, 0.0f64);
 	let (mut rsi_end, mut lambda_end) = (None, None);
@@ -51,8 +52,7 @@ async fn main() {
 	while let Some(lanes) = feed.next() {
 		n_trades += lanes.trades.len() as u64;
 		let ts_ns = lanes.ts_venue.as_nanos();
-		obs.1.at(ts_ns);
-		let out = graph.tick_obs(ts_ns, lanes.into(), &mut obs);
+		let out = graph.tick_obs(ts_ns, lanes.into(), &mut (&mut doc, recorder.at(ts_ns)));
 
 		bars += out.bar.len() as u64;
 		rsi_snaps += out.rsi.iter().flatten().count() as u64;
@@ -86,7 +86,6 @@ async fn main() {
 	assert!(lambda_fires >= 1, "lambda never fired");
 	assert!(cvd != 0.0 && cvd.is_finite(), "day-end CVD degenerate: {cvd}");
 
-	let doc = obs.0;
 	println!("signal exact/FD agreement: checked={} max_rel={:.2e}", doc.checked, doc.max_rel);
 	assert!(doc.checked > 0, "Signal never produced a finite Jacobian");
 	assert!(doc.max_rel < 1e-3, "exact Jacobian disagrees with FD: max_rel={}", doc.max_rel);
@@ -109,6 +108,12 @@ struct SignalDoc {
 	max_rel: f64,
 }
 impl Observer for SignalDoc {
+	/// It asserts the exact Jacobian against the retained finite-difference one, so the FD is what it
+	/// is here for.
+	fn want(&self) -> Want {
+		Want::Jac
+	}
+
 	fn on(&mut self, node: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
 		if node.rsplit("::").next() != Some("Signal") {
 			return;

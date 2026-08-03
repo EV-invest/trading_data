@@ -54,7 +54,7 @@ SWEEP ── `tick(ts, Batches)`, one straight-line monomorphized fn; no dispatc
                         compile error.
         │
         ▼
-OBSERVATION ── the same sweep, read. `()` observer ⇒ `ACTIVE = false` ⇒ erased entirely.
+OBSERVATION ── the same sweep, read. `()` observer ⇒ `want() = Nothing` ⇒ erased entirely.
    Observer::on(name, dep names, dep gate flags, Fire { vals, jac, exact_jac, formula, … })
    Step order IS topo order, so the observed sequence doubles as the static topology; a dep
    name never seen as a stepped node is a root.
@@ -94,7 +94,7 @@ OBSERVATION ── the same sweep, read. `()` observer ⇒ `ACTIVE = false` ⇒ 
   edge(<sweep>, <step>, "->"),
   edge(<step>, <frame>, "->", bend: -25deg, label: [prepends the out], label-size: 7pt),
   edge(<frame>, <step>, "->", bend: -25deg, label: [`Pull` / `Has`], label-size: 7pt),
-  edge(<step>, <obs>, "->", label: [`ACTIVE`], label-size: 7pt),
+  edge(<step>, <obs>, "->", label: [`want()`], label-size: 7pt),
 ))
 
 === 1.2 The step family — the one axis is _who decided not to run_
