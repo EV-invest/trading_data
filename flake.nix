@@ -68,18 +68,62 @@
         # `examples/spl/benches` — the same strategy through our DAG and through NautilusTrader, over
         # one tape. Nothing listens, so no port; the build is `cargo bench`'s own profile.
         #
-        # `BENCH_CPUS` places the run on a fixed CPU set, which is half of what a scaling number needs
-        # — the other half is nobody else being scheduled there, and that is privileged (this host
-        # delegates `cpu io memory pids` to the user slice, not `cpuset`). Confine the complement from
-        # the system config; until then the placement alone only removes migration, not contention.
-        # SMT is on, so a set has to name both siblings of every physical core it claims or the count
-        # is threads, not cores.
+        # `BENCH_CPUS` places the run on a fixed CPU set. Placement alone stops migration, not
+        # contention: a core is only ours if everything else is confined to the complement, which is
+        # privileged (a user slice is delegated `cpu io memory pids`, never `cpuset`). Cheapest is to
+        # have PID 1 hold the reservation — `systemd.settings.Manager.CPUAffinity`, inherited by every
+        # unit and session — and that is what the check below looks for. Failing that we take the
+        # reservation for the run if sudo answers, and say so loudly if it cannot.
+        #
+        # SMT means a set has to name both siblings of every physical core it claims (`lscpu -e` pairs
+        # them), or what it reserved is threads sharing a contended core.
         spl_bench = pkgs.writeShellApplication {
           name = "spl_bench";
           runtimeInputs = with pkgs; [ rust git nix pkg-config openssl mold util-linux ];
           text = ''
             repo="$(git rev-parse --show-toplevel)"
-            exec ''${BENCH_CPUS:+taskset -c "$BENCH_CPUS"} \
+            if [ -z "''${BENCH_CPUS:-}" ]; then
+              exec cargo bench --manifest-path "$repo/Cargo.toml" -p trading_data_spl "$@"
+            fi
+
+            # Lexicographic throughout: `comm` compares as strings, so both sides must sort the same way.
+            expand() {
+              tr -s ', ' '\n' <<<"$1" | while read -r r; do
+                case "$r" in "") ;; *-*) seq "''${r%-*}" "''${r#*-}" ;; *) echo "$r" ;; esac
+              done | sort -u
+            }
+            confined="$(awk '/Cpus_allowed_list/{print $2}' /proc/1/status)"
+            slices=(init.scope system.slice user.slice)
+
+            if ! comm -12 <(expand "$BENCH_CPUS") <(expand "$confined") | grep -q .; then
+              taskset -c "$BENCH_CPUS" cargo bench --manifest-path "$repo/Cargo.toml" -p trading_data_spl "$@"
+              exit
+            fi
+
+            every="0-$(($(getconf _NPROCESSORS_CONF) - 1))"
+            complement="$(comm -23 <(expand "$every") <(expand "$BENCH_CPUS") | paste -sd,)"
+            if ! sudo -n true 2>/dev/null; then
+              echo "spl_bench: WARNING — $BENCH_CPUS is not reserved and sudo declined, so anything else on this machine shares those cores. Wall clock will read the scheduler as much as the code." >&2
+              taskset -c "$BENCH_CPUS" cargo bench --manifest-path "$repo/Cargo.toml" -p trading_data_spl "$@"
+              exit
+            fi
+
+            for u in "''${slices[@]}"; do sudo -n systemctl set-property --runtime "$u" AllowedCPUs="$complement"; done
+            # Restored by naming every CPU, not by clearing the property: an empty value unsets it in
+            # systemd but leaves the unit's `cpuset.cpus` at whatever it last wrote, and the machine
+            # stays confined until reboot. `--runtime`, so a killed run cannot outlive one anyway.
+            trap 'for u in "''${slices[@]}"; do sudo -n systemctl set-property --runtime "$u" AllowedCPUs="$every"; done' EXIT
+            echo "spl_bench: took $BENCH_CPUS for this run; set systemd.settings.Manager.CPUAffinity=$complement to hold them" >&2
+            # cgroup cpusets only narrow, so the bench cannot live under a slice it just confined — it
+            # gets a top-level one instead. A scope is forked by this shell, so the trap still runs.
+            # Spelled out rather than inherited: `sudo` has already reset HOME and PATH by the time
+            # systemd-run reads them, and a bench that builds into /root is not the same bench.
+            env=(-E "PATH=$PATH" -E "HOME=$HOME")
+            for v in CARGO_HOME RUSTUP_HOME; do
+              if [ -n "''${!v:-}" ]; then env+=(-E "$v=''${!v}"); fi
+            done
+            sudo -n systemd-run --scope --quiet --collect --slice=spl_bench \
+              -p AllowedCPUs="$BENCH_CPUS" --uid="$(id -u)" --gid="$(id -g)" --same-dir "''${env[@]}" \
               cargo bench --manifest-path "$repo/Cargo.toml" -p trading_data_spl "$@"
           '';
         };
