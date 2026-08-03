@@ -27,5 +27,35 @@ ureq.workspace = true
 v_utils.workspace = true
 zip.workspace = true
 
+# The benches replay this same strategy on NautilusTrader to measure what the DAG buys over an
+# actor/msgbus. Pinned to the rev scam_pump_liqs' lock names, so the comparison is against the
+# NT the original actually runs on.
+[dev-dependencies]
+# `DataActor`'s callbacks and the `#[custom_data]` expansion both name it.
+anyhow = { workspace = true }
+nautilus-backtest = { workspace = true }
+nautilus-common = { workspace = true }
+nautilus-core = { workspace = true }
+nautilus-data = { workspace = true }
+nautilus-model = { workspace = true }
+nautilus-persistence-macros = { workspace = true }
+
+# the gate the other three rest on: our nodes called by hand must produce the graph's intent stream.
+[[bench]]
+name = "equivalence"
+harness = false
+
+[[bench]]
+name = "td_graph"
+harness = false
+
+[[bench]]
+name = "naive_nt"
+harness = false
+
+[[bench]]
+name = "optimized_nt"
+harness = false
+
 [lints]
 workspace = true

@@ -96,14 +96,14 @@ mod volume_4h;
 
 pub use atr::Atr;
 pub use book_top::{BookTop, BookTopSnap};
-pub use change_1d::Change1d;
-pub use change_3m::Change3m;
+pub use change_1d::{Change1d, REACH_1D};
+pub use change_3m::{Change3m, SPAN_3M};
 pub use classify::{Category, Classified, Classify, Quality};
 pub use decision::{Decided, Decision};
 pub use deprecator::{Deprecator, Intent, TrailingStop};
 pub use imbalance::Imbalance;
 pub use momentum::{MOM_PERIODS, Momentum, mom_cap};
-pub use oi_delta::{OiDelta5m, OiDelta15m};
+pub use oi_delta::{OI_REACH, OiDelta5m, OiDelta15m};
 pub use rsi::{AvgGain, AvgLoss, Knobs, RSI_TF, Rsi, RsiDelta, RsiSeries};
 pub use rsi_screener::RsiScreener;
 pub use spread::Spread;
@@ -136,10 +136,6 @@ trading_data::node_alias! {
 pub use volume_1h::Volume1h;
 pub use volume_1m::Volume1m;
 pub use volume_4h::Volume4h;
-
-// a buffer's reach is written where the dep is, and lands here — so what those reaches are spelled
-// in has to be in scope here too.
-use crate::nodes::{change_1d::REACH_1D, change_3m::SPAN_3M, oi_delta::OI_REACH};
 
 trading_data::graph! {
 	pub struct Graph;

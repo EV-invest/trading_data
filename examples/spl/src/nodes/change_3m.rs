@@ -4,7 +4,7 @@ use v_utils::{Timeframe, TimeframeDesignator};
 use super::{Bar1m, Screener};
 
 /// Reach behind the change — three minutes, spanned by the closes of the 1m bars inside it.
-pub(super) const SPAN_3M: Timeframe = Timeframe::from_naive(3, TimeframeDesignator::Minutes);
+pub const SPAN_3M: Timeframe = Timeframe::from_naive(3, TimeframeDesignator::Minutes);
 
 /// Percent change over the trailing three minutes, off the closed 1m bars inside it. SPL's backtest
 /// mode: reading it off a live Trades window instead is a live-only fidelity choice.

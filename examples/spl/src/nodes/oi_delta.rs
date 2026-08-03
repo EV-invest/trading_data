@@ -4,7 +4,7 @@ use v_utils::{Timeframe, TimeframeDesignator};
 /// Bybit's open-interest publish cadence: every leg reads the publish standing a whole number of
 /// these back, so the retained reach is one past the longest one.
 const OI_STEP: Timeframe = Timeframe::from_naive(5, TimeframeDesignator::Minutes);
-pub(super) const OI_REACH: Horizon = Horizon::Span(Timeframe(4 * OI_STEP.0));
+pub const OI_REACH: Horizon = Horizon::Span(Timeframe(4 * OI_STEP.0));
 
 /// Percent change of the `i`th fresh publish against the one standing `steps` cadences before it. A
 /// gap that leaves none within a publish interval of that instant declines, rather than passing a
