@@ -62,7 +62,10 @@
             export EXEC_VIZ_WEB_DIR
             # The range base every app claims its ordinal in; an app's own flag overrides it.
             export PORT=${toString port_range_base}
-            exec cargo run --manifest-path "$repo/Cargo.toml" -p "$pkg" -- "$@"
+            # `--release`: `spl` replays two days through the graph with a `Viz` attached to every
+            # fire, and a debug build spends ~9 minutes on it against ~3. The bar is unwatchable
+            # otherwise, and `spl_bench` already reads the same profile.
+            exec cargo run --release --manifest-path "$repo/Cargo.toml" -p "$pkg" -- "$@"
           '';
         };
         # `examples/spl/benches` — the same strategy through our DAG and through NautilusTrader, over
