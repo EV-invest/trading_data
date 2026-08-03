@@ -170,6 +170,12 @@ Structural rules (enforced by the signatures, not convention):
   a **window**. A *recurrence* (Wilder RSI/ATR,
   EMA) and a *fold* (a running sum, a partial bar) stay stateful: they must see every element
   exactly once, which a window does not promise.
+- **A node owns its rate.** How often a node publishes is declared on the node, never in `Deps` — so
+  no consumer can change the rate of what it reads, and a node clocked to a timeframe sees completed
+  elements only rather than being re-run as the in-progress one moves. The counterpart obligation is
+  on the dep side: a read never says whether that dep produced *this tick*, which is what keeps a
+  node's output a measurement of the market rather than of the feed's batching. Both, with their
+  consequences, in [docs/spec/rates.md](spec/rates.md).
 - **Universe/cross-sectional ops** are graph composition, not an execution tier: per-symbol graphs
   are values; a universe-level graph ticks at bar cadence, its roots seeded from theirs.
 - **Parallelism is across symbols (live) / episodes (backtest) only** — one graph per unit, rayon
@@ -199,7 +205,7 @@ Two carve-outs, both load-bearing:
   `Buffer<C>` pins `C`, and a folding consumer pins what it folds.
 
 A skipped node reads `Latent::latent` — an `Emit`'s empty run, or `None`. That is the whole
-obligation the derivation puts back on the author, and it asks for the honest *type* rather than a
+obligation the derivation puts back on the author, and it asks for the *type* rather than a
 gate: an out with no unfired reading cannot be skipped, and says so at compile time.
 
 ## One graph, one router, two feeds

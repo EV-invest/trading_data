@@ -162,6 +162,27 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 		.map(|()| None);
 	}
 
+	if let Wrap::Sample = wrap {
+		let dag = &st.cfg.dag;
+		// no reach to join: unlike a buffer, every reader of a level asks for the same one thing, so
+		// the frame type is settled here rather than in `emit`.
+		return record(
+			st,
+			NodeInfo {
+				key: format!("Latest<{key}>"),
+				ty: quote!(#dag::Latest<#cell>),
+				emit: false,
+				diff: false,
+				latch: false,
+				deps: vec![Dep {
+					shim: dep.shim,
+					ty: quote!(#dag::Folding<#cell, { #dag::Horizon::Unbounded }>),
+				}],
+			},
+		)
+		.map(|()| None);
+	}
+
 	if st.cfg.roots.iter().any(|r| key_of(&r.ty).map(|(k, _)| k == key).unwrap_or(false)) {
 		return Ok(None);
 	}

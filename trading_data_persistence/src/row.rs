@@ -5,7 +5,7 @@ use arrow::{
 	datatypes::{DataType, Field, Schema, SchemaRef},
 };
 use trading_data_core::{FrameKind, Local, Precision, PrecisionPriceQty, Side, Ts, Venue};
-use trading_data_dag::{Bump, Cell, Flat, Glance, Stamped, slice_nudge};
+use trading_data_dag::{Bump, Cell, Flat, Glance, Stamped, always_present, slice_nudge};
 
 use crate::feather::RotationPolicy;
 
@@ -741,3 +741,6 @@ impl Cell for McRoot {
 	const NAME: &'static str = "MarketCap";
 }
 slice_nudge!(McRoot, Mc);
+
+// a lane row is a reading that was published: absent only by not being in the batch.
+always_present!(Oi, Mc);

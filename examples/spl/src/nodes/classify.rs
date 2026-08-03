@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Horizon, Ink, McRoot, Node, OiRoot, Plot, ProbabilisticDistribution, Usd, node, value_nudge};
+use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Ink, McRoot, Node, OiRoot, Plot, ProbabilisticDistribution, Sampling, Usd, node, value_nudge};
 
 use super::{
 	Bar1m, Bar4h, Bar5m, Change1d, Change3m, Imbalance, Screener, Spread, TF_4H, TF_5MIN, Volume1h, Volume1m,
@@ -292,7 +292,7 @@ impl Node for Classify {
 		Volume1h,
 		Imbalance,
 		Spread,
-		Buffering<McRoot, { Horizon::Elems(1) }>,
+		Sampling<McRoot>,
 		Buffering<OiRoot, OI_REACH>,
 	);
 
@@ -310,7 +310,7 @@ impl Node for Classify {
 		assert!(hit, "a gating dep reads true inside `advance`");
 		Some(Classified::vote(&Situation {
 			momentum: momentum::standing(m5, h4),
-			market_cap: mc.all().last().map(|m| m.market_cap),
+			market_cap: mc.map(|m| m.market_cap),
 			// the freshest close there is: the ratio against a USD market cap is the reading, and a
 			// stale leg of it would move the threshold rather than the measurement.
 			oi_value: oi.all().last().zip(m1.last()).map(|(o, b)| o.oi * b.close),

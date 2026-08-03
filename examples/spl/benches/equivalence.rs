@@ -238,7 +238,9 @@ impl Direct {
 				&self.b_v1h,
 				&self.b_imb,
 				&self.b_spr,
-				self.mc.hist::<Buffering<McRoot, { Horizon::Elems(1) }>>(),
+				// `Ring` bridges into `Hist` alone, and an `Mc` is never an absence — so the newest row it
+				// ever held is what the frame's `Latest<McRoot>` holds.
+				self.mc.hist::<Buffering<McRoot, { Horizon::Elems(1) }>>().all().last().copied(),
 				self.oi.hist::<Buffering<OiRoot, OI_REACH>>(),
 			));
 			self.decision.advance((classified,))

@@ -1,6 +1,5 @@
 //! A node whose every reader sits behind one gate is skipped while that gate is false, so its out
-//! has to have an unfired reading. A bare `f64` has none: there is no value that says "nothing this
-//! tick". The fix the message names is `Option<f64>`.
+//! has to have an unfired reading. A bare `f64` has none; the fix the message names is `Option<f64>`.
 use trading_data_dag::{Bump, Cell, DepOuts, Flat, Gate, Gating, Glance, Node, slice_nudge, value_nudge};
 use trading_data_macros::{graph, node};
 

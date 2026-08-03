@@ -599,7 +599,9 @@ impl DataActor for Classifier {
 			&self.v1h,
 			&self.imb,
 			&self.spr,
-			self.mc.hist::<Buffering<McRoot, { Horizon::Elems(1) }>>(),
+			// `Ring` bridges into `Hist` alone, and an `Mc` is never an absence — so the newest row it
+			// ever held is what the frame's `Latest<McRoot>` holds.
+			self.mc.hist::<Buffering<McRoot, { Horizon::Elems(1) }>>().all().last().copied(),
 			self.oi.hist::<Buffering<OiRoot, OI_REACH>>(),
 		));
 		self.publish_signal(CLASSIFIED, encode(&out.map(|c| c.0.to_vec())), signal.ts_event);

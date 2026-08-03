@@ -13,6 +13,8 @@ pub enum Wrap {
 	/// where the dep omitted it: the default is `Horizon::Unit`, and only the driver knows the dag's
 	/// path to spell it under.
 	Buf(Option<TokenStream>),
+	/// The point-level read. No reach to carry: a `Latest` field holds one item, whatever was asked.
+	Sample,
 	Gate,
 }
 
@@ -20,11 +22,13 @@ pub fn parse_type(ts: &TokenStream) -> syn::Result<Type> {
 	syn::parse2(ts.clone())
 }
 
-/// `Folding<C, H>` / `Buffering<C, H>` / `Gating<C>` → `C` plus which of them it was. Matched on the
-/// last path segment, so a wrapper named through any path spelling still reads as one.
+/// `Folding<C, H>` / `Buffering<C, H>` / `Sampling<C>` / `Gating<C>` → `C` plus which of them it
+/// was. Matched on the last path segment, so a wrapper named through any path spelling still reads
+/// as one.
 ///
-/// `Buffer<C, H>` named outright reads as the request it is: the frame holds one buffer per series,
-/// so asking for it by its type and asking for it through a dep must land on the same field.
+/// `Buffer<C, H>` / `Latest<C>` named outright read as the requests they are: the frame holds one of
+/// each per series, so asking for it by its type and asking for it through a dep must land on the
+/// same field.
 pub fn unwrap_dep(ty: &Type) -> (Type, Wrap) {
 	let Type::Path(p) = ty else { return (ty.clone(), Wrap::Bare) };
 	let Some(seg) = p.path.segments.last() else { return (ty.clone(), Wrap::Bare) };
@@ -41,6 +45,7 @@ pub fn unwrap_dep(ty: &Type) -> (Type, Wrap) {
 		"Folding" | "Spanning" => (cell.clone(), Wrap::Fold),
 		"Gating" => (cell.clone(), Wrap::Gate),
 		"Buffering" | "Buffer" => (cell.clone(), Wrap::Buf(reach.map(ToTokens::to_token_stream))),
+		"Sampling" | "Latest" => (cell.clone(), Wrap::Sample),
 		_ => (ty.clone(), Wrap::Bare),
 	}
 }

@@ -29,6 +29,7 @@ fn spelling(ts: &TokenStream) -> syn::Result<(String, Wrap)> {
 	let (cell, wrap) = ty::unwrap_dep(&ty::parse_type(&ty::flatten(ts.clone()))?);
 	let key = match wrap {
 		Wrap::Buf(_) => format!("Buffer<{}>", ty::norm(&cell)),
+		Wrap::Sample => format!("Latest<{}>", ty::norm(&cell)),
 		_ => ty::norm(&cell),
 	};
 	Ok((key, wrap))

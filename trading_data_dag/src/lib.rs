@@ -739,8 +739,6 @@ pub trait Pull<'t, F, I>: DepSet {
 		F: 't;
 }
 
-/// The "didn't run" value for gated nodes — `Option` and batch outs only, so gating a node with no
-/// unfired reading is a compile error — no dishonest zeros.
 #[diagnostic::on_unimplemented(
 	message = "`{Self}` has no unfired reading — a node read only behind a gate must be able to decline: make its out `Option`-valued, or give it a consumer that is not gated"
 )]
@@ -1121,6 +1119,39 @@ where
 	type Item: Copy + 'static;
 }
 
+/// A [`Series`] item read as "did this element carry anything" — what [`Latest`] must ask before it
+/// keeps one as a level. The dominant item in this codebase is `Option<f64>`, a rate-preserving
+/// decline; retaining one of those as the standing value would hold an absence forever.
+pub trait Present: Copy {
+	type Val: Copy;
+	fn present(self) -> Option<Self::Val>;
+}
+
+impl<T: Copy> Present for Option<T> {
+	type Val = T;
+
+	fn present(self) -> Option<T> {
+		self
+	}
+}
+
+/// The identity [`Present`]: an item that *is* its value, absent only by not being emitted. One line
+/// per type because the blanket impl is spent on `Option` and Rust has no specialization.
+#[macro_export]
+macro_rules! always_present {
+	($($T:ty),+ $(,)?) => {$(
+		impl $crate::Present for $T {
+			type Val = Self;
+
+			fn present(self) -> Option<Self> {
+				Some(self)
+			}
+		}
+	)+};
+}
+
+always_present!(f64);
+
 /// A [`Buffering`] dep's out: `all = past ++ fresh`, where `fresh` is byte-identical to the
 /// unbuffered series out and `past` is what stood behind this tick's batch. `horizon` is the
 /// *consumer's* declared one, so a window wider than it stated trips regardless of how far the
@@ -1399,6 +1430,123 @@ where
 			horizon: H,
 			watermark: s.2,
 		}
+	}
+}
+
+/// Engine-owned point-level over a [`Series`] — [`Buffer`]'s sibling, an ordinary node (ungated,
+/// `Deps = (Folding<C, {Horizon::Unbounded}>,)`) sitting *next to* its source in the frame. Unbounded
+/// because a level it never saw is one it can never stand on, and it retains nothing: one item, not
+/// a window.
+///
+/// The invariant is monotone — once it holds a value it holds one forever. That is what a consumer
+/// clocked by *another* series needs: on its own ticks this one has emitted nothing, and reading the
+/// empty run there would read absence where a standing level is the truth.
+pub struct Latest<C: Series>
+where
+	C::Item: Present, {
+	held: Option<<C::Item as Present>::Val>,
+}
+
+// hand-written for the same reason [`Buffer`]'s are: `derive` would demand them of the source node.
+impl<C: Series> Default for Latest<C>
+where
+	C::Item: Present,
+{
+	fn default() -> Self {
+		Self { held: None }
+	}
+}
+impl<C: Series> Clone for Latest<C>
+where
+	C::Item: Present,
+{
+	fn clone(&self) -> Self {
+		Self { held: self.held }
+	}
+}
+
+impl<C: Series> Latest<C>
+where
+	C::Item: Present,
+{
+	const TAG: Tag = Tag::of("Latest", &[C::NAME]);
+}
+
+impl<C: Series> Cell for Latest<C>
+where
+	C::Item: Present,
+{
+	type Out<'t> = Option<<C::Item as Present>::Val>;
+
+	/// Unlike its [`Sampling`] dep this is a frame cell of its own, so it takes a name of its own.
+	const NAME: &'static str = Self::TAG.as_str();
+}
+
+impl<C: Series> Node for Latest<C>
+where
+	C::Item: Present,
+{
+	type Deps = (Folding<C, { Horizon::Unbounded }>,);
+
+	fn advance<'t>(&'t mut self, (fresh,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		if let Some(v) = fresh.iter().rev().find_map(|x| x.present()) {
+			self.held = Some(v);
+		}
+		self.held
+	}
+}
+
+/// Dep position only, never a frame field: "the last value `C` produced, whenever that was".
+/// Resolves against the frame's [`Latest<C>`] through the [`Has`] impl below.
+///
+/// [`Buffering`]'s third sibling, and the point where the other two have a window: that one is a
+/// reach the engine retains, [`Folding`] a reach the node retains, this one a single level the
+/// engine carries across every tick the series was silent.
+pub struct Sampling<C: Series>(core::marker::PhantomData<C>);
+
+impl<C: Series> Cell for Sampling<C>
+where
+	C::Item: Present,
+{
+	type Out<'t> = Option<<C::Item as Present>::Val>;
+
+	/// Forwarded, for the same reason [`Buffering`]'s is: the graph predicates match dep names against
+	/// frame cell names, and a wrapper that renamed its dep would drop out of every one of them.
+	const NAME: &'static str = C::NAME;
+}
+
+impl<'t, C: Series, T> Has<'t, Sampling<C>, Here> for Cons<'t, Latest<C>, T>
+where
+	C::Item: Present,
+{
+	fn get(&self) -> Option<<C::Item as Present>::Val> {
+		self.out
+	}
+}
+
+impl<C: Series> Nudge for Sampling<C>
+where
+	C::Item: Present,
+	<C::Item as Present>::Val: Bump,
+{
+	type Scratch = Option<<C::Item as Present>::Val>;
+
+	fn stage<'t>(out: Self::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
+		match bump {
+			Some(slot) => {
+				let (v, dh) = Bump::bump(out, slot, h);
+				*s = v;
+				dh
+			}
+			None => {
+				*s = out;
+				0.0
+			}
+		}
+	}
+
+	fn view<'l>(s: &'l Self::Scratch) -> Self::Out<'l> {
+		*s
 	}
 }
 
