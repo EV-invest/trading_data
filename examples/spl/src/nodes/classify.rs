@@ -148,7 +148,7 @@ impl Quality {
 /// SPL's `ProbabilisticDistribution<Classification>` — a probability per `(category, quality)`,
 /// totalling 1. Dense where SPL is sparse: the flattening has to place every slot regardless, so an
 /// outcome the classifier never names is the zero it already draws as.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Classified(pub [f64; OUTCOMES]);
 impl Classified {
 	fn vote(s: &Situation) -> Self {
@@ -189,10 +189,9 @@ impl Classified {
 }
 
 /// The seat of the classification subtree, and the anchor it hangs off: [`Screener`] is its gate, so
-/// everything that grows here is dormant on the ticks nothing fired, and `shadowed` will force each
-/// new node onto that same gate as it appears. The rest of the deps are the situation the traits
-/// read — buffered rather than folded, because a gated node cannot own a fold it would miss the
-/// ticks of.
+/// everything that grows here is dormant on the ticks nothing fired. The rest of the deps are the
+/// situation the traits read — buffered rather than folded, because a gated node cannot own a fold it
+/// would miss the ticks of.
 #[derive(Clone, Copy, Default)]
 pub struct Classify;
 /// What the traits are read against. Every field is optional because every one of them can be
@@ -237,6 +236,24 @@ impl Bump for Classified {
 	fn bump(self, slot: usize, h: f64) -> (Self, f64) {
 		let (p, dh) = self.0.bump(slot, h);
 		(Self(p), dh)
+	}
+}
+
+/// One line per axis instead of the 25 flat slots: the hover tip is where the distribution is
+/// read, and a marginal is the only thing a row of raw joint probabilities is ever squinted at for.
+impl fmt::Debug for Classified {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.write_str("Classified\n  Category")?;
+		for (c, cat) in CATEGORIES.iter().enumerate() {
+			let p: f64 = self.0[c * QUALITIES.len()..][..QUALITIES.len()].iter().sum();
+			write!(f, " {cat:?} {:.0}%", p * 100.0)?;
+		}
+		f.write_str("\n  Quality ")?;
+		for (q, qual) in QUALITIES.iter().enumerate() {
+			let p: f64 = self.0.iter().skip(q).step_by(QUALITIES.len()).sum();
+			write!(f, " {qual:?} {:.0}%", p * 100.0)?;
+		}
+		Ok(())
 	}
 }
 
