@@ -404,7 +404,8 @@ _Who holds the history_ is the axis the wrappers actually partition:
 
 == 2. Utilization census
 
-// counted at compile time off the sources themselves: typst compile --root . trading_data_dag/model.typ
+// `.examples` is a symlink to `../examples`: `read` cannot escape the project root, which is this file's own directory
+
 #let sources = (
   simple: ("src/lib.rs", "src/main.rs", "src/nodes.rs"),
   live: ("src/lib.rs", "src/main.rs", "src/nodes.rs"),
@@ -449,7 +450,7 @@ _Who holds the history_ is the axis the wrappers actually partition:
     .pairs()
     .map(((crate, files)) => (
       crate,
-      files.map(f => read("/examples/" + crate + "/" + f)).join("\n"),
+      files.map(f => read(".examples/" + crate + "/" + f)).join("\n"),
     ))
 )
 
