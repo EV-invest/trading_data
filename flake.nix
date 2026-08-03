@@ -137,11 +137,12 @@
             cat <<'EOF'
             nix run .          this listing
             nix run .#simple   examples/simple — one day, one RSI dag (port ${toString (port_range_base + 1)})
-            nix run .#live     examples/live   — 15s of live Bybit    (port ${toString (port_range_base + 2)})
+            nix run .#live     examples/live   — live Bybit til ctrl-c (port ${toString (port_range_base + 2)})
             nix run .#spl      examples/spl    — scam_pump_liqs port  (port ${toString (port_range_base + 3)})
             nix run .#spl_bench  that same strategy timed against NautilusTrader
 
             `nix develop` adds `viz <simple|live|spl>`, the same runner against your working tree.
+            `cargo r -p trading_data_live_equiv` is the headless live≡replay proof — 15s, no server.
             Args after `--` reach the app: `nix run .#spl -- --config other.nix`.
             EOF
           '');

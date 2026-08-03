@@ -1,8 +1,10 @@
 //! Minimal live graph: the trade and book roots the facade ships, feeding Cvd (running signed
-//! notional per trade), BookFlow (running signed level qty, market activity only) and Spread off
-//! the folded `Book`. 1m bars won't close in 15s, so the proof rides on these per-event outputs.
+//! notional per trade), BookFlow (running signed level qty, market activity only), the folded
+//! `Book`, and 1m bars off the same trades — the per-event readings are what the live≡replay proof
+//! compares, the bars are what the chart draws price from.
 
 use trading_data::{BookAnchors, BookDeltas, BookShape, Cell, DeltaFrame, Emit, EmitOuts, Folding, Horizon, Lanes, Side, TradeCols, Trades, node, slice_nudge};
+use v_utils::*;
 
 /// Cumulative volume delta: running Σ signed notional, one element per trade.
 #[derive(Clone, Default)]
@@ -68,7 +70,7 @@ trading_data::graph! {
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape] };
 	out TickOut;
 	// `book` is what the live≡replay check compares.
-	outputs { cvd: Cvd, book_flow: BookFlow, book: trading_data::Book }
+	outputs { cvd: Cvd, book_flow: BookFlow, book: trading_data::Book, bar_1m: trading_data::Bars<{ TF_1MIN }> }
 }
 
 impl<'t> From<Lanes<'t>> for Batches<'t> {

@@ -1,6 +1,6 @@
 [package]
-name = "trading_data_live_example"
-description = "Live watchpoint: real Bybit BTC-USDT perp trades+book through the graph until ctrl-c, watchable in a browser as it runs"
+name = "trading_data_live_equiv"
+description = "End-to-end live proof: 15s of real Bybit BTC-USDT perp trades+book through the graph, recorded, then replayed identically"
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -13,12 +13,11 @@ categories.workspace = true
 
 [dependencies]
 color-eyre.workspace = true
-exec_viz.workspace = true
-jiff.workspace = true
 miette.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 trading_data.workspace = true
+trading_data_live_example = { workspace = true }
 # The only edge pointing out of this workspace, declared here rather than in the root manifest so
 # `trading_data` itself has no path back to a venue adapter.
 v_exchanges = { workspace = true }
