@@ -33,6 +33,17 @@ impl Observer for Probe {
 	}
 }
 
+/// The two `format!`s `Tape::on` runs per fire, and nothing else the tape does — so the leg between
+/// this and [`Probe`] prices rendering alone, against the mutex, the copies and the thinning passes.
+#[derive(Default)]
+struct Fmt(usize);
+
+impl Observer for Fmt {
+	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
+		self.0 += format!("{}", fire.glance).len() + format!("{:?}", fire.debug).len();
+	}
+}
+
 fn main() {
 	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
 	let situation = &cfg.situation;
@@ -76,6 +87,16 @@ fn main() {
 
 	let began = Instant::now();
 	let mut graph = Graph::default();
+	let mut fmt = Fmt::default();
+	let mut f = feed();
+	while let Some(l) = f.next() {
+		std::hint::black_box(graph.tick_obs(l.ts_venue.as_nanos(), l.into(), &mut fmt));
+	}
+	let fmt_s = began.elapsed().as_secs_f64();
+	std::hint::black_box(&fmt);
+
+	let began = Instant::now();
+	let mut graph = Graph::default();
 	let mut recorder = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000);
 	let mut f = feed();
 	while let Some(l) = f.next() {
@@ -88,5 +109,6 @@ fn main() {
 	println!("feed only            {feed_s:>8.2}s");
 	println!("+ graph.tick         {plain_s:>8.2}s  (graph {:.2}s)", plain_s - feed_s);
 	println!("+ obs, recording nil {fd_s:>8.2}s  (flatten+FD {:.2}s)", fd_s - plain_s);
-	println!("+ obs, recording Viz {obs_s:>8.2}s  (tape {:.2}s)", obs_s - fd_s);
+	println!("+ obs, rendering     {fmt_s:>8.2}s  (format! {:.2}s)", fmt_s - fd_s);
+	println!("+ obs, recording Viz {obs_s:>8.2}s  (rest of tape {:.2}s)", obs_s - fmt_s);
 }
