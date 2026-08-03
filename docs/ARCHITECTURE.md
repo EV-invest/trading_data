@@ -6,10 +6,19 @@ flowchart TD
     D --> G["Signal"]
 ```
 
-**Source** is persisted strictly and structurally — the observed streams (LOB, Trades,
-OI, Liqs, MC, LSR, News): a property of the situation. **Derived** values ("Indies") are
-computed on top per-episode and never touch the source store; they can always be
-recalculated, so recomputing them can't muddy persistence.
+**Source** is persisted strictly and structurally — the observed streams (LOB, Trades, OI, Liqs, MC,
+LSR, News): a property of the situation. **Derived** values ("Indies") are computed on top
+per-episode and never touch the source store; they can always be recalculated, so recomputing them
+can't muddy persistence.
+
+Two sentences hold up everything below, and each sub-crate is one of them made mechanical:
+
+- **A strategy may read only what it had already received.** So the stream's order is *reception*
+  order, and reception is a reading only we can make — the venue's execution axis says what
+  happened, never when we could have acted on it.
+- **Backtest and live are the same graph over the same event stream.** The seam between them is
+  only where events come from. Anything a node could observe about *how* a feed chunked those
+  events would break the equivalence, so nothing lets it.
 
 ## Crates
 
@@ -44,6 +53,20 @@ into the store, no store type leaks into the exchange layer.
 knowledge. Persistence knows nothing of derivations. Core depends on the dag for `Flat`/`Glance`/
 `Cell` only because orphan rules put a type's impls in the type's crate — nothing flows back.
 
+### Where the detail lives
+
+Two sub-crates carry their own design document, written in their own primitives. This file states
+what they are *for* and what the rest of the system may assume of them; it does not restate how
+they work.
+
+| document | covers |
+|---|---|
+| [`trading_data_dag/model.typ`](../trading_data_dag/model.typ) | declaration → derivation → sweep → observation; the six dep spellings and what each retains; the step family; `Horizon`/`CLOCK`; the out plane (`Flat`, `Diff`, `Latent`, …); every enforcement point; a compile-time census of which primitives the examples actually use |
+| [`trading_data_persistence/weaver.typ`](../trading_data_persistence/weaver.typ) | the `Arrival` key and the read clock; the lane; the merge step; the five lanes and their shapes; the two feeds; what the live/replay round-trip proves and at what strength |
+
+The same pattern is meant to repeat downward: a document reasons in the primitives of its own
+level and links out for the tier below.
+
 ## Raw columnar lanes
 
 A lane is columns, not rows, and the columns are **raw** end to end: venue `i32` → lane `i32` →
@@ -58,30 +81,25 @@ rotation check for a whole venue message, where the row model was N pushes and N
 Each lane keeps its natural shape — Oi/Mc are genuinely f64 and stay `&[Oi]`/`&[Mc]`. Uniformity was
 the old `Batch` enum's sin.
 
-Finite differences respect the grid: `Nudge::stage` returns the perturbation it **actually** applied,
-so a raw column bumps by whole ticks and reports `ticks / scale`, and a discrete slot reports `0.0`
-and leaves its Jacobian column NaN rather than a fabricated zero.
+## Record the decision, not the evidence
 
-## The shadow book: we persist our own recollection
+Anything a replay would otherwise have to *re-derive from circumstance* is decided once, at ingest,
+and written down as a fact on disk. That is the persistence layer's whole shape, and it is what makes
+a recording replayable rather than merely re-readable: arrival order, book reconciliation, lane
+precision and file extent are all decisions, not measurements to be repeated.
 
-A gap or a resync is a fact about *our connection*, not about the market. Stored raw, every replay
-would re-derive the reconciliation from whatever venue snapshots happened to land, so the replayed
-book would depend on a cadence we neither control nor can reproduce.
+The load-bearing case is the book. A gap or a resync is a fact about *our connection*, not about the
+market — stored raw, every replay would re-derive the reconciliation from whichever venue snapshots
+happened to land, a cadence we neither control nor can reproduce. So `ShadowBook` consumes the venue
+stream at ingest and emits ours: the persisted delta lane is our own recollection, gapless and
+self-consistent, with checkpoints on our cadence and venue snapshots consumed but never stored. The
+reconciliation survives as the frame's *identity* — `Update` vs `Correction` — so a flow or imbalance
+node must say which it means and cannot fabricate signal out of a dropped websocket packet.
 
-`ShadowBook` consumes the venue stream at ingest and emits ours:
-
-| venue input | emitted |
-|---|---|
-| delta, chain intact | `DeltaFrame::Update` — the levels, verbatim |
-| delta, gapped | `DeltaFrame::Correction` |
-| snapshot agreeing with our fold | nothing |
-| snapshot disagreeing | `DeltaFrame::Correction` — exactly the diffs |
-| our cadence elapsed | a `BookShape` checkpoint |
-
-The persisted delta lane is therefore gapless and self-consistent, and checkpoints are ours on our
-cadence — venue snapshots are consumed, never stored. `Book` folds both kinds identically; the kind
-is the frame's *identity* so that a flow or imbalance node must say explicitly which it means, and
-cannot fabricate signal out of a dropped websocket packet.
+The exception proves the rule: a historic row we were not present for has no recorded reception, so
+that one key is manufactured — deterministically, seeded on lane and symbol, so two runs of a range
+weave identically. Per-case detail, and the enforcement, in
+[`weaver.typ`](../trading_data_persistence/weaver.typ) §1.8.
 
 <a id="dep_tree"></a>
 ## Dependency tree
@@ -91,11 +109,10 @@ each node names its dependencies as a type, the compiler enforces a valid evalua
 and cycles are unrepresentable — at zero runtime cost.
 
 `type Deps` **is** the graph. A `graph!` states its roots and the handful of nodes an app reads —
-`outputs` and `observe` — and the node set, its topological order and every buffer's size are
-derived from there by walking `Deps` backwards. A node no output reaches is never instantiated:
-unneeded work is not merely unused, it does not exist, and neither does the root lane that would
-have fed it. Types are not resolved at expansion time, so `#[node]` on the impl leaves the dep
-tokens behind as a `macro_rules!` the walk can call back into.
+`outputs` and `observe` — and the node set, its topological order, every buffer's size, and which
+nodes may go dark are derived from there by walking `Deps` backwards. A node no output reaches is
+never instantiated: unneeded work is not merely unused, it does not exist, and neither does the
+source lane that would have fed it. The whole sweep monomorphizes to one straight-line function.
 
 Cells are GAT-shaped and **batch-native**: an out is `&'t [T]` (a run of events) or `&'t Book`, a
 first-class dependency rather than a side-channel context argument. `advance` self-borrows, so a
@@ -109,113 +126,33 @@ pub trait Node: Cell {
 }
 ```
 
-A tick accumulates outputs into a **frame** — a type-indexed HList. `step` advances one node,
-prepending its output; its `Pull` bound is the entire enforcement (frame MUST already hold all of
-`N`'s deps — wrong order names the missing `Has<Dep>`). The whole sweep monomorphizes to one
-straight-line function. See `trading_data_dag`'s crate docs and tests for the worked form.
+Everything an author would otherwise have to state by hand is instead read off that one type. Three
+consequences shape how a strategy is written; the mechanisms are `model.typ`'s subject:
 
-Structural rules (enforced by the signatures, not convention):
-
-- **Roots are the router's lanes.** A graph declares `roots { field: Cell[Event] }`; each tick a
-  batch of one source lane seeds the frame as `&'t [Event]`. `Node::advance` self-borrows, so a
-  node's out is a slice into its own buffer (or `&'t Book` of borrowed state). The "nodes are Copy
-  values" doctrine is dead; the buffer just outlives the tick.
-- **Rate is slice length, firing is element `Option`-ness.** A rate-preserving node emits one
-  element per driving-dep element, `Option`-valued where it declines (warmup) — same-rate deps
-  zip by index (`assert_eq!` on len is the tripwire). A rate-changing node (trades→bars) emits one
-  non-optional element per own event. Cross-rate reads take `.last()` as the level view.
-- **Emptiness is per slot, and NaN spells it.** `Flat` flattens an out into a fixed-width
-  `&mut [f64]`; a NaN slot means *no value there*, not a value. Per-slot because a struct's fields
-  warm independently — a momentum out fires the moment its 5m Sharpe exists, hours before its 4h
-  one, so an `Option<[f64]>` could only report the cold field by discarding the warm ones. NaN
-  because the buffer's arithmetic consumer is the finite-difference Jacobian, where absence is
-  the absorbing element: an absent dep leaves its column NaN, and a `Symbolic` body carries absence
-  through its arithmetic — neither spends a branch. The encoding stops at the engine: every
-  boundary a human reads converts each empty slot to a real `None`.
-- **A node is not a pane.** `PLOTS` lets a node name several slot groups of its `Flat` out, each
-  with its own scale, guides, labels and `overlay` — axes partition by *unit*, and one out can mix
-  them (a deprecator's sizes beside its price-denominated stop levels). So drawing never motivates a
-  node: a step that computes nothing, and differentiates to nothing, stays out of the topology.
-- **Node identity = its type.** Two instances of one node type in a frame are ambiguous —
-  compile error; distinguish via newtypes/const generics (`Rsi<14>` vs `Rsi<28>`).
-- **A gate is scalar-out; a gated node may be batch-out.** A `Gate` is a `bool`-out node; a consumer
-  names it in `Deps` wrapped in `Gating<C>` — the input that *dominates*, leading the tuple — and is
-  skipped while it reads false, pulling none of its plain deps. The gate resolves once per tick, so a gated
-  batch node's episode boundary is quantized to its batch window. *Historic* nodes (stateful)
-  must advance every tick to stay warm: gating one is a compile error; only *current* nodes gate.
-  A node whose readers are all shut is skipped without its author restating their gate — see
-  **Demand** below.
-- **Gateable stateful nodes.** `Book` is the worked example: its out is `Option<&Book>` (hence
-  `Latent`, hence gateable) and `HISTORIC = false` is sound because — unlike a recurrence — a book
-  **re-warms from a checkpoint**. Gate it off and the frames go by unread; gate it back on and the
-  `monotonic_seq` discontinuity desyncs it, so it never folds onto stale state. A checkpoint is a
-  standing offer, taken only by a book with no place in the stream — unseeded or desynced; the delta
-  lane is gapless, so a synced book already holds it and ignores it, which leaves `epoch` counting
-  genuine resyncs. `Node::Deps` is fixed on the impl, so the shipped `Book` node is the ungated one;
-  gating it is an eight-line wrapper over the same public `Book::step` fold.
-- **Latches.** A `Latch` is a `Gate` armed from outside and cut from within (an SCR): an external
-  event arms it; when its `Cut` node publishes an `Episode::terminal` out, `graph!` commutates it
-  and resets every node gated on it to `Default` at the *next* tick's start (deferred: the frame
-  still borrows batch fields at end-of-tick). One episode at a time; triggers during one are absorbed.
-- **Buffering.** History over a series belongs to the producer's edge, never to the consumer.
-  `Buffer<C, K>` is an ordinary node (`Deps = (C,)`, ungated, historic) sitting *next to* `C` in the
-  frame; consumers name `Buffering<C, J>` in `Deps` and read a `Hist` — `past ++ fresh`, where
-  `fresh` is byte-identical to `C`'s own out. This is what makes switching a consumer **off** cheap:
-  a client-owned window comes back cold and must re-warm, an engine-owned one is warm on its first
-  tick back. So a buffer advances every tick regardless of what is dark downstream — being ready is
-  its whole job. Four invariants, all by construction: it is never gated (`Hist` isn't `Latent`, and
-  `HISTORIC` makes gating one a compile error); never latch-reset (no `Gating` dep, so the window
-  outlives the episode); and there is one per series per frame (two make every `Buffering<C, _>` ambiguous, as
-  with any duplicated node type). `K` is nobody's to declare: it is the join of every `J` the
-  derived consumer set asks for, so dominating them all is true by construction. A buffer replaces
-  a **window**. A *recurrence* (Wilder RSI/ATR,
-  EMA) and a *fold* (a running sum, a partial bar) stay stateful: they must see every element
-  exactly once, which a window does not promise.
-- **Sampling.** The point-level read of the same edge: `Latest<C>` is `Buffer`'s sibling — one item,
-  not a window — and a consumer names `Sampling<C>` to read "the last value `C` produced, whenever
-  that was". A dep read is this tick's run, so a consumer clocked by some *other* series reads the
-  empty run on every tick of its own and takes `None` for an answer; a level standing across the
-  silence is what it actually meant. `Present` is what keeps that level a value: the dominant item
-  here is `Option<f64>`, a rate-preserving decline, and retaining one of those would hold an absence
-  forever. So a level never reverts to absent once it holds — which is exactly what a *window* over
-  the same series does not promise, since a window's newest element may itself be a decline.
+- **A dep says which *reading* of its producer it wants** — this tick's batch, a window, the last
+  value whenever it came, or a claim to fold the series itself. The axis those spellings partition
+  is *who holds the history*: history the engine holds re-warms through a skip, history a node holds
+  cannot — so the compiler refuses to gate a node that folds its own reach.
+- **Gating and demand are the same edge read in the two directions.** Gating states what a node
+  needs; demand is whether anyone will read what it produces, derived per node from the gates
+  dominating every path to an output. Neither is the author's to restate — a hand-written badge on
+  six indicators is six restatements of what one edge already said. What a skip costs the author is
+  a *type*: an out with no unfired reading cannot be skipped, and says so at compile time.
 - **A node owns its rate.** How often a node publishes is declared on the node, never in `Deps` — so
   no consumer can change the rate of what it reads, and a node clocked to a timeframe sees completed
-  elements only rather than being re-run as the in-progress one moves. The counterpart obligation is
-  on the dep side: a read never says whether that dep produced *this tick*, which is what keeps a
-  node's output a measurement of the market rather than of the feed's batching. Both, with their
-  consequences, in [docs/spec/rates.md](spec/rates.md).
-- **Universe/cross-sectional ops** are graph composition, not an execution tier: per-symbol graphs
-  are values; a universe-level graph ticks at bar cadence, its roots seeded from theirs.
-- **Parallelism is across symbols (live) / episodes (backtest) only** — one graph per unit, rayon
-  across. Never intra-tick.
+  elements only. The counterpart obligation is on the dep side: a read never says whether that dep
+  produced *this tick*, which is what keeps a node's output a measurement of the market rather than
+  of the feed's batching. Both, with their consequences, in [docs/spec/rates.md](spec/rates.md).
 
-### Demand
+And two rules about what belongs in the graph at all:
 
-Gating states what a node *needs*. Demand is the same edge read backwards: whether anyone will read
-what a node produces. Both are in `Deps` already, so neither is the author's to restate — a hand-written
-`Gating<Screener>` on six indicators is six badges in the DAG panel saying what one edge already said.
-
-`graph!` derives, per node, the gates that dominate **every** path from it to a named output, and the
-sweep skips the node while any of them reads false. The pass is a single reverse walk of the derived
-order: a node's suppressors are the intersection, over its consumers, of each consumer's own
-suppressors plus the gates that consumer sits behind. An empty intersection means somebody reads it
-unconditionally, and the node runs every tick.
-
-Two carve-outs, both load-bearing:
-
-- **A latch never dominates.** It is momentary — what a latch-gated node reads must be *warm before
-  the episode arms*, so everything upstream of one is standing demand. Counting `Armed<E>` as a
-  dominator would take the whole graph dark between episodes, which is exactly the strategy bug.
-- **Anything holding history is pinned** — a node with a `Folding`/`Spanning` dep, a `Buffer`, a
-  latch, and a gate itself. Node-held state cannot re-warm through a skip (the same reason
-  `Pull::open` forbids `Gating` + `Folding`), and frame retention must be hole-free. Because a pinned
-  consumer contributes the empty set, retention carries demand upstream in the same pass: a
-  `Buffer<C>` pins `C`, and a folding consumer pins what it folds.
-
-A skipped node reads `Latent::latent` — an `Emit`'s empty run, or `None`. That is the whole
-obligation the derivation puts back on the author, and it asks for the *type* rather than a
-gate: an out with no unfired reading cannot be skipped, and says so at compile time.
+- **A node is not a pane.** A node names slot groups of its out for drawing, each with its own
+  scale and guides — axes partition by *unit*, and one out can mix them. So drawing never motivates
+  a node: a step that computes nothing, and differentiates to nothing, stays out of the topology.
+- **Universe/cross-sectional ops are graph composition, not an execution tier**: per-symbol graphs
+  are values; a universe-level graph ticks at bar cadence, its roots seeded from theirs. Parallelism
+  is across symbols (live) / episodes (backtest) only — one graph per unit, rayon across. Never
+  intra-tick.
 
 ## One graph, one router, two feeds
 
@@ -236,26 +173,19 @@ emit it — stated, with its consequences, in [docs/spec/feeds.md](spec/feeds.md
 may exist only if it degenerates to on-arrival under `Live` instead of being switched off there.
 
 Batch boundaries are **declared, not emergent**. Every feed states a `BatchWindow`: the most
-arrival-time one batch may group, measured from the previous batch's end so an idle stretch adds no
-latency. A venue message never splits, so `ZERO` means one message per tick — maximum fidelity is
-the degenerate case, not a special path. Without it, how much of a lane lands in one tick would be
-decided by when an *unrelated* lane happened to tick, which silently starves anything reading a
-running extremum or a threshold crossing over *evaluated* states. Fold order is untouched either
-way; what the window buys is how often nodes get to look.
+arrival-time one batch may group, measured absolutely so that which batch an event falls in is a
+property of the event alone. A venue message never splits, so the degenerate window is one message
+per tick — maximum fidelity is not a special path. Without it, how much of a lane lands in one tick
+would be decided by when an *unrelated* lane happened to tick, which silently starves anything
+reading a running extremum or a threshold crossing over *evaluated* states. Fold order is untouched
+either way; what the window buys is how often nodes get to look — a free knob on the CPU bill,
+precisely because chunking is unobservable to a node.
 
-`Live` is **streaming and memory-bounded**: `next` drains what's currently available, stamps
-each *message*'s arrival at ingest (a single point on the consumer thread → strictly monotonic, so
-the current buffer is always a complete prefix — safe to weave and emit with no watermark), then
-drops consumed rows. A long-lived live session never accumulates; recording tees to disk
-incrementally. Arrival time is that ingest stamp for `Live`; for `Replay` it's the recorded
-reception, or a latency-simulation of the venue axis for historic (`None`) rows.
-
-One clock read, one flush check and one send per venue message — a 50-trade frame is one arrival,
-not fifty.
-
-`Replay` is not bounded — it eager-loads its range — so a window wider than memory is *chained*:
-successive `Replay`s over one long-lived graph, which carries its node state across. Only the
-per-lane latency seed resets, deterministically.
+The two feeds differ in cost profile, not in semantics. `Live` is streaming and memory-bounded: a
+long-lived session accumulates nothing and tees to disk incrementally. `Replay` eager-loads its
+range, so a window wider than memory is *chained* — successive `Replay`s over one long-lived graph,
+which carries its node state across. Both, and what the weave does and does not promise, in
+[`weaver.typ`](../trading_data_persistence/weaver.typ) §1.7 and §1.9.
 
 ## Polars boundary
 
