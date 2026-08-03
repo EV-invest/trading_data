@@ -9,5 +9,12 @@ mod nt;
 mod ring;
 
 fn main() {
-	nt::run("naive_nt", false, vec!["every feed subscribed for the whole run".into()]);
+	nt::run(
+		"naive_nt",
+		false,
+		vec![
+			"every feed subscribed for the whole run".into(),
+			"every indie recomputed on every event it clocks off, hit or miss".into(),
+		],
+	);
 }

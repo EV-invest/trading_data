@@ -3,14 +3,14 @@
 //!
 //! The DAG has ticks; an actor system has events, and that is the whole of the difference being
 //! measured. Each node here fires on the event its `Deps` are clocked by — [`Atr`] on a 1m close,
-//! [`Momentum`] on a 5m close, the gated indies on the screener's verdict, [`Deprecator`] on a book
+//! [`Momentum`] on a 5m close, [`Imbalance`]/[`Spread`] on a book delta, [`Deprecator`] on a book
 //! read — which is the same dependency order the graph steps in, minus the tick that synchronises
 //! them. Where that costs fidelity it is listed in the bench's `notes`, not hidden.
 //!
 //! Registration order is load-bearing: the msgbus dispatches a topic's handlers in subscription
-//! order, and `on_start` runs in the order actors were added. Everything that fills a ring off
-//! `bar1m` is therefore registered before [`Screen`], and [`Classifier`] after the six indies, so a
-//! nested publish always finds its inputs already written.
+//! order, and `on_start` runs in the order actors were added. The indies are therefore registered
+//! before [`Screen`], and [`Classifier`] after both, so a nested publish always finds its inputs
+//! already written.
 
 use std::{cell::RefCell, fmt::Debug, rc::Rc, sync::atomic::Ordering};
 
@@ -391,16 +391,17 @@ impl DataActor for Screen {
 	}
 }
 
-// --- the gated indies --------------------------------------------------------------------------
-// A closed gate means the node is *not called* and its consumer reads an empty run — the same
-// distinction `graph!` draws, and the reason each of these publishes even when it computed nothing.
+// --- the indies ----------------------------------------------------------------------------------
+// Each fires on the event its `Deps` are clocked by, and none of them knows the screener exists: an
+// actor graph has no gate to propagate, so the work is done and then thrown away on a miss. That is
+// the cost the tiering in `optimized_nt` claws back, and the only reason it exists.
 
 actor!(C1d { node: Change1d, h1: Ring<Bar>, pending: Vec<Bar>, out: Vec<Option<f64>> });
 
 impl DataActor for C1d {
 	fn on_start(&mut self) -> anyhow::Result<()> {
 		self.subscribe_signal(BAR1H, None);
-		self.subscribe_signal(SCREENER, None);
+		self.subscribe_signal(BAR1M, None);
 		Ok(())
 	}
 
@@ -409,14 +410,11 @@ impl DataActor for C1d {
 			self.pending.push(decode::<BarDto>(signal).into());
 			return Ok(());
 		}
-		let (hit, bar) = decode::<Gate>(signal);
+		let bar = [Bar::from(decode::<BarDto>(signal))];
 		self.h1.push(&self.pending);
 		self.pending.clear();
 		self.out.clear();
-		if hit {
-			let bar = [Bar::from(bar)];
-			self.node.emit((&bar, self.h1.hist::<Buffering<Bar1h, REACH_1D>>()), &mut self.out);
-		}
+		self.node.emit((&bar, self.h1.hist::<Buffering<Bar1h, REACH_1D>>()), &mut self.out);
 		self.publish_signal(CHANGE1D, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -426,17 +424,14 @@ actor!(C3m { node: Change3m, m1: Ring<Bar>, out: Vec<Option<f64>> });
 
 impl DataActor for C3m {
 	fn on_start(&mut self) -> anyhow::Result<()> {
-		self.subscribe_signal(SCREENER, None);
+		self.subscribe_signal(BAR1M, None);
 		Ok(())
 	}
 
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
-		let (hit, bar) = decode::<Gate>(signal);
-		self.m1.push(&[Bar::from(bar)]);
+		self.m1.push(&[Bar::from(decode::<BarDto>(signal))]);
 		self.out.clear();
-		if hit {
-			self.node.emit((self.m1.hist::<Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>>(),), &mut self.out);
-		}
+		self.node.emit((self.m1.hist::<Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>>(),), &mut self.out);
 		self.publish_signal(CHANGE3M, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -446,17 +441,14 @@ actor!(V1m { node: Volume1m, out: Vec<f64> });
 
 impl DataActor for V1m {
 	fn on_start(&mut self) -> anyhow::Result<()> {
-		self.subscribe_signal(SCREENER, None);
+		self.subscribe_signal(BAR1M, None);
 		Ok(())
 	}
 
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
-		let (hit, bar) = decode::<Gate>(signal);
+		let bar = [Bar::from(decode::<BarDto>(signal))];
 		self.out.clear();
-		if hit {
-			let bar = [Bar::from(bar)];
-			self.node.emit((&bar,), &mut self.out);
-		}
+		self.node.emit((&bar,), &mut self.out);
 		self.publish_signal(VOLUME1M, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -467,7 +459,7 @@ actor!(V1h { node: Volume1h, h1: Ring<Bar>, pending: Vec<Bar>, out: Vec<Option<f
 impl DataActor for V1h {
 	fn on_start(&mut self) -> anyhow::Result<()> {
 		self.subscribe_signal(BAR1H, None);
-		self.subscribe_signal(SCREENER, None);
+		self.subscribe_signal(BAR1M, None);
 		Ok(())
 	}
 
@@ -476,14 +468,11 @@ impl DataActor for V1h {
 			self.pending.push(decode::<BarDto>(signal).into());
 			return Ok(());
 		}
-		let (hit, bar) = decode::<Gate>(signal);
+		let bar = [Bar::from(decode::<BarDto>(signal))];
 		self.h1.push(&self.pending);
 		self.pending.clear();
 		self.out.clear();
-		if hit {
-			let bar = [Bar::from(bar)];
-			self.node.emit((&bar, self.h1.hist::<Buffering<Bar1h, { Horizon::Elems(1) }>>()), &mut self.out);
-		}
+		self.node.emit((&bar, self.h1.hist::<Buffering<Bar1h, { Horizon::Elems(1) }>>()), &mut self.out);
 		self.publish_signal(VOLUME1H, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -494,21 +483,14 @@ actor!(Imb { node: Imbalance, top: Vec<Option<BookTopSnap>>, out: Vec<Option<f64
 impl DataActor for Imb {
 	fn on_start(&mut self) -> anyhow::Result<()> {
 		self.subscribe_signal(BOOKTOP, None);
-		self.subscribe_signal(SCREENER, None);
 		Ok(())
 	}
 
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
-		if signal.name == BOOKTOP {
-			self.top.clear();
-			self.top.push(decode::<Option<TopDto>>(signal).map(BookTopSnap::from));
-			return Ok(());
-		}
-		let (hit, _) = decode::<Gate>(signal);
+		self.top.clear();
+		self.top.push(decode::<Option<TopDto>>(signal).map(BookTopSnap::from));
 		self.out.clear();
-		if hit {
-			self.node.emit((&self.top,), &mut self.out);
-		}
+		self.node.emit((&self.top,), &mut self.out);
 		self.publish_signal(IMBALANCE, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -519,21 +501,14 @@ actor!(Spr { node: Spread, top: Vec<Option<BookTopSnap>>, out: Vec<Option<f64>> 
 impl DataActor for Spr {
 	fn on_start(&mut self) -> anyhow::Result<()> {
 		self.subscribe_signal(BOOKTOP, None);
-		self.subscribe_signal(SCREENER, None);
 		Ok(())
 	}
 
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
-		if signal.name == BOOKTOP {
-			self.top.clear();
-			self.top.push(decode::<Option<TopDto>>(signal).map(BookTopSnap::from));
-			return Ok(());
-		}
-		let (hit, _) = decode::<Gate>(signal);
+		self.top.clear();
+		self.top.push(decode::<Option<TopDto>>(signal).map(BookTopSnap::from));
 		self.out.clear();
-		if hit {
-			self.node.emit((&self.top,), &mut self.out);
-		}
+		self.node.emit((&self.top,), &mut self.out);
 		self.publish_signal(SPREAD, encode(&self.out), signal.ts_event);
 		Ok(())
 	}

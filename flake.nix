@@ -65,6 +65,16 @@
             exec cargo run --manifest-path "$repo/Cargo.toml" -p "$pkg" -- "$@"
           '';
         };
+        # `examples/spl/benches` — the same strategy through our DAG and through NautilusTrader, over
+        # one tape. Nothing listens, so no port; the build is `cargo bench`'s own profile.
+        spl_bench = pkgs.writeShellApplication {
+          name = "spl_bench";
+          runtimeInputs = with pkgs; [ rust git nix pkg-config openssl mold ];
+          text = ''
+            repo="$(git rev-parse --show-toplevel)"
+            exec cargo bench --manifest-path "$repo/Cargo.toml" -p trading_data_spl "$@"
+          '';
+        };
         # `trading_data` is a library — there is no default binary — so a bare `nix run .` lands here.
         help = {
           type = "app";
@@ -74,6 +84,7 @@
             nix run .#simple   examples/simple — one day, one RSI dag (port ${toString (port_range_base + 1)})
             nix run .#live     examples/live   — 15s of live Bybit    (port ${toString (port_range_base + 2)})
             nix run .#spl      examples/spl    — scam_pump_liqs port  (port ${toString (port_range_base + 3)})
+            nix run .#spl_bench  that same strategy timed against NautilusTrader
 
             `nix develop` adds `viz <simple|live|spl>`, the same runner against your working tree.
             Args after `--` reach the app: `nix run .#spl -- --config other.nix`.
@@ -88,6 +99,7 @@
           simple = { type = "app"; program = "${pkgs.writeShellScript "simple" ''exec ${viz}/bin/viz simple "$@"''}"; };
           live = { type = "app"; program = "${pkgs.writeShellScript "live" ''exec ${viz}/bin/viz live "$@"''}"; };
           spl = { type = "app"; program = "${pkgs.writeShellScript "spl" ''exec ${viz}/bin/viz spl "$@"''}"; };
+          spl_bench = { type = "app"; program = pkgs.lib.getExe spl_bench; };
         };
 
         packages =
