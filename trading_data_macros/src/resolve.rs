@@ -242,7 +242,7 @@ pub fn resolve(input: TokenStream) -> syn::Result<TokenStream> {
 }
 
 /// A private field name that still reads as the node it holds — the error messages are written in
-/// these, and `__n_Rsi_Bar1m_Knobs_` says more than an index would.
+/// these, and the key's own spelling says more than an index would.
 fn field_of(key: &str) -> Ident {
 	let s: String = key.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
 	Ident::new(&format!("__n_{s}"), Span::call_site())
@@ -295,8 +295,8 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 		// a `Gate`'s out *is* the `bool`, and `Gating::opens` is the identity — nothing to unwrap.
 		let demand = quote!(let d = #(#dag::Has::<#gates, _>::get(&f))&&*;);
 		match (n.emit, n.diff, s.is_empty()) {
-			(true, _, true) => quote!(let f = #dag::step_emit_obs(f, #f, true, obs);),
-			(true, _, false) => quote!(#demand let f = #dag::step_emit_obs(f, #f, d, obs);),
+			(true, _, true) => quote!(let f = #dag::step_emit_obs(f, #f, true, ts, obs);),
+			(true, _, false) => quote!(#demand let f = #dag::step_emit_obs(f, #f, d, ts, obs);),
 			(false, true, true) => quote!(let f = #dag::step_exact(f, #f, obs);),
 			(false, true, false) => quote!(#demand let f = #dag::step_exact_when(f, #f, d, obs);),
 			(false, false, true) => quote!(let f = #dag::step_obs(f, #f, obs);),
@@ -388,6 +388,13 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 				!#dag::deadlocked(#dag::node_name::<#latch_tys>(), <<#latch_tys as #dag::Node>::Deps as #dag::DepSet>::NAMES, METAS),
 				concat!(stringify!(#lfields), " gates its own arm: the arm is dark exactly while the latch is down, so it can never re-arm")
 			);)*
+
+			// a declared rate its inputs cannot deliver — and, where a node names its period in its own
+			// type and reads producers named for the same one, the pin that keeps the two from drifting.
+			#(assert!(
+				#dag::clock_divides(<#node_tys as #dag::Cell>::CLOCK, <#node_deps as #dag::DepSet>::CLOCKS),
+				concat!(stringify!(#fields), " declares a `Cell::CLOCK` no whole number of its inputs' periods tiles")
+			);)*
 		};
 
 		#[derive(Clone, Copy, Debug)]
@@ -415,11 +422,13 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 			/// The derived closure, in sweep order — what this graph's outputs actually cost.
 			#vis const NODES: &'static [&'static str] = &[#(#names),*];
 
-			#vis fn tick<'t>(&'t mut self, b: #batches<'t>) -> #out<'t> {
-				self.tick_obs(b, &mut ())
+			/// `ts` is the tick's event time in nanoseconds — what a node's declared `Emit::CLOCK` is
+			/// read against, and the only thing the sweep needs from a tick besides its batches.
+			#vis fn tick<'t>(&'t mut self, ts: i64, b: #batches<'t>) -> #out<'t> {
+				self.tick_obs(ts, b, &mut ())
 			}
 
-			#vis fn tick_obs<'t>(&'t mut self, b: #batches<'t>, obs: &mut impl #dag::Observer) -> #out<'t> {
+			#vis fn tick_obs<'t>(&'t mut self, ts: i64, b: #batches<'t>, obs: &mut impl #dag::Observer) -> #out<'t> {
 				// deferred commutation: apply last tick's terminals before anything borrows self.
 				#(#apply_pending)*
 

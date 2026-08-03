@@ -372,10 +372,12 @@ pub enum Timestamps {
 	RoundTrip(RoundTrip),
 	/// We are the origin and nothing crossed a wire.
 	Origin(Ts<Local>),
+	// Simplified accounting: for large Accumulator primitives, which are too long to care for minute deltas, - so we just persist the last origin action on it. Example: Klines.
+	Simple(Ts<Venue>),
 }
 
 pub trait Timestamped {
-	fn timestamps(&self) -> Timestamps;
+	fn ts(&self) -> Timestamps;
 }
 
 /// How far a remote clock runs ahead of ours, and how well we know it.

@@ -76,6 +76,7 @@ CLAUDE.md
 
 ## Other Tools
 .codeviz/
+graphify-out/
 **/.redis/
 **/.tb/
 **/.tb-client

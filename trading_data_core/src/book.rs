@@ -18,7 +18,7 @@ pub struct BookShape {
 }
 
 impl Timestamped for BookShape {
-	fn timestamps(&self) -> Timestamps {
+	fn ts(&self) -> Timestamps {
 		Timestamps::Accumulator {
 			venue: self.ts.venue_exec,
 			local: Some(self.ts.local_recv),

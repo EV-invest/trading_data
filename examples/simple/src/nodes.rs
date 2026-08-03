@@ -6,14 +6,14 @@
 use core::fmt;
 
 use trading_data::{
-	Buffering, Bump, Cell, Emit, EmitOuts, Exact, Expr, Flat, Folding, Glance, Horizon, Lanes, RsiSpec, Side, Stamped, Symbolic, Timeframe, TimeframeDesignator::Minutes, TradeCols, Trades,
-	Vars, always_present, constant, node, slice_nudge,
+	Buffering, Bump, Cell, Emit, EmitOuts, Exact, Expr, Flat, Folding, Glance, Horizon, Lanes, RsiSpec, Side, Stamped, Symbolic, TradeCols, Trades, Vars, always_present, constant, node,
+	slice_nudge,
 };
+use v_utils::*;
 
 // the graph reaches every cell through a shim keyed on its name, and a bare `use` leaves no shim
-// behind — so the two series this example imports are aliased rather than imported.
-trading_data::node_alias! { pub Bar1m = trading_data::Bars<{ Timeframe::from_naive(1, Minutes) }>; }
-trading_data::node_alias! { pub Rsi14 = trading_data::Rsi<Bar1m, Len14>; }
+// behind — so a cell is named through its crate rather than imported.
+trading_data::node_alias! { pub Rsi14 = trading_data::Rsi<trading_data::Bars<{ TF_1MIN }>, Len14>; }
 
 /// λ's window, in minutes.
 pub const LAMBDA_WINDOW: usize = 60;
@@ -122,11 +122,11 @@ impl Cell for Flow1m {
 #[node]
 impl Emit for Flow1m {
 	/// The partial minute is the whole of the state, so the trades it holds reach back exactly one.
-	type Deps = (Folding<Trades, { Horizon::Span(Timeframe::from_naive(1, Minutes)) }>,);
+	type Deps = (Folding<Trades, { Horizon::Span(TF_1MIN) }>,);
 
 	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Flow>) {
 		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
-		let step = Exact::from_nanos(Timeframe::from_naive(1, Minutes).duration().as_nanos() as i64);
+		let step = Exact::from_nanos(TF_1MIN.duration().as_nanos() as i64);
 		for (i, exec) in trades.exec().iter().enumerate() {
 			let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
 			let ts_close = exec.floor(step).as_nanos() + step.as_nanos();
@@ -177,7 +177,7 @@ impl Cell for VolUsd1h {
 }
 #[node]
 impl Emit for VolUsd1h {
-	type Deps = (Buffering<Bar1m, REACH>,);
+	type Deps = (Buffering<trading_data::Bars<{ TF_1MIN }>, REACH>,);
 
 	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(hist.narrowed(Horizon::Elems(60)).trailing().map(|w| w.map(|w| w.iter().map(|b| b.vol_base * b.close).sum())));
@@ -204,7 +204,7 @@ trading_data::graph! {
 	roots { trades: Trades[TradeCols] };
 	out TickOut;
 	// `main.rs` reads every one of these: the day-end levels, and `Signal` through the exact/FD witness.
-	outputs { rsi: Rsi14, bar: Bar1m, cvd: Cvd, lambda: Lambda1m, vol_usd_1h: VolUsd1h, signal: Signal }
+	outputs { rsi: Rsi14, bar: trading_data::Bars<{ TF_1MIN }>, cvd: Cvd, lambda: Lambda1m, vol_usd_1h: VolUsd1h, signal: Signal }
 }
 
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it

@@ -29,11 +29,9 @@ use serde::{Deserialize, Serialize};
 use trading_data::{Armed, Bar, Buffering, Direction, Emit as _, Episode, Horizon, Latch as _, Local, Mc, McRoot, Node as _, Oi, OiRoot, Ts, Usd};
 use trading_data_spl::{
 	DEPTH,
-	nodes::{
-		Atr, Bar1h, Bar1m, Bar4h, Bar5m, BookTopSnap, Change1d, Change3m, Classified, Classify, Decided, Decision, Deprecator, Imbalance, Intent, Momentum, OI_REACH, REACH_1D, SPAN_3MIN,
-		Spread, StdScreener, Volume1h, Volume1m,
-	},
+	nodes::{Atr, BookTopSnap, Change1d, Change3m, Classified, Classify, Decided, Decision, Deprecator, Imbalance, Intent, Momentum, OI_REACH, Spread, StdScreener, Volume1h, Volume1m},
 };
+use v_utils::*;
 
 use crate::{
 	harness::{COUNTERS, Digest},
@@ -90,7 +88,7 @@ struct BarDto {
 impl From<&Bar> for BarDto {
 	fn from(b: &Bar) -> Self {
 		Self {
-			ts_close: b.ts_close,
+			ts_close: b.ts_close.as_nanos(),
 			open: b.open,
 			high: b.high,
 			low: b.low,
@@ -103,7 +101,7 @@ impl From<&Bar> for BarDto {
 impl From<BarDto> for Bar {
 	fn from(d: BarDto) -> Self {
 		Self {
-			ts_close: d.ts_close,
+			ts_close: Ts::from_nanos(d.ts_close),
 			open: d.open,
 			high: d.high,
 			low: d.low,
@@ -241,14 +239,14 @@ impl DataActor for Bars {
 			.find(|&(s, a, _)| s == step && a == aggregation)
 			.unwrap_or_else(|| panic!("subscribed only to {STEPS:?}, got {step} {aggregation:?}"));
 		let bar = Bar {
-			ts_close: bar.ts_event.as_u64() as i64,
+			ts_close: Ts::from_nanos(bar.ts_event.as_u64() as i64),
 			open: bar.open.as_f64(),
 			high: bar.high.as_f64(),
 			low: bar.low.as_f64(),
 			close: bar.close.as_f64(),
 			vol_base: bar.volume.as_f64(),
 		};
-		self.publish_signal(name, encode(&BarDto::from(&bar)), (bar.ts_close as u64).into());
+		self.publish_signal(name, encode(&BarDto::from(&bar)), (bar.ts_close.as_nanos() as u64).into());
 		Ok(())
 	}
 }
@@ -358,8 +356,8 @@ impl DataActor for Momenta {
 		self.out.clear();
 		self.node.emit(
 			(
-				self.m5.hist::<Buffering<Bar5m, { Horizon::Elems(181) }>>(),
-				self.h4.hist::<Buffering<Bar4h, { Horizon::Elems(181) }>>(),
+				self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>>(),
+				self.h4.hist::<Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>>(),
 			),
 			&mut self.out,
 		);
@@ -417,7 +415,10 @@ impl DataActor for C1d {
 		self.h1.push(&self.pending);
 		self.pending.clear();
 		self.out.clear();
-		self.node.emit((&bar, self.h1.hist::<Buffering<Bar1h, REACH_1D>>()), &mut self.out);
+		self.node.emit(
+			(&bar, self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Span(Timeframe(TF_1D.0 + TF_1H.0)) }>>()),
+			&mut self.out,
+		);
 		self.publish_signal(CHANGE1D, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -434,7 +435,8 @@ impl DataActor for C3m {
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
 		self.m1.push(&[Bar::from(decode::<BarDto>(signal))]);
 		self.out.clear();
-		self.node.emit((self.m1.hist::<Buffering<Bar1m, { Horizon::Span(SPAN_3MIN) }>>(),), &mut self.out);
+		self.node
+			.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, { Horizon::Span(TF_3MIN) }>>(),), &mut self.out);
 		self.publish_signal(CHANGE3M, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -475,7 +477,8 @@ impl DataActor for V1h {
 		self.h1.push(&self.pending);
 		self.pending.clear();
 		self.out.clear();
-		self.node.emit((&bar, self.h1.hist::<Buffering<Bar1h, { Horizon::Elems(1) }>>()), &mut self.out);
+		self.node
+			.emit((&bar, self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Elems(1) }>>()), &mut self.out);
 		self.publish_signal(VOLUME1H, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -594,8 +597,8 @@ impl DataActor for Classifier {
 		let out = self.node.advance((
 			true,
 			&bar,
-			self.m5.hist::<Buffering<Bar5m, { Horizon::Elems(181) }>>(),
-			self.h4.hist::<Buffering<Bar4h, { Horizon::Elems(181) }>>(),
+			self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>>(),
+			self.h4.hist::<Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>>(),
 			&self.c1d,
 			&self.c3m,
 			&self.v1m,

@@ -144,11 +144,11 @@ fn all_answers_at_the_declared_reach_not_the_frame_s() {
 
 	// nothing stands behind the first batch, so both readers see the same thing: `fresh` is always
 	// wholly in reach, however shallow the declaration.
-	let o = g.tick(Batches { src: &three });
+	let o = g.tick(0, Batches { src: &three });
 	assert_eq!(o.hist.all(), &three);
 	assert_eq!(o.level, &three);
 
-	let o = g.tick(Batches { src: &one });
+	let o = g.tick(0, Batches { src: &one });
 	assert_eq!(o.hist.all(), &[t(1.0), t(2.0), t(3.0), t(4.0)], "the frame retains 3 behind the batch");
 	assert_eq!(o.level, &[t(3.0), t(4.0)], "one declared, one behind the batch");
 }
@@ -159,7 +159,7 @@ fn past_fresh_split_and_trailing() {
 	let (one, three, five, empty) = ([t(1.0)], [t(2.0), t(3.0), t(4.0)], [t(5.0)], []);
 
 	// cold: one element, no window yet.
-	let o = g.tick(Batches { src: &one });
+	let o = g.tick(0, Batches { src: &one });
 	assert_eq!(o.sum3, &[None]);
 	assert_eq!(o.hist.past(), &[] as &[Tick]);
 	assert_eq!(o.hist.fresh(), &one);
@@ -167,21 +167,21 @@ fn past_fresh_split_and_trailing() {
 
 	// a batch carrying several elements: `past` is what stood behind the *whole* batch, so the
 	// per-element cursors each see their own trailing window.
-	let o = g.tick(Batches { src: &three });
+	let o = g.tick(0, Batches { src: &three });
 	assert_eq!(o.hist.past(), &one);
 	assert_eq!(o.hist.fresh(), &three);
 	assert_eq!(o.sum3, &[None, Some(6.0), Some(9.0)]);
 	assert_eq!(o.split, &[split(1, 3.0)]);
 
 	// trim happens before the append, and keeps 3 elements behind.
-	let o = g.tick(Batches { src: &five });
+	let o = g.tick(0, Batches { src: &five });
 	assert_eq!(o.hist.past(), &three);
 	assert_eq!(o.sum3, &[Some(12.0)]);
 	assert_eq!(o.split, &[split(3, 1.0)]);
 
 	// an empty batch still advances the buffer, and a whole window survives it — that is what a
 	// cross-rate reader of `all()` rests on.
-	let o = g.tick(Batches { src: &empty });
+	let o = g.tick(0, Batches { src: &empty });
 	assert_eq!(o.hist.all(), &[t(3.0), t(4.0), t(5.0)]);
 	assert_eq!(o.hist.fresh(), &[] as &[Tick]);
 	assert_eq!(o.sum3, &[] as &[Option<f64>]);
@@ -211,10 +211,10 @@ fn flat_reads_fresh_only() {
 
 	let mut g = G::default();
 	let (warm, observed) = ([t(1.0), t(2.0)], [t(7.0), t(8.0)]);
-	g.tick(Batches { src: &warm });
+	g.tick(0, Batches { src: &warm });
 
 	let mut rec = Rec::default();
-	g.tick_obs(Batches { src: &observed }, &mut rec);
+	g.tick_obs(0, Batches { src: &observed }, &mut rec);
 	assert_eq!(rec.hist, rec.src, "a buffer's Fire must match its source's");
 	assert_eq!(rec.hist, Some((2, vec![8.0])));
 }
@@ -240,15 +240,15 @@ mod span {
 
 		// nothing before the first element seen is claimed, so a 10s window over a 6s-old run is
 		// incomplete — where "have I been running long enough" would be a guess.
-		let o = s.tick(SBatches { src: &start });
+		let o = s.tick(0, SBatches { src: &start });
 		assert_eq!(o.hist.trailing_at(2), None);
 
 		// a whole span past the first element: the window begins strictly inside `t - 10s`.
-		let o = s.tick(SBatches { src: &on });
+		let o = s.tick(0, SBatches { src: &on });
 		assert_eq!(o.hist.trailing_at(0), Some(&[t(3.0), t(6.0), t(12.0)] as &[Tick]));
 
 		// a gap wider than the span: one element, not a window reaching 28s back.
-		let o = s.tick(SBatches { src: &after_gap });
+		let o = s.tick(0, SBatches { src: &after_gap });
 		assert_eq!(o.hist.past(), &[t(3.0), t(6.0), t(12.0)], "retention keys on the pre-batch newest");
 		assert_eq!(o.hist.trailing_at(0), Some(&[t(40.0)] as &[Tick]));
 	}
@@ -357,24 +357,24 @@ mod revive {
 
 		// dark: the consumer never advances, yet the buffer fills — that is the whole feature.
 		for x in &src[..3] {
-			let o = l.tick(LBatches { src: x, trig: IDLE });
+			let o = l.tick(0, LBatches { src: x, trig: IDLE });
 			assert_eq!(o.episodic, None);
 		}
 
 		// armed: full window on its very first tick back, no re-warm.
-		let o = l.tick(LBatches { src: &src[3], trig: ARM });
+		let o = l.tick(0, LBatches { src: &src[3], trig: ARM });
 		assert_eq!(o.episodic, Some(Phase(1, 3)));
 		assert_eq!(o.hist.all(), &[t(1.0), t(2.0), t(3.0), t(4.0)]);
-		let o = l.tick(LBatches { src: &src[4], trig: IDLE });
+		let o = l.tick(0, LBatches { src: &src[4], trig: IDLE });
 		assert_eq!(o.episodic, Some(Phase(2, 3)));
 
 		// commutated: consumer reset to Default, buffer untouched.
-		let o = l.tick(LBatches { src: &src[5], trig: IDLE });
+		let o = l.tick(0, LBatches { src: &src[5], trig: IDLE });
 		assert_eq!(o.episodic, None);
 		assert_eq!(o.hist.all(), &[t(3.0), t(4.0), t(5.0), t(6.0)]);
 
 		// revived: `t` restarted from Default, the window did not.
-		let o = l.tick(LBatches { src: &src[6], trig: ARM });
+		let o = l.tick(0, LBatches { src: &src[6], trig: ARM });
 		assert_eq!(o.episodic, Some(Phase(1, 3)), "revived warm — a client-owned window would read 0 here");
 	}
 }

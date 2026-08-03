@@ -145,30 +145,30 @@ fn arm_terminal_commutate_rearm() {
 	let mut g = G::default();
 
 	// idle: latch down, episode latent.
-	let o = g.tick(Batches { trig: IDLE });
+	let o = g.tick(0, Batches { trig: IDLE });
 	assert!(!o.live);
 	assert_eq!(o.deprec, None);
 
 	// external trigger arms; episode starts.
-	let o = g.tick(Batches { trig: PULSE });
+	let o = g.tick(0, Batches { trig: PULSE });
 	assert!(o.live);
 	assert_eq!(o.deprec, Some(Phase::Degrading(1)));
 
-	let o = g.tick(Batches { trig: IDLE });
+	let o = g.tick(0, Batches { trig: IDLE });
 	assert_eq!(o.deprec, Some(Phase::Degrading(2)));
 
 	// terminal tick — its out is published; the trigger this tick is absorbed and lost.
-	let o = g.tick(Batches { trig: PULSE });
+	let o = g.tick(0, Batches { trig: PULSE });
 	assert!(o.live);
 	assert_eq!(o.deprec, Some(Phase::Done));
 
 	// commutated: latch down, subtree latent, the during-episode trigger did not re-arm.
-	let o = g.tick(Batches { trig: IDLE });
+	let o = g.tick(0, Batches { trig: IDLE });
 	assert!(!o.live);
 	assert_eq!(o.deprec, None);
 
 	// re-trigger: fresh episode from Default — reset observable, not a stale t=3.
-	let o = g.tick(Batches { trig: PULSE });
+	let o = g.tick(0, Batches { trig: PULSE });
 	assert!(o.live);
 	assert_eq!(o.deprec, Some(Phase::Degrading(1)));
 

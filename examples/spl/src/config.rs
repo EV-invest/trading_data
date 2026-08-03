@@ -10,7 +10,7 @@ use std::{path::Path, process::Command, sync::OnceLock};
 
 use serde::Deserialize;
 use trading_data::{LatencyConfig, PrecisionPriceQty, Usd};
-use v_utils::{Timeframe, macros::CompactFormatNamed, percent::PercentU};
+use v_utils::{TF_5MIN, Timeframe, macros::CompactFormatNamed, percent::PercentU};
 
 /// Panics if read before [`Config::load`] — a node running without its configuration is a wiring
 /// bug, not a case for defaults.
@@ -50,12 +50,7 @@ impl Config {
 		// The series an indie runs on is wiring — `RsiSeries` — but the timeframe is half the indie's
 		// signature, so the config still names it and the two have to agree.
 		let tf = parsed.strategy.indies.rsi.timeframe;
-		assert_eq!(
-			tf,
-			crate::nodes::RSI_TF,
-			"indies.rsi.timeframe = {tf}, where the RSI chain is wired onto {}",
-			crate::nodes::RSI_TF
-		);
+		assert_eq!(tf, TF_5MIN, "indies.rsi.timeframe = {tf}, where the RSI chain is wired onto {TF_5MIN}");
 		assert!(CONFIG.set(parsed).is_ok(), "Config::load runs once");
 		config()
 	}

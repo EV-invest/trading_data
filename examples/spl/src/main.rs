@@ -27,10 +27,13 @@ use trading_data_spl::{
 	asset,
 	config::{self, Config},
 	day_bounds, ensure_lanes,
-	nodes::{Bar1m, Graph, Intent, TrailingStop},
+	nodes::{Graph, Intent, TrailingStop},
 	symbol, trading_days, ui,
 };
-use v_utils::utils::tracing::{LogDestination, init_subscriber};
+use v_utils::{
+	utils::tracing::{LogDestination, init_subscriber},
+	*,
+};
 
 /// A failed observation about the replayed data: counted and logged, never fatal. The run's whole
 /// value is the tape it leaves behind, and a panic mid-replay throws that away.
@@ -103,7 +106,7 @@ async fn main() {
 	// downstream can read an unwarmed value in the first place.
 	let lanes = required_lanes::<Graph>();
 	println!("required lanes: {lanes:?}");
-	let viz = Viz::new(Some(<Bar1m as Cell>::NAME), SCROLLBACK, 60_000);
+	let viz = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000);
 	let mut recorder = viz.clone();
 	let mut day = Day::default();
 	let began = std::time::Instant::now();
@@ -137,7 +140,7 @@ async fn main() {
 						pb.set_message(format!("{} episodes, {} intents{}", day.episodes, day.intents, day.violations_msg()));
 					}
 				}
-				let out = graph.tick_obs(lanes.into(), recorder.at(ts_ns));
+				let out = graph.tick_obs(ts_ns, lanes.into(), recorder.at(ts_ns));
 
 				for intent in out.deprecator {
 					day.check_intent(*intent);

@@ -18,6 +18,7 @@ jiff.workspace = true
 tokio.workspace = true
 trading_data.workspace = true
 ureq.workspace = true
+v_utils.workspace = true
 
 [lints]
 workspace = true

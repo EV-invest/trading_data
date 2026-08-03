@@ -96,31 +96,22 @@ mod volume_4h;
 
 pub use atr::Atr;
 pub use book_top::{BookTop, BookTopSnap};
-pub use change_1d::{Change1d, REACH_1D};
-pub use change_3m::{Change3m, SPAN_3MIN};
+pub use change_1d::Change1d;
+pub use change_3m::Change3m;
 pub use classify::{Category, Classified, Classify, Quality};
 pub use decision::{Decided, Decision};
 pub use deprecator::{Deprecator, Intent, TrailingStop};
 pub use imbalance::Imbalance;
 pub use momentum::{LEGS, Momentum};
 pub use oi_delta::{OI_REACH, OiDelta5m, OiDelta15m};
-pub use rsi::{AvgGain, AvgLoss, Knobs, RSI_TF, Rsi, RsiDelta, RsiSeries};
+pub use rsi::{AvgGain, AvgLoss, Knobs, Rsi, RsiDelta, RsiSeries};
 pub use rsi_screener::RsiScreener;
 pub use spread::Spread;
 pub use std_screener::StdScreener;
 use trading_data::{Armed, BookAnchors, BookDeltas, BookShape, DeltaFrame, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
 pub use trading_data::{Bar, RsiValues};
-use v_utils::{
-	Timeframe,
-	TimeframeDesignator::{Hours, Minutes},
-};
-
-// the graph reaches every cell through a shim keyed on its name, and a bare `use` leaves no shim
-// behind — so the series this strategy runs on are aliased rather than imported.
-trading_data::node_alias! { pub Bar1m = trading_data::Bars<{ Timeframe::from_naive(1, Minutes) }>; }
-trading_data::node_alias! { pub Bar5m = trading_data::Bars<{ Timeframe::from_naive(5, Minutes) }>; }
-trading_data::node_alias! { pub Bar1h = trading_data::Bars<{ Timeframe::from_naive(1, Hours) }>; }
-trading_data::node_alias! { pub Bar4h = trading_data::Bars<{ Timeframe::from_naive(4, Hours) }>; }
+// a `type Deps` const expression is re-expanded here, so the `TF_*` a dep names has to resolve here too.
+use v_utils::*;
 
 trading_data::node_alias! {
 	/// The compiled screener — the gate `Classify` and everything under it hangs dormant off. The
@@ -137,7 +128,7 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape], oi: OiRoot[Oi], mc: McRoot[Mc] };
 	out TickOut;
-	outputs { bar_1m: Bar1m, deprecator: Deprecator, rsi: Rsi }
+	outputs { bar_1m: trading_data::Bars<{ TF_1MIN }>, deprecator: Deprecator, rsi: Rsi }
 }
 
 /// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that

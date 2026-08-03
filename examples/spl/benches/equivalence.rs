@@ -18,19 +18,15 @@ use std::path::{Path, PathBuf};
 use ring::Ring;
 use trading_data::{
 	Armed, Bar, Book, BookShape, Buffering, DeltaFrame, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot, Node as _, Ohlc, Ohlcs, Oi,
-	OiRoot, ReadClock, Replay, Timeframe,
-	TimeframeDesignator::{Hours, Minutes},
-	TradeCols, Volume, Volumes, required_lanes,
+	OiRoot, ReadClock, Replay, TradeCols, Volume, Volumes, required_lanes,
 };
 use trading_data_spl::{
 	config::Config,
 	day_bounds, ensure_lanes,
-	nodes::{
-		Atr, Bar1h, Bar1m, Bar4h, Bar5m, Batches, BookTop, BookTopSnap, Change1d, Change3m, Classify, Decision, Deprecator, Graph, Imbalance, Intent, Momentum, OI_REACH, REACH_1D,
-		SPAN_3MIN, Spread, StdScreener, Volume1h, Volume1m,
-	},
+	nodes::{Atr, Batches, BookTop, BookTopSnap, Change1d, Change3m, Classify, Decision, Deprecator, Graph, Imbalance, Intent, Momentum, OI_REACH, Spread, StdScreener, Volume1h, Volume1m},
 	symbol, trading_days,
 };
+use v_utils::*;
 
 fn main() {
 	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
@@ -58,13 +54,16 @@ fn main() {
 		while let Some(l) = feed.next() {
 			let (trades, deltas, anchor, oi, mc) = (l.trades, l.deltas, l.anchor, l.oi, l.mc);
 			let want: Vec<Option<Intent>> = graph
-				.tick(Batches {
-					trades,
-					deltas,
-					anchors: anchor,
-					oi,
-					mc,
-				})
+				.tick(
+					l.ts_venue.as_nanos(),
+					Batches {
+						trades,
+						deltas,
+						anchors: anchor,
+						oi,
+						mc,
+					},
+				)
 				.deprecator
 				.to_vec();
 			let got = direct.tick(trades, deltas, anchor, oi, mc);
@@ -103,18 +102,18 @@ fn same(a: &Option<Intent>, b: &Option<Intent>) -> bool {
 /// real graph missing here — it is a second output that nothing on this path reads.
 #[derive(Default)]
 struct Direct {
-	ohlc_1m: Ohlcs<{ Timeframe::from_naive(1, Minutes) }>,
-	ohlc_5m: Ohlcs<{ Timeframe::from_naive(5, Minutes) }>,
-	ohlc_1h: Ohlcs<{ Timeframe::from_naive(1, Hours) }>,
-	ohlc_4h: Ohlcs<{ Timeframe::from_naive(4, Hours) }>,
-	vol_1m: Volumes<{ Timeframe::from_naive(1, Minutes) }>,
-	vol_5m: Volumes<{ Timeframe::from_naive(5, Minutes) }>,
-	vol_1h: Volumes<{ Timeframe::from_naive(1, Hours) }>,
-	vol_4h: Volumes<{ Timeframe::from_naive(4, Hours) }>,
-	bars_1m: Bar1m,
-	bars_5m: Bar5m,
-	bars_1h: Bar1h,
-	bars_4h: Bar4h,
+	ohlc_1m: Ohlcs<{ TF_1MIN }>,
+	ohlc_5m: Ohlcs<{ TF_5MIN }>,
+	ohlc_1h: Ohlcs<{ TF_1H }>,
+	ohlc_4h: Ohlcs<{ TF_4H }>,
+	vol_1m: Volumes<{ TF_1MIN }>,
+	vol_5m: Volumes<{ TF_5MIN }>,
+	vol_1h: Volumes<{ TF_1H }>,
+	vol_4h: Volumes<{ TF_4H }>,
+	bars_1m: trading_data::Bars<{ TF_1MIN }>,
+	bars_5m: trading_data::Bars<{ TF_5MIN }>,
+	bars_1h: trading_data::Bars<{ TF_1H }>,
+	bars_4h: trading_data::Bars<{ TF_4H }>,
 	book: Book,
 	book_top: BookTop,
 
@@ -209,8 +208,8 @@ impl Direct {
 		self.b_mom.clear();
 		self.momentum.emit(
 			(
-				self.m5.hist::<Buffering<Bar5m, { Horizon::Elems(181) }>>(),
-				self.h4.hist::<Buffering<Bar4h, { Horizon::Elems(181) }>>(),
+				self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>>(),
+				self.h4.hist::<Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>>(),
 			),
 			&mut self.b_mom,
 		);
@@ -226,17 +225,27 @@ impl Direct {
 		// A closed gate is not "advance with nothing": the node is never called, and its out is the
 		// `Latent` reading — an empty run, or `None`.
 		let decision = if hit {
-			self.change_1d.emit((&self.b_bars[0], self.h1.hist::<Buffering<Bar1h, REACH_1D>>()), &mut self.b_c1d);
-			self.change_3m.emit((self.m1.hist::<Buffering<Bar1m, { Horizon::Span(SPAN_3MIN) }>>(),), &mut self.b_c3m);
+			self.change_1d.emit(
+				(
+					&self.b_bars[0],
+					self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Span(Timeframe(TF_1D.0 + TF_1H.0)) }>>(),
+				),
+				&mut self.b_c1d,
+			);
+			self.change_3m
+				.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, { Horizon::Span(TF_3MIN) }>>(),), &mut self.b_c3m);
 			self.volume_1m.emit((&self.b_bars[0],), &mut self.b_v1m);
-			self.volume_1h.emit((&self.b_bars[0], self.h1.hist::<Buffering<Bar1h, { Horizon::Elems(1) }>>()), &mut self.b_v1h);
+			self.volume_1h.emit(
+				(&self.b_bars[0], self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Elems(1) }>>()),
+				&mut self.b_v1h,
+			);
 			self.imbalance.emit((&self.b_top,), &mut self.b_imb);
 			self.spread.emit((&self.b_top,), &mut self.b_spr);
 			let classified = self.classify.advance((
 				true,
 				&self.b_bars[0],
-				self.m5.hist::<Buffering<Bar5m, { Horizon::Elems(181) }>>(),
-				self.h4.hist::<Buffering<Bar4h, { Horizon::Elems(181) }>>(),
+				self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>>(),
+				self.h4.hist::<Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>>(),
 				&self.b_c1d,
 				&self.b_c3m,
 				&self.b_v1m,

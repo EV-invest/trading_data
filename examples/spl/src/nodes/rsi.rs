@@ -1,19 +1,14 @@
 use trading_data::RsiSpec;
-use v_utils::{Timeframe, TimeframeDesignator::Minutes};
+use v_utils::*;
 
-use super::Bar5m;
 use crate::config::strategy;
-
-/// The period [`RsiSeries`] is wired on. `indies.rsi.timeframe` is checked against it rather than
-/// dispatched on — see the alias below.
-pub const RSI_TF: Timeframe = Timeframe::from_naive(5, Minutes);
 
 trading_data::node_alias! {
 	/// Which series the RSI chain runs on. `indies.rsi.timeframe` still *names* it — the timeframe is
 	/// half the indie's signature, and everything reporting the indie reads it from there — but which
 	/// series an indie runs on is wiring, not a knob, so the config is checked against this in
 	/// [`crate::config::Config::load`] rather than dispatched on.
-	pub RsiSeries = Bar5m;
+	pub RsiSeries = trading_data::Bars<{ TF_5MIN }>;
 }
 
 trading_data::node_alias! { pub RsiDelta = trading_data::RsiDelta<RsiSeries>; }

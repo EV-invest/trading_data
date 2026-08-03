@@ -148,19 +148,19 @@ fn a_gate_dominating_every_consumer_skips_the_node_but_not_a_retained_sibling() 
 
 	// gate shut: `Counted` is read by nobody, `Kept` still feeds the buffer.
 	let b = [p(-1.0)];
-	let o = g.tick(GatedBatches { src: &b });
+	let o = g.tick(0, GatedBatches { src: &b });
 	assert_eq!(o.sink, None);
 	assert_eq!(o.watch, Some(-1.0));
 	assert_eq!((COUNTED.load(Ordering::Relaxed) - c0, KEPT.load(Ordering::Relaxed) - k0), (0, 1));
 
 	// gate open: both run, and `Sink` sees a full run out of the node that was dark last tick.
 	let b = [p(2.0)];
-	let o = g.tick(GatedBatches { src: &b });
+	let o = g.tick(0, GatedBatches { src: &b });
 	assert_eq!(o.sink, Some(2.0));
 	assert_eq!((COUNTED.load(Ordering::Relaxed) - c0, KEPT.load(Ordering::Relaxed) - k0), (1, 2));
 
 	let b = [p(-3.0)];
-	let o = g.tick(GatedBatches { src: &b });
+	let o = g.tick(0, GatedBatches { src: &b });
 	assert_eq!(o.sink, None);
 	assert_eq!((COUNTED.load(Ordering::Relaxed) - c0, KEPT.load(Ordering::Relaxed) - k0), (1, 3));
 }
@@ -271,13 +271,13 @@ fn a_latch_gate_does_not_suppress_what_stands_behind_it() {
 	// latch down for two ticks: the episode is latent, but its dep keeps warming.
 	for i in 1..=2 {
 		let b = [p(-1.0)];
-		let o = g.tick(EpisodicBatches { src: &b });
+		let o = g.tick(0, EpisodicBatches { src: &b });
 		assert_eq!(o.ep, None);
 		assert_eq!(WARM.load(Ordering::Relaxed) - w0, i);
 	}
 
 	let b = [p(1.0)];
-	let o = g.tick(EpisodicBatches { src: &b });
+	let o = g.tick(0, EpisodicBatches { src: &b });
 	assert_eq!(o.ep, Some(Phase(1)));
 	assert_eq!(WARM.load(Ordering::Relaxed) - w0, 3);
 }

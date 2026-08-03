@@ -145,30 +145,30 @@ fn arm_terminal_commutate_rearm() {
 	let mut g = G::default();
 
 	// idle: latch down, episode latent.
-	let o = g.tick(Batches { trig: IDLE });
+	let o = g.tick(0, Batches { trig: IDLE });
 	assert!(!o.live);
 	assert_eq!(o.deprec, None);
 
 	// external trigger arms; episode starts.
-	let o = g.tick(Batches { trig: PULSE });
+	let o = g.tick(0, Batches { trig: PULSE });
 	assert!(o.live);
 	assert_eq!(o.deprec, Some(Phase::Degrading(1)));
 
-	let o = g.tick(Batches { trig: IDLE });
+	let o = g.tick(0, Batches { trig: IDLE });
 	assert_eq!(o.deprec, Some(Phase::Degrading(2)));
 
 	// terminal tick — its out is published; the trigger this tick is absorbed and lost.
-	let o = g.tick(Batches { trig: PULSE });
+	let o = g.tick(0, Batches { trig: PULSE });
 	assert!(o.live);
 	assert_eq!(o.deprec, Some(Phase::Done));
 
 	// commutated: latch down, subtree latent, the during-episode trigger did not re-arm.
-	let o = g.tick(Batches { trig: IDLE });
+	let o = g.tick(0, Batches { trig: IDLE });
 	assert!(!o.live);
 	assert_eq!(o.deprec, None);
 
 	// re-trigger: fresh episode from Default — reset observable, not a stale t=3.
-	let o = g.tick(Batches { trig: PULSE });
+	let o = g.tick(0, Batches { trig: PULSE });
 	assert!(o.live);
 	assert_eq!(o.deprec, Some(Phase::Degrading(1)));
 
@@ -280,13 +280,13 @@ graph! {
 fn one_buffer_joins_both_reaches() {
 	let mut g = BG::default();
 	let (three, one) = ([t(1.0), t(2.0), t(3.0)], [t(4.0)]);
-	let o = g.tick(BBatches { src: &three });
+	let o = g.tick(0, BBatches { src: &three });
 	assert_eq!(o.last, 3.0);
 	assert_eq!(o.sum3, 6.0);
 	assert_eq!(o.ratio, 12.0);
 
 	// past + fresh: had the frame been sized to the shallow consumer, only 3 would stand behind the 4.
-	let o = g.tick(BBatches { src: &one });
+	let o = g.tick(0, BBatches { src: &one });
 	assert_eq!(o.sum3, 10.0);
 	assert_eq!(o.last, 4.0);
 

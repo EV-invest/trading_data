@@ -1,8 +1,9 @@
 use core::fmt;
 
 use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Horizon, Ink, McRoot, Node, OiRoot, Plot, ProbabilisticDistribution, Sampling, Usd, node, value_nudge};
+use v_utils::*;
 
-use super::{Bar1m, Bar4h, Bar5m, Change1d, Change3m, Imbalance, Screener, Spread, Volume1h, Volume1m, momentum, oi_delta::OI_REACH};
+use super::{Change1d, Change3m, Imbalance, Screener, Spread, Volume1h, Volume1m, momentum, oi_delta::OI_REACH};
 
 /// The wire order of [`Classified`]'s slots, category-major.
 const CATEGORIES: [Category; 5] = [Category::Indeterminate, Category::Liquidations, Category::MmClosing, Category::Manipulation, Category::Momentum];
@@ -279,9 +280,9 @@ impl Cell for Classify {
 impl Node for Classify {
 	type Deps = (
 		Gating<Screener>,
-		Bar1m,
-		Buffering<Bar5m, { Horizon::Elems(181) }>,
-		Buffering<Bar4h, { Horizon::Elems(181) }>,
+		trading_data::Bars<{ TF_1MIN }>,
+		Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>,
+		Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>,
 		Change1d,
 		Change3m,
 		Volume1m,

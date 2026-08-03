@@ -75,5 +75,5 @@ graph! {
 
 fn main() {
 	let mut g = G::default();
-	let _ = g.tick(Batches { src: &[Ev] });
+	let _ = g.tick(0, Batches { src: &[Ev] });
 }

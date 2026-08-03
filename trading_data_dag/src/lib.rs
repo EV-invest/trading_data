@@ -157,6 +157,23 @@ impl Horizon {
 		Tag { buf, len }
 	}
 
+	/// The wall-clock depth this reach comes to against a producer publishing every `clock` — the
+	/// direction warmup is measured in. What a replay must preload is a *duration*, and `Elems(n)`
+	/// becomes one only once the producer's rate is known, which is what [`Emit::CLOCK`] supplies:
+	/// with every producer's clock static, a consumer's declared reach resolves to a depth at compile
+	/// time instead of being a hand-picked replay range.
+	///
+	/// The inverse is not the useful one. `Span → Elems` yields a buffer capacity, and [`Buffer`]
+	/// already trims on timestamps (see [`Hist::all`]) without ever needing a count.
+	pub const fn span(self, clock: Timeframe) -> Timeframe {
+		match self {
+			Horizon::Unit => clock,
+			Horizon::Elems(n) => Timeframe(clock.0 * n as u64),
+			Horizon::Span(tf) => tf,
+			Horizon::Unbounded => panic!("an unbounded reach is no duration: nothing recovers such a node, so no depth warms it"),
+		}
+	}
+
 	/// Only a [`Horizon::Span`] has one; the caller has already matched the variant.
 	const fn ns(tf: Timeframe) -> i64 {
 		(tf.0 * 1_000_000) as i64
@@ -275,6 +292,21 @@ pub trait Cell {
 	/// Whether [`REACH`](Cell::REACH) is the *node's* to hold — true of [`Folding`] alone. A closed
 	/// gate pulls no deps, so a folded reach is the one thing gating cannot re-warm.
 	const FOLDED: bool = false;
+
+	/// How often this cell publishes, stated on the cell because the rate is a property of what a
+	/// thing *is* and of nothing it reads (`rates.node.declared`). `None` — whenever its inputs do.
+	/// `Some(tf)` — over elements whose `tf` period has closed, never re-entered while one is in
+	/// progress (`rates.node.whole-elements`).
+	///
+	/// Here rather than on [`Emit`] for the reason [`REACH`](Cell::REACH) is: [`DepSet`] is over
+	/// tuples of cells, so this is what lets a consumer's declared reach be read against its
+	/// producer's rate — the `Elems(n)` → duration conversion of [`Horizon::span`] — and what lets
+	/// [`graph!`] check a node's clock against the ones feeding it.
+	///
+	/// Who *keeps* it follows the node's reach, not the declaration: a node whose history the engine
+	/// holds is clocked by the engine ([`Emitter::opens`]), and one holding its own — a
+	/// [`Folding`]/[`Spanning`] dep — keeps it in the element walk that fold already is.
+	const CLOCK: Option<Timeframe> = None;
 
 	/// Whether a consumer naming this in dep position is *dominated* by it — [`Gating`] alone. A type
 	/// rather than a `const` because it is what dispatches the dark branch ([`Dark`]), and only a type
@@ -590,6 +622,9 @@ pub trait DepSet {
 	/// field a dep resolves against: folded or `Unit` reads the cell itself, anything else reads the
 	/// [`Buffer`] retaining it.
 	const FOLDS: &'static [bool];
+	/// Per-dep [`Cell::CLOCK`], positionally — the rates feeding this node, which is what a
+	/// consumer's own rate is checked against and what turns its `Elems(n)` reach into a duration.
+	const CLOCKS: &'static [Option<Timeframe>];
 	/// Per-dep [`Cell::Gates`], positionally — which of these inputs are the node's gates.
 	const GATES: &'static [bool];
 	/// The leading dep's [`Cell::Gates`], which — gating deps leading, as [`Pull::open`] const-asserts
@@ -813,6 +848,10 @@ where
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>, {
 	node: E,
 	buf: alloc::vec::Vec<E::Item>,
+	/// The [`Emit::CLOCK`] period `emit` last ran in; `i64::MIN` is "none yet", which no timestamp
+	/// divides to. Carried by the wrapper rather than the node for the same reason the buffer is:
+	/// the rate is declared, and what enforces it is not the declarer's to fiddle with.
+	last_period: i64,
 }
 
 // hand-written: `derive` would demand `E::Item: Default`, which no buffer needs.
@@ -824,6 +863,7 @@ where
 		Self {
 			node: E::default(),
 			buf: alloc::vec::Vec::new(),
+			last_period: i64::MIN,
 		}
 	}
 }
@@ -838,6 +878,7 @@ where
 		Self {
 			node: self.node.clone(),
 			buf: alloc::vec::Vec::new(),
+			last_period: self.last_period,
 		}
 	}
 }
@@ -853,6 +894,29 @@ where
 	pub fn reset(&mut self) {
 		self.node = E::default();
 		self.buf.clear();
+		self.last_period = i64::MIN;
+	}
+}
+
+impl<E: Emit> Emitter<E>
+where
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+{
+	/// Whether [`Emit::CLOCK`] admits this tick: an unclocked node every one, a clocked one the first
+	/// of each of its periods. Read after the gate, so a shut node consumes no period and the first
+	/// tick it is let through is a boundary rather than the remainder of one it slept out.
+	///
+	/// A node holding its own reach keeps its own rate, the same split [`Folding`] and [`Buffering`]
+	/// draw over retention. The ticks a clock withholds are ticks a [`Folding`]/[`Spanning`] dep is
+	/// never shown, and a fold must see every element (`rates.folds.exactly-once`), so its element
+	/// walk *is* the boundary and the declaration is all the engine takes.
+	fn opens(&mut self, ts: i64) -> bool {
+		let Some(tf) = <E as Cell>::CLOCK else { return true };
+		if any(<<E as Emit>::Deps as DepSet>::FOLDS) {
+			return true;
+		}
+		let period = ts / Horizon::ns(tf);
+		core::mem::replace(&mut self.last_period, period) != period
 	}
 }
 
@@ -1387,6 +1451,7 @@ impl<C: Series, const H: Horizon> Cell for Buffering<C, H> {
 	/// Forwarded, for the same reason [`Folding`]'s is: the graph predicates match dep names against
 	/// frame cell names, and a wrapper that renamed its dep would drop out of every one of them.
 	/// `REACH`/`FOLDED` are what then say it is the retention and not the cell itself being asked for.
+	const CLOCK: Option<Timeframe> = C::CLOCK;
 	const NAME: &'static str = C::NAME;
 	const REACH: Horizon = H;
 }
@@ -1512,6 +1577,7 @@ where
 
 	/// Forwarded, for the same reason [`Buffering`]'s is: the graph predicates match dep names against
 	/// frame cell names, and a wrapper that renamed its dep would drop out of every one of them.
+	const CLOCK: Option<Timeframe> = C::CLOCK;
 	const NAME: &'static str = C::NAME;
 }
 
@@ -1563,6 +1629,7 @@ pub struct Folding<C: Cell, const H: Horizon>(core::marker::PhantomData<C>);
 impl<C: Cell, const H: Horizon> Cell for Folding<C, H> {
 	type Out<'t> = C::Out<'t>;
 
+	const CLOCK: Option<Timeframe> = C::CLOCK;
 	const FOLDED: bool = true;
 	/// Forwarded: `Roots::required_events` matches dep names against frame cell names, and a wrapper
 	/// that renamed its dep would drop out of it.
@@ -1598,6 +1665,7 @@ pub struct Spanning<C: Cell, const TF: Timeframe>(core::marker::PhantomData<C>);
 impl<C: Cell, const TF: Timeframe> Cell for Spanning<C, TF> {
 	type Out<'t> = C::Out<'t>;
 
+	const CLOCK: Option<Timeframe> = C::CLOCK;
 	const FOLDED: bool = true;
 	const NAME: &'static str = C::NAME;
 	const REACH: Horizon = Horizon::Span(TF);
@@ -1637,6 +1705,7 @@ impl<C: Gate> Cell for Gating<C> {
 
 	/// Forwarded, for the same reason [`Folding`]'s is: the graph predicates match dep names against
 	/// frame cell names, and a wrapper that renamed its dep would drop out of every one of them.
+	const CLOCK: Option<Timeframe> = C::CLOCK;
 	const NAME: &'static str = C::NAME;
 
 	fn opens(out: <Self as Cell>::Out<'_>) -> bool {
@@ -1678,6 +1747,7 @@ impl DepSet for () {
 	type Lead = No;
 	type Outs<'t> = ();
 
+	const CLOCKS: &'static [Option<Timeframe>] = &[];
 	const FOLDS: &'static [bool] = &[];
 	const GATES: &'static [bool] = &[];
 	const NAMES: &'static [&'static str] = &[];
@@ -1727,6 +1797,7 @@ macro_rules! impl_arity {
 			type Outs<'t> = ($($T::Out<'t>,)+);
 			type Lead = <head!($($T),+) as Cell>::Gates;
 
+			const CLOCKS: &'static [Option<Timeframe>] = &[$($T::CLOCK),+];
 			const FOLDS: &'static [bool] = &[$($T::FOLDED),+];
 			const GATES: &'static [bool] = &[$(<$T::Gates as Bit>::VALUE),+];
 			const NAMES: &'static [&'static str] = &[$($T::NAME),+];
@@ -1823,15 +1894,19 @@ where
 /// [`step`] for an [`Emit`]: clear the engine's buffer, let the node fill it, push it as the frame's
 /// out. The frame is keyed on `E` itself — the [`Emitter`] is storage, not a cell — so a dep naming
 /// `E` resolves through the ordinary [`Has`] impl. A dark one needs no [`Dark`] reading: not
-/// emitting *is* the empty run — which is equally the reading of an undemanded one.
-pub fn step_emit<'t, E, F, I>(frame: F, e: &'t mut Emitter<E>, demanded: bool) -> Cons<'t, E, F>
+/// emitting *is* the empty run — which is equally the reading of an undemanded one, and of one whose
+/// [`Emit::CLOCK`] has not come round.
+///
+/// `ts` is the tick's event time, which is what a clock is read against: a node's rate must be a
+/// statement about the market, and the count of ticks is a statement about the feed's batching.
+pub fn step_emit<'t, E, F, I>(frame: F, e: &'t mut Emitter<E>, demanded: bool, ts: i64) -> Cons<'t, E, F>
 where
 	E: Emit,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Deps: Pull<'t, F, I>,
 	F: 't, {
 	e.buf.clear();
-	if demanded && <E::Deps as Pull<'t, F, I>>::open(&frame) {
+	if demanded && <E::Deps as Pull<'t, F, I>>::open(&frame) && e.opens(ts) {
 		e.node.emit(<E::Deps as Pull<'t, F, I>>::pull(&frame), &mut e.buf);
 	}
 	Cons { out: &e.buf, tail: frame }
@@ -2099,9 +2174,9 @@ where
 }
 
 /// [`step_emit`] + [`Observer::on`] before the push — [`step_obs`]'s sibling, with the engine's
-/// buffer standing in for the node's out. A gate-closed or undemanded emit node is simply the empty
-/// run, which is why this one needs no [`Latent`] sibling the way [`step_when_obs`] is one.
-pub fn step_emit_obs<'t, E, F, I, O: Observer>(frame: F, e: &'t mut Emitter<E>, demanded: bool, obs: &mut O) -> Cons<'t, E, F>
+/// buffer standing in for the node's out. A gate-closed, undemanded or off-clock emit node is simply
+/// the empty run, which is why this one needs no [`Latent`] sibling the way [`step_when_obs`] is one.
+pub fn step_emit_obs<'t, E, F, I, O: Observer>(frame: F, e: &'t mut Emitter<E>, demanded: bool, ts: i64, obs: &mut O) -> Cons<'t, E, F>
 where
 	E: Emit + Clone,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
@@ -2112,8 +2187,9 @@ where
 	const { assert!(Plot::coherent(<E as Emit>::PLOTS), "a multi-plot node must name each plot's slots; `[]` claims all of them") }
 	e.buf.clear();
 
-	// gate closed or nobody reading: no emit, no dep flatten, no FD — the empty run is the honest view.
-	if !demanded || !<E::Deps as Pull<'t, F, I>>::open(&frame) {
+	// gate closed, nobody reading, or the period still running: no emit, no dep flatten, no FD — the
+	// empty run is the honest view.
+	if !demanded || !<E::Deps as Pull<'t, F, I>>::open(&frame) || !e.opens(ts) {
 		let out: &'t [E::Item] = &e.buf;
 		if O::ACTIVE {
 			obs.on(
@@ -2337,6 +2413,33 @@ const fn str_eq(a: &str, b: &str) -> bool {
 		i += 1;
 	}
 	true
+}
+
+/// Whether a node clocked at `clock` can be fed by producers clocked at `deps` — every one of them
+/// a whole divisor of it. A rate is still the node's own to declare ([`Cell::CLOCK`]); this is what
+/// stops the declaration from being one the inputs cannot deliver, and it is `rates.node.whole-elements`
+/// in arithmetic: a node publishing every `tf` observes whole elements of its input only where that
+/// input's period tiles `tf`.
+///
+/// It is also what pins a period spelled twice. `Bars<TF>` names `TF` in its type and reads
+/// `Ohlcs<TF>`/`Volumes<TF>`, so a clock of anything but `TF` is a build error rather than a bar
+/// silently published at a rate its type denies.
+#[doc(hidden)]
+pub const fn clock_divides(clock: Option<Timeframe>, deps: &[Option<Timeframe>]) -> bool {
+	let Some(tf) = clock else {
+		// unclocked is "whenever my inputs do", which every input delivers by definition.
+		return true;
+	};
+	let mut i = 0;
+	while i < deps.len() {
+		if let Some(d) = deps[i]
+			&& (d.0 == 0 || tf.0 % d.0 != 0)
+		{
+			return false;
+		}
+		i += 1;
+	}
+	tf.0 > 0
 }
 
 /// Whether every name in `set` occurs once — [`graph!`]'s backstop on its own dedup.

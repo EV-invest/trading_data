@@ -124,11 +124,14 @@ fn gated_book_is_latent_closed_and_resyncs_from_a_checkpoint() {
 		if hot {
 			trades.push(Ts::from_nanos(1), None, None, 0, Side::Buy, 1, 1);
 		}
-		let out = g.tick(Batches {
-			trades: trades.cols(0..trades.len()),
-			deltas: d.frame(0..d.len()),
-			anchors: a,
-		});
+		let out = g.tick(
+			0,
+			Batches {
+				trades: trades.cols(0..trades.len()),
+				deltas: d.frame(0..d.len()),
+				anchors: a,
+			},
+		);
 		(out.book.map(Book::epoch), out.mid)
 	};
 

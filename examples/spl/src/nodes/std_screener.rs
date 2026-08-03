@@ -1,6 +1,7 @@
 use trading_data::{Cell, DepOuts, Folding, Gate, Horizon, Node, node, value_nudge};
+use v_utils::*;
 
-use super::{Bar1m, latest, momentum::Momentum};
+use super::{latest, momentum::Momentum};
 use crate::config::{Screen, strategy};
 
 /// Pine's overvalued zone at momentum's leg. The verdict is per *closed 1m bar*, so a tick that
@@ -16,7 +17,7 @@ impl Cell for StdScreener {
 #[node]
 impl Node for StdScreener {
 	/// The cached momentum level stands until the next publish, however many minutes that takes.
-	type Deps = (Bar1m, Folding<Momentum, { Horizon::Unbounded }>);
+	type Deps = (trading_data::Bars<{ TF_1MIN }>, Folding<Momentum, { Horizon::Unbounded }>);
 
 	fn advance<'t>(&'t mut self, (bars, momentum): DepOuts<'t, Self>) -> Self::Out<'t> {
 		let Screen::Std(c) = strategy().screen else {

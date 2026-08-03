@@ -230,7 +230,7 @@ struct Snap {
 }
 
 fn tick(g: &mut G, trig: &[Pulse], feed: &[Pulse], sw: &[bool]) -> Snap {
-	let o = g.tick(Batches { trig, feed, sw });
+	let o = g.tick(0, Batches { trig, feed, sw });
 	Snap {
 		armed: o.armed,
 		deprec: o.deprec.to_vec(),

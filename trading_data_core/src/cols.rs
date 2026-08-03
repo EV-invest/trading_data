@@ -36,7 +36,7 @@ impl TradeCols<'_> {
 }
 
 impl Timestamped for TradeCols<'_> {
-	fn timestamps(&self) -> Timestamps {
+	fn ts(&self) -> Timestamps {
 		Timestamps::Accumulator {
 			venue: span(self.exec()),
 			local: self.ts.recv,
@@ -70,7 +70,7 @@ impl DeltaCols<'_> {
 }
 
 impl Timestamped for DeltaCols<'_> {
-	fn timestamps(&self) -> Timestamps {
+	fn ts(&self) -> Timestamps {
 		Timestamps::Accumulator {
 			venue: span(self.exec()),
 			local: self.ts.recv,

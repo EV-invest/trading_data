@@ -59,7 +59,7 @@ impl BatchTrades {
 }
 
 impl Timestamped for BatchTrades {
-	fn timestamps(&self) -> Timestamps {
+	fn ts(&self) -> Timestamps {
 		Timestamps::Accumulator {
 			venue: self.span(),
 			local: Some(Span::at(self.local_recv)),

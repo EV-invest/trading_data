@@ -1,12 +1,12 @@
 use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Horizon, Plot, node, slice_nudge};
-use v_utils::{
-	Timeframe,
-	TimeframeDesignator::{Hours, Minutes},
-};
+use v_utils::*;
 
-use super::{Bar, Bar4h, Bar5m};
+use super::Bar;
 use crate::config::strategy;
 
+/// The two series a window is retained over, and so the whole of what `indies.momentum.fast` may
+/// name — checked there, in [`crate::config::Config::load`].
+pub const LEGS: [Timeframe; 2] = [TF_5MIN, TF_4H];
 /// Sharpe on the timeframe `indies.momentum.fast` names. Both wired series are candidate inputs,
 /// which is why both are deps; the config picks which one.
 ///
@@ -37,9 +37,6 @@ fn sharpe(window: &[Bar]) -> Option<f64> {
 	Some((mean * 365.0 - strategy().indies.momentum.risk_free_rate) / stdev_ann)
 }
 
-/// The two series a window is retained over, and so the whole of what `indies.momentum.fast` may
-/// name — checked there, in [`crate::config::Config::load`].
-pub const LEGS: [Timeframe; 2] = [Timeframe::from_naive(5, Minutes), Timeframe::from_naive(4, Hours)];
 /// The leg the config names, of the two every reader has to carry as deps.
 fn leg<'t>(m5: Hist<'t, Bar>, h4: Hist<'t, Bar>) -> Hist<'t, Bar> {
 	let tf = strategy().indies.momentum.fast;
@@ -64,7 +61,10 @@ impl Cell for Momentum {
 }
 #[node]
 impl Emit for Momentum {
-	type Deps = (Buffering<Bar5m, { Horizon::Elems(181) }>, Buffering<Bar4h, { Horizon::Elems(181) }>);
+	type Deps = (
+		Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>,
+		Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>,
+	);
 
 	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &["sharpe"],

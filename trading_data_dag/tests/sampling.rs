@@ -158,25 +158,25 @@ fn a_level_stands_through_the_ticks_its_source_is_silent() {
 	let (none, one, two, three, four, five, six) = ([], [t(1.0)], [t(2.0)], [t(3.0)], [t(4.0), t(5.0)], [t(5.0)], [t(6.0)]);
 
 	// cold: nothing has been produced, so there is no level to stand on.
-	let o = g.tick(Batches { src: &none, clk: &one });
+	let o = g.tick(0, Batches { src: &none, clk: &one });
 	assert_eq!(o.sampled, None);
 	assert_eq!(o.whole, None);
 
-	let o = g.tick(Batches { src: &two, clk: &two });
+	let o = g.tick(0, Batches { src: &two, clk: &two });
 	assert_eq!(o.naive, Some(2.0));
 	assert_eq!(o.sampled, Some(2.0));
 
 	// the tick the whole thing is about: this consumer's clock fired, its source did not.
-	let o = g.tick(Batches { src: &none, clk: &three });
+	let o = g.tick(0, Batches { src: &none, clk: &three });
 	assert_eq!(o.naive, None, "the unwrapped dep is this tick's run, and this tick's run is empty");
 	assert_eq!(o.sampled, Some(2.0));
 	assert_eq!(o.windowed, Some(2.0), "a one-deep window reaches behind the batch too");
 	assert_eq!(o.whole, Some(2.0));
 
 	// the last of a multi-element batch is the level, not the first.
-	let o = g.tick(Batches { src: &four, clk: &five });
+	let o = g.tick(0, Batches { src: &four, clk: &five });
 	assert_eq!(o.sampled, Some(5.0));
-	let o = g.tick(Batches { src: &none, clk: &six });
+	let o = g.tick(0, Batches { src: &none, clk: &six });
 	assert_eq!(o.sampled, Some(5.0));
 	assert_eq!(o.windowed, Some(5.0));
 }
@@ -187,15 +187,15 @@ fn a_level_stands_through_the_ticks_its_source_is_silent() {
 fn a_declining_emission_does_not_unseat_the_level() {
 	let mut g = G::default();
 	let (two, three, four, declines, mixed) = ([t(2.0)], [t(3.0)], [t(4.0)], [t(-1.0), t(-1.0)], [t(7.0), t(-1.0)]);
-	g.tick(Batches { src: &two, clk: &two });
+	g.tick(0, Batches { src: &two, clk: &two });
 
-	let o = g.tick(Batches { src: &declines, clk: &three });
+	let o = g.tick(0, Batches { src: &declines, clk: &three });
 	assert_eq!(o.naive, None, "the newest emission is itself a decline");
 	assert_eq!(o.sampled, Some(2.0));
 	assert_eq!(o.whole, Some(-1.0), "`Src`'s own items carry no absence: every one of them is a level");
 
 	// mixed: the last *present* one, not the last one.
-	let o = g.tick(Batches { src: &mixed, clk: &four });
+	let o = g.tick(0, Batches { src: &mixed, clk: &four });
 	assert_eq!(o.naive, None);
 	assert_eq!(o.sampled, Some(7.0));
 }

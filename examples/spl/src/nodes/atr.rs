@@ -1,6 +1,6 @@
 use trading_data::{Cell, Emit, EmitOuts, Folding, Horizon, WilderAtr, node, slice_nudge};
+use v_utils::*;
 
-use super::Bar1m;
 use crate::config::strategy;
 
 /// Wilder ATR(14) on 1m bars. An indie in its own right rather than an execution-owned indicator:
@@ -22,7 +22,7 @@ impl Cell for Atr {
 #[node]
 impl Emit for Atr {
 	/// A Wilder recurrence reaches to the start of the run.
-	type Deps = (Folding<Bar1m, { Horizon::Unbounded }>,);
+	type Deps = (Folding<trading_data::Bars<{ TF_1MIN }>, { Horizon::Unbounded }>,);
 
 	fn emit(&mut self, (bars,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for b in bars {

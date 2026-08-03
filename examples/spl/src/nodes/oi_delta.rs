@@ -1,16 +1,15 @@
 use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Horizon, Oi, OiRoot, Stamped as _, node, slice_nudge};
-use v_utils::{Timeframe, TimeframeDesignator};
+use v_utils::*;
 
-/// Bybit's open-interest publish cadence: every leg reads the publish standing a whole number of
-/// these back, so the retained reach is one past the longest one.
-const OI_STEP: Timeframe = Timeframe::from_naive(5, TimeframeDesignator::Minutes);
-pub const OI_REACH: Horizon = Horizon::Span(Timeframe(4 * OI_STEP.0));
+/// `TF_5MIN` is Bybit's open-interest publish cadence: every leg reads the publish standing a whole
+/// number of those back, so the retained reach is one past the longest one.
+pub const OI_REACH: Horizon = Horizon::Span(Timeframe(4 * TF_5MIN.0));
 
 /// Percent change of the `i`th fresh publish against the one standing `steps` cadences before it. A
 /// gap that leaves none within a publish interval of that instant declines, rather than passing a
 /// shorter delta off as this one.
 fn delta_back(hist: &Hist<'_, Oi>, i: usize, steps: i64) -> Option<f64> {
-	let step_ns = OI_STEP.duration().as_nanos() as i64;
+	let step_ns = TF_5MIN.duration().as_nanos() as i64;
 	let cur = &hist.fresh()[i];
 	let target = cur.ts_ns() - steps * step_ns;
 	let o = hist.trailing_at(i)?.iter().rev().find(|o| o.ts_ns() <= target)?;

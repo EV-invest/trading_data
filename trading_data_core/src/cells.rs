@@ -4,7 +4,7 @@
 //! that may write these impls. Nothing else here knows the dag exists.
 
 use trading_data_dag::{Cell, DepOuts, Folding, Horizon, Node, Nudge, node};
-use v_utils::{Timeframe, TimeframeDesignator};
+use v_utils::TF_15MIN;
 
 use crate::{Book, BookShape, DeltaBuf, DeltaFrame, TradeBuf, TradeCols};
 
@@ -82,7 +82,7 @@ impl Node for Book {
 	/// `Folding` and not `Buffering` only because `DeltaFrame` is no `Series`, so there is nothing
 	/// the engine can retain for it — which is also what still makes a gated book a compile error,
 	/// checkpoint or no. Retaining the deltas as stamped level rows is what would lift that.
-	type Deps = (BookAnchors, Folding<BookDeltas, { Horizon::Span(Timeframe::from_naive(15, TimeframeDesignator::Minutes)) }>);
+	type Deps = (BookAnchors, Folding<BookDeltas, { Horizon::Span(TF_15MIN) }>);
 
 	fn advance<'t>(&'t mut self, (anchor, deltas): DepOuts<'t, Self>) -> Option<&'t Book> {
 		self.step(anchor, deltas).then_some(&*self)

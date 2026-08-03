@@ -1,6 +1,5 @@
 use trading_data::{Cell, Emit, EmitOuts, node, slice_nudge};
-
-use super::Bar1m;
+use v_utils::*;
 
 /// The closed 1m bar's notional, `volume * close` — the close standing in for vwap, as SPL's own
 /// volume indie does. Nothing to warm, so there is no declining.
@@ -11,7 +10,7 @@ impl Cell for Volume1m {
 }
 #[node]
 impl Emit for Volume1m {
-	type Deps = (Bar1m,);
+	type Deps = (trading_data::Bars<{ TF_1MIN }>,);
 
 	fn emit(&mut self, (m1,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		for b in m1 {

@@ -1,12 +1,12 @@
 use core::fmt;
 
-use trading_data_core::{Exact, TradeCols, Trades};
+use trading_data_core::{Exact, Timestamped, Timestamps, TradeCols, Trades, Ts, Venue};
 use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Glance, Spanning, Stamped, Tag, always_present, node, slice_nudge};
 use v_utils::Timeframe;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Ohlc {
-	pub ts_close: i64,
+	pub ts_close: Ts<Venue>,
 	pub open: f64,
 	pub high: f64,
 	pub low: f64,
@@ -15,14 +15,14 @@ pub struct Ohlc {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Volume {
-	pub ts_close: i64,
+	pub ts_close: Ts<Venue>,
 	/// Base-denominated: a quote-denominated reader multiplies by a price of its choosing.
 	pub base: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Bar {
-	pub ts_close: i64,
+	pub ts_close: Ts<Venue>,
 	pub open: f64,
 	pub high: f64,
 	pub low: f64,
@@ -53,7 +53,12 @@ impl Glance for Ohlc {
 }
 impl Stamped for Ohlc {
 	fn ts_ns(&self) -> i64 {
-		self.ts_close
+		self.ts_close.as_nanos()
+	}
+}
+impl Timestamped for Ohlc {
+	fn ts(&self) -> Timestamps {
+		Timestamps::Simple(self.ts_close)
 	}
 }
 
@@ -79,7 +84,12 @@ impl Glance for Volume {
 }
 impl Stamped for Volume {
 	fn ts_ns(&self) -> i64 {
-		self.ts_close
+		self.ts_close.as_nanos()
+	}
+}
+impl Timestamped for Volume {
+	fn ts(&self) -> Timestamps {
+		Timestamps::Simple(self.ts_close)
 	}
 }
 
@@ -106,7 +116,12 @@ impl Glance for Bar {
 
 impl Stamped for Bar {
 	fn ts_ns(&self) -> i64 {
-		self.ts_close
+		self.ts_close.as_nanos()
+	}
+}
+impl Timestamped for Bar {
+	fn ts(&self) -> Timestamps {
+		Timestamps::Simple(self.ts_close)
 	}
 }
 
@@ -116,15 +131,15 @@ always_present!(Ohlc, Volume, Bar);
 /// Trades → one item per period *closed*. Rate-changing: a batch spanning two periods emits two, a
 /// partial period emits none (it stays in `state`). The whole of an accumulator is this boundary
 /// walk — `open` and `fold` are all that tells one apart from another.
-fn accumulate<T: Stamped>(state: &mut Option<T>, trades: TradeCols<'_>, tf: Timeframe, out: &mut Vec<T>, open: impl Fn(i64, f64, f64) -> T, fold: impl Fn(&mut T, f64, f64)) {
+fn accumulate<T: Timestamped>(state: &mut Option<T>, trades: TradeCols<'_>, tf: Timeframe, out: &mut Vec<T>, open: impl Fn(Ts<Venue>, f64, f64) -> T, fold: impl Fn(&mut T, f64, f64)) {
 	// precision is the run's, so the two scales are hoisted once instead of read per trade.
 	let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
 	let step = Exact::from_nanos(tf.duration().as_nanos() as i64);
 	for (i, exec) in trades.exec().iter().enumerate() {
 		let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
-		let ts_close = exec.floor(step).as_nanos() + step.as_nanos();
+		let ts_close = exec.floor(step) + step;
 		match &mut *state {
-			Some(acc) if acc.ts_ns() == ts_close => fold(acc, price, qty),
+			Some(acc) if acc.ts() == Timestamps::Simple(ts_close) => fold(acc, price, qty),
 			slot => {
 				if let Some(done) = slot.take() {
 					out.push(done);
@@ -162,8 +177,8 @@ fn volume(state: &mut Option<Volume>, trades: TradeCols<'_>, tf: Timeframe, out:
 
 /// The prefix of a slower series that has *closed* by `deadline` — the cross-rate read a node
 /// clocked by a faster series makes against a [`trading_data_dag::Buffering`] dep.
-pub fn closed_by(bars: &[Bar], deadline: i64) -> &[Bar] {
-	&bars[..bars.partition_point(|b| b.ts_ns() <= deadline)]
+pub fn closed_by(bars: &[Bar], deadline: Ts<Venue>) -> &[Bar] {
+	&bars[..bars.partition_point(|b| b.ts_close <= deadline)]
 }
 
 /// The series over a period, in three: the two accumulators over trades, and the bar that is their
@@ -179,6 +194,7 @@ impl<const TF: Timeframe> Ohlcs<TF> {
 impl<const TF: Timeframe> Cell for Ohlcs<TF> {
 	type Out<'t> = &'t [Ohlc];
 
+	const CLOCK: Option<Timeframe> = Some(TF);
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
@@ -201,6 +217,7 @@ impl<const TF: Timeframe> Volumes<TF> {
 impl<const TF: Timeframe> Cell for Volumes<TF> {
 	type Out<'t> = &'t [Volume];
 
+	const CLOCK: Option<Timeframe> = Some(TF);
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
@@ -223,6 +240,7 @@ impl<const TF: Timeframe> Bars<TF> {
 impl<const TF: Timeframe> Cell for Bars<TF> {
 	type Out<'t> = &'t [Bar];
 
+	const CLOCK: Option<Timeframe> = Some(TF);
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
