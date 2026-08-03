@@ -16,34 +16,6 @@ use v_utils::*;
 
 const SCROLLBACK: usize = 20_000;
 
-/// An observer that records nothing, so what it costs is what `step_seen` spends *reaching* it:
-/// the pre-advance clone and one `clone_from`+`advance` per dep slot of `fd_jac`. The sums are
-/// what keep that work from being eliminated as dead — an empty `on` would inline to nothing and
-/// time the graph twice.
-#[derive(Default)]
-struct Probe {
-	vals: f64,
-	jac: usize,
-}
-
-impl Observer for Probe {
-	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
-		self.vals += fire.vals.map_or(0.0, |v| v.iter().sum());
-		self.jac += fire.jac.map_or(0, <[f64]>::len);
-	}
-}
-
-/// The two `format!`s `Tape::on` runs per fire, and nothing else the tape does — so the leg between
-/// this and [`Probe`] prices rendering alone, against the mutex, the copies and the thinning passes.
-#[derive(Default)]
-struct Fmt(usize);
-
-impl Observer for Fmt {
-	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
-		self.0 += format!("{}", fire.glance).len() + format!("{:?}", fire.debug).len();
-	}
-}
-
 fn main() {
 	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
 	let situation = &cfg.situation;
@@ -111,4 +83,31 @@ fn main() {
 	println!("+ obs, recording nil {fd_s:>8.2}s  (flatten+FD {:.2}s)", fd_s - plain_s);
 	println!("+ obs, rendering     {fmt_s:>8.2}s  (format! {:.2}s)", fmt_s - fd_s);
 	println!("+ obs, recording Viz {obs_s:>8.2}s  (rest of tape {:.2}s)", obs_s - fmt_s);
+}
+/// An observer that records nothing, so what it costs is what `step_seen` spends *reaching* it:
+/// the pre-advance clone and one `clone_from`+`advance` per dep slot of `fd_jac`. The sums are
+/// what keep that work from being eliminated as dead — an empty `on` would inline to nothing and
+/// time the graph twice.
+#[derive(Default)]
+struct Probe {
+	vals: f64,
+	jac: usize,
+}
+
+impl Observer for Probe {
+	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
+		self.vals += fire.vals.map_or(0.0, |v| v.iter().sum());
+		self.jac += fire.jac.map_or(0, <[f64]>::len);
+	}
+}
+
+/// The two `format!`s `Tape::on` runs per fire, and nothing else the tape does — so the leg between
+/// this and [`Probe`] prices rendering alone, against the mutex, the copies and the thinning passes.
+#[derive(Default)]
+struct Fmt(usize);
+
+impl Observer for Fmt {
+	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
+		self.0 += format!("{}", fire.glance).len() + format!("{:?}", fire.debug).len();
+	}
 }

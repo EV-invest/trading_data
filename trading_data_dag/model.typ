@@ -41,7 +41,8 @@ DERIVATION ── proc-macro walk of `type Deps`, backwards from `outputs`
                    facade maps to source lanes.
         │
         ▼
-SWEEP ── one straight-line monomorphized function per tick; no dispatch, no runtime graph
+SWEEP ── `tick(ts, Batches)`, one straight-line monomorphized fn; no dispatch, no runtime graph
+   the tick's event time and its batches are the whole input — `ts` is what a declared `CLOCK` reads
    Batches ──seed──▶ Cons<'t, R₀, Nil> ──step──▶ Cons<'t, N₁, ·> ──step──▶ … ──▶ TickOut
                      └────────────────── the frame: a type-indexed HList ──────────────┘
                         `Has<'t, N, I>` resolves a cell by TYPE; `I` is the inferred index
@@ -75,7 +76,7 @@ OBSERVATION ── the same sweep, read. `()` observer ⇒ `ACTIVE = false` ⇒ 
   edge(<decl>, <dem>, "->"),
   edge(<decl>, <latch>, "->"),
 
-  node((0.3, 2.7), align(center)[`fn tick(Batches) -> TickOut` \ #text(7pt)[one straight-line monomorphized fn]], fill: luma(235), name: <sweep>),
+  node((0.3, 2.7), align(center)[`fn tick(ts, Batches) -> TickOut` \ #text(7pt)[one straight-line monomorphized fn]], fill: luma(235), name: <sweep>),
   edge(<set>, <sweep>, "->"),
   edge(<topo>, <sweep>, "->"),
   edge(<bufs>, <sweep>, "->"),
@@ -110,6 +111,9 @@ OBSERVATION ── the same sweep, read. `()` observer ⇒ `ACTIVE = false` ⇒ 
    compile time.
    `step_exact` const-asserts its node is ungated: exact partials are stated over deps it
    pulls every tick.
+   A declared `CLOCK` adds no row: `Emitter::opens` is read INSIDE `step_emit`, after the gate — so
+   a shut node consumes no period, and the first tick it is let through is a boundary rather than
+   the remainder of one it slept out.
 ```
 
 === 1.3 The dep vocabulary — `type Deps` *is* the graph
@@ -117,21 +121,22 @@ OBSERVATION ── the same sweep, read. `()` observer ⇒ `ACTIVE = false` ⇒ 
 Six spellings, no seventh. Every structural fact about an edge is one of these.
 
 ```
- spelling                  out read                 resolves against   REACH      FOLDED  Gates
- ───────────────────────────────────────────────────────────────────────────────────────────────
- C                         C::Out<'t>               C                  Unit       false   No
- Gating<G: Gate>           bool  — permission       G                  Unit       false   YES
- Buffering<C: Series, H>   Hist<'t, C::Item>        Buffer<C, K≥H>     H          false   No
- Sampling<C: Series>       Option<Item::Val>        Latest<C>          Unit       false   No
- Folding<C, H>             C::Out<'t>  (a claim)    C                  H          TRUE    No
- Spanning<C, TF>           C::Out<'t>  (a claim)    C                  Span(TF)   TRUE    No
+ spelling                  out read                 resolves against   REACH      FOLDED  RETAINED  Gates
+ ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+ C                         C::Out<'t>               C                  Unit       false   false     No
+ Gating<G: Gate>           bool  — permission       G                  Unit       false   false     YES
+ Buffering<C: Series, H>   Hist<'t, C::Item>        Buffer<C, K≥H>     H          false   TRUE      No
+ Sampling<C: Series>       Option<Item::Val>        Latest<C>          Unit       false   TRUE      No
+ Folding<C, H>             C::Out<'t>  (a claim)    C                  H          TRUE    false     No
+ Spanning<C, TF>           C::Out<'t>  (a claim)    C                  Span(TF)   TRUE    false     No
 
  `Spanning` exists only because `Folding<C, { Horizon::Span(TF) }>` does not parse: an enum
  constructor applied to a generic parameter is rejected in const-argument position.
 
- Every wrapper forwards `Cell::NAME = C::NAME` — the graph predicates match dep names against
- frame cell names, and a wrapper that renamed its dep would drop out of all of them. REACH /
- FOLDED / Gates are what then say WHICH reading of C is being asked for.
+ Every wrapper forwards `Cell::NAME = C::NAME` and `Cell::CLOCK = C::CLOCK` — the graph predicates
+ match dep names against frame cell names, and a wrapper that renamed or re-rated its dep would drop
+ out of all of them. REACH / FOLDED / RETAINED / Gates are what then say WHICH reading of C is being
+ asked for.
 
  `Hist<'t, T>` (what a `Buffering` reads) = past ++ fresh, cut to the CONSUMER's declared
  horizon — so a node reads what a frame buffering at exactly its own `H` would hold, and
@@ -151,8 +156,14 @@ _Who holds the history_ is the axis the wrappers actually partition:
         │   re-warms through a skip   │   CANNOT re-warm ⇒      │   monotone: once it  │
         │   ⇒ darkening a consumer    │   `Gating` + `Folding`  │   holds a level, it  │
         │     is cheap                │   is a COMPILE ERROR    │   holds one forever  │
+        │   RETAINED = true           │   RETAINED = false      │   RETAINED = true    │
         └─────────────────────────────┴─────────────────────────┴──────────────────────┘
                             the two carve-outs the whole design turns on
+
+ `Cell::RETAINED` is that partition as a const, and a bare `C` sits with the middle column: its out
+ is this tick's batch and no other. It answers a second question besides re-warming — whether a tick
+ may be WITHHELD from a consumer (§1.4). A retained dep is there again next tick; a pass-through dep
+ skipped is a batch nobody sees again.
 ```
 
 #align(center, diagram(
@@ -200,7 +211,7 @@ _Who holds the history_ is the axis the wrappers actually partition:
     label: text(fill: red, size: 7pt)[`Gating` + `Folding` = compile error]),
 ))
 
-=== 1.4 `Horizon` — one vocabulary for all three reaches
+=== 1.4 `Horizon` and `CLOCK` — how far back, and how often
 
 ```
    Unit ──────── Elems(n) ──────── Span(tf) ──────── Unbounded         totally ordered
@@ -219,12 +230,39 @@ _Who holds the history_ is the axis the wrappers actually partition:
    `Buffering` are compile errors: Unit is the bare dep, Unbounded names no window.
    `Buffer::watermark` — the highest ts_ns it cannot speak for — is what makes "is this Span
    window complete" exact where "have I been running long enough" is a guess.
+
+   span(self, clock)   Elems(n) ↦ n·clock   Span(tf) ↦ tf   Unit ↦ clock   Unbounded ↦ panic
+           a count is a duration only once the PRODUCER's rate is known, and duration is what a
+           replay preloads. The inverse (Span ↦ Elems) yields buffer capacity, which `Buffer`
+           already gets by trimming on timestamps — no count needed.
+```
+
+```
+  `Cell::CLOCK: Option<Timeframe>`  —  how often this cell publishes, stated on the cell because a
+  rate is a property of what a thing IS and of nothing it reads.
+     None      whenever its inputs do — today's behaviour, and the default.
+     Some(tf)  over elements whose `tf` period has CLOSED; never re-entered while one is in
+               progress, so how a period's messages were cut across its ticks is invisible.
+
+  DECLARED by the node · ENFORCED by whoever can. `Emitter::opens` withholds a tick only from a node
+  every one of whose deps is RETAINED (§1.3) — otherwise a withheld tick is a batch delivered to
+  nobody. A node reading a batch is already clocked by the element walk it runs over it
+  (`rates.folds.exactly-once`), and the engine takes the declaration and nothing else.
+
+     Ohlcs<TF>   Spanning<Trades, TF>          not retained ⇒ its own boundary walk is the rate
+     Bars<TF>    (Ohlcs<TF>, Volumes<TF>)      bare deps    ⇒ publishes when its producers do
+     an indie    Sampling<C> / Buffering<C,H>  retained     ⇒ the engine opens it once per period
+
+  `clock_divides` (§1.7) is what keeps a declaration honest: every feeding rate must tile it. That
+  also pins a period spelled twice — `Bars<TF>` names TF in its type and reads `Ohlcs<TF>`, so any
+  CLOCK but `Some(TF)` fails to build. It is the check standing in for a type-level equality Rust
+  has no way to write: `Deps = (Spanning<Trades, {C::TF}>,)` wants `generic_const_exprs`.
 ```
 
 === 1.5 Node kinds — how a cell computes
 
 ```
-  Cell                      type Out<'t>: Copy  ·  NAME  ·  REACH  ·  FOLDED  ·  type Gates
+  Cell                      type Out<'t>: Copy · NAME · REACH · FOLDED · RETAINED · CLOCK · Gates
    │                        the floor. A root is a Cell with no Node impl.
    │
    ├── Node                 fn advance<'t>(&'t mut self, DepOuts<'t,Self>) -> Out<'t>
@@ -253,6 +291,8 @@ _Who holds the history_ is the axis the wrappers actually partition:
    │                        the struct holds only what it remembers between ticks — and
    │                        `emit` cannot read what it wrote last tick. `&mut self`, not
    │                        `&'t mut self`: only the buffer is lent, not the node.
+   │                        `Emitter` also carries `last_period` — the declared rate is not the
+   │                        declarer's to fiddle with, for the same reason the buffer is not.
    │
    └── Episodic             type Trigger: Cell  ·  fn arms(TriggerOut) -> bool
                             ⇒ `Armed<Self>` is the only gate it can be. Where a hand-written
@@ -272,7 +312,7 @@ _Who holds the history_ is the axis the wrappers actually partition:
   node-stroke: 0.7pt,
   label-size: 7.5pt,
 
-  node((0, 0), align(center)[`Cell` \ #text(7pt)[`Out<'t>: Copy` · `NAME` · `REACH` · `FOLDED` · `Gates`]], fill: luma(235), name: <cell>),
+  node((0, 0), align(center)[`Cell` \ #text(7pt)[`Out<'t>: Copy` · `NAME` · `REACH` · `FOLDED` · `RETAINED` · `CLOCK` · `Gates`]], fill: luma(235), name: <cell>),
 
   node((-2.4, 1.3), align(center)[`Symbolic` \ #text(7pt)[`body -> impl Expr`]], name: <sy>),
   node((-1.1, 1.3), align(center)[`Node` \ #text(7pt)[`advance` self-borrows]], name: <nd>),
@@ -353,7 +393,10 @@ _Who holds the history_ is the axis the wrappers actually partition:
                H is neither Unit nor Unbounded.
   Plot         `Plot::coherent` — a multi-plot node must name each plot's slots.
   Symbolic     every dep scalar, arity ≤ MAX_VARS.
-  graph!       `distinct` node names · `cut_gated` · `deadlocked`.
+  graph!       `distinct` node names · `cut_gated` · `deadlocked` · `clock_divides(CLOCK, CLOCKS)`
+               — a node's declared rate must be a whole multiple of every rate feeding it, else it
+               observes fractions of its inputs' elements. Item-level, so it fires for a node the
+               graph merely contains; a `const {}` inside a generic fn waits on monomorphization.
 ```
 
 == 2. Utilization census
@@ -378,6 +421,10 @@ Occurrences across the whole repo (`examples/`, every `trading_data*` crate, tes
 That table is the design working: engine-held retention outnumbers node-held two to one, and
 every `Folding` left is a genuine recurrence or fold — the two things a window does not
 promise, because they must see every element exactly once.
+
+`Cell::CLOCK` is declared three times so far — `Ohlcs<TF>`, `Volumes<TF>`, `Bars<TF>`, the newest
+mechanism and the one the rest of the repo reads through `Buffering`, which forwards it. All three
+enforce it themselves; the engine's own gate is exercised only by `trading_data_dag/tests/clocking.rs`.
 
 Node-kind spread across the real graphs (`examples/simple`, `examples/live`, `examples/spl`):
 `Emit` for every rate-changing series (bars, RSI deltas, deprecator intents), `Symbolic` for
