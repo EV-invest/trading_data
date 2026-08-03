@@ -1980,6 +1980,52 @@ pub struct Fire<'a> {
 	pub trace: Option<&'a dyn core::fmt::Display>,
 }
 
+impl<'a> Fire<'a> {
+	/// Everything a stepped node reads off its out and its [`Flats`]. The four [`Diff`] fields are
+	/// the exception rather than the shape, spliced in with `..` at the one site that states them.
+	/// `flat: None` is the unfired reading — no flattening happened, so there is none to report.
+	#[inline]
+	fn of<T: Flat + core::fmt::Debug + Glance>(out: &'a T, plots: &'static [Plot], dep_dims: &'a [&'static [usize]], flat: Option<&'a Flats>) -> Self {
+		Fire {
+			debug: out,
+			glance: out,
+			dims: T::DIMS,
+			plots,
+			fires: out.fires(),
+			vals: flat.and_then(|f| f.fired.then_some(f.vals.as_slice())),
+			dep_dims,
+			jac: flat.and_then(|f| f.jac.as_deref()),
+			exact_jac: None,
+			formula: None,
+			deriv: None,
+			trace: None,
+		}
+	}
+}
+
+/// The un-bumped flattenings of one node's out and deps, plus the finite difference taken off them
+/// — the observed leg every stepped node shares, whatever kind of node it is.
+struct Flats {
+	fired: bool,
+	vals: alloc::vec::Vec<f64>,
+	deps: alloc::vec::Vec<f64>,
+	jac: Option<alloc::vec::Vec<f64>>,
+}
+
+impl Flats {
+	/// `fd` is the node's Jacobian over `(dep_buf, out_buf)`; it is asked for only where there is an
+	/// out to differentiate.
+	#[inline]
+	fn of<'d, O: Flat, D: DepFlat>(out: &O, deps: &D::Outs<'d>, fd: impl FnOnce(&[f64], &[f64]) -> alloc::vec::Vec<f64>) -> Self {
+		let mut vals = alloc::vec![f64::NAN; O::LEN];
+		let fired = out.flat(&mut vals);
+		let mut dep_buf = alloc::vec![f64::NAN; D::LEN];
+		D::flat(deps, &mut dep_buf);
+		let jac = fired.then(|| fd(&dep_buf, &vals));
+		Flats { fired, vals, deps: dep_buf, jac }
+	}
+}
+
 /// Sees every [`step_obs`] as it happens: one interpretation choke point, many interpretations.
 /// Step order IS topo order, so the observed sequence doubles as the graph's static topology; dep
 /// names never seen as stepped nodes are roots — apps seed root activations via [`observe_root`].
@@ -2025,28 +2071,22 @@ where
 	(clone.advance(<N::Deps as DepFlat>::view(scratch)).flat(bumped), dh)
 }
 
-/// The full finite-difference Jacobian: one [`fd_col`] per dep element, NaN columns where a dep is
-/// unfired or the bump crossed a firing branch. `out_buf`/`dep_buf` are the un-bumped flattenings.
-fn fd_jac<'d, N>(pre: &N, deps: DepOuts<'d, N>, dep_buf: &[f64], out_buf: &[f64]) -> alloc::vec::Vec<f64>
-where
-	N: Node + Clone,
-	N::Deps: DepFlat,
-	DepOuts<'d, N>: Copy,
-	for<'x> N::Out<'x>: Flat, {
+/// The full finite-difference Jacobian, one column per dep element: `col` re-steps the node with
+/// that element bumped by about `h`, writing the bumped out into `bumped` and returning whether it
+/// fired and the perturbation the dep actually applied. NaN columns where a dep is unfired or the
+/// bump crossed a firing branch. `out_buf`/`dep_buf` are the un-bumped flattenings.
+fn fd_cols(dep_buf: &[f64], out_buf: &[f64], mut col: impl FnMut(usize, f64, &mut [f64]) -> (bool, f64)) -> alloc::vec::Vec<f64> {
 	let (out_len, dep_len) = (out_buf.len(), dep_buf.len());
 	let mut jac = alloc::vec![f64::NAN; out_len * dep_len];
 	let mut bumped = alloc::vec![f64::NAN; out_len];
-	let mut scratch = <N::Deps as DepFlat>::Scratch::default();
-	let mut clone = pre.clone();
 	for slot in 0..dep_len {
 		let x = dep_buf[slot];
 		if x.is_nan() {
 			continue;
 		}
-		let h = (x.abs() * 1e-6).max(1e-9);
 		// `dh`, not `h`: a quantized dep moves in whole ticks, and dividing by a step it never took
 		// is a fabricated slope. `0.0` ⇒ the slot has no derivative at all.
-		let (fired, dh) = fd_col::<N>(pre, &mut clone, deps, &mut scratch, slot, h, &mut bumped);
+		let (fired, dh) = col(slot, (x.abs() * 1e-6).max(1e-9), &mut bumped);
 		if !fired || dh == 0.0 {
 			continue; // bump crossed a firing branch, or the slot is discrete — column stays NaN
 		}
@@ -2055,6 +2095,18 @@ where
 		}
 	}
 	jac
+}
+
+/// [`fd_cols`] over a level node's re-[`advance`](Node::advance), via [`fd_col`].
+fn fd_jac<'d, N>(pre: &N, deps: DepOuts<'d, N>, dep_buf: &[f64], out_buf: &[f64]) -> alloc::vec::Vec<f64>
+where
+	N: Node + Clone,
+	N::Deps: DepFlat,
+	DepOuts<'d, N>: Copy,
+	for<'x> N::Out<'x>: Flat, {
+	let mut scratch = <N::Deps as DepFlat>::Scratch::default();
+	let mut clone = pre.clone();
+	fd_cols(dep_buf, out_buf, |slot, h, bumped| fd_col::<N>(pre, &mut clone, deps, &mut scratch, slot, h, bumped))
 }
 
 /// [`step`] + [`Observer::on`] before the push. The `()` observer erases to exactly `step`.
@@ -2114,25 +2166,8 @@ where
 	if !run {
 		let out: N::Out<'t> = unrun();
 		if O::ACTIVE {
-			obs.on(
-				N::NAME,
-				<N::Deps as DepSet>::NAMES,
-				<N::Deps as DepSet>::GATES,
-				Fire {
-					debug: &out,
-					glance: &out,
-					dims: <N::Out<'t> as Flat>::DIMS,
-					plots: N::PLOTS,
-					fires: out.fires(),
-					vals: None,
-					dep_dims: <N::Deps as DepFlat>::DIMS,
-					jac: None,
-					exact_jac: None,
-					formula: None,
-					deriv: None,
-					trace: None,
-				},
-			);
+			let fire = Fire::of(&out, N::PLOTS, <N::Deps as DepFlat>::DIMS, None);
+			obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
 	}
@@ -2145,43 +2180,18 @@ where
 	let pre = node.clone();
 	let deps = <N::Deps as Pull<'t, F, I>>::pull(&frame);
 	let out = node.advance(deps);
+	let flat = Flats::of::<_, N::Deps>(&out, &deps, |dep_buf, out_buf| fd_jac::<N>(&pre, deps, dep_buf, out_buf));
 
-	let out_len = <N::Out<'t> as Flat>::LEN;
-	let mut out_buf = alloc::vec![f64::NAN; out_len];
-	let fired = out.flat(&mut out_buf);
-	let fires = out.fires();
-
-	let dep_len = <N::Deps as DepFlat>::LEN;
-	let mut dep_buf = alloc::vec![f64::NAN; dep_len];
-	<N::Deps as DepFlat>::flat(&deps, &mut dep_buf);
-
-	let jac = fired.then(|| fd_jac::<N>(&pre, deps, &dep_buf, &out_buf));
-
-	obs.on(
-		N::NAME,
-		<N::Deps as DepSet>::NAMES,
-		<N::Deps as DepSet>::GATES,
-		Fire {
-			debug: &out,
-			glance: &out,
-			dims: <N::Out<'t> as Flat>::DIMS,
-			plots: N::PLOTS,
-			fires,
-			vals: fired.then_some(out_buf.as_slice()),
-			dep_dims: <N::Deps as DepFlat>::DIMS,
-			jac: jac.as_deref(),
-			exact_jac: None,
-			formula: None,
-			deriv: None,
-			trace: None,
-		},
-	);
+	let fire = Fire::of(&out, N::PLOTS, <N::Deps as DepFlat>::DIMS, Some(&flat));
+	obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
 }
 
-/// [`fd_jac`] for an [`Emit`]: same columns, but the re-`emit` needs no lifetime isolation (`&mut
-/// self` never lends the node), so the column body is inline. Everything a column overwrites wholly
-/// — the deps' scratch, the clone, its output run — is hoisted across the slot loop.
+/// [`fd_cols`] over an [`Emit`]'s re-`emit`. It stays separate from [`fd_jac`] because the two
+/// re-step through different traits — merging them would cost a vtable, which is the one thing this
+/// leg cannot pay. The re-`emit` needs no [`fd_col`]-style lifetime isolation (`&mut self` never
+/// lends the node), so its column body is inline; everything a column overwrites wholly — the deps'
+/// scratch, the clone, its output run — is hoisted across the loop.
 fn fd_jac_emit<'d, E>(pre: &E, deps: EmitOuts<'d, E>, dep_buf: &[f64], out_buf: &[f64]) -> alloc::vec::Vec<f64>
 where
 	E: Emit + Clone,
@@ -2189,32 +2199,16 @@ where
 	E::Item: Flat,
 	E::Deps: DepFlat,
 	EmitOuts<'d, E>: Copy, {
-	let (out_len, dep_len) = (out_buf.len(), dep_buf.len());
-	let mut jac = alloc::vec![f64::NAN; out_len * dep_len];
-	let mut bumped = alloc::vec![f64::NAN; out_len];
 	let mut scratch = <E::Deps as DepFlat>::Scratch::default();
 	let mut emitted = alloc::vec::Vec::new();
 	let mut clone = pre.clone();
-	for slot in 0..dep_len {
-		let x = dep_buf[slot];
-		if x.is_nan() {
-			continue;
-		}
-		let h = (x.abs() * 1e-6).max(1e-9);
-		// `dh`, not `h`: a quantized dep moves in whole ticks, and dividing by a step it never took
-		// is a fabricated slope. `0.0` ⇒ the slot has no derivative at all.
+	fd_cols(dep_buf, out_buf, |slot, h, bumped| {
 		let dh = <E::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
 		emitted.clear();
 		clone.clone_from(pre);
 		clone.emit(<E::Deps as DepFlat>::view(&scratch), &mut emitted);
-		if !emitted.as_slice().flat(&mut bumped) || dh == 0.0 {
-			continue; // bump crossed a firing branch, or the slot is discrete — column stays NaN
-		}
-		for i in 0..out_len {
-			jac[i * dep_len + slot] = (bumped[i] - out_buf[i]) / dh;
-		}
-	}
-	jac
+		(emitted.as_slice().flat(bumped), dh)
+	})
 }
 
 /// [`step_emit`] + [`Observer::on`] before the push — [`step_obs`]'s sibling, with the engine's
@@ -2241,25 +2235,8 @@ where
 	if !demanded || !<E::Deps as Pull<'t, F, I>>::open(&frame) || !e.opens(ts) {
 		let out: &'t [E::Item] = &e.buf;
 		if O::ACTIVE {
-			obs.on(
-				E::NAME,
-				<E::Deps as DepSet>::NAMES,
-				<E::Deps as DepSet>::GATES,
-				Fire {
-					debug: &out,
-					glance: &out,
-					dims: <E::Item as Flat>::DIMS,
-					plots: <E as Emit>::PLOTS,
-					fires: 0,
-					vals: None,
-					dep_dims: <E::Deps as DepFlat>::DIMS,
-					jac: None,
-					exact_jac: None,
-					formula: None,
-					deriv: None,
-					trace: None,
-				},
-			);
+			let fire = Fire::of(&out, <E as Emit>::PLOTS, <E::Deps as DepFlat>::DIMS, None);
+			obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
 	}
@@ -2273,36 +2250,10 @@ where
 	let deps = <E::Deps as Pull<'t, F, I>>::pull(&frame);
 	e.node.emit(deps, &mut e.buf);
 	let out: &'t [E::Item] = &e.buf;
+	let flat = Flats::of::<_, E::Deps>(&out, &deps, |dep_buf, out_buf| fd_jac_emit::<E>(&pre, deps, dep_buf, out_buf));
 
-	let out_len = <E::Item as Flat>::LEN;
-	let mut out_buf = alloc::vec![f64::NAN; out_len];
-	let fired = out.flat(&mut out_buf);
-
-	let dep_len = <E::Deps as DepFlat>::LEN;
-	let mut dep_buf = alloc::vec![f64::NAN; dep_len];
-	<E::Deps as DepFlat>::flat(&deps, &mut dep_buf);
-
-	let jac = fired.then(|| fd_jac_emit::<E>(&pre, deps, &dep_buf, &out_buf));
-
-	obs.on(
-		E::NAME,
-		<E::Deps as DepSet>::NAMES,
-		<E::Deps as DepSet>::GATES,
-		Fire {
-			debug: &out,
-			glance: &out,
-			dims: <E::Item as Flat>::DIMS,
-			plots: <E as Emit>::PLOTS,
-			fires: out.len(),
-			vals: fired.then_some(out_buf.as_slice()),
-			dep_dims: <E::Deps as DepFlat>::DIMS,
-			jac: jac.as_deref(),
-			exact_jac: None,
-			formula: None,
-			deriv: None,
-			trace: None,
-		},
-	);
+	let fire = Fire::of(&out, <E as Emit>::PLOTS, <E::Deps as DepFlat>::DIMS, Some(&flat));
+	obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
 }
 
@@ -2331,47 +2282,27 @@ where
 	let pre = node.clone();
 	let deps = <N::Deps as Pull<'t, F, I>>::pull(&frame);
 	let out = node.advance(deps);
-
-	let out_len = <N::Out<'t> as Flat>::LEN;
-	let mut out_buf = alloc::vec![f64::NAN; out_len];
-	let fired = out.flat(&mut out_buf);
-	let fires = out.fires();
+	let flat = Flats::of::<_, N::Deps>(&out, &deps, |dep_buf, out_buf| fd_jac::<N>(&pre, deps, dep_buf, out_buf));
 
 	let dep_len = <N::Deps as DepFlat>::LEN;
-	let mut dep_buf = alloc::vec![f64::NAN; dep_len];
-	<N::Deps as DepFlat>::flat(&deps, &mut dep_buf);
-
-	let jac = fired.then(|| fd_jac::<N>(&pre, deps, &dep_buf, &out_buf));
-
 	// zeroed, not NaN-filled: `grad` accumulates (`+=`) into it, and an absent var's partial is 0.
-	let mut exact = alloc::vec![0.0f64; out_len * dep_len];
+	let mut exact = alloc::vec![0.0f64; <N::Out<'t> as Flat>::LEN * dep_len];
 	pre.exact_jac(deps, &mut exact);
 	let formula = pre.formula();
 	let deriv = Derivs {
 		names: <N::Deps as DepSet>::NAMES,
 		parts: (0..dep_len).map(|i| formula.diff(i).simplify()).collect(),
 	};
-	let trace = formula.trace(&dep_buf);
+	let trace = formula.trace(&flat.deps);
 
-	obs.on(
-		N::NAME,
-		<N::Deps as DepSet>::NAMES,
-		<N::Deps as DepSet>::GATES,
-		Fire {
-			debug: &out,
-			glance: &out,
-			dims: <N::Out<'t> as Flat>::DIMS,
-			plots: N::PLOTS,
-			fires,
-			vals: fired.then_some(out_buf.as_slice()),
-			dep_dims: <N::Deps as DepFlat>::DIMS,
-			jac: jac.as_deref(),
-			exact_jac: Some(&exact),
-			formula: Some(&formula),
-			deriv: Some(&deriv),
-			trace: Some(&trace),
-		},
-	);
+	let fire = Fire {
+		exact_jac: Some(&exact),
+		formula: Some(&formula),
+		deriv: Some(&deriv),
+		trace: Some(&trace),
+		..Fire::of(&out, N::PLOTS, <N::Deps as DepFlat>::DIMS, Some(&flat))
+	};
+	obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
 }
 
@@ -2580,25 +2511,14 @@ where
 	if !O::ACTIVE {
 		return;
 	}
-	let mut buf = alloc::vec![f64::NAN; <C::Out<'t> as Flat>::LEN];
-	let fired = out.flat(&mut buf);
-	obs.on(
-		C::NAME,
-		&[],
-		&[],
-		Fire {
-			debug: &out,
-			glance: &out,
-			dims: <C::Out<'t> as Flat>::DIMS,
-			plots: &[Plot::DEFAULT],
-			fires: out.fires(),
-			vals: fired.then_some(buf.as_slice()),
-			dep_dims: &[],
-			jac: None,
-			exact_jac: None,
-			formula: None,
-			deriv: None,
-			trace: None,
-		},
-	);
+	let mut vals = alloc::vec![f64::NAN; <C::Out<'t> as Flat>::LEN];
+	// a root is pulled from nothing, so there are no deps to flatten and nothing to differentiate.
+	let fired = out.flat(&mut vals);
+	let flat = Flats {
+		fired,
+		vals,
+		deps: alloc::vec::Vec::new(),
+		jac: None,
+	};
+	obs.on(C::NAME, &[], &[], Fire::of(&out, &[Plot::DEFAULT], &[], Some(&flat)));
 }
