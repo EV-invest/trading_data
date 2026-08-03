@@ -1,6 +1,6 @@
-use trading_data::{Cell, Emit, EmitOuts, Gating, Plot, node, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, Plot, node, slice_nudge};
 
-use super::{Screener, book_top::BookTop};
+use super::book_top::BookTop;
 
 /// Which way the top-20 depth leans, in `[-1, 1]`. Zero when both sides are empty — no lean is the
 /// honest reading of a book that shows nothing, and the depths are already published for anyone who
@@ -12,15 +12,14 @@ impl Cell for Imbalance {
 }
 #[node]
 impl Emit for Imbalance {
-	type Deps = (Gating<Screener>, BookTop);
+	type Deps = (BookTop,);
 
 	const PLOTS: &'static [Plot] = &[Plot {
 		range: Some((-1.0, 1.0)),
 		..Plot::DEFAULT
 	}];
 
-	fn emit(&mut self, (hit, top): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
-		assert!(hit, "a gating dep reads true inside `emit`");
+	fn emit(&mut self, (top,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for d in top {
 			out.push(d.map(|d| {
 				let total = d.top20_bid_depth_usd + d.top20_ask_depth_usd;

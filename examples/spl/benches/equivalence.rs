@@ -221,13 +221,12 @@ impl Direct {
 		// A closed gate is not "advance with nothing": the node is never called, and its out is the
 		// `Latent` reading — an empty run, or `None`.
 		let decision = if hit {
-			self.change_1d.emit((true, &self.b_bars[0], self.h1.hist::<Buffering<Bar1h, REACH_1D>>()), &mut self.b_c1d);
-			self.change_3m.emit((true, self.m1.hist::<Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>>()), &mut self.b_c3m);
-			self.volume_1m.emit((true, &self.b_bars[0]), &mut self.b_v1m);
-			self.volume_1h
-				.emit((true, &self.b_bars[0], self.h1.hist::<Buffering<Bar1h, { Horizon::Elems(1) }>>()), &mut self.b_v1h);
-			self.imbalance.emit((true, &self.b_top), &mut self.b_imb);
-			self.spread.emit((true, &self.b_top), &mut self.b_spr);
+			self.change_1d.emit((&self.b_bars[0], self.h1.hist::<Buffering<Bar1h, REACH_1D>>()), &mut self.b_c1d);
+			self.change_3m.emit((self.m1.hist::<Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>>(),), &mut self.b_c3m);
+			self.volume_1m.emit((&self.b_bars[0],), &mut self.b_v1m);
+			self.volume_1h.emit((&self.b_bars[0], self.h1.hist::<Buffering<Bar1h, { Horizon::Elems(1) }>>()), &mut self.b_v1h);
+			self.imbalance.emit((&self.b_top,), &mut self.b_imb);
+			self.spread.emit((&self.b_top,), &mut self.b_spr);
 			let classified = self.classify.advance((
 				true,
 				&self.b_bars[0],
@@ -242,7 +241,7 @@ impl Direct {
 				self.mc.hist::<Buffering<McRoot, { Horizon::Elems(1) }>>(),
 				self.oi.hist::<Buffering<OiRoot, OI_REACH>>(),
 			));
-			self.decision.advance((true, classified))
+			self.decision.advance((classified,))
 		} else {
 			None
 		};

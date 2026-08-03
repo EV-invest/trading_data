@@ -267,6 +267,39 @@ pub trait Bump: Copy {
 	fn bump(self, slot: usize, h: f64) -> (Self, f64);
 }
 
+/// A [`Flat`] out whose slots are probabilities over a named outcome space. Evidence reaches one as
+/// points rather than shares: a read argues only for what it names, and what nothing argued for is
+/// ignorance rather than a uniform guess — so the space has to own a slot to be ignorant in, which
+/// is what the `Default` bound buys.
+pub trait ProbabilisticDistribution: Flat {
+	type Outcome: Copy + Default + PartialEq + 'static;
+	/// The outcome space, in the order [`ProbabilisticDistribution::certainty`] reads points in.
+	const OUTCOMES: &'static [Self::Outcome];
+	/// Every point the evidence could ever have scored. Certainty is measured against its *root*
+	/// rather than against itself: one read out of a hundred declared is a whisper, while a handful
+	/// that agree is already most of what could be said at all.
+	const POINTS: f64;
+
+	/// Points per outcome to probabilities, in place; the unallocated remainder to `Default`'s slot.
+	fn certainty(points: &mut [f64]) {
+		assert_eq!(points.len(), Self::OUTCOMES.len(), "points are scored against the outcome space");
+		assert!(Self::POINTS > 0.0, "nothing can be evidenced in a space nothing argues over");
+		assert!(points.iter().all(|p| *p >= 0.0), "evidence against an outcome is the absence of a point, not a point");
+		let scored: f64 = points.iter().sum();
+		// past the root the evidence is overwhelming and the space is fully allocated, so the
+		// division is a plain normalisation from there on.
+		let divisor = Self::POINTS.sqrt().max(scored);
+		for p in points.iter_mut() {
+			*p /= divisor;
+		}
+		let d = Self::OUTCOMES
+			.iter()
+			.position(|o| *o == Self::Outcome::default())
+			.expect("an outcome space holds its own default");
+		points[d] += (1.0 - scored / divisor).max(0.0);
+	}
+}
+
 impl Flat for f64 {
 	const DIMS: &'static [usize] = &[];
 
@@ -1294,8 +1327,8 @@ impl<C: Cell, const H: Horizon> Cell for Folding<C, H> {
 	type Out<'t> = C::Out<'t>;
 
 	const FOLDED: bool = true;
-	/// Forwarded: `shadowed` and `Roots::required_events` match dep names against frame cell names,
-	/// and a wrapper that renamed its dep would drop out of both.
+	/// Forwarded: `Roots::required_events` matches dep names against frame cell names, and a wrapper
+	/// that renamed its dep would drop out of it.
 	const NAME: &'static str = C::NAME;
 	const REACH: Horizon = H;
 }
@@ -1991,15 +2024,8 @@ pub use alloc::vec::Vec as MacroVec;
 pub struct NodeMeta {
 	pub name: &'static str,
 	pub deps: &'static [&'static str],
-	/// Per-dep, positionally with `deps`.
-	pub reach: &'static [Horizon],
-	/// Per-dep, positionally with `deps`.
-	pub folds: &'static [bool],
 	/// Per-dep, positionally with `deps`: which of them are gates.
 	pub gates: &'static [bool],
-	/// A [`Buffer`] field: it *is* the frame's retention of `deps[0]`, which is how a `Buffering` dep
-	/// finds it while a bare read of the same cell goes elsewhere.
-	pub retains: bool,
 	/// A `latch { }` field. A latch is momentary by nature, so a consumer behind one is not standing
 	/// demand: what it reads must be warm *before* the episode arms.
 	pub latch: bool,
@@ -2049,54 +2075,6 @@ pub const fn contains(set: &[&str], name: &str) -> bool {
 	false
 }
 
-/// The field index `name` occupies. Every predicate is asked about a declared field, so an absent
-/// one is [`graph!`] emitting something other than its own node list.
-const fn field(name: &str, nodes: &[NodeMeta]) -> usize {
-	let mut i = 0;
-	while i < nodes.len() && !str_eq(nodes[i].name, name) {
-		i += 1;
-	}
-	assert!(i < nodes.len(), "name must be one of nodes");
-	i
-}
-
-/// The field a dep resolves against — the const mirror of the [`Has`] impls. A [`Buffering`] reads
-/// the [`Buffer`] retaining its cell; a bare or [`Folding`] dep reads the cell itself. `None` is a
-/// dep no field answers, which is either a root or the hole [`closed`] reports.
-const fn resolve(name: &str, buffered: bool, nodes: &[NodeMeta]) -> Option<usize> {
-	let mut i = 0;
-	while i < nodes.len() {
-		let hit = match (buffered, nodes[i].retains) {
-			(true, true) => !nodes[i].deps.is_empty() && str_eq(nodes[i].deps[0], name),
-			(false, false) => str_eq(nodes[i].name, name),
-			_ => false,
-		};
-		if hit {
-			return Some(i);
-		}
-		i += 1;
-	}
-	None
-}
-
-/// Whether a dep at this reach and fold is asking for a retention rather than the cell itself —
-/// [`Buffering`] alone, which is neither this tick's batch nor a fold the node holds.
-const fn buffered(reach: Horizon, folds: bool) -> bool {
-	!folds && !matches!(reach, Horizon::Unit)
-}
-
-/// Whether field `c` reads field `i` — gates included, a gate being a dep.
-const fn consumes(c: &NodeMeta, i: usize, nodes: &[NodeMeta]) -> bool {
-	let mut d = 0;
-	while d < c.deps.len() {
-		if matches!(resolve(c.deps[d], buffered(c.reach[d], c.folds[d]), nodes), Some(j) if j == i) {
-			return true;
-		}
-		d += 1;
-	}
-	false
-}
-
 /// Whether `deps` names `gate` in a gating position — the const mirror of a [`Gating`] dep.
 #[doc(hidden)]
 pub const fn gates_on(deps: &[&str], gates: &[bool], gate: &str) -> bool {
@@ -2106,71 +2084,6 @@ pub const fn gates_on(deps: &[&str], gates: &[bool], gate: &str) -> bool {
 			return true;
 		}
 		i += 1;
-	}
-	false
-}
-
-const fn reaches_unbounded(reach: &[Horizon]) -> bool {
-	let mut i = 0;
-	while i < reach.len() {
-		if matches!(reach[i], Horizon::Unbounded) {
-			return true;
-		}
-		i += 1;
-	}
-	false
-}
-
-/// Whether any gate of `m` is a latch.
-const fn latched(m: &NodeMeta, nodes: &[NodeMeta]) -> bool {
-	let mut i = 0;
-	while i < nodes.len() {
-		if nodes[i].latch && gates_on(m.deps, m.gates, nodes[i].name) {
-			return true;
-		}
-		i += 1;
-	}
-	false
-}
-
-/// [`graph!`]'s completeness check: true when `name` reaches boundedly into every dep, is ungated,
-/// has in-graph consumers, and all of them sit behind one common **non-latch** gate (other than
-/// `name` itself) — sampling it while that gate is closed is pure waste, so it must be gated too or
-/// read some dep at [`Horizon::Unbounded`], which is the reach nothing recovers. Leaves (no in-graph
-/// consumers) are graph outputs — exempt. So is a [`Buffer`]: running under a dark consumer is the
-/// whole of what it is for, and it cannot be gated — its one dep is fixed.
-#[doc(hidden)]
-pub const fn shadowed(name: &'static str, nodes: &[NodeMeta]) -> bool {
-	let me = field(name, nodes);
-	if reaches_unbounded(nodes[me].reach) || any(nodes[me].gates) || nodes[me].retains {
-		return false;
-	}
-	let mut fc = 0;
-	while fc < nodes.len() && !(consumes(&nodes[fc], me, nodes) && !latched(&nodes[fc], nodes)) {
-		fc += 1;
-	}
-	if fc == nodes.len() {
-		return false;
-	}
-	// a common gate must appear on the first consumer; try each of its gates against the rest
-	let mut g = 0;
-	while g < nodes[fc].deps.len() {
-		let gate = nodes[fc].deps[g];
-		if nodes[fc].gates[g] && !str_eq(gate, name) {
-			let mut all = true;
-			let mut j = fc + 1;
-			while j < nodes.len() {
-				if consumes(&nodes[j], me, nodes) && !latched(&nodes[j], nodes) && !gates_on(nodes[j].deps, nodes[j].gates, gate) {
-					all = false;
-					break;
-				}
-				j += 1;
-			}
-			if all {
-				return true;
-			}
-		}
-		g += 1;
 	}
 	false
 }

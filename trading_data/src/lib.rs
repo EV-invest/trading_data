@@ -9,8 +9,8 @@ pub use trading_data_core::{Asset, ExchangeName, Instrument, Pair, Symbol};
 pub use trading_data_dag as __dag;
 pub use trading_data_dag::{
 	__graph_resolve, Abs, Add, Armed, Ast, Buffer, Buffering, Bump, Cell, Cons, Const, DepOuts, Diff, Div, Emit, EmitOuts, Episode, Episodic, Ex, Expr, Fire, Flat, Folding, Gate, Gating,
-	Glance, Guide, Hist, Horizon, Ink, Latch, Mul, Neg, Nil, Node, Nudge, Observer, Plot, Roots, Series, Spanning, Square, Stamped, Sub, Sum, Symbolic, Tag, Trace, TriggerOut, Var, Vars,
-	abs, constant, graph, node, node_alias, observe_root, slice_nudge, square, step, step_exact, step_obs, sum, value_nudge,
+	Glance, Guide, Hist, Horizon, Ink, Latch, Mul, Neg, Nil, Node, Nudge, Observer, Plot, ProbabilisticDistribution, Roots, Series, Spanning, Square, Stamped, Sub, Sum, Symbolic, Tag,
+	Trace, TriggerOut, Var, Vars, abs, constant, graph, node, node_alias, observe_root, slice_nudge, square, step, step_exact, step_obs, sum, value_nudge,
 };
 pub use trading_data_derivatives::{
 	// the dep shims: a `#[node]` writes one at its own crate's root, and a graph naming the cell

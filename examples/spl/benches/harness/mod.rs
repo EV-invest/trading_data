@@ -32,24 +32,6 @@ const CLK_TCK: f64 = 100.0;
 /// replay day, coarse enough that the sampler itself is not in the measurement.
 const SAMPLE: Duration = Duration::from_millis(20);
 
-fn cpu_ticks() -> u64 {
-	let stat = fs::read_to_string("/proc/self/stat").expect("procfs is mounted");
-	// The comm field is parenthesised and may itself contain spaces, so the fields are counted from
-	// the last ')', not from the start.
-	let rest = &stat[stat.rfind(')').expect("stat has a comm field") + 1..];
-	let mut f = rest.split_whitespace().skip(11);
-	let utime: u64 = f.next().expect("utime").parse().expect("utime is a number");
-	let stime: u64 = f.next().expect("stime").parse().expect("stime is a number");
-	utime + stime
-}
-
-fn peak_rss_mb() -> f64 {
-	let status = fs::read_to_string("/proc/self/status").expect("procfs is mounted");
-	let line = status.lines().find(|l| l.starts_with("VmHWM:")).expect("VmHWM is reported for any live process");
-	let kb: f64 = line.split_whitespace().nth(1).expect("VmHWM has a value").parse().expect("VmHWM is a number");
-	kb / 1024.0
-}
-
 /// Wall clock, CPU time and a cores-busy trace over one timed section.
 pub struct Probe {
 	began: Instant,
@@ -57,7 +39,6 @@ pub struct Probe {
 	stop: Arc<AtomicBool>,
 	sampler: JoinHandle<Vec<f64>>,
 }
-
 impl Probe {
 	pub fn start() -> Self {
 		let stop = Arc::new(AtomicBool::new(false));
@@ -105,17 +86,6 @@ pub struct Counters {
 	pub decision: AtomicU64,
 	pub deprecator: AtomicU64,
 }
-
-pub static COUNTERS: Counters = Counters {
-	trades: AtomicU64::new(0),
-	deltas: AtomicU64::new(0),
-	bars_closed: AtomicU64::new(0),
-	screener: AtomicU64::new(0),
-	classify: AtomicU64::new(0),
-	decision: AtomicU64::new(0),
-	deprecator: AtomicU64::new(0),
-};
-
 impl Counters {
 	/// A zero here means "this implementation cannot see that site", not "it never ran" — which is
 	/// why the row carries `notes`.
@@ -135,6 +105,15 @@ impl Counters {
 	}
 }
 
+pub static COUNTERS: Counters = Counters {
+	trades: AtomicU64::new(0),
+	deltas: AtomicU64::new(0),
+	bars_closed: AtomicU64::new(0),
+	screener: AtomicU64::new(0),
+	classify: AtomicU64::new(0),
+	decision: AtomicU64::new(0),
+	deprecator: AtomicU64::new(0),
+};
 /// Order-sensitive digest of the `Intent` stream. Two implementations that agree on this ran the
 /// same strategy; two that don't are being timed on different work, and the table says so.
 #[derive(Default)]
@@ -142,7 +121,6 @@ pub struct Digest {
 	hasher: DefaultHasher,
 	pub count: u64,
 }
-
 impl Digest {
 	pub fn feed(&mut self, i: &Intent) {
 		self.count += 1;
@@ -173,7 +151,6 @@ pub struct Row {
 	/// Where this row is not comparable to the others on its own terms.
 	pub notes: Vec<String>,
 }
-
 impl Row {
 	pub fn new(name: &str, ticks: u64, digest: &Digest, total: (f64, f64, [f64; 3]), feed_s: f64, notes: Vec<String>) -> Self {
 		Self {
@@ -256,4 +233,21 @@ pub fn publish(row: Row) {
 			println!("  {}: {n}", r.name);
 		}
 	}
+}
+fn cpu_ticks() -> u64 {
+	let stat = fs::read_to_string("/proc/self/stat").expect("procfs is mounted");
+	// The comm field is parenthesised and may itself contain spaces, so the fields are counted from
+	// the last ')', not from the start.
+	let rest = &stat[stat.rfind(')').expect("stat has a comm field") + 1..];
+	let mut f = rest.split_whitespace().skip(11);
+	let utime: u64 = f.next().expect("utime").parse().expect("utime is a number");
+	let stime: u64 = f.next().expect("stime").parse().expect("stime is a number");
+	utime + stime
+}
+
+fn peak_rss_mb() -> f64 {
+	let status = fs::read_to_string("/proc/self/status").expect("procfs is mounted");
+	let line = status.lines().find(|l| l.starts_with("VmHWM:")).expect("VmHWM is reported for any live process");
+	let kb: f64 = line.split_whitespace().nth(1).expect("VmHWM has a value").parse().expect("VmHWM is a number");
+	kb / 1024.0
 }

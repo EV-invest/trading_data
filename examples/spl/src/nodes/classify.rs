@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Horizon, Ink, McRoot, Node, OiRoot, Plot, Usd, node, value_nudge};
+use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Horizon, Ink, McRoot, Node, OiRoot, Plot, ProbabilisticDistribution, Usd, node, value_nudge};
 
 use super::{
 	Bar1m, Bar4h, Bar5m, Change1d, Change3m, H4, Imbalance, M5, Screener, Spread, Volume1h, Volume1m,
@@ -9,9 +9,9 @@ use super::{
 };
 
 /// The wire order of [`Classified`]'s slots, category-major.
-const CATEGORIES: [Category; 5] = [Category::None, Category::Liquidations, Category::MmClosing, Category::Manipulation, Category::Momentum];
+const CATEGORIES: [Category; 5] = [Category::Indeterminate, Category::Liquidations, Category::MmClosing, Category::Manipulation, Category::Momentum];
 const QUALITIES: [Quality; 5] = [Quality::A, Quality::B, Quality::C, Quality::D, Quality::E];
-const OUTCOMES: usize = CATEGORIES.len() * QUALITIES.len();
+const SLOTS: usize = CATEGORIES.len() * QUALITIES.len();
 /// The traits answer *which* situation, never how good it would be, so grading is not something
 /// this classifier can currently do at all — the value is pinned and every share lands in one
 /// column. Held rather than dropped: sizing reads the quality, and a distribution with no quality
@@ -32,14 +32,9 @@ const SKEWED_BOOK: f64 = 0.5;
 /// The minute's notional against the standing hour's own per-minute rate.
 const VOLUME_SURGE: f64 = 3.0;
 /// The traits reading open interest, market cap and the book weigh double the momentum bands: they
-/// see the position stack the bands can only infer from price.
+/// see the position stack the bands can only infer from price. Nothing votes for
+/// [`Category::Indeterminate`] — it is what the points the traits *fail* to score add up to.
 const TRAITS: &[Trait] = &[
-	Trait {
-		category: Category::None,
-		relevance: 1,
-		invalidates_others: false,
-		hits: |s| s.momentum.is_none(),
-	},
 	Trait {
 		category: Category::Manipulation,
 		relevance: 1,
@@ -95,8 +90,8 @@ const TRAITS: &[Trait] = &[
 		hits: |s| matches!((s.volume_1m, s.volume_1h), (Some(m), Some(h)) if h > 0.0 && m > h / 60.0 * VOLUME_SURGE),
 	},
 ];
-const LABELS: [&str; OUTCOMES] = [
-	"None A", "None B", "None C", "None D", "None E", //
+const LABELS: [&str; SLOTS] = [
+	"Indeterminate A", "Indeterminate B", "Indeterminate C", "Indeterminate D", "Indeterminate E", //
 	"Liquidations A", "Liquidations B", "Liquidations C", "Liquidations D", "Liquidations E", //
 	"MmClosing A", "MmClosing B", "MmClosing C", "MmClosing D", "MmClosing E", //
 	"Manipulation A", "Manipulation B", "Manipulation C", "Manipulation D", "Manipulation E", //
@@ -104,10 +99,10 @@ const LABELS: [&str; OUTCOMES] = [
 ];
 /// Quality darkens within its category's run, as it does in SPL's own chart. The hue is the
 /// renderer's — one per slot — so the category reads off that.
-const INKS: [Ink; OUTCOMES] = {
-	let mut inks = [Ink::MAIN; OUTCOMES];
+const INKS: [Ink; SLOTS] = {
+	let mut inks = [Ink::MAIN; SLOTS];
 	let mut i = 0;
-	while i < OUTCOMES {
+	while i < SLOTS {
 		let k = 1.0 - 0.2 * (i % QUALITIES.len()) as f64;
 		inks[i] = Ink {
 			l: Ink::MAIN.l * k,
@@ -118,9 +113,10 @@ const INKS: [Ink; OUTCOMES] = {
 	}
 	inks
 };
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Category {
-	None,
+	#[default]
+	Indeterminate,
 	Liquidations,
 	MmClosing,
 	Manipulation,
@@ -149,7 +145,7 @@ impl Quality {
 /// totalling 1. Dense where SPL is sparse: the flattening has to place every slot regardless, so an
 /// outcome the classifier never names is the zero it already draws as.
 #[derive(Clone, Copy, PartialEq)]
-pub struct Classified(pub [f64; OUTCOMES]);
+pub struct Classified(pub [f64; SLOTS]);
 impl Classified {
 	fn vote(s: &Situation) -> Self {
 		let mut w = [0.0; CATEGORIES.len()];
@@ -169,13 +165,12 @@ impl Classified {
 				};
 			}
 		}
-		let w = w.map(|x| x.max(0.0));
-		let total: f64 = w.iter().sum();
-		assert!(total > 0.0, "the None trait votes on exactly the reads no other trait can be evaluated against");
+		let mut w = w.map(|x| x.max(0.0));
+		Self::certainty(&mut w);
 		let q = QUALITIES.iter().position(|x| *x == PINNED).expect("QUALITIES is the wire order");
-		let mut p = [0.0; OUTCOMES];
+		let mut p = [0.0; SLOTS];
 		for (c, x) in w.iter().enumerate() {
-			p[c * QUALITIES.len() + q] = x / total;
+			p[c * QUALITIES.len() + q] = *x;
 		}
 		Self(p)
 	}
@@ -211,9 +206,10 @@ struct Situation {
 	spread: Option<f64>,
 }
 
-/// One named situation, and what its presence is worth. `relevance` is a bare weight rather than a
-/// probability: the distribution falls out of normalising the per-category sums, so these numbers
-/// only have to be right against each other.
+/// One named situation, and what its presence is worth. `relevance` is a bare point count rather
+/// than a probability: the certainty of a hit is scored against the root of every point declared
+/// here, so these numbers have to be right against each other *and* against how much this table
+/// could ever say.
 struct Trait {
 	category: Category,
 	relevance: u8,
@@ -222,6 +218,22 @@ struct Trait {
 	/// zero, so a category talked down past nothing is simply out.
 	invalidates_others: bool,
 	hits: fn(&Situation) -> bool,
+}
+
+/// The quality axis is pinned, so the space the points are scored over is the category one alone;
+/// the joint slots the pinned grade never reaches stay the zero they draw as.
+impl ProbabilisticDistribution for Classified {
+	type Outcome = Category;
+
+	const OUTCOMES: &'static [Category] = &CATEGORIES;
+	const POINTS: f64 = {
+		let (mut points, mut i) = (0u32, 0);
+		while i < TRAITS.len() {
+			points += TRAITS[i].relevance as u32;
+			i += 1;
+		}
+		points as f64
+	};
 }
 
 impl Flat for Classified {

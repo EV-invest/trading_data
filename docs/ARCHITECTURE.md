@@ -164,8 +164,7 @@ Structural rules (enforced by the signatures, not convention):
   tick back. So a buffer advances every tick regardless of what is dark downstream — being ready is
   its whole job. Four invariants, all by construction: it is never gated (`Hist` isn't `Latent`, and
   `HISTORIC` makes gating one a compile error); never latch-reset (no `Gating` dep, so the window
-  outlives the episode); never lets its own upstream be shadowed (it is an ungated in-graph
-  consumer); and there is one per series per frame (two make every `Buffering<C, _>` ambiguous, as
+  outlives the episode); and there is one per series per frame (two make every `Buffering<C, _>` ambiguous, as
   with any duplicated node type). `K` is nobody's to declare: it is the join of every `J` the
   derived consumer set asks for, so dominating them all is true by construction. A buffer replaces
   a **window**. A *recurrence* (Wilder RSI/ATR,

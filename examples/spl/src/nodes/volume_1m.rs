@@ -1,6 +1,6 @@
-use trading_data::{Cell, Emit, EmitOuts, Gating, node, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, node, slice_nudge};
 
-use super::{Bar1m, Screener};
+use super::Bar1m;
 
 /// The closed 1m bar's notional, `volume * close` — the close standing in for vwap, as SPL's own
 /// volume indie does. Nothing to warm, so there is no declining.
@@ -11,10 +11,9 @@ impl Cell for Volume1m {
 }
 #[node]
 impl Emit for Volume1m {
-	type Deps = (Gating<Screener>, Bar1m);
+	type Deps = (Bar1m,);
 
-	fn emit(&mut self, (hit, m1): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
-		assert!(hit, "a gating dep reads true inside `emit`");
+	fn emit(&mut self, (m1,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		for b in m1 {
 			out.push(b.vol_base * b.close);
 		}

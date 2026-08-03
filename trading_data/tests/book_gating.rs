@@ -68,7 +68,7 @@ impl Node for Hot {
 }
 impl Gate for Hot {}
 
-/// The book's only consumer, behind the same gate — which is what `shadowed()` demands.
+/// The book's only consumer, behind the same gate.
 #[derive(Clone, Copy, Default)]
 struct Mid;
 impl Cell for Mid {

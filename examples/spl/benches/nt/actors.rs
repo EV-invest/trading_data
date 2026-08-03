@@ -74,6 +74,9 @@ const STEPS: [(usize, BarAggregation, &str); 4] = [
 // be a source change for a bench. Mirroring them here is not overhead smuggled into the NT row: a
 // bus that moves JSON has to encode *something*, and this is that something.
 
+/// The gate's payload: the verdict plus the 1m bar it was drawn from, so a subscriber needs no
+/// second subscription to `bar1m` and no assumption about dispatch order.
+type Gate = (bool, BarDto);
 #[derive(Deserialize, Serialize)]
 struct BarDto {
 	ts_close: i64,
@@ -392,10 +395,6 @@ impl DataActor for Screen {
 // A closed gate means the node is *not called* and its consumer reads an empty run — the same
 // distinction `graph!` draws, and the reason each of these publishes even when it computed nothing.
 
-/// The gate's payload: the verdict plus the 1m bar it was drawn from, so a subscriber needs no
-/// second subscription to `bar1m` and no assumption about dispatch order.
-type Gate = (bool, BarDto);
-
 actor!(C1d { node: Change1d, h1: Ring<Bar>, pending: Vec<Bar>, out: Vec<Option<f64>> });
 
 impl DataActor for C1d {
@@ -416,7 +415,7 @@ impl DataActor for C1d {
 		self.out.clear();
 		if hit {
 			let bar = [Bar::from(bar)];
-			self.node.emit((true, &bar, self.h1.hist::<Buffering<Bar1h, REACH_1D>>()), &mut self.out);
+			self.node.emit((&bar, self.h1.hist::<Buffering<Bar1h, REACH_1D>>()), &mut self.out);
 		}
 		self.publish_signal(CHANGE1D, encode(&self.out), signal.ts_event);
 		Ok(())
@@ -436,7 +435,7 @@ impl DataActor for C3m {
 		self.m1.push(&[Bar::from(bar)]);
 		self.out.clear();
 		if hit {
-			self.node.emit((true, self.m1.hist::<Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>>()), &mut self.out);
+			self.node.emit((self.m1.hist::<Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>>(),), &mut self.out);
 		}
 		self.publish_signal(CHANGE3M, encode(&self.out), signal.ts_event);
 		Ok(())
@@ -456,7 +455,7 @@ impl DataActor for V1m {
 		self.out.clear();
 		if hit {
 			let bar = [Bar::from(bar)];
-			self.node.emit((true, &bar), &mut self.out);
+			self.node.emit((&bar,), &mut self.out);
 		}
 		self.publish_signal(VOLUME1M, encode(&self.out), signal.ts_event);
 		Ok(())
@@ -483,7 +482,7 @@ impl DataActor for V1h {
 		self.out.clear();
 		if hit {
 			let bar = [Bar::from(bar)];
-			self.node.emit((true, &bar, self.h1.hist::<Buffering<Bar1h, { Horizon::Elems(1) }>>()), &mut self.out);
+			self.node.emit((&bar, self.h1.hist::<Buffering<Bar1h, { Horizon::Elems(1) }>>()), &mut self.out);
 		}
 		self.publish_signal(VOLUME1H, encode(&self.out), signal.ts_event);
 		Ok(())
@@ -508,7 +507,7 @@ impl DataActor for Imb {
 		let (hit, _) = decode::<Gate>(signal);
 		self.out.clear();
 		if hit {
-			self.node.emit((true, &self.top), &mut self.out);
+			self.node.emit((&self.top,), &mut self.out);
 		}
 		self.publish_signal(IMBALANCE, encode(&self.out), signal.ts_event);
 		Ok(())
@@ -533,7 +532,7 @@ impl DataActor for Spr {
 		let (hit, _) = decode::<Gate>(signal);
 		self.out.clear();
 		if hit {
-			self.node.emit((true, &self.top), &mut self.out);
+			self.node.emit((&self.top,), &mut self.out);
 		}
 		self.publish_signal(SPREAD, encode(&self.out), signal.ts_event);
 		Ok(())
@@ -644,7 +643,7 @@ impl DataActor for Decide {
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
 		let c = decode::<Option<Vec<f64>>>(signal).map(|v| Classified(v.try_into().expect("the classifier published its own outcome vector")));
 		COUNTERS.decision.fetch_add(1, Ordering::Relaxed);
-		let out = self.node.advance((true, c));
+		let out = self.node.advance((c,));
 		self.publish_signal(DECISION, encode(&out.as_ref().map(DecidedDto::from)), signal.ts_event);
 		Ok(())
 	}

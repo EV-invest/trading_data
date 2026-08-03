@@ -1,11 +1,8 @@
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Direction, Flat, Gating, Glance, Node, Plot, Usd, node, value_nudge};
+use trading_data::{Cell, DepOuts, Direction, Flat, Glance, Node, Plot, Usd, node, value_nudge};
 
-use super::{
-	Screener,
-	classify::{Category, Classified, Classify},
-};
+use super::classify::{Category, Classified, Classify};
 use crate::config::strategy;
 
 /// What to trade and how much — the distribution collapsed to one position. Sizing is quadratic in
@@ -23,7 +20,7 @@ impl From<Classified> for Decided {
 		let direction = match category {
 			Category::Liquidations | Category::Manipulation => Direction::Short,
 			Category::Momentum => Direction::Long,
-			Category::None | Category::MmClosing => Direction::Flat,
+			Category::Indeterminate | Category::MmClosing => Direction::Flat,
 		};
 		Self {
 			direction,
@@ -53,8 +50,7 @@ impl Glance for Decided {
 	}
 }
 
-/// Where the classification becomes a position. Gated on [`Screener`] like the rest of the subtree:
-/// on a tick nothing fired there is no situation to decide about.
+/// Where the classification becomes a position.
 #[derive(Clone, Copy, Default)]
 pub struct Decision;
 impl Cell for Decision {
@@ -62,7 +58,7 @@ impl Cell for Decision {
 }
 #[node]
 impl Node for Decision {
-	type Deps = (Gating<Screener>, Classify);
+	type Deps = (Classify,);
 
 	/// Two panes: the direction is a ±1 step and the size is dollars, and one shared scale would
 	/// bury the former under the latter.
@@ -80,8 +76,7 @@ impl Node for Decision {
 		},
 	];
 
-	fn advance<'t>(&'t mut self, (hit, c): DepOuts<'t, Self>) -> Self::Out<'t> {
-		assert!(hit, "a gating dep reads true inside `advance`");
+	fn advance<'t>(&'t mut self, (c,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		c.map(Decided::from)
 	}
 }

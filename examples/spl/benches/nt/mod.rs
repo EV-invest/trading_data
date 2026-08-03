@@ -56,6 +56,58 @@ pub fn mc_type() -> nautilus_model::data::DataType {
 	nautilus_model::data::DataType::new(stringify!(McPoint), None, None)
 }
 
+/// Registration order is the msgbus' dispatch order within a topic, and the chain below depends on
+/// it: everything that fills a ring off `bar1m` is registered before the screener that reads those
+/// rings, and the classifier after the six indies whose outputs it latches.
+pub fn run(name: &str, shallow_deep: bool, mut notes: Vec<String>) {
+	let (data, instrument) = tape();
+	let (trades, deltas) = data.iter().fold((0u64, 0u64), |(t, d), x| match x {
+		Data::Trade(_) => (t + 1, d),
+		Data::Deltas(x) => (t, d + x.deltas.len() as u64),
+		_ => (t, d),
+	});
+	let events = data.len() as u64;
+	let id = instrument.id();
+
+	let digest = Rc::new(RefCell::new(Digest::default()));
+	let mut e = engine(data.clone(), &instrument);
+	e.add_actor(actors::Bars::new(id)).expect("actor ids are distinct");
+	e.add_actor(actors::Book::new(id, shallow_deep)).expect("actor ids are distinct");
+	e.add_actor(actors::Momenta::new()).expect("actor ids are distinct");
+	e.add_actor(actors::Atrs::new()).expect("actor ids are distinct");
+	e.add_actor(actors::C1d::new()).expect("actor ids are distinct");
+	e.add_actor(actors::C3m::new()).expect("actor ids are distinct");
+	e.add_actor(actors::V1m::new()).expect("actor ids are distinct");
+	e.add_actor(actors::V1h::new()).expect("actor ids are distinct");
+	e.add_actor(actors::Imb::new()).expect("actor ids are distinct");
+	e.add_actor(actors::Spr::new()).expect("actor ids are distinct");
+	e.add_actor(actors::Classifier::new()).expect("actor ids are distinct");
+	e.add_actor(actors::Screen::new()).expect("actor ids are distinct");
+	e.add_actor(actors::Decide::new()).expect("actor ids are distinct");
+	e.add_actor(actors::Deprecate::new(digest.clone())).expect("actor ids are distinct");
+
+	COUNTERS.trades.fetch_add(trades, Ordering::Relaxed);
+	COUNTERS.deltas.fetch_add(deltas, Ordering::Relaxed);
+	let probe = Probe::start();
+	e.run(None, None, None, false).expect("the tape is sorted and the venue is registered");
+	let total = probe.stop();
+	e.dispose();
+
+	// The same engine over the same tape with nothing subscribed: the DataEngine still routes every
+	// element, so what this subtracts is the strategy and the bus traffic it causes, not the replay.
+	let mut bare = engine(data, &instrument);
+	let began = std::time::Instant::now();
+	bare.run(None, None, None, false).expect("the tape is sorted and the venue is registered");
+	let feed_s = began.elapsed().as_secs_f64();
+	bare.dispose();
+
+	notes.push("bars are NT's internal TimeBarAggregator, which closes on its clock; ours closes when the next out-of-bucket trade lands".into());
+	notes.push("no tick: each node fires on the event its deps are clocked by, so imbalance/spread read the latest book rather than this tick's".into());
+	notes.push("4h and 1h closes reach their rings on the next 5m/1m close, since NT does not order aggregators against each other".into());
+	// NT's actor registry is a thread-local that outlives `dispose`, so the sink is read through its
+	// handle rather than unwrapped out of it.
+	publish(Row::new(name, events, &digest.borrow(), total, feed_s, notes));
+}
 /// `ts_event = ts_init = venue execution time`. The archive carries no per-element local stamp — the
 /// receive column is a span over the whole batch — and the exec clock is the one NT's bar aggregator
 /// must bucket on for its boundaries to be our `Ohlcs`' boundaries.
@@ -240,57 +292,4 @@ fn engine(data: Vec<Data>, instrument: &InstrumentAny) -> BacktestEngine {
 	engine.add_instrument(instrument).expect("instrument matches its venue");
 	engine.add_data(data, None, false, true).expect("the tape is non-empty");
 	engine
-}
-
-/// Registration order is the msgbus' dispatch order within a topic, and the chain below depends on
-/// it: everything that fills a ring off `bar1m` is registered before the screener that reads those
-/// rings, and the classifier after the six indies whose outputs it latches.
-pub fn run(name: &str, shallow_deep: bool, mut notes: Vec<String>) {
-	let (data, instrument) = tape();
-	let (trades, deltas) = data.iter().fold((0u64, 0u64), |(t, d), x| match x {
-		Data::Trade(_) => (t + 1, d),
-		Data::Deltas(x) => (t, d + x.deltas.len() as u64),
-		_ => (t, d),
-	});
-	let events = data.len() as u64;
-	let id = instrument.id();
-
-	let digest = Rc::new(RefCell::new(Digest::default()));
-	let mut e = engine(data.clone(), &instrument);
-	e.add_actor(actors::Bars::new(id)).expect("actor ids are distinct");
-	e.add_actor(actors::Book::new(id, shallow_deep)).expect("actor ids are distinct");
-	e.add_actor(actors::Momenta::new()).expect("actor ids are distinct");
-	e.add_actor(actors::Atrs::new()).expect("actor ids are distinct");
-	e.add_actor(actors::C1d::new()).expect("actor ids are distinct");
-	e.add_actor(actors::C3m::new()).expect("actor ids are distinct");
-	e.add_actor(actors::V1m::new()).expect("actor ids are distinct");
-	e.add_actor(actors::V1h::new()).expect("actor ids are distinct");
-	e.add_actor(actors::Imb::new()).expect("actor ids are distinct");
-	e.add_actor(actors::Spr::new()).expect("actor ids are distinct");
-	e.add_actor(actors::Classifier::new()).expect("actor ids are distinct");
-	e.add_actor(actors::Screen::new()).expect("actor ids are distinct");
-	e.add_actor(actors::Decide::new()).expect("actor ids are distinct");
-	e.add_actor(actors::Deprecate::new(digest.clone())).expect("actor ids are distinct");
-
-	COUNTERS.trades.fetch_add(trades, Ordering::Relaxed);
-	COUNTERS.deltas.fetch_add(deltas, Ordering::Relaxed);
-	let probe = Probe::start();
-	e.run(None, None, None, false).expect("the tape is sorted and the venue is registered");
-	let total = probe.stop();
-	e.dispose();
-
-	// The same engine over the same tape with nothing subscribed: the DataEngine still routes every
-	// element, so what this subtracts is the strategy and the bus traffic it causes, not the replay.
-	let mut bare = engine(data, &instrument);
-	let began = std::time::Instant::now();
-	bare.run(None, None, None, false).expect("the tape is sorted and the venue is registered");
-	let feed_s = began.elapsed().as_secs_f64();
-	bare.dispose();
-
-	notes.push("bars are NT's internal TimeBarAggregator, which closes on its clock; ours closes when the next out-of-bucket trade lands".into());
-	notes.push("no tick: each node fires on the event its deps are clocked by, so imbalance/spread read the latest book rather than this tick's".into());
-	notes.push("4h and 1h closes reach their rings on the next 5m/1m close, since NT does not order aggregators against each other".into());
-	// NT's actor registry is a thread-local that outlives `dispose`, so the sink is read through its
-	// handle rather than unwrapped out of it.
-	publish(Row::new(name, events, &digest.borrow(), total, feed_s, notes));
 }

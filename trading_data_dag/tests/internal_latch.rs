@@ -7,9 +7,7 @@
 //! batch whose terminal element is *not* last still commutates (`Episode for &[T]` is `any`, not
 //! `last`).
 
-use trading_data_dag::{
-	Armed, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Episodic, Flat, Gate, Gating, Glance, Horizon, Node, NodeMeta, TriggerOut, graph, node, shadowed, slice_nudge, value_nudge,
-};
+use trading_data_dag::{Armed, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Episodic, Flat, Gate, Gating, Glance, Node, TriggerOut, graph, node, slice_nudge, value_nudge};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Pulse;
@@ -298,36 +296,3 @@ fn arm_from_a_node_hold_through_a_dark_arm_cut_from_within() {
 	// ungated bystander: never reset, counted every tick.
 	assert_eq!(s.ticks, 6.0);
 }
-
-// the discount must hold in const position — that's where graph! calls it.
-const LATCH_DISCOUNT: &[NodeMeta] = &[
-	NodeMeta {
-		name: "latch",
-		deps: &["arm"],
-		reach: &[Horizon::Unbounded],
-		folds: &[true],
-		gates: &[false],
-		retains: false,
-		latch: true,
-	},
-	// bounded, ungated, and its only consumer sits behind the latch — a plain gate would shadow it.
-	NodeMeta {
-		name: "warm",
-		deps: &["root"],
-		reach: &[Horizon::Unit],
-		folds: &[false],
-		gates: &[false],
-		retains: false,
-		latch: false,
-	},
-	NodeMeta {
-		name: "episode",
-		deps: &["latch", "warm"],
-		reach: &[Horizon::Unit, Horizon::Unit],
-		folds: &[false, false],
-		gates: &[true, false],
-		retains: false,
-		latch: false,
-	},
-];
-const _: () = assert!(!shadowed("warm", LATCH_DISCOUNT));

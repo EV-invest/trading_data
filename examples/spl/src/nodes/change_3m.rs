@@ -1,7 +1,7 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Gating, Horizon, node, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, node, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
-use super::{Bar1m, Screener};
+use super::Bar1m;
 
 /// Reach behind the change — three minutes, spanned by the closes of the 1m bars inside it.
 pub const SPAN_3M: Timeframe = Timeframe::from_naive(3, TimeframeDesignator::Minutes);
@@ -15,10 +15,9 @@ impl Cell for Change3m {
 }
 #[node]
 impl Emit for Change3m {
-	type Deps = (Gating<Screener>, Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>);
+	type Deps = (Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>,);
 
-	fn emit(&mut self, (hit, m1): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
-		assert!(hit, "a gating dep reads true inside `emit`");
+	fn emit(&mut self, (m1,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for (b, w3) in m1.fresh().iter().zip(m1.trailing()) {
 			out.push(w3.and_then(|w3| {
 				let base_open = w3[0].open;

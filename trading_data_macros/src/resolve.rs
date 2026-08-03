@@ -327,10 +327,7 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 				#dag::NodeMeta {
 					name: #dag::node_name::<#node_tys>(),
 					deps: <#node_deps as #dag::DepSet>::NAMES,
-					reach: <#node_deps as #dag::DepSet>::REACH,
-					folds: <#node_deps as #dag::DepSet>::FOLDS,
 					gates: <#node_deps as #dag::DepSet>::GATES,
-					retains: !matches!(<#node_tys as #dag::Cell>::REACH, #dag::Horizon::Unit),
 					latch: #dag::contains(LATCHES, #dag::node_name::<#node_tys>()),
 				},
 			)*];
@@ -339,14 +336,8 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 			// one type but normalise apart would otherwise surface as an inscrutable `Has` ambiguity.
 			assert!(#dag::distinct(NAMES), "two nodes of this graph share a `Cell::NAME`");
 
-			// the *field*, not the type: a const-generic type name carries braces, and `assert!` reads
-			// its message as a format string.
-			#(assert!(
-				!#dag::shadowed(#dag::node_name::<#node_tys>(), METAS),
-				concat!(stringify!(#fields), " is only consumed under a gate: gate it too, or declare a dep at `Horizon::Unbounded`")
-			);)*
-
-			// a latch is cut from within: what it gates must be what cuts it.
+			// a latch is cut from within: what it gates must be what cuts it. The *field*, not the type:
+			// a const-generic type name carries braces, and `assert!` reads its message as a format string.
 			#(assert!(
 				#dag::cut_gated(#dag::node_name::<<#latch_tys as #dag::Latch>::Cut>(), #dag::node_name::<#latch_tys>(), METAS),
 				concat!(stringify!(#lfields), "'s `Cut` is no field of this graph naming it in a `Gating` dep — a latch cut by something it does not gate never commutates")

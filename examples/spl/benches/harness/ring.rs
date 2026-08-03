@@ -24,13 +24,6 @@ pub struct Ring<T> {
 	/// naming it needs the `H` each reader declares.
 	scratch: (Vec<T>, usize, i64),
 }
-
-impl<T> Default for Ring<T> {
-	fn default() -> Self {
-		Self { scratch: (Vec::new(), 0, i64::MIN) }
-	}
-}
-
 impl<T: Clone + Stamped> Ring<T> {
 	/// One tick's batch, empty batches included — `fresh` is what the reading is rate-preserving
 	/// against, so a tick that published nothing has to say so.
@@ -48,5 +41,11 @@ impl<T: Clone + Stamped> Ring<T> {
 	/// the call site — the horizon lives in the type, and nothing else can supply it.
 	pub fn hist<B: Nudge<Scratch = (Vec<T>, usize, i64)>>(&self) -> B::Out<'_> {
 		B::view(&self.scratch)
+	}
+}
+
+impl<T> Default for Ring<T> {
+	fn default() -> Self {
+		Self { scratch: (Vec::new(), 0, i64::MIN) }
 	}
 }
