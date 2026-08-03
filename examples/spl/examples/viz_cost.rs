@@ -10,11 +10,28 @@ use std::{
 };
 
 use exec_viz::Viz;
-use trading_data::{Cell, Exact, ExchangeName, Feed as _, LatencyConfig, ReadClock, Replay, required_lanes};
+use trading_data::{Cell, Exact, ExchangeName, Feed as _, Fire, LatencyConfig, Observer, ReadClock, Replay, required_lanes};
 use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, symbol, trading_days};
 use v_utils::*;
 
 const SCROLLBACK: usize = 20_000;
+
+/// An observer that records nothing, so what it costs is what `step_seen` spends *reaching* it:
+/// the pre-advance clone and one `clone_from`+`advance` per dep slot of `fd_jac`. The sums are
+/// what keep that work from being eliminated as dead — an empty `on` would inline to nothing and
+/// time the graph twice.
+#[derive(Default)]
+struct Probe {
+	vals: f64,
+	jac: usize,
+}
+
+impl Observer for Probe {
+	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
+		self.vals += fire.vals.map_or(0.0, |v| v.iter().sum());
+		self.jac += fire.jac.map_or(0, <[f64]>::len);
+	}
+}
 
 fn main() {
 	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
@@ -49,6 +66,16 @@ fn main() {
 
 	let began = Instant::now();
 	let mut graph = Graph::default();
+	let mut probe = Probe::default();
+	let mut f = feed();
+	while let Some(l) = f.next() {
+		std::hint::black_box(graph.tick_obs(l.ts_venue.as_nanos(), l.into(), &mut probe));
+	}
+	let fd_s = began.elapsed().as_secs_f64();
+	std::hint::black_box(&probe);
+
+	let began = Instant::now();
+	let mut graph = Graph::default();
 	let mut recorder = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000);
 	let mut f = feed();
 	while let Some(l) = f.next() {
@@ -58,7 +85,8 @@ fn main() {
 	let obs_s = began.elapsed().as_secs_f64();
 
 	println!("{ticks} ticks over {day}");
-	println!("feed only          {feed_s:>8.2}s");
-	println!("+ graph.tick       {plain_s:>8.2}s  (graph {:.2}s)", plain_s - feed_s);
-	println!("+ graph.tick_obs   {obs_s:>8.2}s  (Viz {:.2}s)", obs_s - plain_s);
+	println!("feed only            {feed_s:>8.2}s");
+	println!("+ graph.tick         {plain_s:>8.2}s  (graph {:.2}s)", plain_s - feed_s);
+	println!("+ obs, recording nil {fd_s:>8.2}s  (flatten+FD {:.2}s)", fd_s - plain_s);
+	println!("+ obs, recording Viz {obs_s:>8.2}s  (tape {:.2}s)", obs_s - fd_s);
 }
