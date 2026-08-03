@@ -13,7 +13,7 @@
 = `trading_data_dag` — the utilization framework
 
 Read off `trading_data_dag/src/lib.rs` and `trading_data_macros/`; the census in §2 is counted, at
-compile time, off the sources under `examples/`.
+compile time, off the crate trees under `examples/`.
 
 == 1. The framework
 
@@ -406,52 +406,21 @@ _Who holds the history_ is the axis the wrappers actually partition:
 
 // `.examples` is a symlink to `../examples`: `read` cannot escape the project root, which is this file's own directory
 
-#let sources = (
-  simple: ("src/lib.rs", "src/main.rs", "src/nodes.rs"),
-  live: ("src/lib.rs", "src/main.rs", "src/nodes.rs"),
-  live_equiv: ("src/main.rs",),
-  spl: (
-    "src/lib.rs",
-    "src/main.rs",
-    "src/config.rs",
-    "src/ui.rs",
-    "src/nodes/mod.rs",
-    "src/nodes/atr.rs",
-    "src/nodes/book_top.rs",
-    "src/nodes/change_1d.rs",
-    "src/nodes/change_3m.rs",
-    "src/nodes/classify.rs",
-    "src/nodes/decision.rs",
-    "src/nodes/deprecator.rs",
-    "src/nodes/imbalance.rs",
-    "src/nodes/momentum.rs",
-    "src/nodes/oi_delta.rs",
-    "src/nodes/rsi.rs",
-    "src/nodes/rsi_screener.rs",
-    "src/nodes/spread.rs",
-    "src/nodes/std_screener.rs",
-    "src/nodes/volume_1h.rs",
-    "src/nodes/volume_1m.rs",
-    "src/nodes/volume_4h.rs",
-    "benches/equivalence.rs",
-    "benches/naive_nt.rs",
-    "benches/optimized_nt.rs",
-    "benches/td_graph.rs",
-    "benches/harness/mod.rs",
-    "benches/harness/ring.rs",
-    "benches/nt/mod.rs",
-    "benches/nt/actors.rs",
-    "examples/viz_cost.rs",
-  ),
-)
+// only the crate roots are named; the rest of each tree is reached the way rustc reaches it
+#let roots = (simple: ("lib", "main"), live: ("lib", "main"), live_equiv: ("main",), spl: ("lib", "main"))
+
+#let walk(file, kids) = {
+  let src = read(file)
+  src.matches(regex("(?m)^\\s*(?:pub\\s+(?:\\([^)]*\\)\\s*)?)?mod\\s+(\\w+)\\s*;")).map(m => m.captures.first()).fold(src, (acc, m) => acc + "\n" + walk(kids + m + ".rs", kids + m + "/"))
+}
 
 #let corpus = (
-  sources
+  roots
     .pairs()
-    .map(((crate, files)) => (
-      crate,
-      files.map(f => read(".examples/" + crate + "/" + f)).join("\n"),
-    ))
+    .map(((crate, entries)) => {
+      let dir = ".examples/" + crate + "/src/"
+      (crate, entries.map(e => walk(dir + e + ".rs", dir)).join("\n"))
+    })
 )
 
 #let census(probes) = {
