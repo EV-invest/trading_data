@@ -38,6 +38,12 @@ pub const DEPTH: usize = 20;
 const UA: &str = "trading_data_spl";
 /// Five-minute buckets in a UTC day — what a complete OI day must have.
 const OI_PER_DAY: usize = 288;
+/// Bybit's page ceiling on the OI endpoint.
+const OI_PAGE: usize = 200;
+/// What one day's buckets fit in, plus the empty page an exhausted cursor answers with. Bounding
+/// the walk is the point: the venue decides when to stop handing back cursors, and an unbounded
+/// loop lets it decide never.
+const OI_PAGES: usize = OI_PER_DAY.div_ceil(OI_PAGE) + 1;
 const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
 const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 
@@ -198,11 +204,16 @@ fn ensure_oi(catalog: &Catalog, s: &Situation, pb: &ProgressBar) {
 		let (day_start, day_end) = day_bounds(d);
 		let (start_ms, end_ms) = (day_start.as_nanos() / 1_000_000, day_end.as_nanos() / 1_000_000);
 		let before = rows.len();
-		let mut cursor = String::new();
-		loop {
-			let mut url = format!("https://api.bybit.com/v5/market/open-interest?category=linear&symbol={sym}&intervalTime=5min&startTime={start_ms}&endTime={end_ms}&limit=200");
-			if !cursor.is_empty() {
-				url.push_str(&format!("&cursor={cursor}"));
+		let (mut cursor, mut pages) = (Some(String::new()), 0);
+		while let Some(c) = cursor.take() {
+			pages += 1;
+			assert!(
+				pages <= OI_PAGES,
+				"bybit paginated {d}'s open interest past {OI_PAGES} pages — the endpoint no longer answers the shape below"
+			);
+			let mut url = format!("https://api.bybit.com/v5/market/open-interest?category=linear&symbol={sym}&intervalTime=5min&startTime={start_ms}&endTime={end_ms}&limit={OI_PAGE}");
+			if !c.is_empty() {
+				url.push_str(&format!("&cursor={c}"));
 			}
 			let body = http_get(&url);
 			let v: serde_json::Value = serde_json::from_slice(&body).expect("bybit oi json");
@@ -222,10 +233,8 @@ fn ensure_oi(catalog: &Catalog, s: &Situation, pb: &ProgressBar) {
 				});
 			}
 			// An absent cursor would end pagination early and leave a silently short day.
-			cursor = v["result"]["nextPageCursor"].as_str().expect("bybit paginated responses always carry nextPageCursor").to_string();
-			if cursor.is_empty() || list.is_empty() {
-				break;
-			}
+			let next = v["result"]["nextPageCursor"].as_str().expect("bybit paginated responses always carry nextPageCursor");
+			cursor = (!next.is_empty() && !list.is_empty()).then(|| next.to_string());
 		}
 		// A UTC day is exactly 288 five-minute buckets. Anything less is a hole in the input — most
 		// likely Bybit's 5min OI retention no longer reaching that far back. The decision is data,
