@@ -28,12 +28,11 @@ use trading_data_spl::nodes::Intent;
 /// `USER_HZ`, the unit `/proc/<pid>/stat` reports CPU time in. Fixed at 100 on Linux regardless of
 /// `CONFIG_HZ` — it is ABI, not a kernel tunable.
 const CLK_TCK: f64 = 100.0;
-/// `/proc` reports whole `USER_HZ` ticks, so a window resolves cores-busy to `1 / (CLK_TCK * window)`
-/// — at 100ms that is 0.1 of a core, fine enough to tell 1.0 from 1.5 without reading quantisation
-/// noise as parallelism.
+/// Coarse enough that the sampler is not in the measurement, fine enough that a resident set held
+/// for under a second still shows up in the p95.
 const SAMPLE: Duration = Duration::from_millis(100);
 
-/// Wall clock, CPU time and a cores-busy trace over one timed section.
+/// Wall clock, CPU time and a resident-set trace over one timed section.
 pub struct Probe {
 	began: Instant,
 	cpu0: u64,
@@ -47,12 +46,9 @@ impl Probe {
 		// Joined in `stop` — nothing outlives the section it measures.
 		let sampler = thread::spawn(move || {
 			let mut out = Vec::new();
-			let mut last = cpu_ticks();
 			while !flag.load(Ordering::Relaxed) {
 				thread::sleep(SAMPLE);
-				let now = cpu_ticks();
-				out.push((now - last) as f64 / CLK_TCK / SAMPLE.as_secs_f64());
-				last = now;
+				out.push(rss_mb());
 			}
 			out
 		});
@@ -64,16 +60,16 @@ impl Probe {
 		}
 	}
 
-	/// (wall seconds, CPU seconds, cores-busy percentiles as p50/p95/max).
-	pub fn stop(self) -> (f64, f64, [f64; 3]) {
+	/// (wall seconds, CPU seconds, p95 resident MB). Mean cores busy is CPU over wall, so it needs no
+	/// trace of its own — only the memory does, a peak being one allocation rather than a footprint.
+	pub fn stop(self) -> (f64, f64, f64) {
 		let wall = self.began.elapsed().as_secs_f64();
 		let cpu = (cpu_ticks() - self.cpu0) as f64 / CLK_TCK;
 		self.stop.store(true, Ordering::Relaxed);
-		let mut cores = self.sampler.join().expect("the sampler only reads procfs");
-		cores.sort_by(f64::total_cmp);
-		assert!(!cores.is_empty(), "a timed section shorter than one {SAMPLE:?} window has no parallelism to report");
-		let at = |q: f64| cores[((cores.len() as f64 * q) as usize).min(cores.len() - 1)];
-		(wall, cpu, [at(0.5), at(0.95), at(1.0)])
+		let mut rss = self.sampler.join().expect("the sampler only reads procfs");
+		rss.sort_by(f64::total_cmp);
+		assert!(!rss.is_empty(), "a timed section shorter than one {SAMPLE:?} window has no footprint to report");
+		(wall, cpu, rss[((rss.len() as f64 * 0.95) as usize).min(rss.len() - 1)])
 	}
 }
 
@@ -145,16 +141,14 @@ pub struct Row {
 	pub total_s: f64,
 	pub feed_s: f64,
 	pub cpu_s: f64,
-	/// p50 / p95 / max cores busy over 20ms windows.
-	pub cores: [f64; 3],
 	pub cores_avail: usize,
-	pub peak_rss_mb: f64,
+	pub rss_p95_mb: f64,
 	pub counters: BTreeMap<String, u64>,
 	/// Where this row is not comparable to the others on its own terms.
 	pub notes: Vec<String>,
 }
 impl Row {
-	pub fn new(name: &str, ticks: u64, digest: &Digest, total: (f64, f64, [f64; 3]), feed_s: f64, notes: Vec<String>) -> Self {
+	pub fn new(name: &str, ticks: u64, digest: &Digest, total: (f64, f64, f64), feed_s: f64, notes: Vec<String>) -> Self {
 		Self {
 			name: name.to_string(),
 			ticks,
@@ -163,9 +157,8 @@ impl Row {
 			total_s: total.0,
 			feed_s,
 			cpu_s: total.1,
-			cores: total.2,
 			cores_avail: thread::available_parallelism().expect("a thread count is always known on linux").get(),
-			peak_rss_mb: peak_rss_mb(),
+			rss_p95_mb: total.2,
 			counters: COUNTERS.snapshot(),
 			notes,
 		}
@@ -188,21 +181,19 @@ pub fn publish(row: Row) {
 	rows.sort_by(|a, b| a.name.cmp(&b.name));
 
 	println!(
-		"\n{:<14} {:>9} {:>9} {:>9} {:>9} {:>6} {:>6} {:>6} {:>8} {:>9} {:>18}",
-		"bench", "total s", "feed s", "compute", "cpu s", "p50", "p95", "max", "rss MB", "intents", "digest"
+		"\n{:<14} {:>9} {:>9} {:>9} {:>9} {:>7} {:>11} {:>9} {:>18}",
+		"bench", "total s", "feed s", "compute", "cpu s", "cores", "rss p95 MB", "intents", "digest"
 	);
 	for r in &rows {
 		println!(
-			"{:<14} {:>9.2} {:>9.2} {:>9.2} {:>9.2} {:>6.2} {:>6.2} {:>6.2} {:>8.0} {:>9} {:>18x}",
+			"{:<14} {:>9.2} {:>9.2} {:>9.2} {:>9.2} {:>7.2} {:>11.0} {:>9} {:>18x}",
 			r.name,
 			r.total_s,
 			r.feed_s,
 			r.total_s - r.feed_s,
 			r.cpu_s,
-			r.cores[0],
-			r.cores[1],
-			r.cores[2],
-			r.peak_rss_mb,
+			r.cpu_s / r.total_s,
+			r.rss_p95_mb,
 			r.intents,
 			r.digest
 		);
@@ -247,9 +238,9 @@ fn cpu_ticks() -> u64 {
 	utime + stime
 }
 
-fn peak_rss_mb() -> f64 {
+fn rss_mb() -> f64 {
 	let status = fs::read_to_string("/proc/self/status").expect("procfs is mounted");
-	let line = status.lines().find(|l| l.starts_with("VmHWM:")).expect("VmHWM is reported for any live process");
-	let kb: f64 = line.split_whitespace().nth(1).expect("VmHWM has a value").parse().expect("VmHWM is a number");
+	let line = status.lines().find(|l| l.starts_with("VmRSS:")).expect("VmRSS is reported for any live process");
+	let kb: f64 = line.split_whitespace().nth(1).expect("VmRSS has a value").parse().expect("VmRSS is a number");
 	kb / 1024.0
 }
