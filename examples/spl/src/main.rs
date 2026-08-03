@@ -22,12 +22,12 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use exec_viz::Viz;
-use trading_data::{Exact, ExchangeName, Feed, LatencyConfig, ReadClock, Replay, Side, Ts, read_mc, read_oi, required_lanes};
+use trading_data::{Cell, Exact, ExchangeName, Feed, LatencyConfig, ReadClock, Replay, Side, Ts, read_mc, read_oi, required_lanes};
 use trading_data_spl::{
 	asset,
 	config::{self, Config},
 	day_bounds, ensure_lanes,
-	nodes::{Graph, Intent, TrailingStop},
+	nodes::{Bar1m, Graph, Intent, TrailingStop},
 	symbol, trading_days, ui,
 };
 use v_utils::utils::tracing::{LogDestination, init_subscriber};
@@ -103,7 +103,7 @@ async fn main() {
 	// downstream can read an unwarmed value in the first place.
 	let lanes = required_lanes::<Graph>();
 	println!("required lanes: {lanes:?}");
-	let viz = Viz::new(Some("Bar:1m"), SCROLLBACK, 60_000);
+	let viz = Viz::new(Some(<Bar1m as Cell>::NAME), SCROLLBACK, 60_000);
 	let mut recorder = viz.clone();
 	let mut day = Day::default();
 	let began = std::time::Instant::now();

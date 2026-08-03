@@ -10,8 +10,8 @@
 use std::{path::PathBuf, time::Duration};
 
 use exec_viz::Viz;
-use trading_data::{Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, ReadClock, Replay, required_lanes};
-use trading_data_simple::{day_bounds, ensure_catalog, nodes::Graph, symbol};
+use trading_data::{Cell, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, ReadClock, Replay, required_lanes};
+use trading_data_simple::{day_bounds, ensure_catalog, nodes, nodes::Graph, symbol};
 
 /// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a
 /// slot in it, so several can be up at once.
@@ -40,7 +40,7 @@ async fn main() {
 	let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), day_start, day_end, &lanes, latency, CLOCK);
 
 	let mut graph = Graph::default();
-	let viz = Viz::new(Some("Bar:1m"), SCROLLBACK, 60_000);
+	let viz = Viz::new(Some(<nodes::Bar1m as Cell>::NAME), SCROLLBACK, 60_000);
 	// `Signal`'s exact/FD agreement check and the viz recording are two readings of one sweep.
 	let mut obs = (SignalDoc::default(), viz.clone());
 	let (mut n_trades, mut bars, mut rsi_snaps, mut lambda_fires) = (0u64, 0u64, 0u64, 0u64);
