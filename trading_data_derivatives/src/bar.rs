@@ -1,7 +1,7 @@
 use core::fmt;
 
 use trading_data_core::{Exact, Timestamped, Timestamps, TradeCols, Trades, Ts, Venue};
-use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Glance, Spanning, Stamped, Tag, always_present, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Glance, Plot, Spanning, Stamped, Tag, always_present, node, slice_nudge};
 use v_utils::Timeframe;
 
 #[derive(Clone, Copy, Debug)]
@@ -203,6 +203,9 @@ impl<const TF: Timeframe> Emit for Ohlcs<TF> {
 	/// period.
 	type Deps = (Spanning<Trades, TF>,);
 
+	/// [`Bars`] joins this with [`Volumes`] and draws for all three.
+	const PLOTS: &'static [Plot] = &[];
+
 	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Ohlc>) {
 		ohlc(&mut self.0, trades, TF, out);
 	}
@@ -223,6 +226,9 @@ impl<const TF: Timeframe> Cell for Volumes<TF> {
 #[node]
 impl<const TF: Timeframe> Emit for Volumes<TF> {
 	type Deps = (Spanning<Trades, TF>,);
+
+	/// [`Bars`] joins this with [`Ohlcs`] and draws for all three.
+	const PLOTS: &'static [Plot] = &[];
 
 	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Volume>) {
 		volume(&mut self.0, trades, TF, out);
@@ -246,6 +252,15 @@ impl<const TF: Timeframe> Cell for Bars<TF> {
 #[node]
 impl<const TF: Timeframe> Emit for Bars<TF> {
 	type Deps = (crate::Ohlcs<TF>, crate::Volumes<TF>);
+
+	/// Slot 4 (`vol_base`) goes undrawn: a histogram of it would claim an indicator pane, and the
+	/// price pane draws its own volume off the price node directly.
+	const PLOTS: &'static [Plot] = &[Plot {
+		slots: &[0, 1, 2, 3],
+		overlay: true,
+		candles: true,
+		..Plot::DEFAULT
+	}];
 
 	fn emit(&mut self, (ohlc, vol): EmitOuts<'_, Self>, out: &mut Vec<Bar>) {
 		assert_eq!(ohlc.len(), vol.len(), "one Ohlc and one Volume per period closed");

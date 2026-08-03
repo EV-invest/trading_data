@@ -596,6 +596,9 @@ pub struct Plot {
 	/// Draw as bars (stacked, when the plot has several slots) instead of lines. For discrete,
 	/// sparse acts — a continuous series drawn this way is a wall of ink that hides its neighbours.
 	pub bars: bool,
+	/// The plot's four slots are o·h·l·c, drawn as candle outlines rather than four lines.
+	/// Price-denominated by construction, so `overlay`.
+	pub candles: bool,
 }
 
 impl Plot {
@@ -608,13 +611,18 @@ impl Plot {
 		overlay: false,
 		solo: false,
 		bars: false,
+		candles: false,
 	};
 
-	/// `[]` slots means "every slot", which two plots cannot both claim.
+	/// `[]` slots means "every slot", which two plots cannot both claim. A candle plot is four
+	/// price-denominated slots, so it names them and rides the price pane.
 	const fn coherent(plots: &'static [Plot]) -> bool {
 		let mut i = 0;
 		while i < plots.len() {
 			if plots[i].slots.is_empty() && plots.len() > 1 {
+				return false;
+			}
+			if plots[i].candles && (!plots[i].overlay || plots[i].slots.len() != 4) {
 				return false;
 			}
 			i += 1;
@@ -838,6 +846,7 @@ impl<T: Latent> Dark<Yes> for T {
 
 pub trait Node: Cell {
 	type Deps: DepSet;
+	/// `&[]` draws nothing at all — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
 }
@@ -856,6 +865,7 @@ pub trait Emit: Series
 where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
 	type Deps: DepSet;
+	/// `&[]` draws nothing at all — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	fn emit<'t>(&mut self, deps: EmitOuts<'t, Self>, out: &mut alloc::vec::Vec<Self::Item>);
 }
@@ -2092,7 +2102,12 @@ where
 	for<'x> N::Out<'x>: Flat,
 	N::Out<'t>: core::fmt::Debug + Glance,
 	F: 't, {
-	const { assert!(Plot::coherent(N::PLOTS), "a multi-plot node must name each plot's slots; `[]` claims all of them") }
+	const {
+		assert!(
+			Plot::coherent(N::PLOTS),
+			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay"
+		)
+	}
 
 	// gate closed or nobody reading: no advance, no dep flatten, no FD — an unfired `Fire` is the
 	// honest view.
@@ -2213,7 +2228,12 @@ where
 	E::Deps: Pull<'t, F, I> + DepFlat,
 	EmitOuts<'t, E>: Copy,
 	F: 't, {
-	const { assert!(Plot::coherent(<E as Emit>::PLOTS), "a multi-plot node must name each plot's slots; `[]` claims all of them") }
+	const {
+		assert!(
+			Plot::coherent(<E as Emit>::PLOTS),
+			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay"
+		)
+	}
 	e.buf.clear();
 
 	// gate closed, nobody reading, or the period still running: no emit, no dep flatten, no FD — the
