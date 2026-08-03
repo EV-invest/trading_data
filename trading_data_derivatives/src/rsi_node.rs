@@ -1,6 +1,6 @@
 use core::{fmt, marker::PhantomData};
 
-use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Horizon, Plot, Series, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Horizon, Plot, Series, Tag, node, slice_nudge};
 
 use crate::{Wilder, bar::Bar, rsi};
 
@@ -8,6 +8,12 @@ use crate::{Wilder, bar::Bar, rsi};
 /// the `B` parameter — but these are numbers an app that reads them from a config file has no const
 /// to give, so they arrive through a type it implements once.
 pub trait RsiSpec: 'static {
+	/// How the chain below spells this spec in its own [`Cell::NAME`]. Deliberately without a
+	/// default: `type_name` would put a module path inside every RSI card, and a spec that could
+	/// silently go unnamed is how this trait came to be the one parameter a name could not be
+	/// composed from.
+	const NAME: &'static str;
+
 	fn base_len() -> usize;
 	fn smooth_len() -> usize;
 }
@@ -38,8 +44,13 @@ impl<B> Default for RsiDelta<B> {
 		}
 	}
 }
+impl<B: Series<Item = Bar>> RsiDelta<B> {
+	const TAG: Tag = Tag::of("RsiDelta", &[B::NAME]);
+}
 impl<B: Series<Item = Bar>> Cell for RsiDelta<B> {
 	type Out<'t> = &'t [f64];
+
+	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
 impl<B: Series<Item = Bar>> Emit for RsiDelta<B> {
@@ -81,8 +92,13 @@ macro_rules! wilder_half {
 				}
 			}
 		}
+		impl<B: Series<Item = Bar>, S: RsiSpec> $ty<B, S> {
+			const TAG: Tag = Tag::of(stringify!($ty), &[B::NAME, S::NAME]);
+		}
 		impl<B: Series<Item = Bar>, S: RsiSpec> Cell for $ty<B, S> {
 			type Out<'t> = &'t [Option<f64>];
+
+			const NAME: &'static str = Self::TAG.as_str();
 		}
 		#[node]
 		impl<B: Series<Item = Bar>, S: RsiSpec> Emit for $ty<B, S> {
@@ -170,8 +186,13 @@ impl<B, S: RsiSpec> Default for Rsi<B, S> {
 		}
 	}
 }
+impl<B: Series<Item = Bar>, S: RsiSpec> Rsi<B, S> {
+	const TAG: Tag = Tag::of("Rsi", &[B::NAME, S::NAME]);
+}
 impl<B: Series<Item = Bar>, S: RsiSpec> Cell for Rsi<B, S> {
 	type Out<'t> = &'t [Option<RsiValues>];
+
+	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
 impl<B: Series<Item = Bar>, S: RsiSpec> Emit for Rsi<B, S> {

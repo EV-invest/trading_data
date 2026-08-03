@@ -136,57 +136,116 @@ impl Horizon {
 		}
 	}
 
+	/// The reach as a [`Cell::NAME`] fragment. Unqualified: the only place a reach is spelled is a
+	/// retaining wrapper's parameter list, where the position already says what it is.
+	pub const fn tag(self) -> Tag {
+		let (mut buf, mut len) = ([0u8; 256], 0);
+		len = match self {
+			Horizon::Unit => write(&mut buf, len, b"Unit"),
+			Horizon::Unbounded => write(&mut buf, len, b"Unbounded"),
+			Horizon::Elems(n) => {
+				let len = write(&mut buf, len, b"Elems(");
+				let len = digits(&mut buf, len, n as u64);
+				write(&mut buf, len, b")")
+			}
+			Horizon::Span(tf) => {
+				let len = write(&mut buf, len, b"Span(");
+				let len = timeframe(&mut buf, len, tf);
+				write(&mut buf, len, b")")
+			}
+		};
+		Tag { buf, len }
+	}
+
 	/// Only a [`Horizon::Span`] has one; the caller has already matched the variant.
 	const fn ns(tf: Timeframe) -> i64 {
 		(tf.0 * 1_000_000) as i64
 	}
 }
 
-/// A [`Cell::NAME`] a timeframe parameter can reach. `NAME` is a `const &'static str`, and nothing
-/// that formats at runtime can produce one — so the digits and the designator are spelled into a
-/// fixed buffer, in an *associated* const, whose value outlives the `NAME` borrowing it.
+/// A [`Cell::NAME`] a parameter can reach. `NAME` is a `const &'static str`, and nothing that
+/// formats at runtime can produce one — so the parts are spelled into a fixed buffer, in an
+/// *associated* const, whose value outlives the `NAME` borrowing it. That an associated const may
+/// read its impl's generics, where a free `const` item may not, is the whole reason this works.
+///
+/// Overflowing the buffer indexes out of bounds during const eval, i.e. fails the build.
 pub struct Tag {
-	buf: [u8; 32],
+	buf: [u8; 256],
 	len: usize,
 }
 
 impl Tag {
+	/// A cell parameterised by a bare number: `Bars<1>` leaves the reader to guess the unit, where
+	/// `Bar:1m` states it.
 	pub const fn new(prefix: &str, tf: Timeframe) -> Self {
-		let (mut buf, mut len) = ([0u8; 32], 0);
-		let p = prefix.as_bytes();
-		while len < p.len() {
-			buf[len] = p[len];
-			len += 1;
+		let (mut buf, mut len) = ([0u8; 256], 0);
+		len = write(&mut buf, len, prefix.as_bytes());
+		Self {
+			len: timeframe(&mut buf, len, tf),
+			buf,
 		}
-		let designator = tf.designator();
-		let (mut digits, mut d, mut n) = ([0u8; 20], 0, tf.0 / designator.as_millis());
-		while {
-			digits[d] = b'0' + (n % 10) as u8;
-			n /= 10;
-			d += 1;
-			n > 0
-		} {}
-		while d > 0 {
-			d -= 1;
-			buf[len] = digits[d];
-			len += 1;
-		}
-		let u = designator.as_str().as_bytes();
+	}
+
+	/// A cell parameterised by other cells, named from theirs: `Rsi<Bar:1m, Len14>` rather than the
+	/// `type_name` default's `Rsi<Bars<Timeframe(60000)>, …>`, which spells a dep differently from
+	/// the way the same graph's other cards spell it.
+	pub const fn of(prefix: &str, params: &[&str]) -> Self {
+		assert!(!params.is_empty(), "a tag over no parameters is a string literal");
+		let (mut buf, mut len) = ([0u8; 256], 0);
+		len = write(&mut buf, len, prefix.as_bytes());
+		len = write(&mut buf, len, b"<");
 		let mut i = 0;
-		while i < u.len() {
-			buf[len] = u[i];
-			len += 1;
+		while i < params.len() {
+			if i > 0 {
+				len = write(&mut buf, len, b", ");
+			}
+			len = write(&mut buf, len, params[i].as_bytes());
 			i += 1;
 		}
-		Self { buf, len }
+		Self {
+			len: write(&mut buf, len, b">"),
+			buf,
+		}
 	}
 
 	pub const fn as_str(&self) -> &str {
 		match core::str::from_utf8(self.buf.split_at(self.len).0) {
 			Ok(s) => s,
-			Err(_) => panic!("digits and a designator are ascii"),
+			Err(_) => panic!("a name is utf8, and is spelled here one whole str at a time"),
 		}
 	}
+}
+
+const fn write(buf: &mut [u8; 256], mut len: usize, src: &[u8]) -> usize {
+	let mut i = 0;
+	while i < src.len() {
+		buf[len] = src[i];
+		len += 1;
+		i += 1;
+	}
+	len
+}
+
+const fn digits(buf: &mut [u8; 256], mut len: usize, mut n: u64) -> usize {
+	let (mut d, mut rev) = (0, [0u8; 20]);
+	while {
+		rev[d] = b'0' + (n % 10) as u8;
+		n /= 10;
+		d += 1;
+		n > 0
+	} {}
+	while d > 0 {
+		d -= 1;
+		buf[len] = rev[d];
+		len += 1;
+	}
+	len
+}
+
+const fn timeframe(buf: &mut [u8; 256], len: usize, tf: Timeframe) -> usize {
+	let designator = tf.designator();
+	let len = digits(buf, len, tf.0 / designator.as_millis());
+	write(buf, len, designator.as_str().as_bytes())
 }
 
 /// A retained item's own event time. Required of every [`Buffer`]ed item — a history you cannot
@@ -203,8 +262,8 @@ pub trait Cell {
 
 	/// What this cell is called wherever a human reads the graph — cards, edges, `step_until`.
 	/// Defaults to the Rust path, which is right for a type whose *identity* is its name. A cell
-	/// parameterised by a bare number overrides it: `Bars<1>` leaves the reader to guess the unit,
-	/// where `Bar:1m` states it — see [`Tag`].
+	/// carrying parameters overrides it through [`Tag`], because `type_name` renders those the
+	/// compiler's way and the rest of the graph spells the same cells its own.
 	const NAME: &'static str = core::any::type_name::<Self>();
 
 	/// How far back a consumer naming this in dep position reads. A bare cell is this tick's batch
@@ -972,11 +1031,20 @@ where
 	}
 }
 
+impl<N: Episodic> Armed<N>
+where
+	for<'t> N::Out<'t>: Episode,
+{
+	const TAG: Tag = Tag::of("Armed", &[N::NAME]);
+}
+
 impl<N: Episodic> Cell for Armed<N>
 where
 	for<'t> N::Out<'t>: Episode,
 {
 	type Out<'t> = bool;
+
+	const NAME: &'static str = Self::TAG.as_str();
 }
 
 impl<N: Episodic> Node for Armed<N>
@@ -1213,9 +1281,18 @@ impl<C: Series, const H: Horizon> Clone for Buffer<C, H> {
 	}
 }
 
+impl<C: Series, const H: Horizon> Buffer<C, H> {
+	const REACH_TAG: Tag = H.tag();
+	const TAG: Tag = Tag::of("Buffer", &[C::NAME, Self::REACH_TAG.as_str()]);
+}
+
 impl<C: Series, const H: Horizon> Cell for Buffer<C, H> {
 	type Out<'t> = Hist<'t, C::Item>;
 
+	/// Unlike its [`Buffering`]/[`Folding`] siblings this is a frame cell of its own, so it takes a
+	/// name of its own — and `exec_viz` finds the buffer serving a dep by matching `Buffer<C, `,
+	/// which only lines up while both spell `C` the way the rest of the graph does.
+	const NAME: &'static str = Self::TAG.as_str();
 	const REACH: Horizon = H;
 }
 

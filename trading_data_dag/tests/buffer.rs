@@ -54,6 +54,19 @@ impl Cell for Src {
 }
 slice_nudge!(Src, Tick);
 
+/// Unlike its `Buffering`/`Folding` siblings a buffer is a frame cell of its own, so it carries a
+/// name of its own — and a name is both a `graph!` manifest key and what a chart prints, so it is
+/// composed from its source's and its reach's rather than rendered by the compiler, which would
+/// spell the same series differently here than on every other card.
+#[test]
+fn a_buffer_names_itself_from_its_source_and_its_reach() {
+	assert_eq!(Horizon::Unit.tag().as_str(), "Unit");
+	assert_eq!(Horizon::Unbounded.tag().as_str(), "Unbounded");
+	assert_eq!(Horizon::Elems(61).tag().as_str(), "Elems(61)");
+	assert_eq!(Horizon::Span(Timeframe::from_naive(3, TimeframeDesignator::Minutes)).tag().as_str(), "Span(3m)");
+	assert_eq!(<Buffer<Src, { Horizon::Elems(61) }> as Cell>::NAME, format!("Buffer<{}, Elems(61)>", Src::NAME));
+}
+
 /// Reads a 3-deep window per fresh element: rate-preserving, `None` while short.
 #[derive(Clone, Default)]
 struct Sum3;

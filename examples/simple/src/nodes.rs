@@ -25,6 +25,8 @@ const REACH: Horizon = Horizon::Elems(LAMBDA_WINDOW + 1);
 /// Wilder's own lengths, and the whole of what this graph configures.
 pub struct Len14;
 impl RsiSpec for Len14 {
+	const NAME: &'static str = "Len14";
+
 	fn base_len() -> usize {
 		14
 	}

@@ -23,6 +23,8 @@ trading_data::node_alias! { pub Rsi = trading_data::Rsi<RsiSeries, Knobs>; }
 /// The two Wilder lengths, out of `config.nix`.
 pub struct Knobs;
 impl RsiSpec for Knobs {
+	const NAME: &'static str = "Knobs";
+
 	fn base_len() -> usize {
 		strategy().indies.rsi.base_len
 	}
