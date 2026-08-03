@@ -60,16 +60,19 @@ impl Probe {
 		}
 	}
 
-	/// (wall seconds, CPU seconds, p95 resident MB). Mean cores busy is CPU over wall, so it needs no
-	/// trace of its own — only the memory does, a peak being one allocation rather than a footprint.
-	pub fn stop(self) -> (f64, f64, f64) {
+	/// (wall seconds, CPU seconds, resident MB at p68 and p95). Mean cores busy is CPU over wall, so it
+	/// needs no trace of its own — only the memory does, a peak being one allocation rather than a
+	/// footprint. The two quantiles read as what the run holds and what it spikes to; far apart means
+	/// the footprint is a transient, and the p95 alone would be read as steady state.
+	pub fn stop(self) -> (f64, f64, [f64; 2]) {
 		let wall = self.began.elapsed().as_secs_f64();
 		let cpu = (cpu_ticks() - self.cpu0) as f64 / CLK_TCK;
 		self.stop.store(true, Ordering::Relaxed);
 		let mut rss = self.sampler.join().expect("the sampler only reads procfs");
 		rss.sort_by(f64::total_cmp);
 		assert!(!rss.is_empty(), "a timed section shorter than one {SAMPLE:?} window has no footprint to report");
-		(wall, cpu, rss[((rss.len() as f64 * 0.95) as usize).min(rss.len() - 1)])
+		let at = |q: f64| rss[((rss.len() as f64 * q) as usize).min(rss.len() - 1)];
+		(wall, cpu, [at(0.68), at(0.95)])
 	}
 }
 
@@ -142,13 +145,14 @@ pub struct Row {
 	pub feed_s: f64,
 	pub cpu_s: f64,
 	pub cores_avail: usize,
-	pub rss_p95_mb: f64,
+	/// Resident MB at p68 and p95 of the timed section.
+	pub rss_mb: [f64; 2],
 	pub counters: BTreeMap<String, u64>,
 	/// Where this row is not comparable to the others on its own terms.
 	pub notes: Vec<String>,
 }
 impl Row {
-	pub fn new(name: &str, ticks: u64, digest: &Digest, total: (f64, f64, f64), feed_s: f64, notes: Vec<String>) -> Self {
+	pub fn new(name: &str, ticks: u64, digest: &Digest, total: (f64, f64, [f64; 2]), feed_s: f64, notes: Vec<String>) -> Self {
 		Self {
 			name: name.to_string(),
 			ticks,
@@ -158,7 +162,7 @@ impl Row {
 			feed_s,
 			cpu_s: total.1,
 			cores_avail: thread::available_parallelism().expect("a thread count is always known on linux").get(),
-			rss_p95_mb: total.2,
+			rss_mb: total.2,
 			counters: COUNTERS.snapshot(),
 			notes,
 		}
@@ -181,19 +185,20 @@ pub fn publish(row: Row) {
 	rows.sort_by(|a, b| a.name.cmp(&b.name));
 
 	println!(
-		"\n{:<14} {:>9} {:>9} {:>9} {:>9} {:>7} {:>11} {:>9} {:>18}",
-		"bench", "total s", "feed s", "compute", "cpu s", "cores", "rss p95 MB", "intents", "digest"
+		"\n{:<14} {:>9} {:>9} {:>9} {:>9} {:>7} {:>11} {:>11} {:>9} {:>18}",
+		"bench", "total s", "feed s", "compute", "cpu s", "cores", "rss p68 MB", "rss p95 MB", "intents", "digest"
 	);
 	for r in &rows {
 		println!(
-			"{:<14} {:>9.2} {:>9.2} {:>9.2} {:>9.2} {:>7.2} {:>11.0} {:>9} {:>18x}",
+			"{:<14} {:>9.2} {:>9.2} {:>9.2} {:>9.2} {:>7.2} {:>11.0} {:>11.0} {:>9} {:>18x}",
 			r.name,
 			r.total_s,
 			r.feed_s,
 			r.total_s - r.feed_s,
 			r.cpu_s,
 			r.cpu_s / r.total_s,
-			r.rss_p95_mb,
+			r.rss_mb[0],
+			r.rss_mb[1],
 			r.intents,
 			r.digest
 		);
