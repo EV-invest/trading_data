@@ -48,7 +48,7 @@ pub use trading_data_persistence::{
 };
 /// The period a `Bars<TF>` is over: naming one is now part of wiring a graph, and a facade-only
 /// consumer has no other route to the type.
-pub use v_utils::Timeframe;
+pub use v_utils::{Timeframe, TimeframeDesignator};
 
 /// The source lanes a graph requires: maps its [`Roots::required_events`] `TypeId`s to
 /// [`LaneKind`]s. Lives here — the dag stays storage-free, and persistence can't see graph types —

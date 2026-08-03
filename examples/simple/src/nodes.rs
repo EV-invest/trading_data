@@ -6,15 +6,13 @@
 use core::fmt;
 
 use trading_data::{
-	Buffering, Bump, Cell, Emit, EmitOuts, Exact, Expr, Flat, Folding, Glance, Horizon, Lanes, RsiSpec, Side, Stamped, Symbolic, Timeframe, TradeCols, Trades, Vars, always_present,
-	constant, node, slice_nudge,
+	Buffering, Bump, Cell, Emit, EmitOuts, Exact, Expr, Flat, Folding, Glance, Horizon, Lanes, RsiSpec, Side, Stamped, Symbolic, Timeframe, TimeframeDesignator::Minutes, TradeCols, Trades,
+	Vars, always_present, constant, node, slice_nudge,
 };
 
-/// This graph's clock. `MIN`, not `M`: `M` is the designator for *months*.
-const TF_1MIN: Timeframe = Timeframe::from_str_const("1m");
 // the graph reaches every cell through a shim keyed on its name, and a bare `use` leaves no shim
 // behind — so the two series this example imports are aliased rather than imported.
-trading_data::node_alias! { pub Bar1m = trading_data::Bars<TF_1MIN>; }
+trading_data::node_alias! { pub Bar1m = trading_data::Bars<{ Timeframe::from_naive(1, Minutes) }>; }
 trading_data::node_alias! { pub Rsi14 = trading_data::Rsi<Bar1m, Len14>; }
 
 /// λ's window, in minutes.
@@ -124,11 +122,11 @@ impl Cell for Flow1m {
 #[node]
 impl Emit for Flow1m {
 	/// The partial minute is the whole of the state, so the trades it holds reach back exactly one.
-	type Deps = (Folding<Trades, { Horizon::Span(TF_1MIN) }>,);
+	type Deps = (Folding<Trades, { Horizon::Span(Timeframe::from_naive(1, Minutes)) }>,);
 
 	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Flow>) {
 		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
-		let step = Exact::from_nanos(TF_1MIN.duration().as_nanos() as i64);
+		let step = Exact::from_nanos(Timeframe::from_naive(1, Minutes).duration().as_nanos() as i64);
 		for (i, exec) in trades.exec().iter().enumerate() {
 			let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
 			let ts_close = exec.floor(step).as_nanos() + step.as_nanos();

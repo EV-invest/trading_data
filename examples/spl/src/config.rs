@@ -39,14 +39,13 @@ impl Config {
 			.unwrap_or_else(|e| panic!("failed to run `nix eval` (is nix installed?): {e}"));
 		assert!(out.status.success(), "nix evaluation of '{}' failed:\n{}", path.display(), String::from_utf8_lossy(&out.stderr));
 		let parsed: Self = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("config '{}' does not match the expected shape: {e}", path.display()));
-		// A buffer's reach is a const capacity, the lookback a runtime knob. Failing here names the
-		// key; failing at the window would only look like one that silently never warms.
-		let lookback = parsed.strategy.indies.momentum.lookback;
+		// Failing here names the key; failing at the leg would only look like an indie that never warms.
+		let fast = parsed.strategy.indies.momentum.fast;
 		assert!(
-			lookback as u64 + 1 <= crate::nodes::MOM_PERIODS,
-			"indies.momentum.lookback = {lookback} wants a {}-bar window, over the {} periods the graph retains",
-			lookback + 1,
-			crate::nodes::MOM_PERIODS
+			crate::nodes::LEGS.contains(&fast),
+			"indies.momentum.fast = {fast}, over which no window is retained — the graph buffers {} and {}",
+			crate::nodes::LEGS[0],
+			crate::nodes::LEGS[1]
 		);
 		// The series an indie runs on is wiring — `RsiSeries` — but the timeframe is half the indie's
 		// signature, so the config still names it and the two have to agree.
@@ -104,7 +103,6 @@ pub struct Rsi {
 #[serde(deny_unknown_fields)]
 pub struct Momentum {
 	pub fast: Timeframe,
-	pub lookback: usize,
 	pub risk_free_rate: f64,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]

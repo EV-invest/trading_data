@@ -31,7 +31,7 @@ use trading_data_spl::{
 	DEPTH,
 	nodes::{
 		Atr, Bar1h, Bar1m, Bar4h, Bar5m, BookTopSnap, Change1d, Change3m, Classified, Classify, Decided, Decision, Deprecator, Imbalance, Intent, Momentum, OI_REACH, REACH_1D, SPAN_3MIN,
-		Spread, StdScreener, TF_4H, TF_5MIN, Volume1h, Volume1m, mom_cap,
+		Spread, StdScreener, Volume1h, Volume1m,
 	},
 };
 
@@ -357,7 +357,10 @@ impl DataActor for Momenta {
 		self.m5.push(&[bar]);
 		self.out.clear();
 		self.node.emit(
-			(self.m5.hist::<Buffering<Bar5m, { mom_cap(TF_5MIN) }>>(), self.h4.hist::<Buffering<Bar4h, { mom_cap(TF_4H) }>>()),
+			(
+				self.m5.hist::<Buffering<Bar5m, { Horizon::Elems(181) }>>(),
+				self.h4.hist::<Buffering<Bar4h, { Horizon::Elems(181) }>>(),
+			),
 			&mut self.out,
 		);
 		self.publish_signal(MOMENTUM, encode(&self.out), signal.ts_event);
@@ -591,8 +594,8 @@ impl DataActor for Classifier {
 		let out = self.node.advance((
 			true,
 			&bar,
-			self.m5.hist::<Buffering<Bar5m, { mom_cap(TF_5MIN) }>>(),
-			self.h4.hist::<Buffering<Bar4h, { mom_cap(TF_4H) }>>(),
+			self.m5.hist::<Buffering<Bar5m, { Horizon::Elems(181) }>>(),
+			self.h4.hist::<Buffering<Bar4h, { Horizon::Elems(181) }>>(),
 			&self.c1d,
 			&self.c3m,
 			&self.v1m,

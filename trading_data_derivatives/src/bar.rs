@@ -168,7 +168,8 @@ pub fn closed_by(bars: &[Bar], deadline: i64) -> &[Bar] {
 
 /// The series over a period, in three: the two accumulators over trades, and the bar that is their
 /// join. The period is a parameter rather than a name the framework pre-blessed — a node's identity
-/// is still its type, and `Bars<TF_1MIN>` is as distinct from `Bars<TF_5MIN>` as two newtypes were. Only
+/// is still its type, and a `Bars` over one minute is as distinct from one over five as two newtypes
+/// were. Only
 /// [`Tag`] is new: the period has to reach [`Cell::NAME`] for the DAG card to keep saying `Bar:1m`.
 #[derive(Clone, Default)]
 pub struct Ohlcs<const TF: Timeframe>(Option<Ohlc>);

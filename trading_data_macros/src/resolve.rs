@@ -119,7 +119,10 @@ fn accept(st: &mut State, answer: Option<Answer>) -> syn::Result<()> {
 /// The shim call that answers for `dep`, with the state to hand back.
 fn ask(st: &State, shim: &TokenStream, cell: &Type) -> TokenStream {
 	let args = ty::type_args(cell).into_iter().map(|a| {
-		let s = ty::shim_path(&a, "__td_node_").unwrap_or_else(|_| quote!(crate::__td_not_a_cell));
+		let s = match &a {
+			syn::GenericArgument::Type(t) => ty::shim_path(t, "__td_node_").unwrap_or_else(|_| quote!(crate::__td_not_a_cell)),
+			_ => quote!(crate::__td_not_a_cell),
+		};
 		quote!({ #s } { #a })
 	});
 	let dag = &st.cfg.dag;

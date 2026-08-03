@@ -79,19 +79,15 @@ pub fn norm(ty: &Type) -> String {
 	}
 }
 
-/// The arguments a generic node's shim is invoked with — one per type parameter it declared, in
-/// order, since that is what its matcher binds.
-pub fn type_args(ty: &Type) -> Vec<Type> {
+/// The arguments a generic node's shim is invoked with — one per type *or const* parameter it
+/// declared, in order, since that is what its matcher binds. A const written as an expression
+/// (`Bars<{ Timeframe::from_naive(1, Minutes) }>`) arrives as `Const` where one written as a bare
+/// path is indistinguishable from a type; both fill the same slot.
+pub fn type_args(ty: &Type) -> Vec<GenericArgument> {
 	let Type::Path(p) = ty else { return Vec::new() };
 	let Some(seg) = p.path.segments.last() else { return Vec::new() };
 	let PathArguments::AngleBracketed(a) = &seg.arguments else { return Vec::new() };
-	a.args
-		.iter()
-		.filter_map(|g| match g {
-			GenericArgument::Type(t) => Some(t.clone()),
-			_ => None,
-		})
-		.collect()
+	a.args.iter().filter(|g| !matches!(g, GenericArgument::Lifetime(_))).cloned().collect()
 }
 
 /// The `$crate` token, which only a `macro_rules!` body may carry — spelled by hand because

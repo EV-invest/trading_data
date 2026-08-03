@@ -102,7 +102,7 @@ pub use classify::{Category, Classified, Classify, Quality};
 pub use decision::{Decided, Decision};
 pub use deprecator::{Deprecator, Intent, TrailingStop};
 pub use imbalance::Imbalance;
-pub use momentum::{MOM_PERIODS, Momentum, mom_cap};
+pub use momentum::{LEGS, Momentum};
 pub use oi_delta::{OI_REACH, OiDelta5m, OiDelta15m};
 pub use rsi::{AvgGain, AvgLoss, Knobs, RSI_TF, Rsi, RsiDelta, RsiSeries};
 pub use rsi_screener::RsiScreener;
@@ -110,21 +110,17 @@ pub use spread::Spread;
 pub use std_screener::StdScreener;
 use trading_data::{Armed, BookAnchors, BookDeltas, BookShape, DeltaFrame, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
 pub use trading_data::{Bar, RsiValues};
-use v_utils::Timeframe;
+use v_utils::{
+	Timeframe,
+	TimeframeDesignator::{Hours, Minutes},
+};
 
 // the graph reaches every cell through a shim keyed on its name, and a bare `use` leaves no shim
 // behind — so the series this strategy runs on are aliased rather than imported.
-/// The clocks this strategy runs on, and the whole of what makes its series the periods they are.
-/// Minutes are spelled `MIN` throughout: `M` is the designator for *months*.
-pub const TF_1MIN: Timeframe = Timeframe::from_str_const("1m");
-pub const TF_5MIN: Timeframe = Timeframe::from_str_const("5m");
-pub const TF_1H: Timeframe = Timeframe::from_str_const("1h");
-pub const TF_4H: Timeframe = Timeframe::from_str_const("4h");
-
-trading_data::node_alias! { pub Bar1m = trading_data::Bars<TF_1MIN>; }
-trading_data::node_alias! { pub Bar5m = trading_data::Bars<TF_5MIN>; }
-trading_data::node_alias! { pub Bar1h = trading_data::Bars<TF_1H>; }
-trading_data::node_alias! { pub Bar4h = trading_data::Bars<TF_4H>; }
+trading_data::node_alias! { pub Bar1m = trading_data::Bars<{ Timeframe::from_naive(1, Minutes) }>; }
+trading_data::node_alias! { pub Bar5m = trading_data::Bars<{ Timeframe::from_naive(5, Minutes) }>; }
+trading_data::node_alias! { pub Bar1h = trading_data::Bars<{ Timeframe::from_naive(1, Hours) }>; }
+trading_data::node_alias! { pub Bar4h = trading_data::Bars<{ Timeframe::from_naive(4, Hours) }>; }
 
 trading_data::node_alias! {
 	/// The compiled screener — the gate `Classify` and everything under it hangs dormant off. The

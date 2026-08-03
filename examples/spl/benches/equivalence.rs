@@ -18,14 +18,16 @@ use std::path::{Path, PathBuf};
 use ring::Ring;
 use trading_data::{
 	Armed, Bar, Book, BookShape, Buffering, DeltaFrame, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot, Node as _, Ohlc, Ohlcs, Oi,
-	OiRoot, ReadClock, Replay, TradeCols, Volume, Volumes, required_lanes,
+	OiRoot, ReadClock, Replay, Timeframe,
+	TimeframeDesignator::{Hours, Minutes},
+	TradeCols, Volume, Volumes, required_lanes,
 };
 use trading_data_spl::{
 	config::Config,
 	day_bounds, ensure_lanes,
 	nodes::{
 		Atr, Bar1h, Bar1m, Bar4h, Bar5m, Batches, BookTop, BookTopSnap, Change1d, Change3m, Classify, Decision, Deprecator, Graph, Imbalance, Intent, Momentum, OI_REACH, REACH_1D,
-		SPAN_3MIN, Spread, StdScreener, TF_1H, TF_1MIN, TF_4H, TF_5MIN, Volume1h, Volume1m, mom_cap,
+		SPAN_3MIN, Spread, StdScreener, Volume1h, Volume1m,
 	},
 	symbol, trading_days,
 };
@@ -45,7 +47,7 @@ fn main() {
 	let read_clock = ReadClock::from(Exact::from(cfg.backtest.read_clock.duration()));
 
 	// The situation's whole window, per-day like `main`: the first day of it screens nothing —
-	// momentum wants its lookback of 5m closes before the screener can fire at all — so a truncated
+	// momentum wants its whole window of 5m closes before the screener can fire at all — so a truncated
 	// window would assert that two silent paths are equally silent. The `fired` check at the end is
 	// what makes that a failure rather than a pass.
 	let days = trading_days(situation);
@@ -101,14 +103,14 @@ fn same(a: &Option<Intent>, b: &Option<Intent>) -> bool {
 /// real graph missing here — it is a second output that nothing on this path reads.
 #[derive(Default)]
 struct Direct {
-	ohlc_1m: Ohlcs<TF_1MIN>,
-	ohlc_5m: Ohlcs<TF_5MIN>,
-	ohlc_1h: Ohlcs<TF_1H>,
-	ohlc_4h: Ohlcs<TF_4H>,
-	vol_1m: Volumes<TF_1MIN>,
-	vol_5m: Volumes<TF_5MIN>,
-	vol_1h: Volumes<TF_1H>,
-	vol_4h: Volumes<TF_4H>,
+	ohlc_1m: Ohlcs<{ Timeframe::from_naive(1, Minutes) }>,
+	ohlc_5m: Ohlcs<{ Timeframe::from_naive(5, Minutes) }>,
+	ohlc_1h: Ohlcs<{ Timeframe::from_naive(1, Hours) }>,
+	ohlc_4h: Ohlcs<{ Timeframe::from_naive(4, Hours) }>,
+	vol_1m: Volumes<{ Timeframe::from_naive(1, Minutes) }>,
+	vol_5m: Volumes<{ Timeframe::from_naive(5, Minutes) }>,
+	vol_1h: Volumes<{ Timeframe::from_naive(1, Hours) }>,
+	vol_4h: Volumes<{ Timeframe::from_naive(4, Hours) }>,
 	bars_1m: Bar1m,
 	bars_5m: Bar5m,
 	bars_1h: Bar1h,
@@ -206,7 +208,10 @@ impl Direct {
 		self.atr.emit((&self.b_bars[0],), &mut self.b_atr);
 		self.b_mom.clear();
 		self.momentum.emit(
-			(self.m5.hist::<Buffering<Bar5m, { mom_cap(TF_5MIN) }>>(), self.h4.hist::<Buffering<Bar4h, { mom_cap(TF_4H) }>>()),
+			(
+				self.m5.hist::<Buffering<Bar5m, { Horizon::Elems(181) }>>(),
+				self.h4.hist::<Buffering<Bar4h, { Horizon::Elems(181) }>>(),
+			),
 			&mut self.b_mom,
 		);
 
@@ -230,8 +235,8 @@ impl Direct {
 			let classified = self.classify.advance((
 				true,
 				&self.b_bars[0],
-				self.m5.hist::<Buffering<Bar5m, { mom_cap(TF_5MIN) }>>(),
-				self.h4.hist::<Buffering<Bar4h, { mom_cap(TF_4H) }>>(),
+				self.m5.hist::<Buffering<Bar5m, { Horizon::Elems(181) }>>(),
+				self.h4.hist::<Buffering<Bar4h, { Horizon::Elems(181) }>>(),
 				&self.b_c1d,
 				&self.b_c3m,
 				&self.b_v1m,

@@ -215,9 +215,13 @@ pub fn node_alias(input: TokenStream) -> syn::Result<TokenStream> {
 	// whoever names the alias.
 	let args = ty::type_args(&ty)
 		.into_iter()
-		.map(|a| {
-			let s = dep_shim(&a, "__td_node_")?;
-			Ok(quote!({ #s } { #a }))
+		.map(|a| match &a {
+			syn::GenericArgument::Type(t) => {
+				let s = dep_shim(t, "__td_node_")?;
+				Ok(quote!({ #s } { #a }))
+			}
+			// nothing answers for a const, and its body never asks: the slot is positional only
+			_ => Ok(quote!({ __td_not_a_cell } { #a })),
 		})
 		.collect::<syn::Result<Vec<_>>>()?;
 	let shim = Ident::new(&format!("__td_node_{name}"), name.span());
