@@ -2,14 +2,18 @@
 #set text(size: 9.5pt)
 #set par(justify: false)
 #show raw.where(block: true): it => block(
-  fill: luma(248), inset: 8pt, radius: 3pt, width: 100%, text(size: 7.6pt, it),
+  fill: luma(248),
+  inset: 8pt,
+  radius: 3pt,
+  width: 100%,
+  text(size: 7.6pt, it),
 )
-#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, edge, node
 
 = `trading_data_dag` — the utilization framework
 
-Read off `trading_data_dag/src/lib.rs` and `trading_data_macros/`; the census in §2 is taken from
-the actual call sites across `examples/` and the test corpus.
+Read off `trading_data_dag/src/lib.rs` and `trading_data_macros/`; the census in §2 is counted, at
+compile time, off the sources under `examples/`.
 
 == 1. The framework
 
@@ -207,8 +211,7 @@ _Who holds the history_ is the axis the wrappers actually partition:
   edge(<celll>, <eng>, "->"),
   edge(<cellf>, <own>, "->"),
 
-  edge(<perm>, <own>, "-|>", bend: -32deg, stroke: (paint: red, thickness: 0.7pt),
-    label: text(fill: red, size: 7pt)[`Gating` + `Folding` = compile error]),
+  edge(<perm>, <own>, "-|>", bend: -32deg, stroke: (paint: red, thickness: 0.7pt), label: text(fill: red, size: 7pt)[`Gating` + `Folding` = compile error]),
 ))
 
 === 1.4 `Horizon` and `CLOCK` — how far back, and how often
@@ -401,32 +404,99 @@ _Who holds the history_ is the axis the wrappers actually partition:
 
 == 2. Utilization census
 
-Occurrences across the whole repo (`examples/`, every `trading_data*` crate, tests).
-
-#table(
-  columns: (auto, auto, 1fr),
-  stroke: 0.4pt + luma(180),
-  align: (left, right, left),
-  table.header([*primitive*], [*uses*], [*what the use looks like in practice*]),
-  [`Buffering<C, H>`], [52],
-  [dominant. `Elems(3)` change-over-3-bars, `Span(TF)` volume / vol-of-vol windows.],
-  [`Folding<C, H>`], [25],
-  [almost always `Unbounded` — Wilder `AvgGain`/`AvgLoss`, CVD, the `Book` fold, `Armed`'s own trigger.],
-  [`Gating<G>`], [23],
-  [`Gating<Live>`, `Gating<Hot>`, `Gating<Armed<Deprecator>>`. Always the leading dep.],
-  [`Spanning<C, TF>`], [8], [timeframe-parameterised bars: `Spanning<Trades, TF>`.],
-  [`Sampling<C>`], [8], [cross-rate level reads — the newest wrapper, least exercised.],
+// counted at compile time off the sources themselves: typst compile --root . trading_data_dag/model.typ
+#let sources = (
+  simple: ("src/lib.rs", "src/main.rs", "src/nodes.rs"),
+  live: ("src/lib.rs", "src/main.rs", "src/nodes.rs"),
+  live_equiv: ("src/main.rs",),
+  spl: (
+    "src/lib.rs",
+    "src/main.rs",
+    "src/config.rs",
+    "src/ui.rs",
+    "src/nodes/mod.rs",
+    "src/nodes/atr.rs",
+    "src/nodes/book_top.rs",
+    "src/nodes/change_1d.rs",
+    "src/nodes/change_3m.rs",
+    "src/nodes/classify.rs",
+    "src/nodes/decision.rs",
+    "src/nodes/deprecator.rs",
+    "src/nodes/imbalance.rs",
+    "src/nodes/momentum.rs",
+    "src/nodes/oi_delta.rs",
+    "src/nodes/rsi.rs",
+    "src/nodes/rsi_screener.rs",
+    "src/nodes/spread.rs",
+    "src/nodes/std_screener.rs",
+    "src/nodes/volume_1h.rs",
+    "src/nodes/volume_1m.rs",
+    "src/nodes/volume_4h.rs",
+    "benches/equivalence.rs",
+    "benches/naive_nt.rs",
+    "benches/optimized_nt.rs",
+    "benches/td_graph.rs",
+    "benches/harness/mod.rs",
+    "benches/harness/ring.rs",
+    "benches/nt/mod.rs",
+    "benches/nt/actors.rs",
+    "examples/viz_cost.rs",
+  ),
 )
 
-That table is the design working: engine-held retention outnumbers node-held two to one, and
-every `Folding` left is a genuine recurrence or fold — the two things a window does not
-promise, because they must see every element exactly once.
+#let corpus = (
+  sources
+    .pairs()
+    .map(((crate, files)) => (
+      crate,
+      files.map(f => read("/examples/" + crate + "/" + f)).join("\n"),
+    ))
+)
 
-`Cell::CLOCK` is declared three times so far — `Ohlcs<TF>`, `Volumes<TF>`, `Bars<TF>`, the newest
-mechanism and the one the rest of the repo reads through `Buffering`, which forwards it. All three
-enforce it themselves; the engine's own gate is exercised only by `trading_data_dag/tests/clocking.rs`.
+#let census(probes) = {
+  let rows = probes
+    .map(((label, pat)) => {
+      let hits = corpus.map(((_, src)) => src.matches(regex(pat)).len())
+      (label, hits, hits.sum())
+    })
+    .sorted(key: r => -r.at(2))
+  table(
+    columns: (auto,) + corpus.map(_ => auto) + (auto,),
+    stroke: 0.4pt + luma(180),
+    align: (left,) + corpus.map(_ => right) + (right,),
+    table.header(
+      [*primitive*],
+      ..corpus.map(((crate, _)) => raw(crate)),
+      [*all*],
+    ),
+    ..rows.map(((label, hits, total)) => (raw(label), ..hits.map(h => [#h]), strong[#total])).flatten()
+  )
+}
 
-Node-kind spread across the real graphs (`examples/simple`, `examples/live`, `examples/spl`):
-`Emit` for every rate-changing series (bars, RSI deltas, deprecator intents), `Symbolic` for
-the algebraic leaves (`Signal`, `Lambda1m`), `Gate` for the screeners, and `Episodic` + `Armed`
-for exactly one thing so far — the `spl` deprecator episode.
+#census((
+  ("Buffering<C, H>", "\bBuffering\s*<"),
+  ("Folding<C, H>", "\bFolding\s*<"),
+  ("Gating<G>", "\bGating\s*<"),
+  ("Spanning<C, TF>", "\bSpanning\s*<"),
+  ("Sampling<C>", "\bSampling\s*<"),
+))
+
+#census((
+  ("Elems(N)", "\bElems\s*\("),
+  ("Span(TF)", "\bSpan\s*\("),
+  ("Unbounded", "\bUnbounded\b"),
+  ("Unit", "\bUnit\b"),
+  ("CLOCK", "\bCLOCK\b"),
+))
+
+#census((
+  ("impl Cell", "\bimpl\b[^\n{;]*\bCell\b[^\n{;]*\bfor\b"),
+  ("impl Emit", "\bimpl\b[^\n{;]*\bEmit\b[^\n{;]*\bfor\b"),
+  ("impl Symbolic", "\bimpl\b[^\n{;]*\bSymbolic\b[^\n{;]*\bfor\b"),
+  ("impl Gate", "\bimpl\b[^\n{;]*\bGate\b[^\n{;]*\bfor\b"),
+  ("impl Episodic", "\bimpl\b[^\n{;]*\bEpisodic\b[^\n{;]*\bfor\b"),
+  ("Armed<_>", "\bArmed\s*<"),
+  ("impl Glance", "\bimpl\b[^\n{;]*\bGlance\b[^\n{;]*\bfor\b"),
+  ("impl Flat", "\bimpl\b[^\n{;]*\bFlat\b[^\n{;]*\bfor\b"),
+  ("Plot", "\bPlot\b"),
+))
