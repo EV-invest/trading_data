@@ -293,6 +293,17 @@ pub trait Cell {
 	/// gate pulls no deps, so a folded reach is the one thing gating cannot re-warm.
 	const FOLDED: bool = false;
 
+	/// Whether reading this in dep position reads something the *engine* keeps — [`Buffering`] and
+	/// [`Sampling`], against the [`Buffer`]/[`Latest`] beside the source. Everything else is this
+	/// tick's batch and nothing more: a bare cell, a [`Folding`]/[`Spanning`] reach the node holds, a
+	/// [`Gating`] permission.
+	///
+	/// This is what says whether a tick may be *withheld* from a consumer. A retained dep is there
+	/// again next tick, so skipping one costs nothing; a pass-through dep skipped is a batch nobody
+	/// ever sees again. Hence [`Emitter::opens`]: the engine enforces a declared rate only where it
+	/// holds every input the node would have read.
+	const RETAINED: bool = false;
+
 	/// How often this cell publishes, stated on the cell because the rate is a property of what a
 	/// thing *is* and of nothing it reads (`rates.node.declared`). `None` — whenever its inputs do.
 	/// `Some(tf)` — over elements whose `tf` period has closed, never re-entered while one is in
@@ -303,9 +314,8 @@ pub trait Cell {
 	/// producer's rate — the `Elems(n)` → duration conversion of [`Horizon::span`] — and what lets
 	/// [`graph!`] check a node's clock against the ones feeding it.
 	///
-	/// Who *keeps* it follows the node's reach, not the declaration: a node whose history the engine
-	/// holds is clocked by the engine ([`Emitter::opens`]), and one holding its own — a
-	/// [`Folding`]/[`Spanning`] dep — keeps it in the element walk that fold already is.
+	/// Who *enforces* it follows [`RETAINED`](Cell::RETAINED), not the declaration: see
+	/// [`Emitter::opens`].
 	const CLOCK: Option<Timeframe> = None;
 
 	/// Whether a consumer naming this in dep position is *dominated* by it — [`Gating`] alone. A type
@@ -622,6 +632,9 @@ pub trait DepSet {
 	/// field a dep resolves against: folded or `Unit` reads the cell itself, anything else reads the
 	/// [`Buffer`] retaining it.
 	const FOLDS: &'static [bool];
+	/// Per-dep [`Cell::RETAINED`], positionally — which of these inputs survive a tick the node is
+	/// not run on, and so whether a declared rate is the engine's to enforce.
+	const RETAINS: &'static [bool];
 	/// Per-dep [`Cell::CLOCK`], positionally — the rates feeding this node, which is what a
 	/// consumer's own rate is checked against and what turns its `Elems(n)` reach into a duration.
 	const CLOCKS: &'static [Option<Timeframe>];
@@ -641,6 +654,17 @@ const fn any(flags: &[bool]) -> bool {
 		i += 1;
 	}
 	false
+}
+
+const fn all(flags: &[bool]) -> bool {
+	let mut i = 0;
+	while i < flags.len() {
+		if !flags[i] {
+			return false;
+		}
+		i += 1;
+	}
+	true
 }
 
 /// Whether every gating dep precedes every plain one — see [`Pull::open`].
@@ -906,13 +930,14 @@ where
 	/// of each of its periods. Read after the gate, so a shut node consumes no period and the first
 	/// tick it is let through is a boundary rather than the remainder of one it slept out.
 	///
-	/// A node holding its own reach keeps its own rate, the same split [`Folding`] and [`Buffering`]
-	/// draw over retention. The ticks a clock withholds are ticks a [`Folding`]/[`Spanning`] dep is
-	/// never shown, and a fold must see every element (`rates.folds.exactly-once`), so its element
-	/// walk *is* the boundary and the declaration is all the engine takes.
+	/// Only a node reading what the engine keeps ([`Cell::RETAINED`]) is one the engine may withhold
+	/// a tick from: a withheld tick is a batch never delivered, and a pass-through dep — a bare cell,
+	/// a [`Folding`]/[`Spanning`] reach, a [`Gating`] permission — has no second showing of it. Such a
+	/// node is clocked by the element walk it already runs (`rates.folds.exactly-once`), and the
+	/// declaration is all the engine takes from it.
 	fn opens(&mut self, ts: i64) -> bool {
 		let Some(tf) = <E as Cell>::CLOCK else { return true };
-		if any(<<E as Emit>::Deps as DepSet>::FOLDS) {
+		if !all(<<E as Emit>::Deps as DepSet>::RETAINS) {
 			return true;
 		}
 		let period = ts / Horizon::ns(tf);
@@ -1454,6 +1479,7 @@ impl<C: Series, const H: Horizon> Cell for Buffering<C, H> {
 	const CLOCK: Option<Timeframe> = C::CLOCK;
 	const NAME: &'static str = C::NAME;
 	const REACH: Horizon = H;
+	const RETAINED: bool = true;
 }
 
 impl<'t, C: Series, const K: Horizon, const H: Horizon, T> Has<'t, Buffering<C, H>, Here> for Cons<'t, Buffer<C, K>, T> {
@@ -1579,6 +1605,7 @@ where
 	/// frame cell names, and a wrapper that renamed its dep would drop out of every one of them.
 	const CLOCK: Option<Timeframe> = C::CLOCK;
 	const NAME: &'static str = C::NAME;
+	const RETAINED: bool = true;
 }
 
 impl<'t, C: Series, T> Has<'t, Sampling<C>, Here> for Cons<'t, Latest<C>, T>
@@ -1752,6 +1779,7 @@ impl DepSet for () {
 	const GATES: &'static [bool] = &[];
 	const NAMES: &'static [&'static str] = &[];
 	const REACH: &'static [Horizon] = &[];
+	const RETAINS: &'static [bool] = &[];
 }
 impl<'t, F> Pull<'t, F, ()> for () {
 	fn pull(_: &F) {}
@@ -1802,6 +1830,7 @@ macro_rules! impl_arity {
 			const GATES: &'static [bool] = &[$(<$T::Gates as Bit>::VALUE),+];
 			const NAMES: &'static [&'static str] = &[$($T::NAME),+];
 			const REACH: &'static [Horizon] = &[$($T::REACH),+];
+			const RETAINS: &'static [bool] = &[$($T::RETAINED),+];
 		}
 		impl<'t, F, $($T: Cell, $I),+> Pull<'t, F, ($($I,)+)> for ($($T,)+)
 		where F: $(Has<'t, $T, $I> +)+ {
