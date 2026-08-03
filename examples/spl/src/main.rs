@@ -140,7 +140,7 @@ async fn main() {
 						pb.set_message(format!("{} episodes, {} intents{}", day.episodes, day.intents, day.violations_msg()));
 					}
 				}
-				let out = graph.tick_obs(ts_ns, lanes.into(), recorder.at(ts_ns));
+				let out = graph.tick_obs(ts_ns, lanes.into(), &mut recorder.at(ts_ns));
 
 				for intent in out.deprecator {
 					day.check_intent(*intent);

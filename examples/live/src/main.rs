@@ -64,7 +64,7 @@ async fn main() {
 		let mut graph = Graph::default();
 		while let Some(l) = live.next() {
 			let ts_ns = l.ts_venue.as_nanos();
-			graph.tick_obs(ts_ns, l.into(), recorder.at(ts_ns));
+			graph.tick_obs(ts_ns, l.into(), &mut recorder.at(ts_ns));
 		}
 	});
 
