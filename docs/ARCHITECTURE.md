@@ -170,6 +170,14 @@ Structural rules (enforced by the signatures, not convention):
   a **window**. A *recurrence* (Wilder RSI/ATR,
   EMA) and a *fold* (a running sum, a partial bar) stay stateful: they must see every element
   exactly once, which a window does not promise.
+- **Sampling.** The point-level read of the same edge: `Latest<C>` is `Buffer`'s sibling — one item,
+  not a window — and a consumer names `Sampling<C>` to read "the last value `C` produced, whenever
+  that was". A dep read is this tick's run, so a consumer clocked by some *other* series reads the
+  empty run on every tick of its own and takes `None` for an answer; a level standing across the
+  silence is what it actually meant. `Present` is what keeps that level a value: the dominant item
+  here is `Option<f64>`, a rate-preserving decline, and retaining one of those would hold an absence
+  forever. So a level never reverts to absent once it holds — which is exactly what a *window* over
+  the same series does not promise, since a window's newest element may itself be a decline.
 - **A node owns its rate.** How often a node publishes is declared on the node, never in `Deps` — so
   no consumer can change the rate of what it reads, and a node clocked to a timeframe sees completed
   elements only rather than being re-run as the in-progress one moves. The counterpart obligation is
