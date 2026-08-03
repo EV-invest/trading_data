@@ -142,7 +142,7 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape], oi: OiRoot[Oi], mc: McRoot[Mc] };
 	out TickOut;
-	outputs { deprecator: Deprecator, rsi: Rsi }
+	outputs { bar_1m: Bar1m, deprecator: Deprecator, rsi: Rsi }
 }
 
 /// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that
