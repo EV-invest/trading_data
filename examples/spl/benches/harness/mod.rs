@@ -145,6 +145,9 @@ pub struct Row {
 	pub feed_s: f64,
 	pub cpu_s: f64,
 	pub cores_avail: usize,
+	/// Which CPUs the run was allowed on. `cores_avail` is a count and a count cannot say whether two
+	/// of them were SMT siblings of one physical core.
+	pub cpus: String,
 	/// Resident MB at p68 and p95 of the timed section.
 	pub rss_mb: [f64; 2],
 	pub counters: BTreeMap<String, u64>,
@@ -162,6 +165,7 @@ impl Row {
 			feed_s,
 			cpu_s: total.1,
 			cores_avail: thread::available_parallelism().expect("a thread count is always known on linux").get(),
+			cpus: status_field("Cpus_allowed_list:"),
 			rss_mb: total.2,
 			counters: COUNTERS.snapshot(),
 			notes,
@@ -203,7 +207,9 @@ pub fn publish(row: Row) {
 			r.digest
 		);
 	}
-	println!("cores available: {}", rows.first().map_or(0, |r| r.cores_avail));
+	for r in &rows {
+		println!("{}: cpus {} ({} of them)", r.name, r.cpus, r.cores_avail);
+	}
 
 	let keys: Vec<&String> = rows.first().map(|r| r.counters.keys().collect()).unwrap_or_default();
 	if !keys.is_empty() {
@@ -243,9 +249,21 @@ fn cpu_ticks() -> u64 {
 	utime + stime
 }
 
-fn rss_mb() -> f64 {
+fn status_field(key: &str) -> String {
 	let status = fs::read_to_string("/proc/self/status").expect("procfs is mounted");
-	let line = status.lines().find(|l| l.starts_with("VmRSS:")).expect("VmRSS is reported for any live process");
-	let kb: f64 = line.split_whitespace().nth(1).expect("VmRSS has a value").parse().expect("VmRSS is a number");
-	kb / 1024.0
+	let line = status
+		.lines()
+		.find(|l| l.starts_with(key))
+		.unwrap_or_else(|| panic!("/proc/self/status reports {key} for any live process"));
+	line[key.len()..].trim().to_string()
+}
+
+fn rss_mb() -> f64 {
+	status_field("VmRSS:")
+		.split_whitespace()
+		.next()
+		.expect("VmRSS has a value")
+		.parse::<f64>()
+		.expect("VmRSS is a number")
+		/ 1024.0
 }

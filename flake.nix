@@ -67,12 +67,20 @@
         };
         # `examples/spl/benches` — the same strategy through our DAG and through NautilusTrader, over
         # one tape. Nothing listens, so no port; the build is `cargo bench`'s own profile.
+        #
+        # `BENCH_CPUS` places the run on a fixed CPU set, which is half of what a scaling number needs
+        # — the other half is nobody else being scheduled there, and that is privileged (this host
+        # delegates `cpu io memory pids` to the user slice, not `cpuset`). Confine the complement from
+        # the system config; until then the placement alone only removes migration, not contention.
+        # SMT is on, so a set has to name both siblings of every physical core it claims or the count
+        # is threads, not cores.
         spl_bench = pkgs.writeShellApplication {
           name = "spl_bench";
-          runtimeInputs = with pkgs; [ rust git nix pkg-config openssl mold ];
+          runtimeInputs = with pkgs; [ rust git nix pkg-config openssl mold util-linux ];
           text = ''
             repo="$(git rev-parse --show-toplevel)"
-            exec cargo bench --manifest-path "$repo/Cargo.toml" -p trading_data_spl "$@"
+            exec ''${BENCH_CPUS:+taskset -c "$BENCH_CPUS"} \
+              cargo bench --manifest-path "$repo/Cargo.toml" -p trading_data_spl "$@"
           '';
         };
         # `trading_data` is a library — there is no default binary — so a bare `nix run .` lands here.
