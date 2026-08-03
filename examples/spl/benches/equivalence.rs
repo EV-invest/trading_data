@@ -24,8 +24,8 @@ use trading_data_spl::{
 	config::Config,
 	day_bounds, ensure_lanes,
 	nodes::{
-		Atr, Bar1h, Bar1m, Bar4h, Bar5m, Batches, BookTop, BookTopSnap, Change1d, Change3m, Classify, Decision, Deprecator, Graph, H1, H4, Imbalance, Intent, M1, M5, Momentum, OI_REACH,
-		REACH_1D, SPAN_3M, Spread, StdScreener, Volume1h, Volume1m, mom_cap,
+		Atr, Bar1h, Bar1m, Bar4h, Bar5m, Batches, BookTop, BookTopSnap, Change1d, Change3m, Classify, Decision, Deprecator, Graph, Imbalance, Intent, Momentum, OI_REACH, REACH_1D,
+		SPAN_3MIN, Spread, StdScreener, TF_1H, TF_1MIN, TF_4H, TF_5MIN, Volume1h, Volume1m, mom_cap,
 	},
 	symbol, trading_days,
 };
@@ -101,14 +101,14 @@ fn same(a: &Option<Intent>, b: &Option<Intent>) -> bool {
 /// real graph missing here — it is a second output that nothing on this path reads.
 #[derive(Default)]
 struct Direct {
-	ohlc_1m: Ohlcs<M1>,
-	ohlc_5m: Ohlcs<M5>,
-	ohlc_1h: Ohlcs<H1>,
-	ohlc_4h: Ohlcs<H4>,
-	vol_1m: Volumes<M1>,
-	vol_5m: Volumes<M5>,
-	vol_1h: Volumes<H1>,
-	vol_4h: Volumes<H4>,
+	ohlc_1m: Ohlcs<TF_1MIN>,
+	ohlc_5m: Ohlcs<TF_5MIN>,
+	ohlc_1h: Ohlcs<TF_1H>,
+	ohlc_4h: Ohlcs<TF_4H>,
+	vol_1m: Volumes<TF_1MIN>,
+	vol_5m: Volumes<TF_5MIN>,
+	vol_1h: Volumes<TF_1H>,
+	vol_4h: Volumes<TF_4H>,
 	bars_1m: Bar1m,
 	bars_5m: Bar5m,
 	bars_1h: Bar1h,
@@ -206,7 +206,7 @@ impl Direct {
 		self.atr.emit((&self.b_bars[0],), &mut self.b_atr);
 		self.b_mom.clear();
 		self.momentum.emit(
-			(self.m5.hist::<Buffering<Bar5m, { mom_cap(M5) }>>(), self.h4.hist::<Buffering<Bar4h, { mom_cap(H4) }>>()),
+			(self.m5.hist::<Buffering<Bar5m, { mom_cap(TF_5MIN) }>>(), self.h4.hist::<Buffering<Bar4h, { mom_cap(TF_4H) }>>()),
 			&mut self.b_mom,
 		);
 
@@ -222,7 +222,7 @@ impl Direct {
 		// `Latent` reading — an empty run, or `None`.
 		let decision = if hit {
 			self.change_1d.emit((&self.b_bars[0], self.h1.hist::<Buffering<Bar1h, REACH_1D>>()), &mut self.b_c1d);
-			self.change_3m.emit((self.m1.hist::<Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>>(),), &mut self.b_c3m);
+			self.change_3m.emit((self.m1.hist::<Buffering<Bar1m, { Horizon::Span(SPAN_3MIN) }>>(),), &mut self.b_c3m);
 			self.volume_1m.emit((&self.b_bars[0],), &mut self.b_v1m);
 			self.volume_1h.emit((&self.b_bars[0], self.h1.hist::<Buffering<Bar1h, { Horizon::Elems(1) }>>()), &mut self.b_v1h);
 			self.imbalance.emit((&self.b_top,), &mut self.b_imb);
@@ -230,8 +230,8 @@ impl Direct {
 			let classified = self.classify.advance((
 				true,
 				&self.b_bars[0],
-				self.m5.hist::<Buffering<Bar5m, { mom_cap(M5) }>>(),
-				self.h4.hist::<Buffering<Bar4h, { mom_cap(H4) }>>(),
+				self.m5.hist::<Buffering<Bar5m, { mom_cap(TF_5MIN) }>>(),
+				self.h4.hist::<Buffering<Bar4h, { mom_cap(TF_4H) }>>(),
 				&self.b_c1d,
 				&self.b_c3m,
 				&self.b_v1m,

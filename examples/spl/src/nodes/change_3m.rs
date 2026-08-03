@@ -4,7 +4,7 @@ use v_utils::{Timeframe, TimeframeDesignator};
 use super::Bar1m;
 
 /// Reach behind the change — three minutes, spanned by the closes of the 1m bars inside it.
-pub const SPAN_3M: Timeframe = Timeframe::from_naive(3, TimeframeDesignator::Minutes);
+pub const SPAN_3MIN: Timeframe = Timeframe::from_naive(3, TimeframeDesignator::Minutes);
 
 /// Percent change over the trailing three minutes, off the closed 1m bars inside it. SPL's backtest
 /// mode: reading it off a live Trades window instead is a live-only fidelity choice.
@@ -15,7 +15,7 @@ impl Cell for Change3m {
 }
 #[node]
 impl Emit for Change3m {
-	type Deps = (Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>,);
+	type Deps = (Buffering<Bar1m, { Horizon::Span(SPAN_3MIN) }>,);
 
 	fn emit(&mut self, (m1,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for (b, w3) in m1.fresh().iter().zip(m1.trailing()) {

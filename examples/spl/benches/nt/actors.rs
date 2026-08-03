@@ -30,8 +30,8 @@ use trading_data::{Armed, Bar, Buffering, Direction, Emit as _, Episode, Horizon
 use trading_data_spl::{
 	DEPTH,
 	nodes::{
-		Atr, Bar1h, Bar1m, Bar4h, Bar5m, BookTopSnap, Change1d, Change3m, Classified, Classify, Decided, Decision, Deprecator, H4, Imbalance, Intent, M5, Momentum, OI_REACH, REACH_1D,
-		SPAN_3M, Spread, StdScreener, Volume1h, Volume1m, mom_cap,
+		Atr, Bar1h, Bar1m, Bar4h, Bar5m, BookTopSnap, Change1d, Change3m, Classified, Classify, Decided, Decision, Deprecator, Imbalance, Intent, Momentum, OI_REACH, REACH_1D, SPAN_3MIN,
+		Spread, StdScreener, TF_4H, TF_5MIN, Volume1h, Volume1m, mom_cap,
 	},
 };
 
@@ -357,7 +357,7 @@ impl DataActor for Momenta {
 		self.m5.push(&[bar]);
 		self.out.clear();
 		self.node.emit(
-			(self.m5.hist::<Buffering<Bar5m, { mom_cap(M5) }>>(), self.h4.hist::<Buffering<Bar4h, { mom_cap(H4) }>>()),
+			(self.m5.hist::<Buffering<Bar5m, { mom_cap(TF_5MIN) }>>(), self.h4.hist::<Buffering<Bar4h, { mom_cap(TF_4H) }>>()),
 			&mut self.out,
 		);
 		self.publish_signal(MOMENTUM, encode(&self.out), signal.ts_event);
@@ -431,7 +431,7 @@ impl DataActor for C3m {
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
 		self.m1.push(&[Bar::from(decode::<BarDto>(signal))]);
 		self.out.clear();
-		self.node.emit((self.m1.hist::<Buffering<Bar1m, { Horizon::Span(SPAN_3M) }>>(),), &mut self.out);
+		self.node.emit((self.m1.hist::<Buffering<Bar1m, { Horizon::Span(SPAN_3MIN) }>>(),), &mut self.out);
 		self.publish_signal(CHANGE3M, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -591,8 +591,8 @@ impl DataActor for Classifier {
 		let out = self.node.advance((
 			true,
 			&bar,
-			self.m5.hist::<Buffering<Bar5m, { mom_cap(M5) }>>(),
-			self.h4.hist::<Buffering<Bar4h, { mom_cap(H4) }>>(),
+			self.m5.hist::<Buffering<Bar5m, { mom_cap(TF_5MIN) }>>(),
+			self.h4.hist::<Buffering<Bar4h, { mom_cap(TF_4H) }>>(),
 			&self.c1d,
 			&self.c3m,
 			&self.v1m,

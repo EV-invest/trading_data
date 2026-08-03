@@ -18,9 +18,6 @@ pub trait RsiSpec: 'static {
 	fn smooth_len() -> usize;
 }
 
-/// Only the previous close is held.
-const PREV: Horizon = Horizon::Elems(1);
-
 /// Close-to-close change on `B` — the one series both Wilder averages are taken of.
 ///
 /// Rate-changing on the very first bar: a change needs two closes.
@@ -54,7 +51,7 @@ impl<B: Series<Item = Bar>> Cell for RsiDelta<B> {
 }
 #[node]
 impl<B: Series<Item = Bar>> Emit for RsiDelta<B> {
-	type Deps = (Folding<B, PREV>,);
+	type Deps = (Folding<B, { Horizon::Elems(1) }>,);
 
 	fn emit(&mut self, (bars,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		for b in bars {

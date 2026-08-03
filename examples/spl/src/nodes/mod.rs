@@ -97,7 +97,7 @@ mod volume_4h;
 pub use atr::Atr;
 pub use book_top::{BookTop, BookTopSnap};
 pub use change_1d::{Change1d, REACH_1D};
-pub use change_3m::{Change3m, SPAN_3M};
+pub use change_3m::{Change3m, SPAN_3MIN};
 pub use classify::{Category, Classified, Classify, Quality};
 pub use decision::{Decided, Decision};
 pub use deprecator::{Deprecator, Intent, TrailingStop};
@@ -115,17 +115,16 @@ use v_utils::Timeframe;
 // the graph reaches every cell through a shim keyed on its name, and a bare `use` leaves no shim
 // behind — so the series this strategy runs on are aliased rather than imported.
 /// The clocks this strategy runs on, and the whole of what makes its series the periods they are.
-pub const M1: Timeframe = Timeframe::from_str_const("1m");
-pub const M5: Timeframe = Timeframe::from_str_const("5m");
-pub const M15: Timeframe = Timeframe::from_str_const("15m");
-pub const H1: Timeframe = Timeframe::from_str_const("1h");
-pub const H4: Timeframe = Timeframe::from_str_const("4h");
+/// Minutes are spelled `MIN` throughout: `M` is the designator for *months*.
+pub const TF_1MIN: Timeframe = Timeframe::from_str_const("1m");
+pub const TF_5MIN: Timeframe = Timeframe::from_str_const("5m");
+pub const TF_1H: Timeframe = Timeframe::from_str_const("1h");
+pub const TF_4H: Timeframe = Timeframe::from_str_const("4h");
 
-trading_data::node_alias! { pub Bar1m = trading_data::Bars<M1>; }
-trading_data::node_alias! { pub Bar5m = trading_data::Bars<M5>; }
-trading_data::node_alias! { pub Bar15m = trading_data::Bars<M15>; }
-trading_data::node_alias! { pub Bar1h = trading_data::Bars<H1>; }
-trading_data::node_alias! { pub Bar4h = trading_data::Bars<H4>; }
+trading_data::node_alias! { pub Bar1m = trading_data::Bars<TF_1MIN>; }
+trading_data::node_alias! { pub Bar5m = trading_data::Bars<TF_5MIN>; }
+trading_data::node_alias! { pub Bar1h = trading_data::Bars<TF_1H>; }
+trading_data::node_alias! { pub Bar4h = trading_data::Bars<TF_4H>; }
 
 trading_data::node_alias! {
 	/// The compiled screener — the gate `Classify` and everything under it hangs dormant off. The

@@ -1,7 +1,7 @@
 use core::fmt;
 
 use trading_data_core::{Exact, TradeCols, Trades};
-use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Glance, Spanning, Stamped, Tag, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Glance, Spanning, Stamped, Tag, always_present, node, slice_nudge};
 use v_utils::Timeframe;
 
 #[derive(Clone, Copy, Debug)]
@@ -110,6 +110,9 @@ impl Stamped for Bar {
 	}
 }
 
+// a period that closed had trades in it, so these three are absent only by not being emitted.
+always_present!(Ohlc, Volume, Bar);
+
 /// Trades → one item per period *closed*. Rate-changing: a batch spanning two periods emits two, a
 /// partial period emits none (it stays in `state`). The whole of an accumulator is this boundary
 /// walk — `open` and `fold` are all that tells one apart from another.
@@ -165,7 +168,7 @@ pub fn closed_by(bars: &[Bar], deadline: i64) -> &[Bar] {
 
 /// The series over a period, in three: the two accumulators over trades, and the bar that is their
 /// join. The period is a parameter rather than a name the framework pre-blessed — a node's identity
-/// is still its type, and `Bars<M1>` is as distinct from `Bars<M5>` as two newtypes were. Only
+/// is still its type, and `Bars<TF_1MIN>` is as distinct from `Bars<TF_5MIN>` as two newtypes were. Only
 /// [`Tag`] is new: the period has to reach [`Cell::NAME`] for the DAG card to keep saying `Bar:1m`.
 #[derive(Clone, Default)]
 pub struct Ohlcs<const TF: Timeframe>(Option<Ohlc>);

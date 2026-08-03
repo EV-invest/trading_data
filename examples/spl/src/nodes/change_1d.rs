@@ -1,14 +1,14 @@
 use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, closed_by, node, slice_nudge};
 use v_utils::{Timeframe, TimeframeDesignator};
 
-use super::{Bar1h, Bar1m, H1};
+use super::{Bar1h, Bar1m, TF_1H};
 
 /// A day of wall clock, not "24 bars": an hour nothing traded emits no bar, and SPL's own name for
 /// the window is the day.
 const SPAN_1D: Timeframe = Timeframe::from_naive(1, TimeframeDesignator::Days);
 /// What the 1h series must retain to answer it: the day, plus one period of cross-rate slack — the
 /// 1m bar whose close asks the question stands up to a whole 1h period past the newest 1h bar.
-pub const REACH_1D: Horizon = Horizon::Span(Timeframe(SPAN_1D.0 + H1.0));
+pub const REACH_1D: Horizon = Horizon::Span(Timeframe(SPAN_1D.0 + TF_1H.0));
 
 /// Percent change against the 1h close standing a day back, asked once per closed 1m bar.
 #[derive(Clone, Default)]
