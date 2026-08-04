@@ -76,9 +76,10 @@ floor. Nothing in this pipeline is bottlenecked on arithmetic.
   [MB over the day], str(calc.round(tg / 1e6, digits: 1)), [],
 )
 
-#per(tg) bytes a tick across #m.render.len() cells, and the distribution is no longer flat: the two
-order-book cells are a fifth of it on their own. A `Glance` is hand-written per out, so a cell that
-shows up here is a cell whose author chose what it says — which is the read this table is for.
+#per(tg) bytes a tick across #m.render.len() cells, and the distribution is not flat: the top two
+cells are #str(calc.round(100 * (m.render.at(0).glance + m.render.at(1).glance) / tg, digits: 0))% of
+it between them. A `Glance` is hand-written per out, so a cell that shows up here is a cell whose
+author chose what it says — which is the read this table is for.
 
 == Regenerating
 
@@ -88,10 +89,11 @@ typst compile examples/spl/cost.typ   # rewrites the pdf
 ```
 
 Through `measure`, and with `BENCH_CPUS` naming both SMT siblings of every core claimed, because a
-leg taken on a shared core lands in a committed document and stays there. Measured on a loaded box,
-the same day twice each way: reserved reads 2.97 s and 2.97 s, shared 3.21 s and 3.09 s. The
-reservation is worth less in the mean than in the spread — and it is the `handoff` and `backpressure`
-legs that move, which is what a second runnable thread on a contended core looks like.
+leg taken on a shared core lands in a committed document and stays there. On this box cores 12-15
+and their siblings 28-31 are already held out of `systemd`'s `CPUAffinity`, so `reserved` reaches
+them with a plain `taskset` and nothing else is scheduled there. What the reservation buys is
+mostly spread rather than mean: the legs that move on a contended core are `handoff` and
+`backpressure`, which is what a second runnable thread looks like from the producer side.
 
 `tests/cost.rs` asserts `cost.json`'s derived closure still equals `Graph::NODES`, so adding or
 removing a node fails the suite rather than leaving this document quietly describing a graph that no

@@ -168,11 +168,20 @@
                 -o "$repo/tmp/flame-$pkg.svg" -- "$@"
               echo "measure: tmp/flame-$pkg.svg" >&2
               ;;
+            cost)
+              # `examples/spl/cost.typ` reads what this writes, so it is the one reading whose noise
+              # outlives the run — an unreserved leg lands in a committed document. Release rather than
+              # `profiling`: the legs are differences of wall clock, and the profile that carries frame
+              # information is not the one the app ships.
+              cargo build --release --manifest-path "$repo/Cargo.toml" -p trading_data_spl --example viz_cost
+              reserved "$repo/target/release/examples/viz_cost" "$@"
+              ;;
             *)
             cat >&2 <<'EOF'
             measure bench [cargo-bench args]       instruction counts, iai-callgrind (`-p PKG` to narrow)
             measure stat  <simple|spl> [app args]  perf stat -r 5: wall, IPC, cache and branch misses
             measure flame <simple|spl> [app args]  cargo flamegraph, one frame per DAG node
+            measure cost                           the replay's wall clock, itemized — rewrites examples/spl/cost.json
 
             BENCH_CPUS=<list> confines the run to those CPUs and everything else to the complement;
             without it the wall clock reads the scheduler as much as the code. Name both SMT siblings
