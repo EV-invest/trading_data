@@ -2015,6 +2015,12 @@ impl Flats {
 	/// further than [`Want::Vals`], and it is asked for only where there is an out to differentiate.
 	#[inline]
 	fn of<'d, O: Flat, D: DepFlat>(out: &O, deps: &D::Outs<'d>, fd: Option<impl FnOnce(&[f64], &[f64]) -> alloc::vec::Vec<f64>>) -> Self {
+		const {
+			assert!(
+				O::LEN > 0,
+				"an out flattens to at least one slot: a fire is read downstream as the slots being there, so a zero-slot out would be indistinguishable from not firing"
+			);
+		}
 		let mut vals = alloc::vec![f64::NAN; O::LEN];
 		let fired = out.flat(&mut vals);
 		let mut dep_buf = alloc::vec![f64::NAN; D::LEN];
