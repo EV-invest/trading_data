@@ -1,0 +1,22 @@
+[package]
+name = "trading_data_bench"
+description = "What every measured unit measures with: the wall/CPU/RSS probe, the shared counters, the intent digest, and the row store they all print through"
+publish = false
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# `Nudge`/`Stamped` for [`ring`] and the observation seam for [`Census`] — the facade only, same as
+# any implementor (`docs/spec/boundaries.md` §1).
+trading_data.workspace = true
+
+[lints]
+workspace = true

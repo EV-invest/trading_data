@@ -12,5 +12,12 @@ categories.workspace = true
 
 [dependencies]
 
+[dev-dependencies]
+iai-callgrind.workspace = true
+
+[[bench]]
+name = "algebra"
+harness = false
+
 [lints]
 workspace = true

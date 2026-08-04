@@ -32,5 +32,9 @@ snapshot_fonts.workspace = true
 name = "book_fold"
 harness = false
 
+[[bench]]
+name = "precision_parse"
+harness = false
+
 [lints]
 workspace = true

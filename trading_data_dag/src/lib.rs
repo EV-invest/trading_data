@@ -94,7 +94,7 @@ use v_utils::Timeframe;
 /// ([`Buffering`]), or the consumer's own state ([`Folding`]). One vocabulary for all three, so the
 /// reach a node reads and the reach it holds are stated the same way — and a `const` of it drops
 /// straight into const-generic position.
-#[derive(Clone, core::marker::ConstParamTy, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, core::marker::ConstParamTy)]
 pub enum Horizon {
 	/// The current value only — no history at all.
 	Unit,
@@ -454,6 +454,7 @@ impl<const N: usize> Bump for [f64; N] {
 }
 
 /// `Option` stays the multi-rate channel: `None` flattens to NaN + unfired.
+// r[impl outs.absence.one-reading]
 impl<T: Flat> Flat for Option<T> {
 	const DIMS: &'static [usize] = T::DIMS;
 
@@ -485,6 +486,7 @@ impl<T: Bump> Bump for Option<T> {
 }
 
 /// A batch out flattens to its *last* element (empty ⇒ NaN + unfired); its rate is its len.
+// r[impl outs.absence.one-reading]
 impl<T: Flat> Flat for &[T] {
 	const DIMS: &'static [usize] = T::DIMS;
 
@@ -1915,6 +1917,12 @@ impl_arity!(@all
 /// Advances `node` over `frame` and pushes its output — unless a [`Gating`] dep reads false, when
 /// nothing is pulled and the out is the node's [`Dark`] reading. The `Pull` bound is the engine's
 /// reason to exist: a node stepped before its deps are in the frame does not compile.
+// `profile` (off by default, and here on every `step*`): a sweep is generic free fns, so
+// `step::<Screener, _, _>` already carries the node type in its mangled symbol — but each is small
+// enough that LLVM folds the whole DAG into one frame and an external profiler has nothing to
+// attribute to. This is an attribute, not a branch: without the feature it is not in the source the
+// compiler sees, so the framework's contribution to measurement costs a shipped build nothing.
+#[cfg_attr(feature = "profile", inline(never))]
 pub fn step<'t, N, F, I>(frame: F, node: &'t mut N) -> Cons<'t, N, F>
 where
 	N: Node,
@@ -1936,6 +1944,7 @@ where
 ///
 /// `ts` is the tick's event time, which is what a clock is read against: a node's rate must be a
 /// statement about the market, and the count of ticks is a statement about the feed's batching.
+#[cfg_attr(feature = "profile", inline(never))]
 pub fn step_emit<'t, E, F, I>(frame: F, e: &'t mut Emitter<E>, demanded: bool, ts: i64) -> Cons<'t, E, F>
 where
 	E: Emit,
@@ -1950,11 +1959,12 @@ where
 }
 
 /// One node firing, flattened: values and the finite-difference local Jacobian wrt its deps,
-/// à la Jane Street's "Computations that differentiate, debug and document themselves".
+/// à la Jane Street's "Computations that differentiate and document themselves".
 #[derive(Clone, Copy)]
 pub struct Fire<'a> {
-	pub debug: &'a dyn core::fmt::Debug,
-	/// Compact one-liner for viz cards; `debug` stays the full-detail view (hover/tooltip).
+	/// How the node says what it looks like. [`Glance`] rather than `Debug`: an out's `Glance` is
+	/// hand-written where its `Debug` is whatever the derive emitted, and a recorder that reaches for
+	/// the derive pays for it once per node per tick.
 	pub glance: &'a dyn Glance,
 	pub dims: &'static [usize],
 	pub plots: &'static [Plot],
@@ -1974,7 +1984,7 @@ pub struct Fire<'a> {
 	/// Simplified `∂out/∂dep` formulas, [`Diff`] nodes only.
 	pub deriv: Option<&'a dyn core::fmt::Display>,
 	/// Value-annotated intermediate-value tree ([`Ast::trace`]) over this tick's deps, [`Diff`]
-	/// nodes only — the "debug themselves" reading.
+	/// nodes only.
 	pub trace: Option<&'a dyn core::fmt::Display>,
 }
 
@@ -1983,9 +1993,8 @@ impl<'a> Fire<'a> {
 	/// the exception rather than the shape, spliced in with `..` at the one site that states them.
 	/// `flat: None` is the unfired reading — no flattening happened, so there is none to report.
 	#[inline]
-	fn of<T: Flat + core::fmt::Debug + Glance>(out: &'a T, plots: &'static [Plot], dep_dims: &'a [&'static [usize]], flat: Option<&'a Flats>) -> Self {
+	fn of<T: Flat + Glance>(out: &'a T, plots: &'static [Plot], dep_dims: &'a [&'static [usize]], flat: Option<&'a Flats>) -> Self {
 		Fire {
-			debug: out,
 			glance: out,
 			dims: T::DIMS,
 			plots,
@@ -2015,6 +2024,13 @@ impl Flats {
 	/// further than [`Want::Vals`], and it is asked for only where there is an out to differentiate.
 	#[inline]
 	fn of<'d, O: Flat, D: DepFlat>(out: &O, deps: &D::Outs<'d>, fd: Option<impl FnOnce(&[f64], &[f64]) -> alloc::vec::Vec<f64>>) -> Self {
+		// r[impl outs.flat.nonempty]
+		const {
+			assert!(
+				O::LEN > 0,
+				"an out flattens to at least one slot: a fire is read downstream as the slots being there, so a zero-slot out would be indistinguishable from not firing"
+			);
+		}
 		let mut vals = alloc::vec![f64::NAN; O::LEN];
 		let fired = out.flat(&mut vals);
 		let mut dep_buf = alloc::vec![f64::NAN; D::LEN];
@@ -2138,13 +2154,14 @@ where
 /// Under an active observer, each fired node's Jacobian is finite-differenced: clone the
 /// pre-advance node, [`Nudge`] the *last* element of one dep (batch deps copied into scratch),
 /// re-advance the clone at a shorter lifetime, diff the last out elements.
+#[cfg_attr(feature = "profile", inline(never))]
 pub fn step_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node + Clone,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: core::fmt::Debug + Glance + Dark<<N::Deps as DepSet>::Lead>,
+	N::Out<'t>: Glance + Dark<<N::Deps as DepSet>::Lead>,
 	F: 't, {
 	let run = <N::Deps as Pull<'t, F, I>>::open(&frame);
 	step_seen(frame, node, run, <N::Out<'t> as Dark<<N::Deps as DepSet>::Lead>>::dark, obs)
@@ -2155,13 +2172,14 @@ where
 /// [`Dark`] because an undemanded node is dark whatever its own `Deps` say — which is precisely the
 /// obligation `graph!` puts on a node it suppresses.
 #[doc(hidden)]
+#[cfg_attr(feature = "profile", inline(never))]
 pub fn step_when_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, demanded: bool, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node + Clone,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: core::fmt::Debug + Glance + Latent,
+	N::Out<'t>: Glance + Latent,
 	F: 't, {
 	let run = demanded && <N::Deps as Pull<'t, F, I>>::open(&frame);
 	step_seen(frame, node, run, <N::Out<'t> as Latent>::latent, obs)
@@ -2170,13 +2188,14 @@ where
 /// The observed sweep of one level node, given whether it runs at all and what it reads if it does
 /// not. `unrun` is a thunk rather than a value because [`Dark<No>::dark`](Dark) is unreachable by
 /// construction — an ungated node has no dark branch to evaluate.
+#[cfg_attr(feature = "profile", inline(never))]
 fn step_seen<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, run: bool, unrun: impl FnOnce() -> N::Out<'t>, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node + Clone,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: core::fmt::Debug + Glance,
+	N::Out<'t>: Glance,
 	F: 't, {
 	const {
 		assert!(
@@ -2244,11 +2263,12 @@ where
 /// [`step_emit`] + [`Observer::on`] before the push — [`step_obs`]'s sibling, with the engine's
 /// buffer standing in for the node's out. A gate-closed, undemanded or off-clock emit node is simply
 /// the empty run, which is why this one needs no [`Latent`] sibling the way [`step_when_obs`] is one.
+#[cfg_attr(feature = "profile", inline(never))]
 pub fn step_emit_obs<'t, E, F, I, O: Observer>(frame: F, e: &'t mut Emitter<E>, demanded: bool, ts: i64, obs: &mut O) -> Cons<'t, E, F>
 where
 	E: Emit + Clone,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
-	E::Item: Flat + core::fmt::Debug + Glance,
+	E::Item: Flat + Glance,
 	E::Deps: Pull<'t, F, I> + DepFlat,
 	EmitOuts<'t, E>: Copy,
 	F: 't, {
@@ -2295,13 +2315,14 @@ where
 /// [`step_obs`]'s sibling for a [`Diff`] node: the same advance + FD momentary Jacobian, plus the
 /// *exact* partials, the equation formula, and its simplified per-dep derivatives — the graph's
 /// "differentiate + document themselves" reading. The `graph!` `diff { }` group routes fields here.
+#[cfg_attr(feature = "profile", inline(never))]
 pub fn step_exact<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node + Diff + Clone,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: core::fmt::Debug + Glance,
+	N::Out<'t>: Glance,
 	F: 't, {
 	const {
 		assert!(
@@ -2359,13 +2380,14 @@ where
 /// [`Diff`] sibling. The exact partials have nothing to state about a tick the node did not take,
 /// so an undemanded one reads exactly as a suppressed level node does.
 #[doc(hidden)]
+#[cfg_attr(feature = "profile", inline(never))]
 pub fn step_exact_when<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, demanded: bool, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node + Diff + Clone,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: core::fmt::Debug + Glance + Latent,
+	N::Out<'t>: Glance + Latent,
 	F: 't, {
 	match demanded {
 		true => step_exact(frame, node, obs),
@@ -2555,7 +2577,7 @@ pub use trading_data_macros::{__graph_resolve, graph, node, node_alias};
 pub fn observe_root<'t, C, O>(out: C::Out<'t>, obs: &mut O)
 where
 	C: Cell,
-	C::Out<'t>: Flat + core::fmt::Debug + Glance,
+	C::Out<'t>: Flat + Glance,
 	O: Observer, {
 	if obs.want() == Want::Nothing {
 		return;

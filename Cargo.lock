@@ -5268,9 +5268,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "trading_data_bench"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trading_data",
+]
+
+[[package]]
 name = "trading_data_core"
 version = "0.3.0"
 dependencies = [
+ "arrayvec",
  "derive-new",
  "derive_more",
  "eyre",
@@ -5289,6 +5299,7 @@ dependencies = [
 name = "trading_data_dag"
 version = "0.3.0"
 dependencies = [
+ "iai-callgrind",
  "trading_data_expr",
  "trading_data_macros",
  "v_utils",
@@ -5306,6 +5317,9 @@ dependencies = [
 [[package]]
 name = "trading_data_expr"
 version = "0.3.0"
+dependencies = [
+ "iai-callgrind",
+]
 
 [[package]]
 name = "trading_data_live_equiv"
@@ -5353,6 +5367,7 @@ dependencies = [
 name = "trading_data_persistence"
 version = "0.3.0"
 dependencies = [
+ "arrayvec",
  "arrow",
  "color-eyre",
  "iai-callgrind",
@@ -5371,6 +5386,7 @@ dependencies = [
 name = "trading_data_simple"
 version = "0.3.0"
 dependencies = [
+ "clap",
  "exec_viz",
  "flate2",
  "jiff",
@@ -5401,6 +5417,7 @@ dependencies = [
  "tokio",
  "tracing",
  "trading_data",
+ "trading_data_bench",
  "ureq",
  "v_utils",
  "zip",

@@ -3,7 +3,7 @@ use eyre::Report;
 use serde::{Deserializer, Serialize, Serializer};
 
 //HACK: should implement `pad`, but rust is broken (or skill issue (upd: definitely broken)). Whatever the case, doing `f.pad(s)` on the same output breaks things downstream (no clue why).
-#[derive(Clone, Copy, derive_more::Debug, Default, Deref, DerefMut, Display, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Default, Deref, DerefMut, Display, Eq, Hash, Ord, PartialEq, PartialOrd, derive_more::Debug)]
 #[debug("{}", self.as_str())]
 #[display("{}", self.as_str())]
 pub struct Asset(pub [u8; 16]);

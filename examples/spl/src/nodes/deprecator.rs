@@ -84,6 +84,21 @@ pub struct Intent {
 	pub terminal: bool,
 }
 
+/// Bit-identity, so an intent stream can be compared across implementations that share nothing else.
+/// Deliberately not `PartialEq`: an intent carries `f64`s, and equality on those is the comparison
+/// nobody wants — this is the digest's alphabet, not an ordering key.
+impl core::hash::Hash for Intent {
+	fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+		h.write_i64(self.ts_ns);
+		h.write_u8((self.side == Side::Buy) as u8);
+		for b in [self.base_q, self.target_q, self.eval, self.lambda_atr, self.trail_fraction, self.sl, self.tp] {
+			h.write_u64(b.to_bits());
+		}
+		h.write_u64(self.trail_stop.map_or(0, f64::to_bits));
+		h.write_u8(self.draining as u8 | (self.terminal as u8) << 1);
+	}
+}
+
 impl Flat for Intent {
 	const DIMS: &'static [usize] = &[8];
 

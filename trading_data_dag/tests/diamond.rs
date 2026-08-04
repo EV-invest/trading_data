@@ -110,7 +110,7 @@ impl Observer for Rec {
 	}
 
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
-		self.0.push((node, deps, format!("{:?}", fire.debug)));
+		self.0.push((node, deps, format!("{}", fire.glance)));
 	}
 }
 
@@ -141,11 +141,11 @@ fn observer_sees_topo_order_deps_and_values() {
 	assert_eq!(
 		seen,
 		vec![
-			("A", vec!["Trades"], "Some(4.0)"),
-			("B", vec!["A"], "Some(5.0)"),
-			("C", vec!["A"], "Some(12.0)"),
-			("D", vec!["B", "C"], "Some(17.0)"),
-			("Cross", vec!["Trades", "Quotes"], "Some(1.0)"),
+			("A", vec!["Trades"], "4"),
+			("B", vec!["A"], "5"),
+			("C", vec!["A"], "12"),
+			("D", vec!["B", "C"], "17"),
+			("Cross", vec!["Trades", "Quotes"], "1"),
 			("A", vec!["Trades"], "None"),
 			("B", vec!["A"], "None"),
 			("C", vec!["A"], "None"),
@@ -255,6 +255,7 @@ impl Node for Level {
 	}
 }
 
+// r[verify outs.absence.one-reading]
 #[test]
 fn fd_unfired_dep_nan_column() {
 	let mut rec = JacRec::default();

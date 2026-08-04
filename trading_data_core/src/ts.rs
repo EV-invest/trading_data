@@ -279,7 +279,7 @@ pub struct Aggregate {
 ///
 /// `recv` is absent for a static endpoint pulled on demand: the reading we'd record is when the
 /// download landed, which says nothing about the fact and is not a wire arrival.
-#[derive(Clone, Copy, Debug, derive_more::Deref, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, derive_more::Deref)]
 pub struct Relay<From, To> {
 	/// `None` when the origin does not attest when it acted — a relaying vendor, or a run whose
 	/// elements each attest their own.
@@ -317,7 +317,7 @@ impl<From, To> PartialEq for RelayCols<'_, From, To> {
 impl<From, To> Eq for RelayCols<'_, From, To> {}
 
 /// The origin acts, then sends; the destination receives. [`Relay`] plus an attested origin.
-#[derive(Clone, Copy, Debug, derive_more::Deref, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, derive_more::Deref)]
 pub struct Leg<From, To> {
 	#[deref]
 	pub exec: Ts<From>,

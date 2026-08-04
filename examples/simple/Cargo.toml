@@ -11,7 +11,13 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# Forwarded from the facade so `measure flame` can ask the app it profiles for it. Off by default,
+# and never in a `default` set: without it the attribute is absent from the source the compiler sees.
+[features]
+profile = ["trading_data/profile"]
+
 [dependencies]
+clap.workspace = true
 exec_viz.workspace = true
 flate2.workspace = true
 jiff.workspace = true

@@ -6,12 +6,8 @@
 //! table shows is what that hand-rolling costs, and how much of the gate's reach it recovers: the
 //! book stops being maintained, but the bar-clocked indies still run.
 
-#[path = "harness/mod.rs"]
-mod harness;
 #[path = "nt/mod.rs"]
 mod nt;
-#[path = "harness/ring.rs"]
-mod ring;
 
 fn main() {
 	nt::run(

@@ -30,9 +30,8 @@ use nautilus_model::{
 };
 use nautilus_persistence_macros::custom_data;
 use trading_data::{Book, DeltaCols, Exact, ExchangeName, Feed as _, LatencyConfig, ReadClock, Replay, Side, required_lanes};
+use trading_data_bench::{COUNTERS, Digest, Probe, Row, publish};
 use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, symbol, trading_days};
-
-use crate::harness::{COUNTERS, Digest, Probe, Row, publish};
 
 #[custom_data(no_arrow)]
 pub struct OiPoint {

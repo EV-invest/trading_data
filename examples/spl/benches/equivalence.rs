@@ -10,16 +10,13 @@
 //! node is *not called* and reads its `Latent` out, which is not the same as calling it with empty
 //! deps; and the [`Armed`] latch's *deferred* commutation, applied at the start of the next tick.
 
-#[path = "harness/ring.rs"]
-mod ring;
-
 use std::path::{Path, PathBuf};
 
-use ring::Ring;
 use trading_data::{
 	Armed, Bar, Book, BookShape, Buffering, DeltaFrame, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot, Node as _, Ohlc, Ohlcs, Oi,
 	OiRoot, ReadClock, Replay, TradeCols, Volume, Volumes, required_lanes,
 };
+use trading_data_bench::ring::Ring;
 use trading_data_spl::{
 	config::Config,
 	day_bounds, ensure_lanes,
