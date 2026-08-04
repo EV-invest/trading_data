@@ -335,15 +335,20 @@ fn pump_archives(zips: &[PathBuf], sink: &Sink, clock: &ArchiveClock, prec: Prec
 		// The zip header carries the member's uncompressed size, which is what reading it advances by.
 		let pb = ui::bytes(mp, lane, format!("⇢ {}", name_of(zip)), Some(entry.size()));
 
-		for (i, line) in BufReader::new(pb.wrap_read(entry)).lines().enumerate() {
-			let line = line.expect("read archive line");
-			let v: serde_json::Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("malformed line {i} of {}: {e}", zip.display()));
-			let ts_ns = v["ts"].as_i64().unwrap_or_else(|| panic!("no ts on line {i} of {}", zip.display())) * 1_000_000;
+		// A 400-level line is ~10KB, so `lines()` would allocate and drop 10KB per message.
+		let mut reader = BufReader::new(pb.wrap_read(entry));
+		let mut line = String::new();
+		for i in 0.. {
+			line.clear();
+			if reader.read_line(&mut line).expect("read archive line") == 0 {
+				break;
+			}
+			let rec: Rec = serde_json::from_str(&line).unwrap_or_else(|e| panic!("malformed line {i} of {}: {e}", zip.display()));
+			let ts_ns = rec.ts * 1_000_000;
 			assert!(ts_ns >= last_ns, "archives out of order at line {i} of {}: {ts_ns} < {last_ns}", zip.display());
 			last_ns = ts_ns;
 
-			let kind = v["type"].as_str().unwrap_or_else(|| panic!("no type on line {i} of {}", zip.display()));
-			match kind {
+			match rec.kind {
 				"snapshot" => {
 					book.bids.clear();
 					book.asks.clear();
@@ -351,8 +356,8 @@ fn pump_archives(zips: &[PathBuf], sink: &Sink, clock: &ArchiveClock, prec: Prec
 				"delta" => {}
 				other => panic!("unknown archive record type `{other}` on line {i} of {}", zip.display()),
 			}
-			apply(&mut book.bids, Side::Buy, &v["data"]["b"], prec, i);
-			apply(&mut book.asks, Side::Sell, &v["data"]["a"], prec, i);
+			apply(&mut book.bids, Side::Buy, &rec.data.b, prec);
+			apply(&mut book.asks, Side::Sell, &rec.data.a, prec);
 
 			let n = emit(sink, clock, prec, &book, &mut emitted, ts_ns);
 			emissions += u64::from(n > 0);
@@ -384,10 +389,31 @@ fn seek(levels: &[(i32, u32)], side: Side, price: i32) -> Result<usize, usize> {
 	}
 }
 
-fn apply(levels: &mut Vec<(i32, u32)>, side: Side, raw: &serde_json::Value, prec: PrecisionPriceQty, line: usize) {
-	for l in raw.as_array().unwrap_or_else(|| panic!("book side is not an array on line {line}")) {
-		let price = prec.price.parse_i32(l[0].as_str().unwrap_or_else(|| panic!("price is not a string on line {line}")));
-		let qty = prec.qty.parse_u32(l[1].as_str().unwrap_or_else(|| panic!("qty is not a string on line {line}")));
+/// One archive record, borrowed out of the line buffer. A `serde_json::Value` of the same line is a
+/// `String` per key and per number — ~1600 allocations to reach 800 integers — where the derive
+/// resolves the keys at compile time and leaves the numbers as slices for [`Precision`] to walk.
+/// Fields the fold does not read (`topic`, `data.s`, the update ids) are simply not named.
+#[derive(serde::Deserialize)]
+struct Rec<'a> {
+	ts: i64,
+	#[serde(rename = "type")]
+	kind: &'a str,
+	#[serde(borrow)]
+	data: Sides<'a>,
+}
+
+#[derive(serde::Deserialize)]
+struct Sides<'a> {
+	#[serde(borrow)]
+	b: Vec<[&'a str; 2]>,
+	#[serde(borrow)]
+	a: Vec<[&'a str; 2]>,
+}
+
+fn apply(levels: &mut Vec<(i32, u32)>, side: Side, raw: &[[&str; 2]], prec: PrecisionPriceQty) {
+	for [p, q] in raw {
+		let price = prec.price.parse_i32(p);
+		let qty = prec.qty.parse_u32(q);
 		match (seek(levels, side, price), qty) {
 			(Ok(j), 0) => {
 				levels.remove(j);
@@ -520,13 +546,18 @@ fn ingest_trades(gz: &Path, catalog: &Catalog, s: &Situation, mp: &MultiProgress
 
 	let file = fs::File::open(gz).expect("open archive");
 	let pb = ui::bytes(mp, after, format!("⇢ {}", name_of(gz)), Some(file.metadata().expect("stat archive").len()));
-	let mut lines = BufReader::new(flate2::read::GzDecoder::new(pb.wrap_read(file))).lines();
-	let header = lines.next().expect("empty archive").expect("read header");
-	assert!(header.starts_with("timestamp,symbol,side,size,price"), "unexpected header: {header}");
+	let mut reader = BufReader::new(flate2::read::GzDecoder::new(pb.wrap_read(file)));
+	let mut line = String::new();
+	reader.read_line(&mut line).expect("read header");
+	assert!(line.starts_with("timestamp,symbol,side,size,price"), "unexpected header: {line}");
 
 	let mut prev_ts = i64::MIN;
-	for (i, line) in lines.enumerate() {
-		let line = line.expect("read line");
+	for i in 0.. {
+		line.clear();
+		if reader.read_line(&mut line).expect("read line") == 0 {
+			break;
+		}
+		let line = line.trim_end();
 		let mut cols = line.split(',');
 		let mut col = || cols.next().unwrap_or_else(|| panic!("malformed line {i}: {line}"));
 		let ts_sec: f64 = col().parse().unwrap_or_else(|e| panic!("bad ts on line {i}: {e}"));
