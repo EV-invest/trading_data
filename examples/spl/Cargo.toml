@@ -12,11 +12,6 @@ keywords.workspace = true
 categories.workspace = true
 autobenches = false
 
-[features]
-# Persist the tape under `tmp/spl_viz/runs/`. Off by default: this replay is ~10^6 ticks over ~30
-# nodes, so a recorded run is multi-GB and nobody reaching for `nix run .#spl` asked for that.
-record = ["exec_viz/record"]
-
 [dependencies]
 clap.workspace = true
 exec_viz.workspace = true

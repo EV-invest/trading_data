@@ -1519,10 +1519,8 @@ dependencies = [
 name = "exec_viz"
 version = "0.1.0"
 dependencies = [
- "arrow",
  "axum",
  "serde",
- "serde_json",
  "tokio",
  "tower-http",
  "trading_data_dag",
