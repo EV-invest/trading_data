@@ -1917,11 +1917,16 @@ impl_arity!(@all
 /// Advances `node` over `frame` and pushes its output — unless a [`Gating`] dep reads false, when
 /// nothing is pulled and the out is the node's [`Dark`] reading. The `Pull` bound is the engine's
 /// reason to exist: a node stepped before its deps are in the frame does not compile.
-// `profile` (off by default, and here on every `step*`): a sweep is generic free fns, so
-// `step::<Screener, _, _>` already carries the node type in its mangled symbol — but each is small
-// enough that LLVM folds the whole DAG into one frame and an external profiler has nothing to
-// attribute to. This is an attribute, not a branch: without the feature it is not in the source the
-// compiler sees, so the framework's contribution to measurement costs a shipped build nothing.
+// `profile` (off by default): a sweep is generic free fns, so `step::<Screener, _, _>` already
+// carries the node type in its mangled symbol — but each is small enough that LLVM folds the whole
+// DAG into one frame and an external profiler has nothing to attribute to. This is an attribute, not
+// a branch: without the feature it is not in the source the compiler sees, so the framework's
+// contribution to measurement costs a shipped build nothing.
+//
+// It sits on the entry points `graph!` emits and nowhere else, so a fired node is *one* box. A
+// shared leg that took its own frame would name the same node a second time and — since the frame is
+// passed by value and returned grown — pay the `Cons` copy twice, which reads on the flamegraph as
+// the node costing more the later it sits in the sweep.
 #[cfg_attr(feature = "profile", inline(never))]
 pub fn step<'t, N, F, I>(frame: F, node: &'t mut N) -> Cons<'t, N, F>
 where
@@ -2188,7 +2193,7 @@ where
 /// The observed sweep of one level node, given whether it runs at all and what it reads if it does
 /// not. `unrun` is a thunk rather than a value because [`Dark<No>::dark`](Dark) is unreachable by
 /// construction — an ungated node has no dark branch to evaluate.
-#[cfg_attr(feature = "profile", inline(never))]
+#[cfg_attr(feature = "profile", inline(always))]
 fn step_seen<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, run: bool, unrun: impl FnOnce() -> N::Out<'t>, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node + Clone,
@@ -2379,8 +2384,10 @@ where
 /// [`step_exact`] for a node the graph derived no standing demand for — [`step_when_obs`]'s
 /// [`Diff`] sibling. The exact partials have nothing to state about a tick the node did not take,
 /// so an undemanded one reads exactly as a suppressed level node does.
+///
+/// Alone among the emitted entry points this one carries no `profile` frame: it is a routing `match`
+/// whose demanded arm is [`step_exact`], which has one already.
 #[doc(hidden)]
-#[cfg_attr(feature = "profile", inline(never))]
 pub fn step_exact_when<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, demanded: bool, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node + Diff + Clone,
