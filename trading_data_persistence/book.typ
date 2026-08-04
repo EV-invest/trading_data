@@ -373,9 +373,8 @@ pub(crate) struct BookSnapshot {             // one row per checkpoint  ·  64 M
   asks: BTreeMap<i32,u32>  ascending    ──────▶ asks: Vec<(i32,u32)>  ascending    ] index 0 = top
                                         ◀─shape()── .iter().copied().collect()
 
-  ponytail: sorted Vec, on the reasoning that at the depth a lane carries the memmove of an insert
-  costs less than a B-tree descent. `debug_assert!(levels.len() <= 1024)` marks where that stops
-  being the assumption; a full-depth feed would want a map.
+  `apply` inserts and removes by index into the two Vecs, so each edit memmoves the tail of one
+  side. `debug_assert!(levels.len() <= 1024)` bounds the length under which that runs.
 
   Precision is held once per shape, per cols view, per Book, and in the parquet schema metadata.
   Levels themselves carry raw i32 price and u32 qty as the venue sent them; the decode to f64 happens
@@ -440,10 +439,9 @@ pub(crate) struct BookSnapshot {             // one row per checkpoint  ·  64 M
      declared cannot sit behind a gate. Retaining the deltas as stamped level rows would change
      that.
 
-     `stage` calls `clone_from` so that a hand-written `Clone for Book` could reuse both level
-     vectors across ticks. `Book` derives `Clone`, and a derived `clone_from` is
-     `*self = source.clone()`, so at present the observer clones the book twice per fired node and
-     again per dep slot.
+     `stage` calls `clone_from`. `Book` derives `Clone`, and a derived `clone_from` expands to
+     `*self = source.clone()`, so every call allocates both level vectors. Under an observer it runs
+     twice per fired node and once per dep slot.
 ```
 
 ```
@@ -488,11 +486,10 @@ pub(crate) struct BookSnapshot {             // one row per checkpoint  ·  64 M
 
 ```
   Book::apply         assert: frame precision == book precision
-  Book::apply         debug: levels.len() <= 1024 — the sorted-Vec assumption
+  Book::apply         debug: levels.len() <= 1024
   Book::step          a `monotonic_seq` discontinuity desyncs; a checkpoint re-arms, and the fold
                       restarts from the checkpoint's levels
-  Book::step          the single public verb; `resync`, `apply`, `missed` and `diff` are private, so
-                      a caller cannot apply a frame without the `missed` check ahead of it
+  Book::step          the only public verb; `resync`, `apply`, `missed` and `diff` are private
   ShadowBook::ckpt    expect: `epoch_start` is set whenever the book is synced
   Feather::extend     assert: the run's precision equals the lane's
   Feather::extend     expect: `ts.recv` is present, which is what lets `BookDelta::ts_local_recv` be
