@@ -1959,11 +1959,12 @@ where
 }
 
 /// One node firing, flattened: values and the finite-difference local Jacobian wrt its deps,
-/// à la Jane Street's "Computations that differentiate, debug and document themselves".
+/// à la Jane Street's "Computations that differentiate and document themselves".
 #[derive(Clone, Copy)]
 pub struct Fire<'a> {
-	pub debug: &'a dyn core::fmt::Debug,
-	/// Compact one-liner for viz cards; `debug` stays the full-detail view (hover/tooltip).
+	/// How the node says what it looks like. [`Glance`] rather than `Debug`: an out's `Glance` is
+	/// hand-written where its `Debug` is whatever the derive emitted, and a recorder that reaches for
+	/// the derive pays for it once per node per tick.
 	pub glance: &'a dyn Glance,
 	pub dims: &'static [usize],
 	pub plots: &'static [Plot],
@@ -1983,7 +1984,7 @@ pub struct Fire<'a> {
 	/// Simplified `∂out/∂dep` formulas, [`Diff`] nodes only.
 	pub deriv: Option<&'a dyn core::fmt::Display>,
 	/// Value-annotated intermediate-value tree ([`Ast::trace`]) over this tick's deps, [`Diff`]
-	/// nodes only — the "debug themselves" reading.
+	/// nodes only.
 	pub trace: Option<&'a dyn core::fmt::Display>,
 }
 
@@ -1992,9 +1993,8 @@ impl<'a> Fire<'a> {
 	/// the exception rather than the shape, spliced in with `..` at the one site that states them.
 	/// `flat: None` is the unfired reading — no flattening happened, so there is none to report.
 	#[inline]
-	fn of<T: Flat + core::fmt::Debug + Glance>(out: &'a T, plots: &'static [Plot], dep_dims: &'a [&'static [usize]], flat: Option<&'a Flats>) -> Self {
+	fn of<T: Flat + Glance>(out: &'a T, plots: &'static [Plot], dep_dims: &'a [&'static [usize]], flat: Option<&'a Flats>) -> Self {
 		Fire {
-			debug: out,
 			glance: out,
 			dims: T::DIMS,
 			plots,
@@ -2161,7 +2161,7 @@ where
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: core::fmt::Debug + Glance + Dark<<N::Deps as DepSet>::Lead>,
+	N::Out<'t>: Glance + Dark<<N::Deps as DepSet>::Lead>,
 	F: 't, {
 	let run = <N::Deps as Pull<'t, F, I>>::open(&frame);
 	step_seen(frame, node, run, <N::Out<'t> as Dark<<N::Deps as DepSet>::Lead>>::dark, obs)
@@ -2179,7 +2179,7 @@ where
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: core::fmt::Debug + Glance + Latent,
+	N::Out<'t>: Glance + Latent,
 	F: 't, {
 	let run = demanded && <N::Deps as Pull<'t, F, I>>::open(&frame);
 	step_seen(frame, node, run, <N::Out<'t> as Latent>::latent, obs)
@@ -2195,7 +2195,7 @@ where
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: core::fmt::Debug + Glance,
+	N::Out<'t>: Glance,
 	F: 't, {
 	const {
 		assert!(
@@ -2268,7 +2268,7 @@ pub fn step_emit_obs<'t, E, F, I, O: Observer>(frame: F, e: &'t mut Emitter<E>, 
 where
 	E: Emit + Clone,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
-	E::Item: Flat + core::fmt::Debug + Glance,
+	E::Item: Flat + Glance,
 	E::Deps: Pull<'t, F, I> + DepFlat,
 	EmitOuts<'t, E>: Copy,
 	F: 't, {
@@ -2322,7 +2322,7 @@ where
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: core::fmt::Debug + Glance,
+	N::Out<'t>: Glance,
 	F: 't, {
 	const {
 		assert!(
@@ -2387,7 +2387,7 @@ where
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: core::fmt::Debug + Glance + Latent,
+	N::Out<'t>: Glance + Latent,
 	F: 't, {
 	match demanded {
 		true => step_exact(frame, node, obs),
@@ -2577,7 +2577,7 @@ pub use trading_data_macros::{__graph_resolve, graph, node, node_alias};
 pub fn observe_root<'t, C, O>(out: C::Out<'t>, obs: &mut O)
 where
 	C: Cell,
-	C::Out<'t>: Flat + core::fmt::Debug + Glance,
+	C::Out<'t>: Flat + Glance,
 	O: Observer, {
 	if obs.want() == Want::Nothing {
 		return;
