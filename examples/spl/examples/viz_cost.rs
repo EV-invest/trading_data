@@ -224,8 +224,10 @@ impl Observer for Bill {
 
 		let slot = &mut self.slots[i];
 		slot.out.clear();
-		write!(slot.out, "{}", fire.glance).expect("`String`'s `Write` is infallible");
-		self.bytes[i] += slot.out.len() as u64;
+		if fire.vals.is_some() {
+			write!(slot.out, "{}", fire.glance).expect("`String`'s `Write` is infallible");
+			self.bytes[i] += slot.out.len() as u64;
+		}
 		if self.upto == Piece::Glance {
 			return;
 		}
