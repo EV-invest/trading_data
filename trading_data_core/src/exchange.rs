@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use crate::Pair;
 
-#[derive(Clone, Copy, Debug, strum::Display, strum::EnumString, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, strum::Display, strum::EnumString)]
 #[strum(serialize_all = "lowercase")]
 #[non_exhaustive]
 pub enum ExchangeName {
@@ -15,7 +15,7 @@ pub enum ExchangeName {
 	Yahoo,
 }
 
-#[derive(Clone, Copy, Debug, Default, serde::Deserialize, strum::Display, strum::EnumString, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, strum::Display, strum::EnumString, serde::Serialize)]
 #[non_exhaustive]
 pub enum Instrument {
 	#[default]
@@ -31,7 +31,7 @@ pub enum Instrument {
 	Options,
 }
 
-#[derive(Clone, Copy, Debug, Default, serde::Deserialize, Eq, Hash, PartialEq, serde::Serialize, derive_new::new)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize, derive_new::new)]
 pub struct Symbol {
 	pub pair: Pair,
 	pub instrument: Instrument,

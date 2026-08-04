@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// Decimal exponent: `raw = value × 10^precision`. Signed, so a million-dollar index tick and a
 /// satoshi tick both fit the same 32-bit raw column.
-#[derive(Clone, Copy, Debug, Default, Deserialize, derive_more::Display, Eq, derive_more::From, derive_more::FromStr, Hash, derive_more::Into, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, derive_more::Display, derive_more::From, derive_more::FromStr, derive_more::Into)]
 #[serde(transparent)]
 pub struct Precision(pub i8);
 
@@ -174,7 +174,7 @@ impl std::ops::Neg for pi32 {
 macro_rules! money {
 	($(#[$doc:meta])* $name:ident, $inner:ident, $raw:ty) => {
 		$(#[$doc])*
-		#[derive(Clone, Copy, Debug, Default, derive_more::Display, Eq, Ord, PartialEq, PartialOrd)]
+		#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, derive_more::Display)]
 		pub struct $name($inner);
 
 		impl $name {

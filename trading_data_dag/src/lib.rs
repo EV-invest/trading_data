@@ -94,7 +94,7 @@ use v_utils::Timeframe;
 /// ([`Buffering`]), or the consumer's own state ([`Folding`]). One vocabulary for all three, so the
 /// reach a node reads and the reach it holds are stated the same way — and a `const` of it drops
 /// straight into const-generic position.
-#[derive(Clone, core::marker::ConstParamTy, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, core::marker::ConstParamTy)]
 pub enum Horizon {
 	/// The current value only — no history at all.
 	Unit,
