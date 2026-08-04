@@ -157,10 +157,15 @@ pub(crate) mod sealed {
 	use super::*;
 
 	pub trait Sealed: Sized {
-		type Builders: Default;
+		type Builders;
 		/// Precision context for scaled-int lanes; `()` for f64-native lanes.
 		type Meta: Copy;
 		const PER_ROW_MIN: usize;
+		/// `rows` is what the rotation policy says the batch reaches before it is written, or 0 when
+		/// the policy does not bound it. Half-measures are pointless here — a `Vec` growing to `n`
+		/// copies ~`2n` bytes whatever it starts at, and the final doubling alone outweighs every one
+		/// before it — so this is the whole count or nothing.
+		fn builders(rows: usize) -> Self::Builders;
 		fn schema(meta: Self::Meta) -> SchemaRef;
 		fn append(&self, b: &mut Self::Builders, meta: Self::Meta);
 		fn finish(b: &mut Self::Builders) -> Vec<ArrayRef>;
@@ -266,7 +271,6 @@ fn opt_ts<A>(a: &Int64Array, i: usize) -> Option<Ts<A>> {
 	(!a.is_null(i)).then(|| Ts::from_nanos(a.value(i)))
 }
 
-#[derive(Default)]
 pub struct TradeBuilders {
 	ts_venue_exec: arrow::array::Int64Builder,
 	ts_venue_send: arrow::array::Int64Builder,
@@ -282,6 +286,18 @@ impl Sealed for Trade {
 	type Meta = PrecisionPriceQty;
 
 	const PER_ROW_MIN: usize = 48;
+
+	fn builders(rows: usize) -> TradeBuilders {
+		TradeBuilders {
+			ts_venue_exec: arrow::array::Int64Builder::with_capacity(rows),
+			ts_venue_send: arrow::array::Int64Builder::with_capacity(rows),
+			ts_local_recv: arrow::array::Int64Builder::with_capacity(rows),
+			monotonic_seq: arrow::array::UInt64Builder::with_capacity(rows),
+			side: arrow::array::UInt8Builder::with_capacity(rows),
+			price_raw: arrow::array::Int32Builder::with_capacity(rows),
+			qty_raw: arrow::array::UInt32Builder::with_capacity(rows),
+		}
+	}
 
 	fn schema(meta: PrecisionPriceQty) -> SchemaRef {
 		let mut fields = venue_ts_fields().to_vec();
@@ -346,7 +362,6 @@ impl Sealed for Trade {
 	}
 }
 
-#[derive(Default)]
 pub struct BookDeltaBuilders {
 	ts_venue_exec: arrow::array::Int64Builder,
 	ts_local_recv: arrow::array::Int64Builder,
@@ -362,6 +377,18 @@ impl Sealed for BookDelta {
 	type Meta = PrecisionPriceQty;
 
 	const PER_ROW_MIN: usize = 40;
+
+	fn builders(rows: usize) -> BookDeltaBuilders {
+		BookDeltaBuilders {
+			ts_venue_exec: arrow::array::Int64Builder::with_capacity(rows),
+			ts_local_recv: arrow::array::Int64Builder::with_capacity(rows),
+			monotonic_seq: arrow::array::UInt64Builder::with_capacity(rows),
+			kind: arrow::array::UInt8Builder::with_capacity(rows),
+			side: arrow::array::UInt8Builder::with_capacity(rows),
+			price_raw: arrow::array::Int32Builder::with_capacity(rows),
+			qty_raw: arrow::array::UInt32Builder::with_capacity(rows),
+		}
+	}
 
 	fn schema(meta: PrecisionPriceQty) -> SchemaRef {
 		let mut fields = book_ts_fields().to_vec();
@@ -427,7 +454,6 @@ impl Sealed for BookDelta {
 	}
 }
 
-#[derive(Default)]
 pub struct BookSnapshotBuilders {
 	ts_venue_exec: arrow::array::Int64Builder,
 	ts_local_recv: arrow::array::Int64Builder,
@@ -443,6 +469,18 @@ impl Sealed for BookSnapshot {
 	type Meta = PrecisionPriceQty;
 
 	const PER_ROW_MIN: usize = 32;
+
+	fn builders(rows: usize) -> BookSnapshotBuilders {
+		BookSnapshotBuilders {
+			ts_venue_exec: arrow::array::Int64Builder::with_capacity(rows),
+			ts_local_recv: arrow::array::Int64Builder::with_capacity(rows),
+			monotonic_seq: arrow::array::UInt64Builder::with_capacity(rows),
+			bid_prices: arrow::array::ListBuilder::with_capacity(arrow::array::Int32Builder::new(), rows),
+			bid_qtys: arrow::array::ListBuilder::with_capacity(arrow::array::UInt32Builder::new(), rows),
+			ask_prices: arrow::array::ListBuilder::with_capacity(arrow::array::Int32Builder::new(), rows),
+			ask_qtys: arrow::array::ListBuilder::with_capacity(arrow::array::UInt32Builder::new(), rows),
+		}
+	}
 
 	fn schema(meta: PrecisionPriceQty) -> SchemaRef {
 		let i32_list = || DataType::List(Arc::new(Field::new("item", DataType::Int32, true)));
@@ -522,7 +560,6 @@ impl Sealed for BookSnapshot {
 	}
 }
 
-#[derive(Default)]
 pub struct OiBuilders {
 	ts_venue_exec: arrow::array::Int64Builder,
 	ts_venue_send: arrow::array::Int64Builder,
@@ -535,6 +572,15 @@ impl Sealed for Oi {
 	type Meta = ();
 
 	const PER_ROW_MIN: usize = 32;
+
+	fn builders(rows: usize) -> OiBuilders {
+		OiBuilders {
+			ts_venue_exec: arrow::array::Int64Builder::with_capacity(rows),
+			ts_venue_send: arrow::array::Int64Builder::with_capacity(rows),
+			ts_local_recv: arrow::array::Int64Builder::with_capacity(rows),
+			oi: Float64Builder::with_capacity(rows),
+		}
+	}
 
 	fn schema(_meta: ()) -> SchemaRef {
 		let mut fields = venue_ts_fields().to_vec();
@@ -582,7 +628,6 @@ impl Sealed for Oi {
 	}
 }
 
-#[derive(Default)]
 pub struct McBuilders {
 	ts_local_exec: arrow::array::Int64Builder,
 	market_cap: Float64Builder,
@@ -594,6 +639,14 @@ impl Sealed for Mc {
 	type Meta = ();
 
 	const PER_ROW_MIN: usize = 20;
+
+	fn builders(rows: usize) -> McBuilders {
+		McBuilders {
+			ts_local_exec: arrow::array::Int64Builder::with_capacity(rows),
+			market_cap: Float64Builder::with_capacity(rows),
+			rank: arrow::array::UInt32Builder::with_capacity(rows),
+		}
+	}
 
 	fn schema(_meta: ()) -> SchemaRef {
 		schema_with(

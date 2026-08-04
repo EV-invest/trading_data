@@ -29,7 +29,7 @@ pub struct Feather<T: Row> {
 	oldest_ts: Option<Ts<T::Axis>>,
 	newest_ts: Option<Ts<T::Axis>>,
 	age_deadline: Option<Instant>,
-	next_check_at_rows: usize,
+	next_check_at_rows: Option<usize>,
 }
 
 impl Feather<Trade> {
@@ -99,19 +99,21 @@ impl Feather<BookSnapshot> {
 
 impl<T: Row> Feather<T> {
 	fn init(key: LaneKey, meta: T::Meta, policy: RotationPolicy) -> Self {
-		let next_check_at_rows = policy.max_bytes.map(|m| (m / T::PER_ROW_MIN).max(64)).unwrap_or(usize::MAX);
+		let rows_per_batch = policy.max_bytes.map(|m| (m / T::PER_ROW_MIN).max(64));
 		Self {
 			key,
 			schema: T::schema(meta),
 			meta,
 			policy,
-			builders: T::Builders::default(),
+			// `None` is a lane bounded by age alone — `Oi` and `Mc`, hundreds of rows a day between
+			// them — which is nothing to reserve for, and `with_capacity(0)` does not allocate.
+			builders: T::builders(rows_per_batch.unwrap_or(0)),
 			rows: 0,
 			approx_bytes: 0,
 			oldest_ts: None,
 			newest_ts: None,
 			age_deadline: None,
-			next_check_at_rows,
+			next_check_at_rows: rows_per_batch,
 		}
 	}
 
@@ -172,7 +174,7 @@ impl<T: Row> Feather<T> {
 	}
 
 	pub fn maybe_flush(&mut self, catalog: &Catalog) -> Result<Option<PathBuf>, CatalogError> {
-		if self.rows < self.next_check_at_rows && !self.age_deadline_passed() {
+		if self.next_check_at_rows.is_none_or(|n| self.rows < n) && !self.age_deadline_passed() {
 			return Ok(None);
 		}
 		if self.should_flush() { self.flush(catalog) } else { Ok(None) }
