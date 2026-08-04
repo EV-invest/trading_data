@@ -91,7 +91,7 @@ trading_data_dag = { path = "trading_data_dag", version = "0.3.0" }
 trading_data_derivatives = { path = "trading_data_derivatives", version = "0.3.0" }
 trading_data_expr = { path = "trading_data_expr", version = "0.3.0" }
 trading_data_live_example = { path = "examples/live" }
-trading_data_macros = { path = "trading_data_macros", version = "0.1.0" }
+trading_data_macros = { path = "trading_data_macros", version = "0.2.0" }
 trading_data_persistence = { path = "trading_data_persistence", version = "0.3.0" }
 ui_test = "0.30"
 ureq = "^3"
