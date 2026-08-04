@@ -18,38 +18,41 @@ impl Precision {
 	}
 
 	pub fn parse_i32(self, s: &str) -> i32 {
-		digits(s, self).parse().expect("realigned digits fit i32")
+		i32::try_from(realigned(s, self)).expect("realigned digits fit i32")
 	}
 
 	pub fn parse_u32(self, s: &str) -> u32 {
-		digits(s, self).parse().expect("realigned digits fit u32")
+		u32::try_from(realigned(s, self)).expect("realigned digits fit u32")
 	}
 }
 
-/// Re-align a decimal string onto `precision`'s tick and return it as a raw-integer string.
-/// Trailing zeros are insignificant (Binance pads `.24` to `.24000000`); a significant digit the
-/// tick cannot hold is a feed/config mismatch and panics.
-fn digits(s: &str, precision: Precision) -> String {
-	let (int, frac) = s.split_once('.').unwrap_or((s, ""));
+/// Re-align a decimal string onto `precision`'s tick. Trailing zeros are insignificant (Binance
+/// pads `.24` to `.24000000`); a significant digit the tick cannot hold is a feed/config mismatch
+/// and panics. Runs once per level of every book message, so it walks the bytes in place rather
+/// than materializing the realigned digits.
+fn realigned(s: &str, precision: Precision) -> i64 {
+	let (sign, body) = match s.strip_prefix('-') {
+		Some(rest) => (-1, rest),
+		None => (1, s.strip_prefix('+').unwrap_or(s)),
+	};
+	let (int, frac) = body.split_once('.').unwrap_or((body, ""));
 	let frac = frac.trim_end_matches('0');
-	let mut significant = String::with_capacity(int.len() + frac.len());
-	significant.push_str(int);
-	significant.push_str(frac);
+	assert!((1..=18).contains(&(int.len() + frac.len())), "{s:?} is not a decimal number i64 holds");
 
-	match precision.0 as isize - frac.len() as isize {
-		0 => significant,
-		pad if pad > 0 => {
-			significant.extend(std::iter::repeat_n('0', pad as usize));
-			significant
-		}
-		cut => {
-			let keep = significant.len().saturating_sub(-cut as usize);
-			let (head, tail) = significant.split_at(keep);
-			assert!(tail.bytes().all(|b| b == b'0'), "{s:?} carries digits below the 10^{} tick", precision.0);
-			match head {
-				"" | "-" => "0".to_owned(),
-				h => h.to_owned(),
-			}
+	let mut acc: i64 = 0;
+	for &b in int.as_bytes().iter().chain(frac.as_bytes()) {
+		let d = b.wrapping_sub(b'0');
+		assert!(d < 10, "{s:?} is not a decimal number");
+		acc = acc * 10 + d as i64;
+	}
+
+	let gap = precision.0 as i32 - frac.len() as i32;
+	let pow = 10i64.checked_pow(gap.unsigned_abs()).expect("precision gap fits i64");
+	sign * match gap >= 0 {
+		true => acc.checked_mul(pow).expect("realigned raw fits i64"),
+		false => {
+			assert_eq!(acc % pow, 0, "{s:?} carries digits below the 10^{} tick", precision.0);
+			acc / pow
 		}
 	}
 }
