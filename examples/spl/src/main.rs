@@ -107,7 +107,26 @@ async fn main() {
 	let lanes = required_lanes::<Graph>();
 	println!("required lanes: {lanes:?}");
 	// Blocking: a replay wants the whole tape, and its feed is a file that will wait.
+	#[cfg(not(feature = "record"))]
 	let (viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, Backpressure::Block);
+	// A run dir is written over when its name repeats, so the config has to be in the name: the same
+	// binary pointed at a second `config.nix` is a second run, not the same one again.
+	#[cfg(feature = "record")]
+	let (viz, mut recorder) = Viz::recorded(
+		Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME),
+		SCROLLBACK,
+		60_000,
+		Backpressure::Block,
+		&PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_viz")),
+		&format!(
+			"{}_{:x}",
+			env!("CARGO_PKG_VERSION"),
+			std::hash::BuildHasher::hash_one(
+				&std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default(),
+				std::fs::read(&cli.config).expect("`Config::load` just read it")
+			)
+		),
+	);
 	let mut day = Day::default();
 	let began = std::time::Instant::now();
 	let (run_start, _) = day_bounds(days[0]);
