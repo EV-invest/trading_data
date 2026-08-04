@@ -84,8 +84,8 @@ author chose what it says — which is the read this table is for.
 == Regenerating
 
 ```
-BENCH_CPUS=12-15,28-31 measure cost   # rewrites cost.json
-typst compile examples/spl/cost.typ   # rewrites the pdf
+BENCH_CPUS=12-15,28-31 measure cost                    # rewrites cost.json
+typst compile examples/spl/cost.typ /tmp/cost.pdf      # renders it; the pdf is never written locally
 ```
 
 Through `measure`, and with `BENCH_CPUS` naming both SMT siblings of every core claimed, because a
