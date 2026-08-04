@@ -10,194 +10,187 @@
 )
 #import "@preview/fletcher:0.5.8" as fletcher: diagram, edge, node
 
-= The book — every primitive, and what touches what
+= The book — primitives and data flow
 
 Read off `trading_data_core/src/{book.rs, cols.rs, cells.rs, precision.rs, ts.rs}`,
-`trading_data_persistence/src/{sync/mod.rs, feather.rs, row.rs, read.rs}`, and the two consumers in
+`trading_data_persistence/src/{sync/mod.rs, feather.rs, row.rs, read.rs}`, and the consumers in
 `examples/spl/src/nodes/book_top.rs` and `examples/live/src/nodes.rs`.
 
-Third of three: `trading_data_dag/model.typ` is what happens to a tick, `weaver.typ` is where a tick
-comes from, this one is what *one lane* is made of. §1.8 of the weaver states the rule; this is the
-one lane that pays the most for it.
+Companion to `trading_data_dag/model.typ` (what happens to a tick) and `weaver.typ` (where a tick
+comes from). This one covers the book lanes.
 
-== 1. The axiom, and the seven primitives that fall out of it
+== 1. Overview
 
 ```
-  A GAP IS A FACT ABOUT OUR CONNECTION, NOT ABOUT THE MARKET.
+  Three types carry the book, and they split along write / read:
 
-  Stored raw, every replay would re-derive the reconciliation from whichever venue snapshots
-  happened to land — a cadence we neither control nor can reproduce. So the reconciliation happens
-  ONCE, at record time, and what reaches disk is our own recollection: gapless by construction,
-  self-consistent, and folded blind on the way back.
+     ShadowBook   consumes venue updates, emits our delta frames, mints checkpoints.  Write side.
+     Book         folds a checkpoint and a stream of delta frames into levels.        Both sides.
+     BookShape    the level map. Used as the venue's message, as a checkpoint, and as
+                  the shape a stored snapshot row decodes to.
 
-  That splits the book into a WRITE side and a READ side that share no code except the fold itself:
+  ShadowBook owns a Book and calls `apply` on it with each frame it emits, so the levels the
+  recorder holds are the levels a replay reconstructs from the same frames.
 
-     ShadowBook  ── decides.   Owns a `Book`, emits frames, mints checkpoints.        write-only
-     Book        ── folds.     Knows nothing of venues, gaps, or disk.                both sides
-     BookShape   ── carries.   The wire, the checkpoint and the disk row are one shape.
-
-  and the same instance of `Book` sits inside `ShadowBook`, so what we recorded and what a replay
-  folds cannot drift. That is the whole trick; everything below is bookkeeping around it.
+  Venue snapshots are consumed; they do not reach disk. What is written is the frame stream ShadowBook
+  produced, whose `monotonic_seq` it assigns by increment, plus checkpoints on a 60 s cadence.
 ```
 
-=== 1.1 The shapes, verbatim
+=== 1.1 Shapes
 
 ```rust
 // ── venue side ───────────────────────────────────────────────────────────────────────────────
-enum BookUpdate {                            // what an adapter hands us; consumed, never stored
+enum BookUpdate {                            // what an adapter hands us
     Snapshot(BookShape),
-    BatchDelta { shape: BookShape, gapped: bool },   // gapped = the VENUE's seq chain broke
+    BatchDelta { shape: BookShape, gapped: bool },   // gapped: the venue's seq chain broke
 }
 
-struct BookShape {                           // wire + checkpoint + disk, one shape
-    ts:   Aggregate,                         // both `first`s = start of the accumulation EPOCH
-    prec: PrecisionPriceQty,                 // shared across every level; hoisted, never per-level
+struct BookShape {                           // venue message, checkpoint, decoded snapshot row
+    ts:   Aggregate,                         // both `first`s: start of the accumulation epoch
+    prec: PrecisionPriceQty,                 // one value for every level in the map
     asks: BTreeMap<i32, u32>,                // ascending
-    bids: BTreeMap<i32, u32>,                // ascending — `Book` re-orders on resync
+    bids: BTreeMap<i32, u32>,                // ascending
 }
 
 struct Aggregate { venue_exec: Span<Venue>, local_recv: Span<Local> }
 struct Span<A>   { first: Ts<A>, last: Ts<A> }
 struct PrecisionPriceQty { price: Precision, qty: Precision }    // Precision(i8): raw = v × 10^p
 
-// ── the reconciler (write side only) ─────────────────────────────────────────────────────────
+// ── write side ───────────────────────────────────────────────────────────────────────────────
 struct ShadowBook {
-    book:  Book,                   // our recollection — kept in lockstep with what we emit
-    out:   DeltaBuf,               // scratch the emitted frame borrows from
-    seq:   u64,                    // OUR chain. Never the venue's. Gapless by construction
-    cadence: Exact,                // CHECKPOINT_CADENCE = 60s (sync/mod.rs)
-    epoch_start:     Option<Ts<Local>>,     // set on seed; `Some` ⇔ book is synced
-    last_checkpoint: Option<Ts<Local>>,     // cleared on seed: a new epoch owes a fresh checkpoint
+    book:  Book,                   // folded with every frame this instance emits
+    out:   DeltaBuf,               // the emitted frame borrows from it
+    seq:   u64,                    // our own chain, incremented once per emitted level
+    cadence: Exact,                // CHECKPOINT_CADENCE = 60 s (sync/mod.rs)
+    epoch_start:     Option<Ts<Local>>,     // set on seed; `Some` while the book is synced
+    last_checkpoint: Option<Ts<Local>>,     // cleared on seed
 }
 fn ingest(&mut self, u: &BookUpdate, recv: Ts<Local>) -> Option<DeltaFrame<'_>>;
 fn checkpoint(&mut self, recv: Ts<Local>) -> Option<BookShape>;
 
-// ── the fold (both sides) ────────────────────────────────────────────────────────────────────
+// ── the fold ─────────────────────────────────────────────────────────────────────────────────
 struct Book {
     prec:  PrecisionPriceQty,
-    bids:  Vec<(i32, u32)>,        // DESCENDING  ] best-first, contiguous,
-    asks:  Vec<(i32, u32)>,        // ascending   ] index 0 = top of book
-    epoch: u64,                    // bumped by every resync: "same book, deeper" ≠ "a other book"
+    bids:  Vec<(i32, u32)>,        // descending  ] both best-first, index 0 = top of book
+    asks:  Vec<(i32, u32)>,        // ascending   ]
+    epoch: u64,                    // incremented by every resync
     synced: bool,
-    seq:   Option<u64>,            // last folded monotonic_seq; `None` right after a resync
+    seq:   Option<u64>,            // last folded monotonic_seq; `None` after a resync
     span:  Span<Venue>,
 }
-fn step(&mut self, anchor: Option<&BookShape>, frame: DeltaFrame<'_>) -> bool;   // the ONLY verb
+fn step(&mut self, anchor: Option<&BookShape>, frame: DeltaFrame<'_>) -> bool;   // the only pub verb
 
 // ── the delta carrier ────────────────────────────────────────────────────────────────────────
 enum DeltaFrame<'a> { Update(DeltaCols<'a>), Correction(DeltaCols<'a>) }
-enum FrameKind      { Update, Correction }        // the stored u8, parallel to the side byte
+enum FrameKind      { Update, Correction }        // the stored u8 discriminant
 
-struct DeltaCols<'a> {                            // borrowed SoA view — what a node reads
+struct DeltaCols<'a> {                            // borrowed columnar view; what a node reads
     prec: PrecisionPriceQty,
     ts:   RelayCols<'a, Venue, Local>,            // { exec: Option<&[Ts]>, send, recv: Option<Span> }
     monotonic_seq: &'a [u64],
-    side: &'a [Side], price: &'a [i32], qty: &'a [u32],       // qty == 0 ⇒ DELETE this level
+    side: &'a [Side], price: &'a [i32], qty: &'a [u32],       // qty == 0 deletes the level
 }
-struct DeltaBuf {                                 // owned twin: lane buffer + Nudge scratch +
-    prec: PrecisionPriceQty,                      //             ShadowBook's emit accumulator
+struct DeltaBuf {                                 // owned twin; serves as lane buffer, Nudge
+    prec: PrecisionPriceQty,                      // scratch, and ShadowBook's emit accumulator
     exec: Vec<Ts<Venue>>, recv: Vec<Option<Ts<Local>>>,
     monotonic_seq: Vec<u64>, kind: Vec<FrameKind>,
     side: Vec<Side>, price: Vec<i32>, qty: Vec<u32>,
 }
 
-// ── graph roots (cells.rs — the only crate that may write these impls) ───────────────────────
+// ── graph cells (cells.rs; orphan rules put these impls in that crate) ───────────────────────
 struct BookAnchors;   // Cell::Out = Option<&BookShape>   Nudge::Scratch = Option<BookShape>
 struct BookDeltas;    // Cell::Out = DeltaFrame<'_>       Nudge::Scratch = DeltaBuf
-impl  Cell for Book { type Out<'t> = Option<&'t Book>; }   // Option ⇒ Latent ⇒ gateable
+impl  Cell for Book { type Out<'t> = Option<&'t Book>; }   // Option ⇒ Latent
 impl  Node for Book { type Deps = (BookAnchors, Folding<BookDeltas, {Horizon::Span(TF_15MIN)}>); }
 
 // ── disk rows ────────────────────────────────────────────────────────────────────────────────
-pub struct BookDelta {                       // one row PER LEVEL   ·   256 MB / 1 h rotation
+pub struct BookDelta {                       // one row per level   ·   256 MB / 1 h rotation
     ts_venue_exec: Ts<Venue>,
-    ts_local_recv: Ts<Local>,                // NOT Option: book lanes are only ever live-recorded
+    ts_local_recv: Ts<Local>,                // book lanes are written only by a live recording
     monotonic_seq: u64,
-    kind: FrameKind,                         // ours. Not the venue's `gapped`
+    kind: FrameKind,                         // ours; the venue's `gapped` is folded into it
     side: Side, price: i32, qty: u32,
 }
-pub(crate) struct BookSnapshot {             // one row PER CHECKPOINT  ·  64 MB / 6 h rotation
+pub(crate) struct BookSnapshot {             // one row per checkpoint  ·  64 MB / 6 h rotation
     ts_venue_exec: Ts<Venue>, ts_local_recv: Ts<Local>,
-    monotonic_seq: u64,                      // written 0 — a checkpoint has no element sequence
+    monotonic_seq: u64,                      // written 0; a checkpoint carries no element sequence
     bid_prices: Vec<i32>, bid_qtys: Vec<u32>,
     ask_prices: Vec<i32>, ask_qtys: Vec<u32>,
 }
 ```
 
-=== 1.2 Who holds whom
+=== 1.2 Ownership and conversions
 
 ```
-  ShadowBook ─owns─▶ Book        the recorded book and the replayed book are the same fold
-             ─owns─▶ DeltaBuf    the emitted frame borrows it; cleared at the top of every ingest
+  ShadowBook ─owns─▶ Book        folded with each emitted frame
+             ─owns─▶ DeltaBuf    the emitted frame borrows it; cleared at the top of each ingest
 
-  BookShape  ◀─shape()── Book              fold  ⇒ wire   (checkpoint out)
-  BookShape  ──resync()─▶ Book             wire  ⇒ fold   (checkpoint in)
-  BookShape  ◀─snapshot_shape()── BookSnapshot          disk ⇒ wire, precision from the FILE
+  BookShape  ◀─shape()── Book               used to emit a checkpoint
+  BookShape  ──resync()─▶ Book              used to seed the fold
+  BookShape  ◀─snapshot_shape()── BookSnapshot        precision comes from the file's metadata
 
-  DeltaFrame ◀─frame()── DeltaBuf          borrowed view over the owned twin
-  DeltaFrame ──extend()─▶ Feather<BookDelta>            one row per level
-  DeltaFrame ──apply()──▶ Book                          the fold, both kinds identically
+  DeltaFrame ◀─frame()── DeltaBuf           borrowed view over the owned twin
+  DeltaFrame ──extend()─▶ Feather<BookDelta>          one row per level
+  DeltaFrame ──apply()──▶ Book              both kinds fold the same way
 ```
 
-== 2. The write path — `ShadowBook` is the only thing that ever sees a venue
+== 2. Write path
 
 ```
   venue WS
-     │  Sink::push   (clock-free, one send per MESSAGE)
+     │  Sink::push   (clock-free, one send per message)
      ▼
- LiveEvt::Book(BookUpdate) ─────▶ Live::ingest_book(u, ts)          ONE thread, ONE point
-                                        │  recv = recv_of(ts)   ← the ARRIVAL KEY reinterpreted,
-                                        │                          never a second clock read
+ LiveEvt::Book(BookUpdate) ─────▶ Live::ingest_book(u, ts)          single-threaded
+                                        │  recv = recv_of(ts)   ← the arrival key, reinterpreted
                                         ▼
                                  ShadowBook::ingest(&u, recv)
-     ┌──────────────────┬────────────────────┴──────────────┬───────────────────────────┐
-     │ Snapshot         │ Snapshot                          │ BatchDelta                │ BatchDelta
-     │   & !synced      │   & synced                        │   & !synced               │   & synced
-     ▼                  ▼                                   ▼                           ▼
-   seed(s)         book.diff(&shape)                     seed(shape)              levels verbatim
-   ─────────       ─────────────────                     ──────────               ──────────────
-   book.resync     the levels that carry US onto THEM:    a delta before any       kind = gapped
-   epoch += 1        theirs, where ours disagrees          snapshot IS the start          ? Correction
-   epoch_start=recv  ours, as qty 0, where theirs          of the epoch — not a           : Update
-   last_ckpt = None    has no such level                   fallback path
-   ⇒ None          kind = Correction                      ⇒ None
-   (a seed is      empty diff ⇒ None
-    not an event)  (an agreeing snapshot is not an event)
-     └──────────────────┴───────────────────────────────────┴───────────────────────────┘
+     ┌──────────────────┬────────────────────┴──────────────┬──────────────────────────┐
+     │ Snapshot         │ Snapshot                          │ BatchDelta               │ BatchDelta
+     │   & !synced      │   & synced                        │   & !synced              │   & synced
+     ▼                  ▼                                   ▼                          ▼
+   seed(s)         book.diff(&shape)                     seed(shape)            levels verbatim
+   ─────────       ─────────────────                     ──────────             ──────────────
+   book.resync     levels where the two differ:           same seed path as     kind = gapped
+   epoch += 1        theirs, where ours disagrees          the snapshot case          ? Correction
+   epoch_start=recv  qty 0, where theirs holds                                        : Update
+   last_ckpt = None    no such level                      ⇒ None
+   ⇒ None          kind = Correction
+                   empty diff ⇒ None
+     └──────────────────┴───────────────────────────────────┴──────────────────────────┘
                                         ▼
                             for each level:  self.seq += 1
                                              out.push(exec, Some(recv), seq, kind, side, price, qty)
                                         ▼
-                            self.book.apply(frame)      ◀── we fold exactly what we emit
+                            self.book.apply(frame)
                                         ▼
                                  Some(DeltaFrame)
                                         │
         ┌───────────────────────────────┴──────────────────────────────┐
         ▼                                                              ▼
   Feather<BookDelta>::extend(frame)                        weaver.deltas.extend(ts, frame)
-  one BookDelta row per level                              lane key = the arrival, per element
+  one BookDelta row per level                              one arrival key per element
         │                                                              │
         ▼                                                              ▼
   data/book_deltas/<sym>/{ts_min}_{ts_max}.parquet             Lanes::deltas ⇒ Graph::tick
 
-                                        ▼   then, after the fold, at the same `recv`
+                                        ▼   then, at the same `recv`
                             ShadowBook::checkpoint(recv)
-                                  synced?  and  recv - last_checkpoint >= 60s ?
+                                  synced, and recv - last_checkpoint >= 60 s
                                         ▼
                                   BookShape { ts: Aggregate {
                                        venue_exec: self.span,                  ← epoch's venue window
-                                       local_recv: Span(epoch_start, recv) } } ← time SINCE RESYNC,
-                                        │                                        i.e. folded drift
+                                       local_recv: Span(epoch_start, recv) } } ← time since resync
+                                        │
         ┌───────────────────────────────┴──────────────────────────────┐
         ▼                                                              ▼
   Feather<BookSnapshot> (monotonic_seq: 0)                  weaver.anchors.push(ts, shape)
 ```
 
 ```
-  THE CHECKPOINT IS MINTED AFTER THE FOLD, so it INCLUDES the frame it was emitted alongside.
-  Both land on the same `Arrival`, and the weaver's tie-break is lane INDEX — deltas(1) before
-  anchors(2) — so the replayed order matches the live one: the frame arrives, then the checkpoint
-  that already contains it. A replay seeded from that checkpoint reads a gapless chain starting at
-  the NEXT frame, which is exactly what `Book::step` wants.
+  `checkpoint` runs after `apply`, so the shape it returns includes the frame emitted alongside it.
+  Both carry the same `Arrival`; the weaver breaks that tie on lane index, and deltas (1) precede
+  anchors (2). A replay seeded from such a checkpoint therefore starts folding at the following
+  frame.
 ```
 
 #align(center, diagram(
@@ -218,8 +211,13 @@ pub(crate) struct BookSnapshot {             // one row PER CHECKPOINT  ·  64 M
   edge(<upd>, <d0>, "->"),
   edge(<upd>, <d1>, "->"),
 
-  node((-1.5, 2.5), align(center)[`seed` \ #text(7pt)[resync · `epoch += 1`]], fill: rgb("#f2ecdc"), name: <seed>),
-  node((-0.75, 3.6), align(center)[`None` \ #text(7pt)[not an event]], fill: luma(240), name: <none>),
+  node(
+    (-1.5, 2.5),
+    align(center)[`seed` \ #text(7pt)[resync · `epoch += 1`]],
+    fill: rgb("#f2ecdc"),
+    name: <seed>,
+  ),
+  node((-0.75, 3.6), align(center)[`None`], fill: luma(240), name: <none>),
   node((0.2, 2.5), align(center)[`diff(shape)`], fill: rgb("#f6e6e6"), name: <diff>),
   node((2.2, 2.5), align(center)[levels verbatim], fill: rgb("#e9f1e4"), name: <verb>),
 
@@ -230,40 +228,50 @@ pub(crate) struct BookSnapshot {             // one row PER CHECKPOINT  ·  64 M
   edge(<d1>, <verb>, "->"),
   edge(<diff>, <none>, "->", label: [empty], label-size: 7pt, label-side: right),
 
-  node((1.2, 3.7), align(center)[`DeltaFrame` \ #text(7pt)[`Correction` | `Update`] \ #text(7pt)[`self.seq += 1` per level]], fill: luma(235), name: <fr>),
+  node(
+    (1.2, 3.7),
+    align(center)[`DeltaFrame` \ #text(7pt)[`Correction` | `Update`] \ #text(7pt)[`self.seq += 1` per level]],
+    fill: luma(235),
+    name: <fr>,
+  ),
   edge(<diff>, <fr>, "->", label: [`Correction`], label-size: 7pt),
   edge(<verb>, <fr>, "->", label: [`gapped ? Correction : Update`], label-size: 7pt, label-side: right),
 
-  node((1.2, 4.9), align(center)[`book.apply(frame)` \ #text(7pt)[we fold what we emit]], fill: rgb("#e4edf5"), name: <ap>),
+  node((1.2, 4.9), align(center)[`book.apply(frame)`], fill: rgb("#e4edf5"), name: <ap>),
   edge(<fr>, <ap>, "->"),
 
   node((-0.4, 6.1), align(center)[`Feather<BookDelta>` \ #text(7pt)[one row per level]], name: <fd>),
   node((1.2, 6.1), align(center)[`weaver.deltas`], name: <wd>),
-  node((2.9, 6.1), align(center)[`checkpoint(recv)` \ #text(7pt)[after the fold · 60 s]], fill: rgb("#e9f1e4"), name: <ck>),
+  node(
+    (2.9, 6.1),
+    align(center)[`checkpoint(recv)` \ #text(7pt)[after the fold · 60 s]],
+    fill: rgb("#e9f1e4"),
+    name: <ck>,
+  ),
 
   edge(<ap>, <fd>, "->"),
   edge(<ap>, <wd>, "->"),
   edge(<ap>, <ck>, "->"),
 ))
 
-=== 2.1 The reconciliation table
+=== 2.1 What each venue input produces
 
 #table(
-  columns: (auto, auto, auto, auto),
+  columns: (auto, auto, auto, 1fr),
   stroke: 0.4pt + luma(180),
   align: (left, left, left, left),
-  table.header([*venue input*], [*emitted*], [*persisted*], [*why*]),
+  table.header([*venue input*], [*emitted*], [*persisted*], [*notes*]),
 
-  [delta, chain intact], [`DeltaFrame::Update`], [levels, verbatim], [market activity],
-  [delta, `gapped`], [`DeltaFrame::Correction`], [levels + `kind`], [the hole is ours, so the repair is ours],
-  [snapshot, we are unsynced], [nothing (`seed`)], [nothing], [no chain to reconcile against yet],
-  [snapshot, agreeing], [nothing], [nothing], [an agreeing snapshot is not an event],
-  [snapshot, disagreeing], [`DeltaFrame::Correction`], [exactly the diffs], [the minimal carry from ours onto theirs],
-  [cadence elapsed], [`BookShape`], [a `BookSnapshot` row], [our checkpoint, on our cadence],
-  [any venue snapshot], [—], [*never stored*], [their story is not our recollection],
+  [delta, chain intact], [`DeltaFrame::Update`], [the levels], [],
+  [delta, `gapped`], [`DeltaFrame::Correction`], [the levels, `kind = Correction`], [the venue's flag is read once, here],
+  [delta, book unsynced], [nothing], [nothing], [`seed`: the shape becomes the epoch's starting state],
+  [snapshot, book unsynced], [nothing], [nothing], [`seed`, same path],
+  [snapshot, equal to ours], [nothing], [nothing], [`diff` returns an empty vector],
+  [snapshot, differing], [`DeltaFrame::Correction`], [the diff levels], [levels present in theirs and differing in ours, plus `qty 0` for levels only ours holds],
+  [cadence elapsed], [`BookShape`], [a `BookSnapshot` row], [emitted after the frame at the same `recv`],
 )
 
-== 3. The read path — the same fold, run blind
+== 3. Read path
 
 ```
  BookSnapshots lane                            BookDeltas lane
@@ -271,15 +279,14 @@ pub(crate) struct BookSnapshot {             // one row PER CHECKPOINT  ·  64 M
         │    newest row with ts_min <= start,         │    streams one parquet file at a time,
         │    within MAX_ANCHOR_AGE                    │    filters ts_axis ∈ [start, end]
         │  snapshot_shape(row, prec)  ← precision     │
-        │    off the FILE's schema metadata           │
-        │    Span::at(..) both epochs: a stored       │
-        │    snapshot IS a resync point               │
+        │    from the file's schema metadata          │
+        │    Span::at(..) for both epochs             │
         ▼                                             ▼
    BookAnchors                                   BookDeltas
    Out = Option<&BookShape>                      Out = DeltaFrame<'t>
-   a LEVEL: a run of checkpoints collapses       a FLOW WITH IDENTITY: the weaver breaks a
-   to `.last()` — older ones are superseded,     run where `FrameKind` changes, because the
-   not skipped. Pre-range ⇒ `Arrival::MIN`       frame wraps the RUN, not the row
+   a run of checkpoints collapses to             the weaver breaks a run where `FrameKind`
+   `.last()`; a pre-range one gets               changes, since a frame wraps a run of levels
+   `Arrival::MIN`
         └──────────────────┬──────────────────────────┘
                            ▼
               Book::advance ⇒ Book::step(anchor, frame)
@@ -288,23 +295,24 @@ pub(crate) struct BookSnapshot {             // one row PER CHECKPOINT  ·  64 M
    ┌─────────────────────────────── Book::step, in order ───────────────────────────────┐
    │                                                                                     │
    │  1.  missed(frame.seq)                                                              │
-   │        seq.first() vs self.seq: `first != last + 1`  ⇒  synced = false               │
-   │        one path covers three things — an unseeded start, a gap in our own recording, │
-   │        and an episode that went by while a gate was shut                             │
+   │        seq.first() against self.seq: `first != last + 1`  ⇒  synced = false          │
+   │        the same condition covers an unseeded start, a gap in the recording, and      │
+   │        frames that went by while a gate was shut                                     │
    │                                                                                     │
    │  2.  !synced && anchor.is_some()  ⇒  resync(s)                                      │
    │        prec = s.prec  ·  bids ← s.bids.rev()  ·  asks ← s.asks  ·  span = s.ts       │
    │        epoch += 1  ·  synced = true  ·  seq = None                                  │
-   │        NOT taken while synced: our chain is gapless, so the checkpoint is the state  │
-   │        we already hold — taking it would clone both maps and bump `epoch` for free   │
+   │        skipped while synced: the checkpoint holds what the fold already holds, and   │
+   │        taking it would clone both maps and increment `epoch`                         │
    │                                                                                     │
    │  3.  synced  ⇒  apply(frame)                                                        │
    │        assert_eq!(self.prec, cols.prec)                                              │
-   │        per level:  seek(levels, side, price)  — binary search, best-first ordering    │
-   │            (Ok(j),  0) ⇒ remove(j)          a level that went away                    │
-   │            (Ok(j),  q) ⇒ levels[j].1 = q    a level that moved                        │
-   │            (Err(_), 0) ⇒ noop               a delete BELOW our window                 │
-   │            (Err(j), q) ⇒ insert(j, ..)      a level that appeared                     │
+   │        per level:  seek(levels, side, price)  — binary search over the best-first     │
+   │                    ordering                                                          │
+   │            (Ok(j),  0) ⇒ remove(j)          the level went away                       │
+   │            (Ok(j),  q) ⇒ levels[j].1 = q    the level's qty changed                   │
+   │            (Err(_), 0) ⇒ noop               a delete below the window we hold         │
+   │            (Err(j), q) ⇒ insert(j, ..)      a level appeared                          │
    │        span = Span(min(span.first, exec[0]), exec.last())                            │
    │        seq  = cols.monotonic_seq.last()                                              │
    │                                                                                     │
@@ -340,13 +348,13 @@ pub(crate) struct BookSnapshot {             // one row PER CHECKPOINT  ·  64 M
 
   node(
     (0, 1.6),
-    align(center)[#text(7pt)[no anchor yet: frames are dropped, \ never folded onto stale state]],
+    align(center)[#text(7pt)[no anchor yet: the frame \ is dropped]],
     stroke: none,
     name: <drop>,
   ),
   node(
     (1.6, 1.6),
-    align(center)[#text(7pt)[`apply(frame)` — `Update` and \ `Correction` fold identically]],
+    align(center)[#text(7pt)[`apply(frame)` — `Update` and \ `Correction` fold the same way]],
     stroke: none,
     name: <app>,
   ),
@@ -356,29 +364,27 @@ pub(crate) struct BookSnapshot {             // one row PER CHECKPOINT  ·  64 M
   edge(<app>, <sy>, "->", bend: 40deg),
 ))
 
-=== 3.1 Two orderings, one book
+=== 3.1 Level ordering and precision
 
 ```
-  BookShape (wire · checkpoint · disk)          Book (the fold)
-  ────────────────────────────────────          ────────────────────────────────────────────
-  bids: BTreeMap<i32,u32>  ASCENDING    ──rev──▶ bids: Vec<(i32,u32)>  DESCENDING  ] best-first
+  BookShape (venue message · checkpoint · row)   Book (the fold)
+  ────────────────────────────────────────────   ────────────────────────────────────────────
+  bids: BTreeMap<i32,u32>  ascending    ──rev──▶ bids: Vec<(i32,u32)>  descending  ] best-first
   asks: BTreeMap<i32,u32>  ascending    ──────▶ asks: Vec<(i32,u32)>  ascending    ] index 0 = top
                                         ◀─shape()── .iter().copied().collect()
 
-  ponytail: a sorted Vec beats a B-tree to ~1k levels — at the depth a lane carries, the memmove of
-  an insert costs less than a descent. `debug_assert!(levels.len() <= 1024)` marks the ceiling; a
-  full-depth feed is where it flips back to a map.
+  ponytail: sorted Vec, on the reasoning that at the depth a lane carries the memmove of an insert
+  costs less than a B-tree descent. `debug_assert!(levels.len() <= 1024)` marks where that stops
+  being the assumption; a full-depth feed would want a map.
 
-  PRECISION IS THE HOLDER'S, never the level's. `PrecisionPriceQty` sits on the shape, on the cols,
-  on the `Book`, and in the parquet schema metadata — one value hoisted out of every loop, so the
-  columns stay exactly what the venue sent and what the disk holds, with no f64 round trip between.
-  `apply` asserts the frame's precision equals the book's; `Feather::extend` asserts the run's
-  equals the lane's; a lane with no file at all PANICS rather than defaulting, because a default
-  precision scales every price by 1 and produces plausible-looking numbers that are wrong by orders
-  of magnitude.
+  Precision is held once per shape, per cols view, per Book, and in the parquet schema metadata.
+  Levels themselves carry raw i32 price and u32 qty as the venue sent them; the decode to f64 happens
+  at the reading end. `apply` asserts the frame's precision equals the book's, `Feather::extend`
+  asserts the run's equals the lane's, and a lane with no file panics — there is no default, and
+  `Precision(0)` would scale every price by 1.
 ```
 
-== 4. The two lanes on disk
+== 4. Disk lanes
 
 #table(
   columns: (auto, auto, auto, auto, auto, 1fr),
@@ -391,151 +397,111 @@ pub(crate) struct BookSnapshot {             // one row PER CHECKPOINT  ·  64 M
   [`Venue`],
   [256 MB / 1 h],
   [`DeltaFrame<'t>`],
-  [one row per LEVEL. `ts_local_recv` is not `Option`: the adapter that took the frame off the wire always knew its own reception time, so there is no historic-ingest path here. Carries `kind`, never the venue's `gapped`.],
+  [one row per level. `ts_local_recv` is a plain `Ts<Local>`, since the adapter that took the frame off the wire knew its reception time and there is no historic-ingest path into this lane.],
 
   [`BookSnapshots`],
   [`BookSnapshot`],
   [`Venue`],
   [64 MB / 6 h],
   [`Option<&BookShape>`],
-  [our checkpoints, our cadence. `monotonic_seq` written 0 — a checkpoint carries no element sequence, and `resync` sets `seq = None` so the next frame's first seq re-seeds the chain. `pub(crate)`: it is internal to the persistence model, and nothing outside may name it.],
+  [our checkpoints, at `CHECKPOINT_CADENCE`. `monotonic_seq` is written 0, and `resync` sets the fold's `seq` to `None`, so the following frame's first seq re-seeds the chain. `pub(crate)`.],
 )
 
 ```
-  Separate `LaneKind`s, deliberately: naming one root must not LOAD AND ACCUMULATE the other. A
-  graph reading only `BookDeltas` never opens the snapshot lane, and in `Live` an un-drained
-  duplicate lane grows without bound.
+  The two are separate `LaneKind`s, so a graph naming one root does not open and accumulate the
+  other. Under `Live` an un-drained lane grows for the length of the session.
 
-  MAX_ANCHOR_AGE is not a constant of this crate. It is read off the graph:
+  MAX_ANCHOR_AGE is read off the graph:
 
       <<Book as Node>::Deps as DepSet>::REACH[1]   must be a `Horizon::Span(tf)`, else compile error
                                                    ⇒ TF_15MIN, today
 
-  The reader looks back exactly as far as the folding node DECLARED it reaches. It bounds a READ,
-  not drift — our delta lane is gapless by construction, so a miss here means a hole in our own
-  recording, and the honest answer is an unsynced book rather than a seeded one.
+  So the reader looks back as far as the folding node declares it reaches. A range with no
+  checkpoint in that window yields `None`, and the book stays unsynced until one arrives.
 ```
 
-== 5. In the graph
+== 5. Graph cells
 
 ```
   BookAnchors      Cell::Out = Option<&BookShape>   Nudge::Scratch = Option<BookShape>
-                   stage() ⇒ 0.0: perturbing a level makes it a DIFFERENT book, not a nearby one
-                   "Anchors are `Book`'s input, not the graph's" — nothing else should name it
+                   stage() returns 0.0 — there is no finite-difference step over a level map
+                   its doc comment marks it as `Book`'s input
 
   BookDeltas       Cell::Out = DeltaFrame<'t>       Nudge::Scratch = DeltaBuf
-                   the owned twin serves three roles at once: lane buffer, FD scratch, emit
-                   accumulator. `bump_last(slot, h)` is the only thing scratch does that a lane
-                   buffer does not
+                   the owned twin serves as lane buffer, FD scratch and emit accumulator;
+                   `bump_last(slot, h)` is the part only the scratch role uses
 
   Book             Cell::Out = Option<&Book>        Nudge::Scratch = Option<Book>
                    Deps = (BookAnchors, Folding<BookDeltas, {Horizon::Span(TF_15MIN)}>)
                    advance = `self.step(anchor, deltas).then_some(&*self)`
 
-     `Folding` and not `Buffering` only because `DeltaFrame` is no `Series` — there is nothing the
-     engine could retain for it. Which is also what still makes a gated `Book` a compile error
-     (`Pull::open`: `!any(GATES) || !any(FOLDS)`), checkpoint or no. Retaining the deltas as stamped
-     level rows is the one change that would lift it.
+     The dep is `Folding` because `DeltaFrame` does not implement `Series`, so there is nothing for
+     the engine to retain. `Pull::open` const-asserts `!any(GATES) || !any(FOLDS)`, so this node as
+     declared cannot sit behind a gate. Retaining the deltas as stamped level rows would change
+     that.
 
-     The stage() note in cells.rs is a live cost: `clone_from` is written so that a hand-rolled
-     `Clone for Book` would keep both level vectors across ticks, but `Book` derives its own, and a
-     derived `clone_from` is `*self = source.clone()`. So today the observer pays two book clones
-     per fired node and again per dep slot.
+     `stage` calls `clone_from` so that a hand-written `Clone for Book` could reuse both level
+     vectors across ticks. `Book` derives `Clone`, and a derived `clone_from` is
+     `*self = source.clone()`, so at present the observer clones the book twice per fired node and
+     again per dep slot.
 ```
 
 ```
-  READERS OF THE FOLDED BOOK
+  Readers of the folded book
 
   Flat for &Book        [best_bid, best_ask]     via Price::as_f64
   Flat for &BookShape   [bids.keys().next_back(), asks.keys().next()] / price.scale()
-                        the same two numbers, read off the other ordering — a checkpoint reads like
-                        the book it seeds
+                        the same two numbers, read off the map ordering
   Glance for &Book      "{bid}/{ask} ({n} lvls)"  ·  "empty ({n} lvls)"
   Glance for &BookShape "checkpoint {n}b/{n}a"
 
   examples/spl  BookTop : Emit
       Deps = (Folding<Book, {Horizon::Unbounded}>, BookDeltas)
       ⇒ BookTopSnap { ts_ns, best_bid, best_ask, top20_bid_depth_usd, top20_ask_depth_usd }
-      Unbounded and not Span: the book is the accumulation of every delta since its anchor, so a
-      gate closing over it would lose a state no later tick rebuilds. The reach says so.
-      One side still empty is WARMUP, not corruption — the tick declines and consumers don't enter.
-      The `BookDeltas` dep is there for the run's last `exec` stamp; the batch collapses to the one
-      read at its end, so the out is never longer than a tick.
+      The reach is Unbounded: the book accumulates every delta since its anchor.
+      While one side is still empty the out is `None` for that tick.
+      The `BookDeltas` dep supplies the run's last `exec` stamp; the batch collapses to a single
+      read at its end.
 
   examples/live BookFlow : Emit
-      Deps = (Folding<BookDeltas, {Horizon::Unbounded}>,)  — reads the LEVELS, not the book
+      Deps = (Folding<BookDeltas, {Horizon::Unbounded}>,)  — reads the level stream directly
 ```
 
 === 5.1 Gating
 
 ```
-  gate OPEN    ─▶ deps pulled ─▶ anchor + frame ─▶ fold ─▶ Some(&Book)
-  gate CLOSED  ─▶ deps NOT pulled — no checkpoint read, no level read. `Latent` for `Option<T>`
-                  is `None`, and that is the whole dark branch
-  gate REOPEN  ─▶ the frames that went by left a seq hole
+  gate open    ─▶ deps pulled ─▶ anchor + frame ─▶ fold ─▶ Some(&Book)
+  gate closed  ─▶ deps not pulled, so neither lane is read. `Latent` for `Option<T>` is `None`
+  gate reopen  ─▶ the frames that went by left a seq hole
                     └▶ missed() ⇒ desync ⇒ the next checkpoint resyncs, `epoch += 1`, and the
-                       stale levels are CLEARED rather than folded onto
+                       levels held from before are cleared
 
-  This is why a book may be gated where a recurrence may not: it re-warms from a checkpoint, out of
-  band, so the graph owes it no history. Cost of an episode off and on is one desync and one
-  resync — not a warmup it can never recover.
+  An episode spent shut therefore costs one desync and one resync, and the levels come back from the
+  next checkpoint.
 
-  `GatedBook` (trading_data/tests/book_gating.rs) is a TEST-LOCAL eight-line wrapper over the same
-  public `Book::step`, swapping `Folding<BookDeltas, _>` for a bare `BookDeltas` behind
-  `Gating<Hot>`. It is not shipped and nothing in any library names it — its only job is to make the
-  three claims above fail loudly if they stop holding.
+  `GatedBook` (trading_data/tests/book_gating.rs) is a test-local wrapper over `Book::step` with
+  `Folding<BookDeltas, _>` replaced by a bare `BookDeltas` behind `Gating<Hot>`. It exists to hold
+  the three claims above under test; no library names it.
 ```
 
-== 6. The enforcement points, in full
+== 6. enforcement points
 
 ```
-  Book::apply         assert: frame precision == book precision — the one mismatch that silently
-                      rescales every level
-  Book::apply         debug: levels.len() <= 1024 — the sorted-Vec ceiling, named where it flips
-  Book::step          a `monotonic_seq` discontinuity desyncs; ONLY a checkpoint re-arms, and from
-                      the checkpoint's state rather than the stale one
-  Book::step          one entry point, not four verbs: a caller that could `apply` without first
-                      checking `missed` is a caller that can fold onto stale state. `resync`,
-                      `apply`, `missed` and `diff` are all private
+  Book::apply         assert: frame precision == book precision
+  Book::apply         debug: levels.len() <= 1024 — the sorted-Vec assumption
+  Book::step          a `monotonic_seq` discontinuity desyncs; a checkpoint re-arms, and the fold
+                      restarts from the checkpoint's levels
+  Book::step          the single public verb; `resync`, `apply`, `missed` and `diff` are private, so
+                      a caller cannot apply a frame without the `missed` check ahead of it
   ShadowBook::ckpt    expect: `epoch_start` is set whenever the book is synced
   Feather::extend     assert: the run's precision equals the lane's
-  Feather::extend     expect: `ts.recv` is present — "a book lane is only ever written by a live
-                      recording", which is also why `BookDelta::ts_local_recv` is not `Option`
+  Feather::extend     expect: `ts.recv` is present, which is what lets `BookDelta::ts_local_recv` be
+                      a plain `Ts<Local>`
   read.rs             assert: `schema_version` matches exactly · file metadata consistent across
                       the read range
   read.rs             const:  MAX_ANCHOR_AGE is a `Horizon::Span` on `Book`'s declared reach, or it
                       does not compile
-  Replay::new         panic:  no file under any candidate key ⇒ no default precision, ever
-  Pull::open          const:  `Gating` + `Folding` on one node is a compile error — hence the
-                      shipped `Book` node cannot be gated as written
-  Weaver::next        deltas break a run where `FrameKind` changes: an `Update` and a `Correction`
-                      are not the same kind of thing and must not reach a consumer as one frame
-```
-
-== 7. What is not modelled
-
-```
-  · NO PRICE BUCKETING. Levels are keyed by the venue's own raw tick, at the lane's shared
-    precision, and nothing anywhere coarsens them. `bucket` in this repo only ever means TIME
-    (bars, five-minute OI publishes).
-  · NO PER-PERIOD DELTA BATCHING. `CHECKPOINT_CADENCE` (60 s) bounds how far a replay reads back;
-    it does not group deltas. The only grouping a run gets is the weaver's `ReadClock` cell, which
-    is a cost knob and unobservable to a node.
-  · `Book` carries no venue sequence of its own after a resync — `seq = None` until the next frame
-    re-seeds it, so the very first frame after a checkpoint can never be judged for a gap. That is
-    intentional: the checkpoint is a seed, and a seed has no predecessor.
-  · `Book::len()` is `bids.len() + asks.len()`, both sides at once. There is no per-side depth
-    reading, because no consumer has needed one.
-```
-
-```
-  The chain of custody, one sentence per link:
-
-    the venue said it          ── ts_venue_exec, and both the file bounds and the query bounds are on it
-    we received it             ── Live::stamp, one thread, one point, monotone by construction
-    we wrote down that we did  ── recv_of ⇒ ts_local_recv, the key itself and not a second reading
-    we reconciled it ONCE      ── ShadowBook: gaps and disagreements became OUR frames and OUR kinds
-    we checkpointed ourselves  ── after the fold, on our cadence, never the venue's snapshot
-    a replay folds it blind    ── Book::step knows nothing of venues, gaps, or disk
-    and lands on the same book ── which is what `examples/sync_round_trip.rs` asserts, epoch and all
+  Replay::new         panic:  no file under any candidate key, so no precision to hoist
+  Pull::open          const:  `Gating` + `Folding` on one node does not compile
+  Weaver::next        deltas break a run where `FrameKind` changes, so one frame carries one kind
 ```
