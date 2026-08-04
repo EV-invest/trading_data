@@ -5,6 +5,7 @@
 //! feed with the observer off and on, so the two numbers are read off one process on one day.
 
 use std::{
+	fmt::{self, Write as _},
 	path::{Path, PathBuf},
 	time::Instant,
 };
@@ -30,9 +31,12 @@ fn main() {
 		Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency, read_clock)
 	};
 
+	// `Replay::new` eager-loads the whole range, so the decode and the merge are two different
+	// timers on one leg rather than one number the later deltas would have to be read against.
 	let mut ticks = 0u64;
 	let began = Instant::now();
 	let mut f = feed();
+	let load_s = began.elapsed().as_secs_f64();
 	while let Some(l) = f.next() {
 		ticks += 1;
 		std::hint::black_box(&l);
@@ -89,14 +93,184 @@ fn main() {
 	let obs_s = tape(Backpressure::Block);
 	let free_s = tape(Backpressure::Drop);
 
-	println!("{ticks} ticks over {day}");
-	println!("feed only            {feed_s:>8.2}s");
-	println!("+ graph.tick         {plain_s:>8.2}s  (graph {:.2}s)", plain_s - feed_s);
-	println!("+ obs at Want::Vals  {vals_s:>8.2}s  (flatten {:.2}s)", vals_s - plain_s);
-	println!("+ obs at Want::Jac   {fd_s:>8.2}s  (the FD {:.2}s)", fd_s - vals_s);
-	println!("+ obs, recording Viz {obs_s:>8.2}s  (the tape {:.2}s)", obs_s - fd_s);
-	println!("  graph thread alone {free_s:>8.2}s  (the wait {:.2}s)", obs_s - free_s);
-	println!("  had it not clipped {fmt_s:>8.2}s  (the clip saves {:.2}s)", fmt_s - obs_s);
+	// The tape's `on` rebuilt in the four pieces it is made of, each level doing everything the level
+	// below it does. Everything but the handoff, so the last delta against `free_s` is the channel
+	// and the absorbing thread with nothing else folded into it.
+	let piece = |upto| {
+		let began = Instant::now();
+		let mut graph = Graph::default();
+		let mut rec = Bill::new(upto);
+		let mut f = feed();
+		while let Some(l) = f.next() {
+			rec.idx = 0;
+			std::hint::black_box(graph.tick_obs(l.ts_venue.as_nanos(), l.into(), &mut rec));
+		}
+		let elapsed = began.elapsed().as_secs_f64();
+		(elapsed, rec)
+	};
+	let (bare_s, _) = piece(Piece::Bare);
+	let (glance_s, _) = piece(Piece::Glance);
+	let (debug_s, _) = piece(Piece::Debug);
+	let (refill_s, bill) = piece(Piece::Refill);
+
+	println!("{ticks} ticks over {day}\n");
+	println!("── the feed ─────────────────────────────────────");
+	println!("  parquet decode + latency sample  {load_s:>7.2}s");
+	println!("  the weave (arrival merge)        {:>7.2}s", feed_s - load_s);
+	println!("── the graph ────────────────────────────────────");
+	println!("  every derived node               {:>7.2}s", plain_s - feed_s);
+	println!("── reaching the observer ────────────────────────");
+	println!("  flatten (Want::Vals)             {:>7.2}s", vals_s - plain_s);
+	println!("  finite-diff Jacobian (Want::Jac) {:>7.2}s", fd_s - vals_s);
+	println!("── the tape's `on` ──────────────────────────────");
+	println!("  bookkeeping                      {:>7.2}s", bare_s - fd_s);
+	println!("  glance   (Display, unclipped)    {:>7.2}s", glance_s - bare_s);
+	println!("  detail   (Debug, clipped at 256) {:>7.2}s", debug_s - glance_s);
+	println!("  vals+jac memcpy                  {:>7.2}s", refill_s - debug_s);
+	println!("  handoff (channel + absorb)       {:>7.2}s", free_s - refill_s);
+	println!("  backpressure wait                {:>7.2}s", obs_s - free_s);
+	println!("─────────────────────────────────────────────────");
+	println!("  total                            {obs_s:>7.2}s");
+	println!("  (unclipped Debug would be        {fmt_s:>7.2}s)");
+
+	// Which nodes the rendering bill is actually run up by — the only thing that says where
+	// de-stringing pays first. Bytes rather than a per-fire timer: at ~27 ns a read the clock would
+	// be a third of what it measures, and rendered length is what the cost is proportional to.
+	let mut rows: Vec<_> = bill.names.iter().zip(&bill.bytes).map(|(n, &(g, d))| (*n, g, d)).collect();
+	rows.sort_unstable_by_key(|&(_, g, d)| core::cmp::Reverse(g + d));
+	let (tg, td) = rows.iter().fold((0u64, 0u64), |(a, b), &(_, g, d)| (a + g, b + d));
+	let per = |b: u64| b as f64 / ticks as f64;
+	println!("\n── rendered bytes per tick, by node ─────────────");
+	println!("  {:<38} {:>8} {:>8} {:>6}", "node", "glance", "detail", "share");
+	for &(n, g, d) in rows.iter().take(10) {
+		let n = if n.len() > 38 { &n[n.len() - 38..] } else { n };
+		println!("  {n:<38} {:>8.0} {:>8.0} {:>5.1}%", per(g), per(d), 100.0 * (g + d) as f64 / (tg + td) as f64);
+	}
+	println!("  {:<38} {:>8.0} {:>8.0} {:>5.1}%", format!("[all {} nodes]", rows.len()), per(tg), per(td), 100.0);
+	println!("  {:<38} {:>8.1} {:>8.1}", "MB over the day", tg as f64 / 1e6, td as f64 / 1e6);
+}
+
+/// How far down the tape's `on` a [`Bill`] leg goes; each level does everything below it.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum Piece {
+	Bare,
+	Glance,
+	Debug,
+	Refill,
+}
+
+/// `exec_viz`'s `Rec::on`, itemized — the same per-node slots reused across ticks, the same clip at
+/// 256, the same two `refill`s, and nothing else. What it does *not* do is hand the tick off, which
+/// is what leaves the channel priceable as a delta against the real recorder.
+struct Bill {
+	upto: Piece,
+	idx: usize,
+	names: Vec<&'static str>,
+	slots: Vec<Slot>,
+	/// Per node, `(glance, detail)` bytes rendered across the whole day.
+	bytes: Vec<(u64, u64)>,
+}
+impl Bill {
+	fn new(upto: Piece) -> Self {
+		Self {
+			upto,
+			idx: 0,
+			names: Vec::new(),
+			slots: Vec::new(),
+			bytes: Vec::new(),
+		}
+	}
+}
+
+#[derive(Default)]
+struct Slot {
+	out: String,
+	detail: String,
+	vals: Vec<f64>,
+	jac: Vec<f64>,
+}
+
+impl Observer for Bill {
+	fn want(&self) -> Want {
+		Want::Jac
+	}
+
+	fn on(&mut self, node: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
+		let i = self.idx;
+		self.idx += 1;
+		if self.names.len() == i {
+			self.names.push(node);
+			self.slots.push(Slot::default());
+			self.bytes.push((0, 0));
+		} else {
+			assert_eq!(self.names[i], node, "step order shifted between ticks");
+		}
+		if self.upto == Piece::Bare {
+			return;
+		}
+
+		let slot = &mut self.slots[i];
+		slot.out.clear();
+		write!(slot.out, "{}", fire.glance).expect("`String`'s `Write` is infallible");
+		self.bytes[i].0 += slot.out.len() as u64;
+		if self.upto == Piece::Glance {
+			return;
+		}
+
+		slot.detail.clear();
+		// The `Err` is the clip reporting it has seen enough; stopping the render early is the point.
+		let _ = write!(
+			Clip {
+				out: &mut slot.detail,
+				left: Some(256)
+			},
+			"{:?}",
+			fire.debug
+		);
+		self.bytes[i].1 += slot.detail.len() as u64;
+		if self.upto == Piece::Debug {
+			return;
+		}
+
+		refill(&mut slot.vals, fire.vals);
+		refill(&mut slot.jac, fire.jac);
+	}
+}
+
+fn refill(dst: &mut Vec<f64>, src: Option<&[f64]>) {
+	dst.clear();
+	if let Some(src) = src {
+		dst.extend_from_slice(src);
+	}
+}
+
+/// `exec_viz`'s `Clip`, copied rather than shared: it is private there, and a leg that priced a
+/// different truncation would price the wrong thing.
+struct Clip<'a> {
+	out: &'a mut String,
+	left: Option<usize>,
+}
+
+impl fmt::Write for Clip<'_> {
+	fn write_str(&mut self, s: &str) -> fmt::Result {
+		let Some(left) = self.left else { return Err(fmt::Error) };
+		if s.is_empty() {
+			return Ok(());
+		}
+		match s.char_indices().nth(left) {
+			Some((i, _)) => {
+				self.out.push_str(&s[..i]);
+				self.out.push('…');
+				self.left = None;
+				Err(fmt::Error)
+			}
+			None => {
+				self.left = Some(left - s.chars().count());
+				self.out.push_str(s);
+				Ok(())
+			}
+		}
+	}
 }
 /// An observer that records nothing, so what it costs is what `step_seen` spends *reaching* it —
 /// which is what `want` dials: the pre-advance clone and one `clone_from`+`advance` per dep slot of
