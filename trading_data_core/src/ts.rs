@@ -13,6 +13,8 @@ use std::{
 	ops::{Add, Sub},
 };
 
+use derive_more::{Deref, DerefMut};
+
 /// Our own process.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Local;
@@ -315,8 +317,9 @@ impl<From, To> PartialEq for RelayCols<'_, From, To> {
 impl<From, To> Eq for RelayCols<'_, From, To> {}
 
 /// The origin acts, then sends; the destination receives. [`Relay`] plus an attested origin.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, derive_more::Deref, Eq, PartialEq)]
 pub struct Leg<From, To> {
+	#[deref]
 	pub exec: Ts<From>,
 	pub send: Ts<From>,
 	pub recv: Ts<To>,
