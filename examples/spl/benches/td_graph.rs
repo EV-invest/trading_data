@@ -3,17 +3,14 @@
 //! `tick` rather than `tick_obs`: an inactive observer costs nothing but a bench that carried one
 //! would be measuring a facility the NT rows have no counterpart for.
 
-#[path = "harness/mod.rs"]
-mod harness;
-
 use std::{
 	hint::black_box,
 	path::{Path, PathBuf},
 	sync::atomic::Ordering,
 };
 
-use harness::{COUNTERS, Digest, Probe, Row, publish};
 use trading_data::{Exact, ExchangeName, Feed as _, LatencyConfig, ReadClock, Replay, required_lanes};
+use trading_data_bench::{COUNTERS, Digest, Probe, Row, publish};
 use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, symbol, trading_days};
 
 fn main() {

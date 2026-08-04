@@ -11,6 +11,11 @@ readme = "../README.md"
 keywords = ["trading", "finance", "market-data"]
 categories = ["finance"]
 
+# Forwarded, not re-invented: an example depends on this facade only, and the switch it needs is the
+# engine's. Off by default here too — an implementor who never asks cannot acquire it by accident.
+[features]
+profile = ["trading_data_dag/profile"]
+
 [dependencies]
 trading_data_core.workspace = true
 trading_data_dag.workspace = true

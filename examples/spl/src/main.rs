@@ -21,8 +21,9 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use exec_viz::{Backpressure, Viz};
-use trading_data::{Cell, Exact, ExchangeName, Feed, LatencyConfig, ReadClock, Replay, Side, Ts, read_mc, read_oi, required_lanes};
+use exec_viz::{Backpressure, Rec, Recorder, Viz};
+use indicatif::ProgressBar;
+use trading_data::{Catalog, Cell, Exact, ExchangeName, Feed, LatencyConfig, Observer, ReadClock, Replay, Side, Ts, read_mc, read_oi, required_lanes};
 use trading_data_spl::{
 	asset,
 	config::{self, Config},
@@ -65,6 +66,16 @@ struct Cli {
 	/// Strategy + situation config; the flag wins over the env. Mirrors scam_pump_liqs' `--config`.
 	#[arg(long, env = "SPL_CONFIG", default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix"))]
 	config: PathBuf,
+	/// No `Viz`, no server, no observer — run the replay, print the summary, exit. What an external
+	/// profiler wraps: nothing can measure a command that does not return.
+	#[arg(long, env = "TD_HEADLESS")]
+	headless: bool,
+	/// Cap the situation's window at its first `N` trading days. Work-bounded rather than
+	/// time-bounded: a wall-clock cutoff makes every run take exactly that long and leaves the outer
+	/// tool measuring process startup, and cutting mid-day would strand node state inside an episode,
+	/// firing the checks below spuriously.
+	#[arg(long)]
+	days: Option<usize>,
 }
 
 #[tokio::main]
@@ -79,7 +90,10 @@ async fn main() {
 	let cli = Cli::parse();
 	let cfg = Config::load(&cli.config);
 	let situation = &cfg.situation;
-	let days = trading_days(situation);
+	let mut days = trading_days(situation);
+	if let Some(n) = cli.days {
+		days.truncate(n);
+	}
 	println!(
 		"{} {} .. {} ({} days), screen {:?}, {}",
 		situation.pair,
@@ -106,63 +120,109 @@ async fn main() {
 	// downstream can read an unwarmed value in the first place.
 	let lanes = required_lanes::<Graph>();
 	println!("required lanes: {lanes:?}");
-	// Blocking: a replay wants the whole tape, and its feed is a file that will wait.
-	let (viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, Backpressure::Block);
 	let mut day = Day::default();
 	let began = std::time::Instant::now();
 	let (run_start, _) = day_bounds(days[0]);
-
-	// Bound before a byte is read, and printed before the bar starts redrawing over it: the point of
-	// serving concurrently is that the URL works from the first second.
-	let port = std::env::var("PORT").map_or(PORT_BASE, |p| p.parse().expect("PORT is a u16")) + ORDINAL;
-	let server = viz.clone().serve_on(Viz::bind(port).await);
-	println!("serving on http://localhost:{port}");
+	// ponytail: `Replay::new` eager-decodes the day's parquet (~40MB, seconds) with no await, so new
+	// connections stall for that long once per day. Chunking the window across successive `Replay`s
+	// (see the module doc) fixes it, but resets the per-lane latency seed at each boundary, which
+	// moves the run's numbers.
+	let feed = |d| {
+		let (start, end) = day_bounds(d);
+		Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency, read_clock)
+	};
 
 	let pb = ui::run("replay", days.len() as i64 * DAY_NS);
-	tokio::join!(server, async {
-		for d in &days {
-			let (start, end) = day_bounds(*d);
-			// ponytail: `Replay::new` eager-decodes the day's parquet (~40MB, seconds) with no await, so
-			// new connections stall for that long once per day. Chunking the window across successive
-			// `Replay`s (see the module doc) fixes it, but resets the per-lane latency seed at each
-			// boundary, which moves the run's numbers.
-			let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency, read_clock);
-			while let Some(lanes) = feed.next() {
-				day.ticks += 1;
-				let ts_ns = lanes.ts_venue.as_nanos();
-				if day.ticks % 256 == 0 {
-					// `join!` polls both branches on this one task: without a yield the accept loop never
-					// runs, and the bound port stays deaf for the whole replay.
-					tokio::task::yield_now().await;
-					// Both calls take the draw lock. Every 1024th tick is still twice a second.
-					if day.ticks % 1024 == 0 {
-						pb.set_position((ts_ns - run_start.as_nanos()) as u64);
-						pb.set_message(format!("{} episodes, {} intents{}", day.episodes, day.intents, day.violations_msg()));
-					}
-				}
-				let out = graph.tick_obs(ts_ns, lanes.into(), &mut recorder.at(ts_ns));
+	// What observes is chosen here, once: `tick_obs` over the unit observer monomorphizes to exactly
+	// `tick`, so the headless run pays nothing for the branch that selected it.
+	match cli.headless {
+		true => {
+			replay(&mut graph, &mut day, &days, feed, &pb, run_start.as_nanos(), &mut ()).await;
+			summary(&mut day, &pb, began, &cfg, &catalog);
+		}
+		false => {
+			// Blocking: a replay wants the whole tape, and its feed is a file that will wait.
+			let (viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, Backpressure::Block);
+			// Bound before a byte is read, and printed before the bar starts redrawing over it: the point
+			// of serving concurrently is that the URL works from the first second.
+			let port = std::env::var("PORT").map_or(PORT_BASE, |p| p.parse().expect("PORT is a u16")) + ORDINAL;
+			let server = viz.clone().serve_on(Viz::bind(port).await);
+			println!("serving on http://localhost:{port}");
+			tokio::join!(server, async {
+				replay(&mut graph, &mut day, &days, feed, &pb, run_start.as_nanos(), &mut recorder).await;
+				summary(&mut day, &pb, began, &cfg, &catalog);
+				recorder.seal();
+			});
+		}
+	}
+}
 
-				for intent in out.deprecator {
-					day.check_intent(*intent);
+/// What the tick is observed by, per tick. A lending factory rather than `FnMut(i64) -> O` because
+/// [`Rec`] borrows the recorder it writes into; the unit impl is the headless run, and it erases —
+/// `tick_obs` over a `()` observer *is* `tick`.
+trait Observed {
+	type Obs<'a>: Observer
+	where
+		Self: 'a;
+
+	fn at(&mut self, ts_ns: i64) -> Self::Obs<'_>;
+}
+impl Observed for () {
+	type Obs<'a> = ();
+
+	fn at(&mut self, _: i64) {}
+}
+impl Observed for Recorder {
+	type Obs<'a> = Rec<'a>;
+
+	fn at(&mut self, ts_ns: i64) -> Rec<'_> {
+		Recorder::at(self, ts_ns)
+	}
+}
+
+/// Generic over *what* observes, never over *whether*: the caller picks the observer before the
+/// first byte is read, so the tick body below has no test in it either way.
+async fn replay(graph: &mut Graph, day: &mut Day, days: &[jiff::civil::Date], feed: impl Fn(jiff::civil::Date) -> Replay, pb: &ProgressBar, run_start: i64, obs: &mut impl Observed) {
+	for d in days {
+		let mut feed = feed(*d);
+		while let Some(lanes) = feed.next() {
+			day.ticks += 1;
+			let ts_ns = lanes.ts_venue.as_nanos();
+			if day.ticks % 256 == 0 {
+				// `join!` polls both branches on this one task: without a yield the accept loop never
+				// runs, and the bound port stays deaf for the whole replay.
+				tokio::task::yield_now().await;
+				// Both calls take the draw lock. Every 1024th tick is still twice a second.
+				if day.ticks % 1024 == 0 {
+					pb.set_position((ts_ns - run_start) as u64);
+					pb.set_message(format!("{} episodes, {} intents{}", day.episodes, day.intents, day.violations_msg()));
 				}
 			}
+			let out = graph.tick_obs(ts_ns, lanes.into(), &mut obs.at(ts_ns));
+
+			for intent in out.deprecator {
+				day.check_intent(*intent);
+			}
 		}
-		ui::finish_run(&pb, format!("{} ticks, {} episodes{}", day.ticks, day.episodes, day.violations_msg()));
+	}
+}
 
-		println!("traded: episodes={} intents={}", day.episodes, day.intents);
-		println!("{} ticks in {:.1}s on a {} read clock", day.ticks, began.elapsed().as_secs_f64(), cfg.backtest.read_clock);
+fn summary(day: &mut Day, pb: &ProgressBar, began: std::time::Instant, cfg: &Config, catalog: &Catalog) {
+	let situation = &cfg.situation;
+	ui::finish_run(pb, format!("{} ticks, {} episodes{}", day.ticks, day.episodes, day.violations_msg()));
 
-		let oi: Vec<_> = read_oi(&catalog, ExchangeName::Bybit, symbol(situation), Ts::MIN, Ts::MAX).expect("open oi lane").collect();
-		flag!(day, oi.windows(2).all(|w| w[0].ts_venue_exec <= w[1].ts_venue_exec), "oi timestamps unordered");
-		let mc: Vec<_> = read_mc(&catalog, asset(situation), Ts::MIN, Ts::MAX).expect("open mc lane").collect();
-		println!("oi rows={} mc rows={} (mc={:.3e})", oi.len(), mc.len(), mc[0].market_cap);
+	println!("traded: episodes={} intents={}", day.episodes, day.intents);
+	println!("{} ticks in {:.1}s on a {} read clock", day.ticks, began.elapsed().as_secs_f64(), cfg.backtest.read_clock);
 
-		match day.violations {
-			0 => println!("spl: ok"),
-			n => println!("spl: {n} INVARIANT VIOLATIONS — see tmp/spl.log"),
-		}
-		recorder.seal();
-	});
+	let oi: Vec<_> = read_oi(catalog, ExchangeName::Bybit, symbol(situation), Ts::MIN, Ts::MAX).expect("open oi lane").collect();
+	flag!(day, oi.windows(2).all(|w| w[0].ts_venue_exec <= w[1].ts_venue_exec), "oi timestamps unordered");
+	let mc: Vec<_> = read_mc(catalog, asset(situation), Ts::MIN, Ts::MAX).expect("open mc lane").collect();
+	println!("oi rows={} mc rows={} (mc={:.3e})", oi.len(), mc.len(), mc[0].market_cap);
+
+	match day.violations {
+		0 => println!("spl: ok"),
+		n => println!("spl: {n} INVARIANT VIOLATIONS — see tmp/spl.log"),
+	}
 }
 
 /// Per-day accumulator and the running check block over the deprecator stream.

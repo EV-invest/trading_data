@@ -9,8 +9,9 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use exec_viz::{Backpressure, Viz};
-use trading_data::{Cell, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, ReadClock, Replay, Want, required_lanes};
+use clap::Parser;
+use exec_viz::{Backpressure, Rec, Recorder, Viz};
+use trading_data::{Cell, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, ReadClock, Replay, RsiValues, Want, required_lanes};
 use trading_data_simple::{day_bounds, ensure_catalog, nodes::Graph, symbol};
 use v_utils::*;
 
@@ -24,8 +25,19 @@ const SCROLLBACK: usize = 20_000;
 /// — this example's cost driver is how often it looks, not how finely.
 const CLOCK: ReadClock = ReadClock::from(Exact::from_nanos(60_000_000_000));
 
+#[derive(Parser)]
+#[command(about = "one day, one root, one RSI chain", long_about = None)]
+struct Cli {
+	/// No `Viz`, no server, no observer — run the day, print the counts, exit. What an external
+	/// profiler wraps: nothing can measure a command that does not return. The `Signal` FD check goes
+	/// with the observer, so a headless run is a sweep measurement and not the acceptance test.
+	#[arg(long, env = "TD_HEADLESS")]
+	headless: bool,
+}
+
 #[tokio::main]
 async fn main() {
+	let cli = Cli::parse();
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/simple_cache"));
 	let catalog = ensure_catalog(&cache);
 
@@ -41,49 +53,20 @@ async fn main() {
 	let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), day_start, day_end, &lanes, latency, CLOCK);
 
 	let mut graph = Graph::default();
-	let (viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, Backpressure::Block);
-	// `Signal`'s exact/FD agreement check and the viz recording are two readings of one sweep.
-	let mut doc = SignalDoc::default();
-	let (mut n_trades, mut bars, mut rsi_snaps, mut lambda_fires) = (0u64, 0u64, 0u64, 0u64);
-	let (mut cvd, mut vol1h) = (0.0f64, 0.0f64);
-	let (mut rsi_end, mut lambda_end) = (None, None);
 
-	while let Some(lanes) = feed.next() {
-		n_trades += lanes.trades.len() as u64;
-		let ts_ns = lanes.ts_venue.as_nanos();
-		let out = graph.tick_obs(ts_ns, lanes.into(), &mut (&mut doc, recorder.at(ts_ns)));
-
-		bars += out.bar.len() as u64;
-		rsi_snaps += out.rsi.iter().flatten().count() as u64;
-		lambda_fires += out.lambda.iter().flatten().count() as u64;
-		for l in out.lambda.iter().flatten() {
-			assert!(l.is_finite(), "lambda went non-finite: {l}");
-		}
-		// cross-rate levels: last element is the current running/level view.
-		if let Some(&c) = out.cvd.last() {
-			cvd = c;
-		}
-		if let Some(&Some(v)) = out.vol_usd_1h.last() {
-			vol1h = v;
-		}
-		if let Some(&Some(r)) = out.rsi.last() {
-			rsi_end = Some(r);
-		}
-		if let Some(&l) = out.lambda.last() {
-			lambda_end = l;
-		}
+	// What observes is chosen here, once, and monomorphizes into the sweep: `tick_obs` over the unit
+	// observer *is* `tick`, so the headless run pays nothing for the branch that selected it.
+	if cli.headless {
+		run(&mut feed, &mut graph, &mut ()).report();
+		println!("simple: ok");
+		return;
 	}
 
-	println!("trades={n_trades} bars={bars} rsi_snaps={rsi_snaps} lambda_fires={lambda_fires}");
-	println!("leaf levels at day end: rsi={rsi_end:?} vol1h={vol1h:.0} cvd={cvd:.0} λ={lambda_end:?}");
-
-	// batching does not alter fold order ⇒ these are bit-identical to the pre-batch run.
-	assert_eq!(n_trades, 270164, "trade count changed");
-	assert_eq!(bars, 1439, "bar count changed");
-	// warm after base_len + smooth_len closes, and the day is three orders of magnitude longer.
-	assert!(rsi_snaps > 1_000, "RSI warmed on only {rsi_snaps} bars");
-	assert!(lambda_fires >= 1, "lambda never fired");
-	assert!(cvd != 0.0 && cvd.is_finite(), "day-end CVD degenerate: {cvd}");
+	let (viz, recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, Backpressure::Block);
+	// `Signal`'s exact/FD agreement check and the viz recording are two readings of one sweep.
+	let mut watched = (SignalDoc::default(), recorder);
+	run(&mut feed, &mut graph, &mut watched).report();
+	let (doc, recorder) = watched;
 
 	println!("signal exact/FD agreement: checked={} max_rel={:.2e}", doc.checked, doc.max_rel);
 	assert!(doc.checked > 0, "Signal never produced a finite Jacobian");
@@ -94,6 +77,96 @@ async fn main() {
 	// Replay-only: the recording is over before the first request, so the last tick is addressable.
 	recorder.seal();
 	viz.serve_on(Viz::bind(base + ORDINAL).await).await;
+}
+
+/// What observes a tick, per tick. A lending factory rather than a closure because [`Rec`] borrows
+/// the recorder it writes into; `()` is the headless reading, and it erases.
+trait Observed {
+	type Obs<'a>: Observer
+	where
+		Self: 'a;
+
+	fn at(&mut self, ts_ns: i64) -> Self::Obs<'_>;
+}
+impl Observed for () {
+	type Obs<'a> = ();
+
+	fn at(&mut self, _: i64) {}
+}
+impl Observed for (SignalDoc, Recorder) {
+	type Obs<'a> = (&'a mut SignalDoc, Rec<'a>);
+
+	fn at(&mut self, ts_ns: i64) -> Self::Obs<'_> {
+		(&mut self.0, self.1.at(ts_ns))
+	}
+}
+
+/// The day's counts and its leaf levels — what the asserts are over, and the only thing the sweep
+/// leaves behind once the observer is gone.
+#[derive(Default)]
+struct Tally {
+	n_trades: u64,
+	bars: u64,
+	rsi_snaps: u64,
+	lambda_fires: u64,
+	cvd: f64,
+	vol1h: f64,
+	rsi_end: Option<RsiValues>,
+	lambda_end: Option<f64>,
+}
+impl Tally {
+	fn report(&self) {
+		let Self {
+			n_trades,
+			bars,
+			rsi_snaps,
+			lambda_fires,
+			cvd,
+			vol1h,
+			rsi_end,
+			lambda_end,
+		} = *self;
+		println!("trades={n_trades} bars={bars} rsi_snaps={rsi_snaps} lambda_fires={lambda_fires}");
+		println!("leaf levels at day end: rsi={rsi_end:?} vol1h={vol1h:.0} cvd={cvd:.0} λ={lambda_end:?}");
+
+		// batching does not alter fold order ⇒ these are bit-identical to the pre-batch run.
+		assert_eq!(n_trades, 270164, "trade count changed");
+		assert_eq!(bars, 1439, "bar count changed");
+		// warm after base_len + smooth_len closes, and the day is three orders of magnitude longer.
+		assert!(rsi_snaps > 1_000, "RSI warmed on only {rsi_snaps} bars");
+		assert!(lambda_fires >= 1, "lambda never fired");
+		assert!(cvd != 0.0 && cvd.is_finite(), "day-end CVD degenerate: {cvd}");
+	}
+}
+
+fn run(feed: &mut Replay, graph: &mut Graph, obs: &mut impl Observed) -> Tally {
+	let mut t = Tally::default();
+	while let Some(lanes) = feed.next() {
+		t.n_trades += lanes.trades.len() as u64;
+		let ts_ns = lanes.ts_venue.as_nanos();
+		let out = graph.tick_obs(ts_ns, lanes.into(), &mut obs.at(ts_ns));
+
+		t.bars += out.bar.len() as u64;
+		t.rsi_snaps += out.rsi.iter().flatten().count() as u64;
+		t.lambda_fires += out.lambda.iter().flatten().count() as u64;
+		for l in out.lambda.iter().flatten() {
+			assert!(l.is_finite(), "lambda went non-finite: {l}");
+		}
+		// cross-rate levels: last element is the current running/level view.
+		if let Some(&c) = out.cvd.last() {
+			t.cvd = c;
+		}
+		if let Some(&Some(v)) = out.vol_usd_1h.last() {
+			t.vol1h = v;
+		}
+		if let Some(&Some(r)) = out.rsi.last() {
+			t.rsi_end = Some(r);
+		}
+		if let Some(&l) = out.lambda.last() {
+			t.lambda_end = l;
+		}
+	}
+	t
 }
 
 /// Surfaces the `Signal` node's self-documentation through the observation choke point: prints its

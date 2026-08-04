@@ -10,11 +10,24 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# `#[inline(never)]` on every `step*`, so a profiler resolves one frame per node. Never in a
+# `default` set and never enabled by a dependency — it is an explicit `--features profile` or it is
+# absent from codegen.
+profile = []
+
 [dependencies]
 trading_data_expr.workspace = true
 trading_data_macros.workspace = true
 # `Horizon::Span` is a `Timeframe`, which is a std type — so this crate is no longer `no_std`.
 v_utils.workspace = true
+
+[dev-dependencies]
+iai-callgrind.workspace = true
+
+[[bench]]
+name = "sweep"
+harness = false
 
 [lints]
 workspace = true

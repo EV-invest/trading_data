@@ -7,6 +7,7 @@ members = [
     "examples/simple",
     "examples/spl",
     "trading_data",
+    "trading_data_bench",
     "trading_data_core",
     "trading_data_dag",
     "trading_data_derivatives",
@@ -46,6 +47,7 @@ unused_features = "allow"
 
 [workspace.dependencies]
 anyhow = "1"
+arrayvec = "0.7"
 arrow = "59"
 clap = { version = "^4.6.5", features = ["derive", "env"] }
 color-eyre = "^0.6.5"
@@ -81,6 +83,9 @@ thiserror = "^2.0"
 tokio = { version = "^1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 tracing = "^0.1"
 trading_data = { path = "trading_data", version = "0.3.0" }
+# Unversioned on purpose: `publish = false`, so it can only ever be a dev-dependency of a workspace
+# member and never reaches a shipped build.
+trading_data_bench = { path = "trading_data_bench" }
 trading_data_core = { path = "trading_data_core", version = "0.3.0" }
 trading_data_dag = { path = "trading_data_dag", version = "0.3.0" }
 trading_data_derivatives = { path = "trading_data_derivatives", version = "0.3.0" }
@@ -93,6 +98,15 @@ ureq = "^3"
 v_exchanges = { path = "../../v_exchanges/v_exchanges" }
 v_utils = { version = "^2.17.2", features = ["io", "macros", "cli", "distributions"] }
 zip = "^8"
+
+# A separate profile, so `release` stays bit-for-bit what it is. `debug = 1` is line tables only —
+# enough for `perf`/`samply` to name a frame, and no `force-frame-pointer`, which would need
+# `RUSTFLAGS` and silently drop `.cargo/config.toml`'s mold linker; `--call-graph dwarf` unwinds
+# instead.
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = false
 
 [patch.crates-io]
 # `trading_data_core` dev-depends on `snapshot_fonts`, and `v_exchanges` names it from crates-io;
