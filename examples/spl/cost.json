@@ -213,55 +213,55 @@
     {
       "group": "the feed",
       "label": "parquet decode + latency sample",
-      "secs": 0.891100595
+      "secs": 0.879207859
     },
     {
       "group": "the feed",
       "label": "the weave (arrival merge)",
-      "secs": 0.01662721299999992
+      "secs": 0.016545166
     },
     {
       "group": "the graph",
       "label": "every derived node",
-      "secs": 0.00661453600000006
+      "secs": 0.008141383000000002
     },
     {
       "group": "reaching the observer",
       "label": "flatten (Want::Vals)",
-      "secs": 0.2450625769999999
+      "secs": 0.247561272
     },
     {
       "group": "reaching the observer",
       "label": "finite-diff Jacobian (Want::Jac)",
-      "secs": 0.4782947020000001
+      "secs": 0.481081415
     },
     {
       "group": "the tape's `on`",
       "label": "bookkeeping",
-      "secs": 0.11315355800000004
+      "secs": 0.08606927300000011
     },
     {
       "group": "the tape's `on`",
       "label": "glance (the node's own one-liner)",
-      "secs": 0.345662774
+      "secs": 0.26780015199999996
     },
     {
       "group": "the tape's `on`",
       "label": "vals+jac columns",
-      "secs": 0.037453866999999974
+      "secs": 0.05589854999999977
     },
     {
       "group": "the tape's `on`",
       "label": "handoff (channel + absorb)",
-      "secs": 0.980089064
+      "secs": 0.7809959540000002
     },
     {
       "group": "the tape's `on`",
       "label": "backpressure wait",
-      "secs": -0.09714383500000023
+      "secs": 0.028782784000000117
     }
   ],
-  "tape_s": 1.3792154279999997,
+  "tape_s": 1.2195467130000002,
   "ticks": 158969,
-  "total_s": 3.016915051
+  "total_s": 2.852083808
 }
