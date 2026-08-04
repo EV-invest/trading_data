@@ -113,25 +113,34 @@ fn main() {
 	let (debug_s, _) = piece(Piece::Debug);
 	let (refill_s, bill) = piece(Piece::Refill);
 
+	// One list, printed and written, so the terminal and `cost.typ` can never disagree about what a
+	// line is called or which stage it belongs to.
+	let stages = [
+		("the feed", "parquet decode + latency sample", load_s),
+		("the feed", "the weave (arrival merge)", feed_s - load_s),
+		("the graph", "every derived node", plain_s - feed_s),
+		("reaching the observer", "flatten (Want::Vals)", vals_s - plain_s),
+		("reaching the observer", "finite-diff Jacobian (Want::Jac)", fd_s - vals_s),
+		("the tape's `on`", "bookkeeping", bare_s - fd_s),
+		("the tape's `on`", "glance (Display, unclipped)", glance_s - bare_s),
+		("the tape's `on`", "detail (Debug, clipped at 256)", debug_s - glance_s),
+		("the tape's `on`", "vals+jac memcpy", refill_s - debug_s),
+		("the tape's `on`", "handoff (channel + absorb)", free_s - refill_s),
+		("the tape's `on`", "backpressure wait", obs_s - free_s),
+	];
+
 	println!("{ticks} ticks over {day}\n");
-	println!("── the feed ─────────────────────────────────────");
-	println!("  parquet decode + latency sample  {load_s:>7.2}s");
-	println!("  the weave (arrival merge)        {:>7.2}s", feed_s - load_s);
-	println!("── the graph ────────────────────────────────────");
-	println!("  every derived node               {:>7.2}s", plain_s - feed_s);
-	println!("── reaching the observer ────────────────────────");
-	println!("  flatten (Want::Vals)             {:>7.2}s", vals_s - plain_s);
-	println!("  finite-diff Jacobian (Want::Jac) {:>7.2}s", fd_s - vals_s);
-	println!("── the tape's `on` ──────────────────────────────");
-	println!("  bookkeeping                      {:>7.2}s", bare_s - fd_s);
-	println!("  glance   (Display, unclipped)    {:>7.2}s", glance_s - bare_s);
-	println!("  detail   (Debug, clipped at 256) {:>7.2}s", debug_s - glance_s);
-	println!("  vals+jac memcpy                  {:>7.2}s", refill_s - debug_s);
-	println!("  handoff (channel + absorb)       {:>7.2}s", free_s - refill_s);
-	println!("  backpressure wait                {:>7.2}s", obs_s - free_s);
-	println!("─────────────────────────────────────────────────");
-	println!("  total                            {obs_s:>7.2}s");
-	println!("  (unclipped Debug would be        {fmt_s:>7.2}s)");
+	let mut group = "";
+	for (g, label, secs) in stages {
+		if g != group {
+			group = g;
+			println!("── {g} {}", "─".repeat(45 - g.chars().count()));
+		}
+		println!("  {label:<34} {secs:>6.2}s {:>5.1}%", 100.0 * secs / obs_s);
+	}
+	println!("{}", "─".repeat(49));
+	println!("  {:<34} {obs_s:>6.2}s", "total");
+	println!("  {:<34} {fmt_s:>6.2}s", "unclipped Debug would have been");
 
 	// Which nodes the rendering bill is actually run up by — the only thing that says where
 	// de-stringing pays first. Bytes rather than a per-fire timer: at ~27 ns a read the clock would
@@ -148,6 +157,23 @@ fn main() {
 	}
 	println!("  {:<38} {:>8.0} {:>8.0} {:>5.1}%", format!("[all {} nodes]", rows.len()), per(tg), per(td), 100.0);
 	println!("  {:<38} {:>8.1} {:>8.1}", "MB over the day", tg as f64 / 1e6, td as f64 / 1e6);
+
+	// `cost.typ` renders these; nothing regenerates them but this example, and `tests/cost.rs` is
+	// what notices when the graph has moved on since it last ran. `derived` is the graph's own
+	// closure rather than what the observer saw, which also counts roots — it is the list the test
+	// can check without a feed.
+	let art = serde_json::json!({
+		"day": day.to_string(),
+		"ticks": ticks,
+		"total_s": obs_s,
+		"unclipped_s": fmt_s,
+		"derived": Graph::NODES,
+		"stages": stages.map(|(g, label, secs)| serde_json::json!({ "group": g, "label": label, "secs": secs })),
+		"render": rows.iter().map(|&(n, g, d)| serde_json::json!({ "node": n, "glance": g, "detail": d })).collect::<Vec<_>>(),
+	});
+	let at = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/cost.json"));
+	std::fs::write(at, serde_json::to_string_pretty(&art).expect("a json! literal serializes")).expect("write cost.json");
+	println!("\nwrote {}", at.display());
 }
 
 /// How far down the tape's `on` a [`Bill`] leg goes; each level does everything below it.

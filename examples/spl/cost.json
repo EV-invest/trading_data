@@ -1,0 +1,314 @@
+{
+  "day": "2026-05-20",
+  "derived": [
+    "Ohlcs<{TF_1MIN}>",
+    "Volumes<{TF_1MIN}>",
+    "Bars<{TF_1MIN}>",
+    "Ohlcs<{TF_5MIN}>",
+    "Volumes<{TF_5MIN}>",
+    "Bars<{TF_5MIN}>",
+    "Buffer<Bars<{TF_5MIN}>>",
+    "Ohlcs<{TF_4H}>",
+    "Volumes<{TF_4H}>",
+    "Bars<{TF_4H}>",
+    "Buffer<Bars<{TF_4H}>>",
+    "Momentum",
+    "StdScreener",
+    "Ohlcs<{TF_1H}>",
+    "Volumes<{TF_1H}>",
+    "Bars<{TF_1H}>",
+    "Buffer<Bars<{TF_1H}>>",
+    "Change1d",
+    "Buffer<Bars<{TF_1MIN}>>",
+    "Change3m",
+    "Volume1m",
+    "Volume1h",
+    "Book",
+    "BookTop",
+    "Imbalance",
+    "Spread",
+    "Latest<McRoot>",
+    "Buffer<OiRoot>",
+    "Classify",
+    "Decision",
+    "Armed<Deprecator>",
+    "Atr",
+    "Deprecator",
+    "RsiDelta<RsiSeries>",
+    "AvgGain<RsiSeries,Knobs>",
+    "AvgLoss<RsiSeries,Knobs>",
+    "Rsi<RsiSeries,Knobs>"
+  ],
+  "render": [
+    {
+      "detail": 41169911,
+      "glance": 3656059,
+      "node": "trading_data_core::book::Book"
+    },
+    {
+      "detail": 40386091,
+      "glance": 3285609,
+      "node": "trading_data_core::cells::BookDeltas"
+    },
+    {
+      "detail": 40934219,
+      "glance": 319013,
+      "node": "Buffer<trading_data_persistence::row::OiRoot, Span(20m)>"
+    },
+    {
+      "detail": 40839474,
+      "glance": 330793,
+      "node": "Buffer<Bar:1m, Span(3m)>"
+    },
+    {
+      "detail": 40311539,
+      "glance": 320765,
+      "node": "Buffer<Bar:5m, Elems(181)>"
+    },
+    {
+      "detail": 37012560,
+      "glance": 318165,
+      "node": "Buffer<Bar:1h, Span(25h)>"
+    },
+    {
+      "detail": 30878772,
+      "glance": 317986,
+      "node": "Buffer<Bar:4h, Elems(181)>"
+    },
+    {
+      "detail": 30322343,
+      "glance": 440601,
+      "node": "trading_data_core::cells::Trades"
+    },
+    {
+      "detail": 23562733,
+      "glance": 1931352,
+      "node": "trading_data_spl::nodes::book_top::BookTop"
+    },
+    {
+      "detail": 14466179,
+      "glance": 953814,
+      "node": "Latest<MarketCap>"
+    },
+    {
+      "detail": 995171,
+      "glance": 655602,
+      "node": "trading_data_core::cells::BookAnchors"
+    },
+    {
+      "detail": 794845,
+      "glance": 794845,
+      "node": "Armed<trading_data_spl::nodes::deprecator::Deprecator>"
+    },
+    {
+      "detail": 794845,
+      "glance": 794845,
+      "node": "trading_data_spl::nodes::std_screener::StdScreener"
+    },
+    {
+      "detail": 635876,
+      "glance": 635876,
+      "node": "trading_data_spl::nodes::classify::Classify"
+    },
+    {
+      "detail": 635876,
+      "glance": 635876,
+      "node": "trading_data_spl::nodes::decision::Decision"
+    },
+    {
+      "detail": 461988,
+      "glance": 330793,
+      "node": "Bar:1m"
+    },
+    {
+      "detail": 440782,
+      "glance": 330793,
+      "node": "Ohlc:1m"
+    },
+    {
+      "detail": 388506,
+      "glance": 319659,
+      "node": "Vol:1m"
+    },
+    {
+      "detail": 353253,
+      "glance": 342939,
+      "node": "trading_data_spl::nodes::atr::Atr"
+    },
+    {
+      "detail": 349877,
+      "glance": 320765,
+      "node": "Bar:5m"
+    },
+    {
+      "detail": 344958,
+      "glance": 320765,
+      "node": "Ohlc:5m"
+    },
+    {
+      "detail": 346549,
+      "glance": 319013,
+      "node": "trading_data_persistence::row::OiRoot"
+    },
+    {
+      "detail": 336793,
+      "glance": 318508,
+      "node": "Rsi<Bar:5m, Knobs>"
+    },
+    {
+      "detail": 333725,
+      "glance": 318567,
+      "node": "Vol:5m"
+    },
+    {
+      "detail": 325483,
+      "glance": 323295,
+      "node": "AvgLoss<Bar:5m, Knobs>"
+    },
+    {
+      "detail": 325468,
+      "glance": 323286,
+      "node": "AvgGain<Bar:5m, Knobs>"
+    },
+    {
+      "detail": 323595,
+      "glance": 323007,
+      "node": "RsiDelta<Bar:5m>"
+    },
+    {
+      "detail": 321214,
+      "glance": 320006,
+      "node": "trading_data_spl::nodes::momentum::Momentum"
+    },
+    {
+      "detail": 320534,
+      "glance": 318165,
+      "node": "Bar:1h"
+    },
+    {
+      "detail": 320107,
+      "glance": 318165,
+      "node": "Ohlc:1h"
+    },
+    {
+      "detail": 319239,
+      "glance": 318020,
+      "node": "Vol:1h"
+    },
+    {
+      "detail": 318503,
+      "glance": 317986,
+      "node": "Bar:4h"
+    },
+    {
+      "detail": 318407,
+      "glance": 317986,
+      "node": "Ohlc:4h"
+    },
+    {
+      "detail": 318224,
+      "glance": 317959,
+      "node": "Vol:4h"
+    },
+    {
+      "detail": 318108,
+      "glance": 317946,
+      "node": "MarketCap"
+    },
+    {
+      "detail": 317938,
+      "glance": 317938,
+      "node": "trading_data_spl::nodes::change_1d::Change1d"
+    },
+    {
+      "detail": 317938,
+      "glance": 317938,
+      "node": "trading_data_spl::nodes::change_3m::Change3m"
+    },
+    {
+      "detail": 317938,
+      "glance": 317938,
+      "node": "trading_data_spl::nodes::volume_1m::Volume1m"
+    },
+    {
+      "detail": 317938,
+      "glance": 317938,
+      "node": "trading_data_spl::nodes::volume_1h::Volume1h"
+    },
+    {
+      "detail": 317938,
+      "glance": 317938,
+      "node": "trading_data_spl::nodes::imbalance::Imbalance"
+    },
+    {
+      "detail": 317938,
+      "glance": 317938,
+      "node": "trading_data_spl::nodes::spread::Spread"
+    },
+    {
+      "detail": 317938,
+      "glance": 317938,
+      "node": "trading_data_spl::nodes::deprecator::Deprecator"
+    }
+  ],
+  "stages": [
+    {
+      "group": "the feed",
+      "label": "parquet decode + latency sample",
+      "secs": 0.876315948
+    },
+    {
+      "group": "the feed",
+      "label": "the weave (arrival merge)",
+      "secs": 0.016337437999999982
+    },
+    {
+      "group": "the graph",
+      "label": "every derived node",
+      "secs": -0.012395558000000029
+    },
+    {
+      "group": "reaching the observer",
+      "label": "flatten (Want::Vals)",
+      "secs": 0.27769607100000004
+    },
+    {
+      "group": "reaching the observer",
+      "label": "finite-diff Jacobian (Want::Jac)",
+      "secs": 0.441411204
+    },
+    {
+      "group": "the tape's `on`",
+      "label": "bookkeeping",
+      "secs": 0.13481336099999996
+    },
+    {
+      "group": "the tape's `on`",
+      "label": "glance (Display, unclipped)",
+      "secs": 0.3608257979999998
+    },
+    {
+      "group": "the tape's `on`",
+      "label": "detail (Debug, clipped at 256)",
+      "secs": 2.7095981270000005
+    },
+    {
+      "group": "the tape's `on`",
+      "label": "vals+jac memcpy",
+      "secs": 0.024592756999999743
+    },
+    {
+      "group": "the tape's `on`",
+      "label": "handoff (channel + absorb)",
+      "secs": 2.3270887289999997
+    },
+    {
+      "group": "the tape's `on`",
+      "label": "backpressure wait",
+      "secs": -0.049186681999999315
+    }
+  ],
+  "ticks": 158969,
+  "total_s": 7.107097193,
+  "unclipped_s": 16.750920448
+}
