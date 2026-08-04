@@ -211,7 +211,8 @@ mod tests {
 
 	fn round_trip_batch<T: Row>(f: &mut Feather<T>, cat: &Catalog) -> Vec<T> {
 		let path = f.flush(cat).unwrap().expect("flush wrote a file");
-		let (schema, batches) = cat.read(&path).unwrap();
+		let (schema, batches) = crate::catalog::open(&path).unwrap();
+		let batches: Vec<_> = batches.map(Result::unwrap).collect();
 		assert_eq!(batches.len(), 1);
 		T::decode(&batches[0], schema.as_ref())
 	}

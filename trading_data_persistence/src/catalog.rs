@@ -7,7 +7,10 @@ use std::{
 
 use arrow::{array::RecordBatch, datatypes::SchemaRef};
 use parquet::{
-	arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
+	arrow::{
+		ArrowWriter,
+		arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder},
+	},
 	basic::Compression,
 	file::properties::WriterProperties,
 };
@@ -96,20 +99,16 @@ impl Catalog {
 	pub(crate) fn list_range(&self, key: &LaneKey, start: UnixNanos, end: UnixNanos) -> Result<Vec<FileEntry>, CatalogError> {
 		Ok(self.list(key)?.into_iter().filter(|e| e.ts_max >= start && e.ts_min <= end).collect())
 	}
+}
 
-	/// Returns the file-level schema alongside the batches: per-batch schemas drop the
-	/// key-value metadata (precisions) that decode needs.
-	pub(crate) fn read(&self, path: &Path) -> Result<(SchemaRef, Vec<RecordBatch>), CatalogError> {
-		let file = fs::File::open(path)?;
-		let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-		let schema = builder.schema().clone();
-		let reader = builder.build()?;
-		let mut out = Vec::new();
-		for batch in reader {
-			out.push(batch?);
-		}
-		Ok((schema, out))
-	}
+/// Returns the file-level schema alongside a reader over its batches: per-batch schemas drop the
+/// key-value metadata (precisions) that decode needs. The reader is where the decompression
+/// happens, so a caller that wants only the schema pays for none of it — and one that wants the
+/// rows holds a batch at a time rather than the whole file inflated.
+pub(crate) fn open(path: &Path) -> Result<(SchemaRef, ParquetRecordBatchReader), CatalogError> {
+	let builder = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(path)?)?;
+	let schema = builder.schema().clone();
+	Ok((schema, builder.build()?))
 }
 
 #[derive(Debug, Error)]
@@ -224,8 +223,9 @@ mod tests {
 		assert_eq!(listed[0].ts_min, 110);
 		assert_eq!(listed[0].ts_max, 110);
 
-		let (schema, read) = cat.read(&listed[0].path).unwrap();
+		let (schema, read) = open(&listed[0].path).unwrap();
 		assert!(schema.metadata().contains_key("price_precision"));
+		let read: Vec<RecordBatch> = read.map(Result::unwrap).collect();
 		assert_eq!(read.len(), 1);
 		assert_eq!(read[0].num_rows(), 1);
 	}
