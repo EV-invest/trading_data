@@ -19,7 +19,7 @@ use std::sync::{
 };
 
 use trading_data_core::{
-	Arrival, Asset, BatchTrades, BookShape, BookUpdate, DeltaBuf, DeltaFrame, Exact, ExchangeName, Local, PrecisionPriceQty, ReadClock, ShadowBook, Symbol, TradeBuf, TradeCols, Ts, Venue,
+	Arrival, BatchTrades, BookShape, BookUpdate, DeltaBuf, DeltaFrame, Exact, ExchangeName, Local, PrecisionPriceQty, ReadClock, ShadowBook, Symbol, TradeBuf, TradeCols, Ts, Venue,
 };
 use v_utils::distributions::LatencyConfig;
 
@@ -354,8 +354,7 @@ impl Replay {
 				}
 				LaneKind::Mc => {
 					let mut s = sampler(lane);
-					let asset = Asset::new(symbol.pair.base().to_string());
-					for m in read_mc(catalog, asset, mc_axis(start), mc_axis(end)).expect("open mc lane") {
+					for m in read_mc(catalog, symbol.pair.base(), mc_axis(start), mc_axis(end)).expect("open mc lane") {
 						// This lane's axis is already ours, so it is its own reception reading.
 						let ts = effective(Some(m.ts_local_exec), m.ts_local_exec, &mut s);
 						weaver.mc.push(ts, m);
@@ -477,16 +476,13 @@ pub struct Live {
 impl Live {
 	pub fn new(catalog: Catalog, exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, record: bool, clock: Arc<dyn Clock>, read: ReadClock) -> Self {
 		let (tx, rx) = channel();
-		let record = record.then(|| {
-			let asset = Asset::new(symbol.pair.base().to_string());
-			Record {
-				trades: Feather::<Trade>::new(exchange, symbol, prec, Trade::POLICY),
-				snapshots: Feather::<BookSnapshot>::new(exchange, symbol, prec, BookSnapshot::POLICY),
-				deltas: Feather::<BookDelta>::new(exchange, symbol, prec, BookDelta::POLICY),
-				oi: Feather::<Oi>::new(exchange, symbol, Oi::POLICY),
-				mc: Feather::<Mc>::new(asset, Mc::POLICY),
-				catalog,
-			}
+		let record = record.then(|| Record {
+			trades: Feather::<Trade>::new(exchange, symbol, prec, Trade::POLICY),
+			snapshots: Feather::<BookSnapshot>::new(exchange, symbol, prec, BookSnapshot::POLICY),
+			deltas: Feather::<BookDelta>::new(exchange, symbol, prec, BookDelta::POLICY),
+			oi: Feather::<Oi>::new(exchange, symbol, Oi::POLICY),
+			mc: Feather::<Mc>::new(symbol.pair.base(), Mc::POLICY),
+			catalog,
 		});
 		let mut weaver = Weaver::new(read);
 		weaver.trades.buf.prec = prec;

@@ -11,6 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+arrayvec.workspace = true
 arrow.workspace = true
 jiff.workspace = true
 parquet.workspace = true

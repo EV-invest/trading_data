@@ -1,22 +1,21 @@
-use derive_more::{Deref, DerefMut, Display};
+use arrayvec::ArrayString;
+use derive_more::{Deref, Display};
 use eyre::Report;
 use serde::{Deserializer, Serialize, Serializer};
 
 //HACK: should implement `pad`, but rust is broken (or skill issue (upd: definitely broken)). Whatever the case, doing `f.pad(s)` on the same output breaks things downstream (no clue why).
-#[derive(Clone, Copy, Default, Deref, DerefMut, Display, Eq, Hash, Ord, PartialEq, PartialOrd, derive_more::Debug)]
+#[derive(Clone, Copy, Default, Deref, Display, Eq, Hash, Ord, PartialEq, PartialOrd, derive_more::Debug)]
 #[debug("{}", self.as_str())]
 #[display("{}", self.as_str())]
-pub struct Asset(pub [u8; 16]);
+pub struct Asset(ArrayString<16>);
 impl Asset {
 	pub fn new<S: AsRef<str>>(s: S) -> Self {
 		let s = s.as_ref().to_uppercase();
-		let mut bytes = [0; 16];
-		bytes[..s.len()].copy_from_slice(s.as_bytes());
-		Self(bytes)
+		Self(ArrayString::from(&s).expect("asset ticker fits 16 bytes"))
 	}
 
 	pub fn as_str(&self) -> &str {
-		std::str::from_utf8(&self.0).unwrap().trim_end_matches('\0')
+		&self.0
 	}
 
 	/// Construct the standard USD-quoted [Pair] for this asset.
@@ -71,12 +70,12 @@ impl Pair {
 		self.quote == "USDT" && self.base != "BTCST" /*Binance thing*/
 	}
 
-	pub fn base(&self) -> &Asset {
-		&self.base
+	pub fn base(&self) -> Asset {
+		self.base
 	}
 
-	pub fn quote(&self) -> &Asset {
-		&self.quote
+	pub fn quote(&self) -> Asset {
+		self.quote
 	}
 
 	// Exchange-specific {{{

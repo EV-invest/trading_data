@@ -49,6 +49,7 @@ impl Precision {
 	/// Raw ticks per unit. Hoist it once per run and divide inside the loop — the raw column is
 	/// what the venue sent and what the disk holds, so this is the only decode there is.
 	pub fn scale(self) -> f64 {
+		debug_assert!((-18..=18).contains(&self.0), "precision 10^{} is outside the 10^-18..=10^18 the tables hold", self.0);
 		*POW10F.get((self.0 as isize + 18) as usize).expect("precision within the i64 raw's decimal range")
 	}
 
@@ -66,6 +67,7 @@ impl Precision {
 /// and panics. Runs once per level of every book message, so it walks the bytes in place rather
 /// than materializing the realigned digits.
 fn realigned(s: &str, precision: Precision) -> i64 {
+	debug_assert!((-18..=18).contains(&precision.0), "precision 10^{} is outside the 10^-18..=10^18 the tables hold", precision.0);
 	let (sign, body) = match s.strip_prefix('-') {
 		Some(rest) => (-1, rest),
 		None => (1, s.strip_prefix('+').unwrap_or(s)),
@@ -101,8 +103,14 @@ pub struct PrecisionPriceQty {
 
 /// Re-scale `raw` from one tick onto another. Upscaling is exact or overflows; downscaling is only
 /// defined when the digits it drops are zero — anything else is the same feed/config mismatch
-/// [`digits`] rejects.
+/// [`realigned`] rejects.
 fn realign(raw: i64, from: Precision, to: Precision) -> i64 {
+	debug_assert!(
+		(-18..=18).contains(&from.0) && (-18..=18).contains(&to.0),
+		"realigning 10^{} → 10^{}, outside the 10^-18..=10^18 the tables hold",
+		from.0,
+		to.0
+	);
 	let gap = to.0 as i32 - from.0 as i32;
 	let pow = pow10(gap.unsigned_abs());
 	match gap >= 0 {

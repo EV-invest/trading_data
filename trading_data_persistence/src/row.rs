@@ -12,6 +12,9 @@ use crate::feather::RotationPolicy;
 pub const SCHEMA_VERSION: &str = "7";
 pub type UnixNanos = i64;
 
+/// Every signature is two `i8`s as `{}/{}`, so `"-128/-128"` (9 bytes) is the worst case.
+pub(crate) type FileSig = arrayvec::ArrayString<16>;
+
 /// A lane's row type. Sealed: the set of lanes is this crate's contract with the disk.
 pub trait Row: sealed::Sealed {
 	/// Rotation default for this lane.
@@ -163,7 +166,7 @@ pub(crate) mod sealed {
 		fn finish(b: &mut Self::Builders) -> Vec<ArrayRef>;
 		fn decode(batch: &RecordBatch, file_schema: &Schema) -> Vec<Self>;
 		/// Metadata that must agree across every file of a read range; `None` when the lane has none.
-		fn file_sig(schema: &Schema) -> Option<String>;
+		fn file_sig(schema: &Schema) -> Option<FileSig>;
 		fn approx_bytes(&self) -> usize;
 	}
 }
@@ -226,9 +229,12 @@ fn prec_pairs(prec: PrecisionPriceQty) -> [(&'static str, String); 2] {
 	[("price_precision", prec.price.to_string()), ("qty_precision", prec.qty.to_string())]
 }
 
-fn prec_sig(schema: &Schema) -> Option<String> {
+fn prec_sig(schema: &Schema) -> Option<FileSig> {
+	use core::fmt::Write;
 	let p = prec_from_schema(schema);
-	Some(format!("{}/{}", p.price, p.qty))
+	let mut sig = FileSig::new();
+	write!(sig, "{}/{}", p.price, p.qty).expect("two i8s and a slash fit");
+	Some(sig)
 }
 
 /// A book lane's readings: an aggregate has an event window and a reception window, and nothing
@@ -331,7 +337,7 @@ impl Sealed for Trade {
 			.collect()
 	}
 
-	fn file_sig(schema: &Schema) -> Option<String> {
+	fn file_sig(schema: &Schema) -> Option<FileSig> {
 		prec_sig(schema)
 	}
 
@@ -412,7 +418,7 @@ impl Sealed for BookDelta {
 			.collect()
 	}
 
-	fn file_sig(schema: &Schema) -> Option<String> {
+	fn file_sig(schema: &Schema) -> Option<FileSig> {
 		prec_sig(schema)
 	}
 
@@ -507,7 +513,7 @@ impl Sealed for BookSnapshot {
 			.collect()
 	}
 
-	fn file_sig(schema: &Schema) -> Option<String> {
+	fn file_sig(schema: &Schema) -> Option<FileSig> {
 		prec_sig(schema)
 	}
 
@@ -567,7 +573,7 @@ impl Sealed for Oi {
 			.collect()
 	}
 
-	fn file_sig(_schema: &Schema) -> Option<String> {
+	fn file_sig(_schema: &Schema) -> Option<FileSig> {
 		None
 	}
 
@@ -623,7 +629,7 @@ impl Sealed for Mc {
 			.collect()
 	}
 
-	fn file_sig(_schema: &Schema) -> Option<String> {
+	fn file_sig(_schema: &Schema) -> Option<FileSig> {
 		None
 	}
 

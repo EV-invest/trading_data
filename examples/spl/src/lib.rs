@@ -55,7 +55,7 @@ pub fn symbol(s: &Situation) -> Symbol {
 }
 
 pub fn asset(s: &Situation) -> Asset {
-	Asset::new(symbol(s).pair.base())
+	symbol(s).pair.base()
 }
 
 /// UTC bounds `[start, end)` of one day — the Replay range, on the venue axis the lanes are stored

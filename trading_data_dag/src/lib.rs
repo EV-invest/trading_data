@@ -183,7 +183,7 @@ impl Horizon {
 /// *associated* const, whose value outlives the `NAME` borrowing it. That an associated const may
 /// read its impl's generics, where a free `const` item may not, is the whole reason this works.
 ///
-/// Overflowing the buffer indexes out of bounds during const eval, i.e. fails the build.
+/// Overflowing the buffer trips an assert during const eval, i.e. fails the build.
 pub struct Tag {
 	buf: [u8; 256],
 	len: usize,
@@ -232,6 +232,11 @@ impl Tag {
 }
 
 const fn write(buf: &mut [u8; 256], mut len: usize, src: &[u8]) -> usize {
+	// should this ever fire, the alternative to raising the cap is truncating the tail with an ellipsis.
+	assert!(
+		len + src.len() <= buf.len(),
+		"a cell name overflowed Tag's 256-byte buffer: shorten the Cell::NAME of the deps in this cell's tag, or raise the buffer in trading_data_dag::Tag"
+	);
 	let mut i = 0;
 	while i < src.len() {
 		buf[len] = src[i];
@@ -249,6 +254,10 @@ const fn digits(buf: &mut [u8; 256], mut len: usize, mut n: u64) -> usize {
 		d += 1;
 		n > 0
 	} {}
+	assert!(
+		len + d <= buf.len(),
+		"a cell name overflowed Tag's 256-byte buffer: shorten the Cell::NAME of the deps in this cell's tag, or raise the buffer in trading_data_dag::Tag"
+	);
 	while d > 0 {
 		d -= 1;
 		buf[len] = rev[d];
@@ -1973,6 +1982,9 @@ pub struct Fire<'a> {
 	pub glance: &'a dyn Glance,
 	pub dims: &'static [usize],
 	pub plots: &'static [Plot],
+	/// The node's [`Cell::CLOCK`] — the period one of its elements *covers*, which is what a viz needs
+	/// to draw a slower series at its own width instead of the chart's.
+	pub clock: Option<Timeframe>,
 	/// Elements the node fired this tick: slice len, or 0/1 for scalar/`Option` outs.
 	pub fires: usize,
 	/// Flattened *last* element; `None` = didn't fire.
@@ -1998,11 +2010,12 @@ impl<'a> Fire<'a> {
 	/// the exception rather than the shape, spliced in with `..` at the one site that states them.
 	/// `flat: None` is the unfired reading — no flattening happened, so there is none to report.
 	#[inline]
-	fn of<T: Flat + Glance>(out: &'a T, plots: &'static [Plot], dep_dims: &'a [&'static [usize]], flat: Option<&'a Flats>) -> Self {
+	fn of<T: Flat + Glance>(out: &'a T, plots: &'static [Plot], clock: Option<Timeframe>, dep_dims: &'a [&'static [usize]], flat: Option<&'a Flats>) -> Self {
 		Fire {
 			glance: out,
 			dims: T::DIMS,
 			plots,
+			clock,
 			fires: out.fires(),
 			vals: flat.and_then(|f| f.fired.then_some(f.vals.as_slice())),
 			dep_dims,
@@ -2216,7 +2229,7 @@ where
 	if !run {
 		let out: N::Out<'t> = unrun();
 		if want != Want::Nothing {
-			let fire = Fire::of(&out, N::PLOTS, <N::Deps as DepFlat>::DIMS, None);
+			let fire = Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Deps as DepFlat>::DIMS, None);
 			obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
@@ -2236,7 +2249,7 @@ where
 		pre.as_ref().map(|pre| move |dep_buf: &[f64], out_buf: &[f64]| fd_jac::<N>(pre, deps, dep_buf, out_buf)),
 	);
 
-	let fire = Fire::of(&out, N::PLOTS, <N::Deps as DepFlat>::DIMS, Some(&flat));
+	let fire = Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Deps as DepFlat>::DIMS, Some(&flat));
 	obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
 }
@@ -2291,7 +2304,7 @@ where
 	if !demanded || !<E::Deps as Pull<'t, F, I>>::open(&frame) || !e.opens(ts) {
 		let out: &'t [E::Item] = &e.buf;
 		if want != Want::Nothing {
-			let fire = Fire::of(&out, <E as Emit>::PLOTS, <E::Deps as DepFlat>::DIMS, None);
+			let fire = Fire::of(&out, <E as Emit>::PLOTS, <E as Cell>::CLOCK, <E::Deps as DepFlat>::DIMS, None);
 			obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
@@ -2312,7 +2325,7 @@ where
 		pre.as_ref().map(|pre| move |dep_buf: &[f64], out_buf: &[f64]| fd_jac_emit::<E>(pre, deps, dep_buf, out_buf)),
 	);
 
-	let fire = Fire::of(&out, <E as Emit>::PLOTS, <E::Deps as DepFlat>::DIMS, Some(&flat));
+	let fire = Fire::of(&out, <E as Emit>::PLOTS, <E as Cell>::CLOCK, <E::Deps as DepFlat>::DIMS, Some(&flat));
 	obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
 }
@@ -2366,7 +2379,7 @@ where
 		(exact, formula, deriv, trace)
 	});
 
-	let base = Fire::of(&out, N::PLOTS, <N::Deps as DepFlat>::DIMS, Some(&flat));
+	let base = Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Deps as DepFlat>::DIMS, Some(&flat));
 	let fire = match &exacts {
 		Some((exact, formula, deriv, trace)) => Fire {
 			exact_jac: Some(exact),
@@ -2598,5 +2611,5 @@ where
 		deps: alloc::vec::Vec::new(),
 		jac: None,
 	};
-	obs.on(C::NAME, &[], &[], Fire::of(&out, &[Plot::DEFAULT], &[], Some(&flat)));
+	obs.on(C::NAME, &[], &[], Fire::of(&out, &[Plot::DEFAULT], C::CLOCK, &[], Some(&flat)));
 }

@@ -9,7 +9,7 @@ use trading_data_dag::{DepSet, Horizon, Node};
 
 use crate::{
 	catalog::{Catalog, CatalogError, FileEntry, LaneKey},
-	row::{BookDelta, BookSnapshot, Mc, Oi, Row, SCHEMA_VERSION, Trade, prec_from_schema, sealed::Sealed},
+	row::{BookDelta, BookSnapshot, FileSig, Mc, Oi, Row, SCHEMA_VERSION, Trade, prec_from_schema, sealed::Sealed},
 };
 
 /// A stored file's `schema_version` must match ours exactly — no silent cross-version reads.
@@ -41,7 +41,7 @@ pub struct LaneReader<T: Row> {
 	// current file's schema: per-batch schemas drop the key-value metadata decode needs
 	file_schema: Option<SchemaRef>,
 	// file-metadata consistency across the read range (e.g. precisions)
-	sig: Option<String>,
+	sig: Option<FileSig>,
 	start: Ts<T::Axis>,
 	end: Ts<T::Axis>,
 }
@@ -65,8 +65,8 @@ impl<T: Row> Iterator for LaneReader<T> {
 			let (schema, batches) = self.catalog.read(&file.path).expect("catalog file unreadable during read");
 			assert_schema_version(schema.as_ref());
 			if let Some(sig) = T::file_sig(schema.as_ref()) {
-				match &self.sig {
-					Some(prev) => assert_eq!(prev, &sig, "inconsistent file metadata across read range"),
+				match self.sig {
+					Some(prev) => assert_eq!(prev, sig, "inconsistent file metadata across read range"),
 					None => self.sig = Some(sig),
 				}
 			}
