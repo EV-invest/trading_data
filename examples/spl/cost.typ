@@ -45,15 +45,16 @@ What used to sit at the top of this table was `detail` — a clipped `{:?}` of e
 rendered on every tick, 2.7 s and 353 MB a day for a string a hover might read one of. It is gone,
 and so is `Fire::debug` and the `Debug` bound the eight observation entry points held for it. What
 a hover reads now is the node's own `Flat` under its `plots` labels, which is the same source the
-chart's crosshair line has always printed from.
+chart's crosshair line has always printed from. `glance` then stopped rendering a node that did not
+fire — 86% of the calls — and a tick's storage went columnar, one `String` and two `Vec`s for the
+whole tick rather than three heap pointers per node.
 
 What is left at the top is not computation either:
 
-/ `handoff`: `Rec::drop` builds a `TickMsg` with `mem::take(&mut r.acts)`, which hands the whole
-  `Vec<Act>` away and leaves an empty one — so the `act.out.clear()` slot reuse two lines above it
-  is defeated whenever the recycle channel does not return a buffer in time, and #m.render.len()
-  fresh `Act`s are allocated instead. The measured leg keeps its slots and never hands off, which is
-  precisely what this difference prices.
+/ `handoff`: `Rec::drop` builds a `TickMsg` with `mem::take(&mut r.acts)`, which hands the tick's
+  columns away and leaves empty ones — so the appends are free only while the recycle channel
+  returns a buffer in time, and a fresh one regrows its capacity from nothing. The measured leg
+  keeps its columns and never hands off, which is precisely what this difference prices.
 
 By contrast the *entire* derived closure and the arrival weave are each at or under the measurement
 floor. Nothing in this pipeline is bottlenecked on arithmetic.
@@ -82,9 +83,15 @@ shows up here is a cell whose author chose what it says — which is the read th
 == Regenerating
 
 ```
-cargo r --release -p trading_data_spl --example viz_cost   # rewrites cost.json
-typst compile examples/spl/cost.typ                        # rewrites the pdf
+BENCH_CPUS=12-15,28-31 measure cost   # rewrites cost.json
+typst compile examples/spl/cost.typ   # rewrites the pdf
 ```
+
+Through `measure`, and with `BENCH_CPUS` naming both SMT siblings of every core claimed, because a
+leg taken on a shared core lands in a committed document and stays there. Measured on a loaded box,
+the same day twice each way: reserved reads 2.97 s and 2.97 s, shared 3.21 s and 3.09 s. The
+reservation is worth less in the mean than in the spread — and it is the `handoff` and `backpressure`
+legs that move, which is what a second runnable thread on a contended core looks like.
 
 `tests/cost.rs` asserts `cost.json`'s derived closure still equals `Graph::NODES`, so adding or
 removing a node fails the suite rather than leaving this document quietly describing a graph that no

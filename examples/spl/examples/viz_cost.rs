@@ -92,7 +92,7 @@ fn main() {
 		let mut rec = Bill::new(upto);
 		let mut f = feed();
 		while let Some(l) = f.next() {
-			rec.idx = 0;
+			rec.open();
 			std::hint::black_box(graph.tick_obs(l.ts_venue.as_nanos(), l.into(), &mut rec));
 		}
 		let elapsed = began.elapsed().as_secs_f64();
@@ -100,7 +100,7 @@ fn main() {
 	};
 	let (bare_s, _) = piece(Piece::Bare);
 	let (glance_s, _) = piece(Piece::Glance);
-	let (refill_s, bill) = piece(Piece::Refill);
+	let (cols_s, bill) = piece(Piece::Columns);
 
 	// One list, printed and written, so the terminal and `cost.typ` can never disagree about what a
 	// line is called or which stage it belongs to.
@@ -112,8 +112,8 @@ fn main() {
 		("reaching the observer", "finite-diff Jacobian (Want::Jac)", fd_s - vals_s),
 		("the tape's `on`", "bookkeeping", bare_s - fd_s),
 		("the tape's `on`", "glance (the node's own one-liner)", glance_s - bare_s),
-		("the tape's `on`", "vals+jac memcpy", refill_s - glance_s),
-		("the tape's `on`", "handoff (channel + absorb)", free_s - refill_s),
+		("the tape's `on`", "vals+jac columns", cols_s - glance_s),
+		("the tape's `on`", "handoff (channel + absorb)", free_s - cols_s),
 		("the tape's `on`", "backpressure wait", obs_s - free_s),
 	];
 
@@ -170,17 +170,22 @@ fn main() {
 enum Piece {
 	Bare,
 	Glance,
-	Refill,
+	Columns,
 }
 
-/// `exec_viz`'s `Rec::on`, itemized — the same per-node slots reused across ticks, the same render,
-/// the same two `refill`s, and nothing else. What it does *not* do is hand the tick off, which is
-/// what leaves the channel priceable as a delta against the real recorder.
+/// `exec_viz`'s `Rec::on`, itemized — the same columns reused across ticks, the same fire-gated
+/// render, the same appends, and nothing else. What it does *not* do is hand the tick off, which is
+/// what leaves the channel priceable as a delta against the real recorder. Kept in step by hand;
+/// see `tmp/ongoing_dev/logic_duplication.md`.
 struct Bill {
 	upto: Piece,
 	idx: usize,
 	names: Vec<&'static str>,
-	slots: Vec<Slot>,
+	/// One tick, as the tape holds it — see `exec_viz`'s `Acts`.
+	outs: String,
+	vals: Vec<f64>,
+	jac: Vec<f64>,
+	ends: Vec<[u32; 3]>,
 	/// Per node, glance bytes rendered across the whole day.
 	bytes: Vec<u64>,
 }
@@ -190,17 +195,22 @@ impl Bill {
 			upto,
 			idx: 0,
 			names: Vec::new(),
-			slots: Vec::new(),
+			outs: String::new(),
+			vals: Vec::new(),
+			jac: Vec::new(),
+			ends: Vec::new(),
 			bytes: Vec::new(),
 		}
 	}
-}
 
-#[derive(Default)]
-struct Slot {
-	out: String,
-	vals: Vec<f64>,
-	jac: Vec<f64>,
+	/// `Rec::at`, minus the recycling — there is one buffer here and it is never handed away.
+	fn open(&mut self) {
+		self.idx = 0;
+		self.outs.clear();
+		self.vals.clear();
+		self.jac.clear();
+		self.ends.clear();
+	}
 }
 
 impl Observer for Bill {
@@ -213,7 +223,6 @@ impl Observer for Bill {
 		self.idx += 1;
 		if self.names.len() == i {
 			self.names.push(node);
-			self.slots.push(Slot::default());
 			self.bytes.push(0);
 		} else {
 			assert_eq!(self.names[i], node, "step order shifted between ticks");
@@ -222,25 +231,22 @@ impl Observer for Bill {
 			return;
 		}
 
-		let slot = &mut self.slots[i];
-		slot.out.clear();
 		if fire.vals.is_some() {
-			write!(slot.out, "{}", fire.glance).expect("`String`'s `Write` is infallible");
-			self.bytes[i] += slot.out.len() as u64;
+			let was = self.outs.len();
+			write!(self.outs, "{}", fire.glance).expect("`String`'s `Write` is infallible");
+			self.bytes[i] += (self.outs.len() - was) as u64;
 		}
 		if self.upto == Piece::Glance {
 			return;
 		}
 
-		refill(&mut slot.vals, fire.vals);
-		refill(&mut slot.jac, fire.jac);
-	}
-}
-
-fn refill(dst: &mut Vec<f64>, src: Option<&[f64]>) {
-	dst.clear();
-	if let Some(src) = src {
-		dst.extend_from_slice(src);
+		if let Some(vals) = fire.vals {
+			self.vals.extend_from_slice(vals);
+		}
+		if let Some(jac) = fire.jac {
+			self.jac.extend_from_slice(jac);
+		}
+		self.ends.push([self.outs.len() as u32, self.vals.len() as u32, self.jac.len() as u32]);
 	}
 }
 
