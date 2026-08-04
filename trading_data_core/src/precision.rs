@@ -10,11 +10,46 @@ use serde::{Deserialize, Serialize};
 #[serde(transparent)]
 pub struct Precision(pub i8);
 
+/// The only exponents an i64 raw can hold, and the only ones [`realigned`] admits. Tabulated
+/// because `checked_pow` is a multiply-and-check loop run once per parsed number.
+static POW10: [i64; 19] = [
+	1,
+	10,
+	100,
+	1_000,
+	10_000,
+	100_000,
+	1_000_000,
+	10_000_000,
+	100_000_000,
+	1_000_000_000,
+	10_000_000_000,
+	100_000_000_000,
+	1_000_000_000_000,
+	10_000_000_000_000,
+	100_000_000_000_000,
+	1_000_000_000_000_000,
+	10_000_000_000_000_000,
+	100_000_000_000_000_000,
+	1_000_000_000_000_000_000,
+];
+
+/// [`POW10`] mirrored around zero, indexed by `exponent + 18`. Bit-identical to `10f64.powi` across
+/// the range (asserted below), so this is a table lookup and nothing else.
+static POW10F: [f64; 37] = [
+	1e-18, 1e-17, 1e-16, 1e-15, 1e-14, 1e-13, 1e-12, 1e-11, 1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12,
+	1e13, 1e14, 1e15, 1e16, 1e17, 1e18,
+];
+
+fn pow10(exp: u32) -> i64 {
+	*POW10.get(exp as usize).expect("precision gap fits i64")
+}
+
 impl Precision {
 	/// Raw ticks per unit. Hoist it once per run and divide inside the loop — the raw column is
 	/// what the venue sent and what the disk holds, so this is the only decode there is.
 	pub fn scale(self) -> f64 {
-		10f64.powi(self.0 as i32)
+		*POW10F.get((self.0 as isize + 18) as usize).expect("precision within the i64 raw's decimal range")
 	}
 
 	pub fn parse_i32(self, s: &str) -> i32 {
@@ -47,7 +82,7 @@ fn realigned(s: &str, precision: Precision) -> i64 {
 	}
 
 	let gap = precision.0 as i32 - frac.len() as i32;
-	let pow = 10i64.checked_pow(gap.unsigned_abs()).expect("precision gap fits i64");
+	let pow = pow10(gap.unsigned_abs());
 	sign * match gap >= 0 {
 		true => acc.checked_mul(pow).expect("realigned raw fits i64"),
 		false => {
@@ -69,7 +104,7 @@ pub struct PrecisionPriceQty {
 /// [`digits`] rejects.
 fn realign(raw: i64, from: Precision, to: Precision) -> i64 {
 	let gap = to.0 as i32 - from.0 as i32;
-	let pow = 10i64.checked_pow(gap.unsigned_abs()).expect("precision gap fits i64");
+	let pow = pow10(gap.unsigned_abs());
 	match gap >= 0 {
 		true => raw.checked_mul(pow).expect("upscaled raw fits i64"),
 		false => {
@@ -270,6 +305,18 @@ fn split_decimal(s: &str) -> (Precision, String) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The tables replaced `checked_pow`/`powi` on the promise of being the same number, and an f64
+	/// off by an ULP would move every decoded price without failing anything else.
+	#[test]
+	fn the_tables_are_what_they_replaced() {
+		for e in 0..POW10.len() as u32 {
+			assert_eq!(pow10(e), 10i64.checked_pow(e).unwrap());
+		}
+		for e in -18i8..=18 {
+			assert_eq!(Precision(e).scale().to_bits(), 10f64.powi(e as i32).to_bits(), "10^{e}");
+		}
+	}
 
 	#[test]
 	fn compares_by_value_not_by_representation() {

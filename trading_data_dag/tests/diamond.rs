@@ -255,6 +255,7 @@ impl Node for Level {
 	}
 }
 
+// r[verify outs.absence.one-reading]
 #[test]
 fn fd_unfired_dep_nan_column() {
 	let mut rec = JacRec::default();
