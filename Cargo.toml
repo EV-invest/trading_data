@@ -10,6 +10,7 @@ members = [
     "trading_data_core",
     "trading_data_dag",
     "trading_data_derivatives",
+    "trading_data_expr",
     "trading_data_macros",
     "trading_data_persistence",
 ]
@@ -83,6 +84,7 @@ trading_data = { path = "trading_data", version = "0.3.0" }
 trading_data_core = { path = "trading_data_core", version = "0.3.0" }
 trading_data_dag = { path = "trading_data_dag", version = "0.3.0" }
 trading_data_derivatives = { path = "trading_data_derivatives", version = "0.3.0" }
+trading_data_expr = { path = "trading_data_expr", version = "0.3.0" }
 trading_data_live_example = { path = "examples/live" }
 trading_data_macros = { path = "trading_data_macros", version = "0.1.0" }
 trading_data_persistence = { path = "trading_data_persistence", version = "0.3.0" }

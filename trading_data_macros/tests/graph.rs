@@ -5,7 +5,8 @@
 
 use core::any::TypeId;
 
-use trading_data_dag::{Buffering, Bump, Cell, DepOuts, Episode, Expr, Flat, Gate, Gating, Glance, Horizon, Latch, Node, Roots, Stamped, Symbolic, Vars, constant, slice_nudge, value_nudge};
+use trading_data_dag::{Buffering, Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Horizon, Latch, Node, Roots, Stamped, Symbolic, slice_nudge, value_nudge};
+use trading_data_expr::{Expr, Vars, constant};
 use trading_data_macros::{graph, node};
 
 #[derive(Clone, Copy, Debug)]

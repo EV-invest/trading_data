@@ -1,7 +1,7 @@
 //! One kernel, `(x0 + x1)² + |x0 − 1|`, read four ways: value, exact gradient (vs central FD),
 //! symbolic derivative (vs the gradient), and the LaTeX/trace renderings.
 
-use trading_data_dag::{Expr, Vars, abs, constant, square};
+use trading_data_expr::{Expr, Vars, abs, constant, square};
 
 /// The shared kernel; returns the typed `impl Expr` so every test reads the same source of truth.
 fn kernel() -> impl Expr {

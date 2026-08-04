@@ -15,6 +15,7 @@ categories = ["finance"]
 trading_data_core.workspace = true
 trading_data_dag.workspace = true
 trading_data_derivatives.workspace = true
+trading_data_expr.workspace = true
 trading_data_persistence.workspace = true
 # a period is wiring vocabulary now: `Bars<TF>` is named by whoever wires it, and a consumer reaching
 # only through this facade still has to spell a `Timeframe`.

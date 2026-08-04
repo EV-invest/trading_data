@@ -1519,8 +1519,10 @@ dependencies = [
 name = "exec_viz"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "axum",
  "serde",
+ "serde_json",
  "tokio",
  "tower-http",
  "trading_data_dag",
@@ -5262,6 +5264,7 @@ dependencies = [
  "trading_data_core",
  "trading_data_dag",
  "trading_data_derivatives",
+ "trading_data_expr",
  "trading_data_persistence",
  "v_utils",
 ]
@@ -5288,6 +5291,7 @@ dependencies = [
 name = "trading_data_dag"
 version = "0.3.0"
 dependencies = [
+ "trading_data_expr",
  "trading_data_macros",
  "v_utils",
 ]
@@ -5300,6 +5304,10 @@ dependencies = [
  "trading_data_dag",
  "v_utils",
 ]
+
+[[package]]
+name = "trading_data_expr"
+version = "0.3.0"
 
 [[package]]
 name = "trading_data_live_equiv"
@@ -5339,6 +5347,7 @@ dependencies = [
  "quote",
  "syn 3.0.3",
  "trading_data_dag",
+ "trading_data_expr",
  "ui_test",
 ]
 

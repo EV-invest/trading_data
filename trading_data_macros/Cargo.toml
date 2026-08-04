@@ -19,6 +19,7 @@ syn.workspace = true
 
 [dev-dependencies]
 trading_data_dag.workspace = true
+trading_data_expr.workspace = true
 ui_test = { workspace = true }
 
 [[test]]

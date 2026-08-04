@@ -8,10 +8,9 @@ pub use trading_data_core::{Asset, ExchangeName, Instrument, Pair, Symbol};
 #[doc(hidden)]
 pub use trading_data_dag as __dag;
 pub use trading_data_dag::{
-	__graph_resolve, Abs, Add, Armed, Ast, Buffer, Buffering, Bump, Cell, Cons, Const, DepOuts, Diff, Div, Emit, EmitOuts, Episode, Episodic, Ex, Expr, Fire, Flat, Folding, Gate, Gating,
-	Glance, Guide, Hist, Horizon, Ink, Latch, Latest, Mul, Neg, Nil, Node, Nudge, Observer, Plot, Present, ProbabilisticDistribution, Roots, Sampling, Series, Spanning, Square, Stamped,
-	Sub, Sum, Symbolic, Tag, Trace, TriggerOut, Var, Vars, Want, abs, always_present, constant, graph, node, node_alias, observe_root, slice_nudge, square, step, step_exact, step_obs, sum,
-	value_nudge,
+	__graph_resolve, Armed, Buffer, Buffering, Bump, Cell, Cons, DepOuts, Diff, Emit, EmitOuts, Episode, Episodic, Fire, Flat, Folding, Gate, Gating, Glance, Guide, Hist, Horizon, Ink,
+	Latch, Latest, Nil, Node, Nudge, Observer, Plot, Present, ProbabilisticDistribution, Roots, Sampling, Series, Spanning, Stamped, Symbolic, Tag, TriggerOut, Want, always_present, graph,
+	node, node_alias, observe_root, slice_nudge, step, step_exact, step_obs, value_nudge,
 };
 pub use trading_data_derivatives::{
 	// the dep shims: a `#[node]` writes one at its own crate's root, and a graph naming the cell
@@ -41,6 +40,7 @@ pub use trading_data_derivatives::{
 	closed_by,
 	rsi,
 };
+pub use trading_data_expr::{Abs, Add, Ast, Const, Div, Ex, Expr, Mul, Neg, Square, Sub, Sum, Trace, Var, Vars, abs, constant, square, sum};
 pub use trading_data_persistence::{
 	__td_node_Book, Aggregate, Arrival, BatchTrades, Book, BookAnchors, BookDeltas, BookShape, BookUpdate, Catalog, CatalogError, Clock, DeltaBuf, DeltaCols, DeltaFrame, Direction, Exact,
 	Feather, Feed, FrameKind, InnerTrade, LaneKind, LaneReader, Lanes, LatencyConfig, Live, LiveClock, Local, Mc, McRoot, Oi, OiRoot, Precision, PrecisionPriceQty, ReadClock, Replay,

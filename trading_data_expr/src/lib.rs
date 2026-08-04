@@ -8,7 +8,10 @@
 //! documentation/debug readings, where `alloc` is fine (a LaTeX string allocates anyway).
 //!
 //! [`Const`] is the sole `f64 → Expr` door; there is no `Expr → f64 → Expr` escape, so a
-//! [`Symbolic`](crate::Symbolic) body *cannot* compute any other way — the algebra is load-bearing.
+//! `trading_data_dag::Symbolic` body *cannot* compute any other way — the algebra is load-bearing.
+#![no_std]
+
+extern crate alloc;
 
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 use core::{fmt, ops};
@@ -234,7 +237,7 @@ impl<T: Expr> Expr for Ex<T> {
 	}
 }
 
-/// The dep-slot dispenser handed to a [`Symbolic`](crate::Symbolic) body: `v.get::<I>()` is the
+/// The dep-slot dispenser handed to a `trading_data_dag::Symbolic` body: `v.get::<I>()` is the
 /// `Var` reading dep `I` (bounds enforced at eval time by `env` length).
 #[derive(Clone, Copy)]
 pub struct Vars;

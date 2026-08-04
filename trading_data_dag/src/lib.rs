@@ -87,10 +87,8 @@ extern crate alloc;
 
 use core::any::TypeId;
 
+use trading_data_expr::{Ast, Expr, Vars};
 use v_utils::Timeframe;
-
-mod expr;
-pub use expr::{Abs, Add, Ast, Const, Div, Ex, Expr, Mul, Neg, Square, Sub, Sum, Trace, Var, Vars, abs, constant, square, sum};
 
 /// How far back a dep position reaches: nothing at all (a bare dep), the engine's retention
 /// ([`Buffering`]), or the consumer's own state ([`Folding`]). One vocabulary for all three, so the

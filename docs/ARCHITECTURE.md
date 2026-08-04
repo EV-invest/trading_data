@@ -23,6 +23,8 @@ Two sentences hold up everything below, and each sub-crate is one of them made m
 ## Crates
 
 ```
+trading_data_expr           #![no_std], zero deps — the primitive algebra: one expression, four readings
+                            (eval / exact grad / LaTeX / value-annotated trace)
 trading_data_dag                     #![no_std], zero deps — domain-free derivation engine
 trading_data_derivatives    the fundamental primitives: indicator state machines, and the bar/RSI nodes that are
                             nothing but those machines wired to a series — every strategy names these
