@@ -5257,7 +5257,7 @@ dependencies = [
 
 [[package]]
 name = "trading_data"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "trading_data_core",
  "trading_data_dag",

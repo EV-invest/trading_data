@@ -1,6 +1,6 @@
 [package]
 name = "trading_data"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
 description = "Trading data collection and processing"

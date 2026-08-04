@@ -82,7 +82,7 @@ tempfile = "3"
 thiserror = "^2.0"
 tokio = { version = "^1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 tracing = "^0.1"
-trading_data = { path = "trading_data", version = "0.3.0" }
+trading_data = { path = "trading_data", version = "0.4.0" }
 # Unversioned on purpose: `publish = false`, so it can only ever be a dev-dependency of a workspace
 # member and never reaches a shipped build.
 trading_data_bench = { path = "trading_data_bench" }
