@@ -9,7 +9,7 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use exec_viz::Viz;
+use exec_viz::{Backpressure, Viz};
 use trading_data::{Cell, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, ReadClock, Replay, Want, required_lanes};
 use trading_data_simple::{day_bounds, ensure_catalog, nodes::Graph, symbol};
 use v_utils::*;
@@ -41,10 +41,9 @@ async fn main() {
 	let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(), day_start, day_end, &lanes, latency, CLOCK);
 
 	let mut graph = Graph::default();
-	let viz = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000);
+	let (viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, Backpressure::Block);
 	// `Signal`'s exact/FD agreement check and the viz recording are two readings of one sweep.
 	let mut doc = SignalDoc::default();
-	let mut recorder = viz.clone();
 	let (mut n_trades, mut bars, mut rsi_snaps, mut lambda_fires) = (0u64, 0u64, 0u64, 0u64);
 	let (mut cvd, mut vol1h) = (0.0f64, 0.0f64);
 	let (mut rsi_end, mut lambda_end) = (None, None);
@@ -93,7 +92,7 @@ async fn main() {
 	println!("simple: ok");
 	let base: u16 = std::env::var("PORT").expect("PORT: the devShell sets the base of the port range").parse().expect("PORT is a u16");
 	// Replay-only: the recording is over before the first request, so the last tick is addressable.
-	viz.clone().seal();
+	recorder.seal();
 	viz.serve_on(Viz::bind(base + ORDINAL).await).await;
 }
 

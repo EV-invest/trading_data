@@ -21,7 +21,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use exec_viz::Viz;
+use exec_viz::{Backpressure, Viz};
 use trading_data::{Cell, Exact, ExchangeName, Feed, LatencyConfig, ReadClock, Replay, Side, Ts, read_mc, read_oi, required_lanes};
 use trading_data_spl::{
 	asset,
@@ -106,8 +106,8 @@ async fn main() {
 	// downstream can read an unwarmed value in the first place.
 	let lanes = required_lanes::<Graph>();
 	println!("required lanes: {lanes:?}");
-	let viz = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000);
-	let mut recorder = viz.clone();
+	// Blocking: a replay wants the whole tape, and its feed is a file that will wait.
+	let (viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, Backpressure::Block);
 	let mut day = Day::default();
 	let began = std::time::Instant::now();
 	let (run_start, _) = day_bounds(days[0]);

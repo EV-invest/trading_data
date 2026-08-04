@@ -13,7 +13,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use exec_viz::Viz;
+use exec_viz::{Backpressure, Viz};
 use trading_data::{Catalog, Cell, Exact, Feed, Live, LiveClock, ReadClock};
 use trading_data_live_example::{nodes::Graph, pair, pump_book, pump_trades, symbol};
 use v_exchanges::prelude::*;
@@ -51,7 +51,9 @@ async fn main() {
 
 	// `Bars` only fires on a close, so a 100ms bucket still yields one candle per minute — it is the
 	// per-event series either side of the price pane that wants the fine grain.
-	let viz = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 100);
+	// Dropping: a fill must never wait on a study aid. What was dropped is counted, not hidden —
+	// `ActivationFrame::dropped`.
+	let (viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 100, Backpressure::Drop);
 	let mut server = tokio::task::JoinSet::new();
 	let base: u16 = std::env::var("PORT").expect("PORT: the devShell sets the base of the port range").parse().expect("PORT is a u16");
 	server.spawn(viz.clone().serve_on(Viz::bind(base + ORDINAL).await));
@@ -59,7 +61,6 @@ async fn main() {
 	// graph consumes on a blocking thread (blocking recv) while the async pumps feed it.
 	let ts_sink = live.sink();
 	let bk_sink = live.sink();
-	let mut recorder = viz.clone();
 	let consumer = tokio::task::spawn_blocking(move || {
 		let mut graph = Graph::default();
 		while let Some(l) = live.next() {

@@ -9,7 +9,7 @@ use std::{
 	time::Instant,
 };
 
-use exec_viz::Viz;
+use exec_viz::{Backpressure, Viz};
 use trading_data::{Cell, Exact, ExchangeName, Feed as _, Fire, LatencyConfig, Observer, ReadClock, Replay, Want, required_lanes};
 use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, symbol, trading_days};
 use v_utils::*;
@@ -71,15 +71,23 @@ fn main() {
 	let fmt_s = began.elapsed().as_secs_f64();
 	std::hint::black_box(&fmt);
 
-	let began = Instant::now();
-	let mut graph = Graph::default();
-	let mut recorder = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000);
-	let mut f = feed();
-	while let Some(l) = f.next() {
-		let ts_ns = l.ts_venue.as_nanos();
-		std::hint::black_box(graph.tick_obs(ts_ns, l.into(), &mut recorder.at(ts_ns)));
-	}
-	let obs_s = began.elapsed().as_secs_f64();
+	// Two legs over the same recording: what the graph thread waits for when the tape must keep up,
+	// and what it pays when it is allowed to outrun it — the producer side alone.
+	let tape = |mode| {
+		let began = Instant::now();
+		let mut graph = Graph::default();
+		let (_viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, mode);
+		let mut f = feed();
+		while let Some(l) = f.next() {
+			let ts_ns = l.ts_venue.as_nanos();
+			std::hint::black_box(graph.tick_obs(ts_ns, l.into(), &mut recorder.at(ts_ns)));
+		}
+		let elapsed = began.elapsed().as_secs_f64();
+		recorder.seal();
+		elapsed
+	};
+	let obs_s = tape(Backpressure::Block);
+	let free_s = tape(Backpressure::Drop);
 
 	println!("{ticks} ticks over {day}");
 	println!("feed only            {feed_s:>8.2}s");
@@ -87,6 +95,7 @@ fn main() {
 	println!("+ obs at Want::Vals  {vals_s:>8.2}s  (flatten {:.2}s)", vals_s - plain_s);
 	println!("+ obs at Want::Jac   {fd_s:>8.2}s  (the FD {:.2}s)", fd_s - vals_s);
 	println!("+ obs, recording Viz {obs_s:>8.2}s  (the tape {:.2}s)", obs_s - fd_s);
+	println!("  graph thread alone {free_s:>8.2}s  (the wait {:.2}s)", obs_s - free_s);
 	println!("  had it not clipped {fmt_s:>8.2}s  (the clip saves {:.2}s)", fmt_s - obs_s);
 }
 /// An observer that records nothing, so what it costs is what `step_seen` spends *reaching* it —
