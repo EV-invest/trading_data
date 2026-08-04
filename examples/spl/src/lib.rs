@@ -26,8 +26,8 @@ use std::{
 
 use indicatif::{MultiProgress, ProgressBar};
 use trading_data::{
-	Aggregate, Asset, BookShape, BookUpdate, Catalog, Clock, Exact, ExchangeName, Feather, Feed as _, Instrument, Live, Local, Mc, Oi, Pair, PrecisionPriceQty, ReadClock, Row as _, Side,
-	Sink, Span, Symbol, Trade, TradeBuf, Ts, Venue, read_mc, read_oi, read_trades,
+	Aggregate, Asset, BookShape, BookUpdate, Catalog, Clock, Exact, ExchangeName, Feather, Feed as _, Instrument, Live, Local, Mc, Oi, Pair, Precision, PrecisionPriceQty, ReadClock,
+	Row as _, Side, Sink, Span, Symbol, Trade, TradeBuf, Ts, Venue, read_mc, read_oi, read_trades,
 };
 
 use crate::config::Situation;
@@ -560,13 +560,14 @@ fn ingest_trades(gz: &Path, catalog: &Catalog, s: &Situation, mp: &MultiProgress
 		let line = line.trim_end();
 		let mut cols = line.split(',');
 		let mut col = || cols.next().unwrap_or_else(|| panic!("malformed line {i}: {line}"));
-		let ts_sec: f64 = col().parse().unwrap_or_else(|e| panic!("bad ts on line {i}: {e}"));
+		// The column is a decimal second; `* 1e9` through an f64 is up to 160ns off (see
+		// `Precision::parse_i64`'s test), and these timestamps are the replay axis.
+		let ts = Precision(9).parse_i64(col());
 		assert_eq!(col(), s.bybit_symbol, "foreign symbol on line {i}");
 		let side: Side = col().parse().unwrap_or_else(|e| panic!("bad side on line {i}: {e}"));
 		let qty = prec.qty.parse_u32(col());
 		let price = prec.price.parse_i32(col());
 
-		let ts = (ts_sec * 1e9).round() as i64;
 		assert!(ts >= prev_ts, "trades not time-ordered at line {i}: {prev_ts} > {ts}");
 		prev_ts = ts;
 

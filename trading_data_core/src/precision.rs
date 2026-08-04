@@ -60,6 +60,11 @@ impl Precision {
 	pub fn parse_u32(self, s: &str) -> u32 {
 		u32::try_from(realigned(s, self)).expect("realigned digits fit u32")
 	}
+
+	/// For values past a 32-bit raw — a nanosecond epoch is the only one we have.
+	pub fn parse_i64(self, s: &str) -> i64 {
+		realigned(s, self)
+	}
 }
 
 /// Re-align a decimal string onto `precision`'s tick. Trailing zeros are insignificant (Binance
@@ -388,5 +393,23 @@ mod tests {
 	#[should_panic(expected = "carries digits below")]
 	fn tick_too_coarse() {
 		Precision(-3).parse_i32("12000500");
+	}
+
+	/// Trade archives carry the epoch as a decimal second, and the `(s * 1e9).round()` this replaced
+	/// lands up to 160ns off — an f64 runs out of mantissa four digits before nanoseconds do
+	/// (`1735862401.1471` came back 96ns early). The last case is the ceiling: an int+frac wider than
+	/// 18 digits panics rather than silently truncating, so full nanosecond text needs a wider raw.
+	#[test]
+	fn a_nanosecond_epoch_parses_exactly() {
+		assert_eq!(Precision(9).parse_i64("1735862401.1471"), 1_735_862_401_147_100_000);
+		assert_eq!(Precision(9).parse_i64("1735862401.9999"), 1_735_862_401_999_900_000);
+		assert_eq!(Precision(9).parse_i64("1735862400.0001"), 1_735_862_400_000_100_000);
+		assert_eq!(Precision(9).parse_i64("1735862401"), 1_735_862_401_000_000_000);
+	}
+
+	#[test]
+	#[should_panic(expected = "not a decimal number i64 holds")]
+	fn a_nanosecond_epoch_written_out_in_full_does_not_fit() {
+		Precision(9).parse_i64("1735862401.123456789");
 	}
 }

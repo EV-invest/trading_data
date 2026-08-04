@@ -95,13 +95,12 @@ fn ingest(gz: &Path, catalog: &Catalog) {
 		let line = line.trim_end();
 		let mut cols = line.split(',');
 		let mut col = || cols.next().unwrap_or_else(|| panic!("malformed line {i}: {line}"));
-		let ts_sec: f64 = col().parse().unwrap_or_else(|e| panic!("bad ts on line {i}: {e}"));
+		let ts = Precision(9).parse_i64(col());
 		assert_eq!(col(), BYBIT_SYMBOL, "foreign symbol on line {i}");
 		let side: Side = col().parse().unwrap_or_else(|e| panic!("bad side on line {i}: {e}"));
 		let qty_raw = PREC.qty.parse_u32(col());
 		let price_raw = PREC.price.parse_i32(col());
 
-		let ts = (ts_sec * 1e9).round() as i64;
 		assert!(ts >= prev_ts, "trades not time-ordered at line {i}: {prev_ts} > {ts}");
 		prev_ts = ts;
 
