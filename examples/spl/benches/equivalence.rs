@@ -31,6 +31,10 @@ use trading_data_spl::{
 };
 use v_utils::*;
 
+/// What a run *did*. Counts are exact — an episode either happened or it did not, and that is the
+/// thing worth failing over. The quantities are relative, because they are sums over per-tick
+/// readings and one tick's worth of drift is not a different strategy.
+const TOLERANCE: f64 = 1e-3;
 #[tokio::main]
 async fn main() {
 	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
@@ -84,11 +88,6 @@ async fn main() {
 	want_ran.agrees_with(&got_ran);
 	println!("equivalence: {ticks} ticks, {want_ran:?}, graph == direct");
 }
-
-/// What a run *did*. Counts are exact — an episode either happened or it did not, and that is the
-/// thing worth failing over. The quantities are relative, because they are sums over per-tick
-/// readings and one tick's worth of drift is not a different strategy.
-const TOLERANCE: f64 = 1e-3;
 
 #[derive(Debug, Default)]
 struct Outcome {

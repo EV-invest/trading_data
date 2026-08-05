@@ -107,13 +107,6 @@ pub async fn run(name: &str, shallow_deep: bool, mut notes: Vec<String>) {
 	// handle rather than unwrapped out of it.
 	publish(Row::new(name, events, &digest.borrow(), total, feed_s, notes));
 }
-/// `ts_event = ts_init = venue execution time`. The archive carries no per-element local stamp — the
-/// receive column is a span over the whole batch — and the exec clock is the one NT's bar aggregator
-/// must bucket on for its boundaries to be our `Ohlcs`' boundaries.
-fn stamp(ns: i64) -> UnixNanos {
-	UnixNanos::from(u64::try_from(ns).expect("the archive's window is after the epoch"))
-}
-
 /// The whole window as NT `Data`, plus the instrument the graph's precision implies.
 ///
 /// The book is folded here by our own [`Book`] for one reason: it owns when a resync happens, and NT
@@ -226,6 +219,12 @@ pub async fn tape() -> (Vec<Data>, InstrumentAny) {
 		UnixNanos::default(),
 	));
 	(out, instrument)
+}
+/// `ts_event = ts_init = venue execution time`. The archive carries no per-element local stamp — the
+/// receive column is a span over the whole batch — and the exec clock is the one NT's bar aggregator
+/// must bucket on for its boundaries to be our `Ohlcs`' boundaries.
+fn stamp(ns: i64) -> UnixNanos {
+	UnixNanos::from(u64::try_from(ns).expect("the archive's window is after the epoch"))
 }
 
 /// qty 0 is a level deletion in our lane and a `Delete` in NT's; everything else is the level's new
