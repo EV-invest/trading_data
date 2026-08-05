@@ -114,9 +114,9 @@ impl<T: Row> Feather<T> {
 		}
 	}
 
-	/// [`Self::push`]'s bookkeeping for a whole run appended columnar. Only the two fixed-width lanes
-	/// have a columnar source, and for those `PER_ROW_MIN` *is* the row size — so it is the run's
-	/// estimate here, not a floor.
+	/// [`Self::push`]'s bookkeeping for a whole run appended columnar. Only the trade lane has a
+	/// columnar source, and it is fixed-width, so `PER_ROW_MIN` *is* the row size — the run's estimate
+	/// here, not a floor.
 	fn ran(&mut self, axis: &[Ts<T::Axis>]) {
 		let Some((&lo, &hi)) = axis.iter().min().zip(axis.iter().max()) else {
 			return;
