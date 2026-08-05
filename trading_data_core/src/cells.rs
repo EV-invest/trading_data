@@ -3,10 +3,10 @@
 //! `Cell`/`Node` are the dag's and these types are ours, so orphan rules make this the only crate
 //! that may write these impls. Nothing else here knows the dag exists.
 
-use trading_data_dag::{Cell, DepOuts, Folding, Horizon, Node, Nudge, node, slice_nudge};
+use trading_data_dag::{Buffering, Cell, DepOuts, Horizon, Node, Nudge, node, slice_nudge};
 use v_utils::TF_15MIN;
 
-use crate::{Book, BookDelta, BookShape, TradeBuf, TradeCols};
+use crate::{Book, BookChunk, BookDelta, BookShape, TradeBuf, TradeCols};
 
 pub struct Trades;
 impl Cell for Trades {
@@ -52,7 +52,7 @@ impl Cell for BookDeltas {
 	type Out<'t> = &'t [BookDelta];
 }
 
-slice_nudge!(BookDeltas, BookDelta);
+slice_nudge!(BookDeltas, BookDelta, BookChunk);
 
 /// `Option<&Book>` is `Latent`, so the book **can be gated** — and a closed gate returns `None`
 /// without pulling deps, so no checkpoint and no frame is even read.
@@ -62,17 +62,16 @@ impl Cell for Book {
 
 #[node]
 impl Node for Book {
-	/// The fold reaches back over the deltas exactly one checkpoint interval — a book re-warms from a
-	/// checkpoint, so gating it off and back on costs one desync and one resync, not a warmup it can
-	/// never recover. `trading_data_persistence` reads its anchor-age bound off this.
+	/// The reach back over the deltas is exactly one checkpoint interval, and it is the *engine's* —
+	/// a `Buffering` dep, so it accumulates whether or not this node is dark, which is the whole of
+	/// what makes the book gateable. `trading_data_persistence` reads its anchor-age bound off this.
 	///
-	/// `Folding` and not `Buffering` only because `DeltaFrame` is no `Series`, so there is nothing
-	/// the engine can retain for it — which is also what still makes a gated book a compile error,
-	/// checkpoint or no. Retaining the deltas as stamped level rows is what would lift that.
-	type Deps = (BookAnchors, Folding<BookDeltas, { Horizon::Span(TF_15MIN) }>);
+	/// The `BookChunk` behind it tumbles on the same absolute boundary the checkpoint is written on,
+	/// so a wake is one resync plus one net — depth, not the length of the sleep.
+	type Deps = (BookAnchors, Buffering<BookDeltas, { Horizon::Span(TF_15MIN) }>);
 
-	fn advance<'t>(&'t mut self, (anchor, deltas): DepOuts<'t, Self>) -> Option<&'t Book> {
-		self.step(anchor, deltas).then_some(&*self)
+	fn advance<'t>(&'t mut self, (anchor, chunk): DepOuts<'t, Self>) -> Option<&'t Book> {
+		self.step(anchor, chunk).then_some(&*self)
 	}
 }
 

@@ -22,7 +22,9 @@ use std::sync::{
 
 use tempfile::tempdir;
 use trading_data_core::{Aggregate, ExchangeName, InnerTrade, Instrument, Local, Precision, PrecisionPriceQty, Price, Qty, Side, Span, Symbol, Ts, Venue};
-use trading_data_persistence::{BatchTrades, Book, BookShape, BookUpdate, Catalog, Clock, Exact, Feed, FrameKind, LaneKind, LatencyConfig, Live, Oi, ReadClock, Replay};
+use trading_data_dag::{Batch as _, Horizon};
+use trading_data_persistence::{BatchTrades, Book, BookChunk, BookShape, BookUpdate, Catalog, Clock, Exact, Feed, FrameKind, LaneKind, LatencyConfig, Live, Oi, ReadClock, Replay};
+use v_utils::TF_15MIN;
 
 /// Monotonic synthetic clock: each read advances 1ms, so live arrival stamps are strictly
 /// increasing across lanes and the recording replays deterministically.
@@ -61,9 +63,13 @@ struct Step {
 fn collect(feed: &mut impl Feed) -> Vec<Step> {
 	let mut out = Vec::new();
 	let mut book = Book::default();
+	// the frame's own retention, driven by hand: a `Feed` hands lanes, and folding the book off one
+	// means standing in for the `Buffer<BookDeltas, 15m>` a graph would have grown.
+	let mut chunk = BookChunk::default();
 	while let Some(l) = feed.next() {
+		chunk.advance(l.deltas, Horizon::Span(TF_15MIN));
 		let t = l.trades;
-		let synced = book.step(l.anchor, l.deltas);
+		let synced = book.step(l.anchor, &chunk);
 		out.push(Step {
 			trades: (0..t.len())
 				.map(|i| (t.ts.recv.expect("recorded").last.as_nanos(), t.monotonic_seq[i], t.price[i], t.qty[i]))

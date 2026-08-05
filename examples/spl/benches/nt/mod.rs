@@ -29,7 +29,7 @@ use nautilus_model::{
 	types::{Currency, Money, Price, Quantity},
 };
 use nautilus_persistence_macros::custom_data;
-use trading_data::{Book, BookDelta, Exact, ExchangeName, Feed as _, LatencyConfig, ReadClock, Replay, Side, required_lanes};
+use trading_data::{Batch as _, Book, BookChunk, BookDelta, Exact, ExchangeName, Feed as _, Horizon, LatencyConfig, ReadClock, Replay, Side, required_lanes};
 use trading_data_bench::{COUNTERS, Digest, Probe, Row, publish};
 use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, symbol, trading_days};
 
@@ -131,6 +131,8 @@ fn tape() -> (Vec<Data>, InstrumentAny) {
 	let id = InstrumentId::new(Symbol::new(situation.bybit_symbol.replace('-', "")), Venue::new("BYBIT"));
 	let mut out = Vec::new();
 	let mut book = Book::default();
+	// the frame's own retention, driven by hand: a `Feed` hands lanes, not the `Buffer` a graph grows.
+	let mut chunk = BookChunk::default();
 	let mut prec = None;
 
 	for d in trading_days(situation) {
@@ -159,10 +161,11 @@ fn tape() -> (Vec<Data>, InstrumentAny) {
 				}
 			}
 
+			chunk.advance(l.deltas, Horizon::Span(v_utils::TF_15MIN));
 			let epoch = book.epoch();
 			// `step` is the only entry point that knows whether this frame folds at all; a frame that
 			// left our book desynced left it unreadable, and NT is told nothing rather than told a lie.
-			if book.step(l.anchor, l.deltas)
+			if book.step(l.anchor, &chunk)
 				&& let Some(last) = l.deltas.last()
 			{
 				prec.get_or_insert(last.prec);

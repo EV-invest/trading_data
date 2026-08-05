@@ -172,8 +172,9 @@ impl Horizon {
 		}
 	}
 
-	/// Only a [`Horizon::Span`] has one; the caller has already matched the variant.
-	const fn ns(tf: Timeframe) -> i64 {
+	/// Only a [`Horizon::Span`] has one; the caller has already matched the variant. Public because a
+	/// [`Batch`] written outside this crate has to turn its declared reach into a period.
+	pub const fn ns(tf: Timeframe) -> i64 {
 		(tf.0 * 1_000_000) as i64
 	}
 }

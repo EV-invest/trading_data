@@ -11,6 +11,9 @@ pub use book::*;
 pub mod cells;
 pub use cells::*;
 
+pub mod chunk;
+pub use chunk::*;
+
 pub mod cols;
 pub use cols::*;
 

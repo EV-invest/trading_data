@@ -42,9 +42,9 @@ pub use trading_data_derivatives::{
 };
 pub use trading_data_expr::{Abs, Add, Ast, Const, Div, Ex, Expr, Mul, Neg, Square, Sub, Sum, Trace, Var, Vars, abs, constant, square, sum};
 pub use trading_data_persistence::{
-	__td_node_Book, Aggregate, Arrival, BatchTrades, Book, BookAnchors, BookDelta, BookDeltas, BookShape, BookUpdate, Catalog, CatalogError, Clock, Direction, Exact, Feather, Feed,
-	FrameKind, InnerTrade, LaneKind, LaneReader, Lanes, LatencyConfig, Live, LiveClock, Local, Mc, McRoot, Oi, OiRoot, Precision, PrecisionPriceQty, ReadClock, Replay, RotationPolicy, Row,
-	ShadowBook, Side, Sink, Span, Trade, TradeBuf, TradeCols, Trades, Ts, UnixNanos, Usd, Venue, read_mc, read_oi, read_trades,
+	__td_node_Book, Aggregate, Arrival, BatchTrades, Book, BookAnchors, BookChunk, BookDelta, BookDeltas, BookShape, BookUpdate, Catalog, CatalogError, Clock, Direction, Exact, Feather,
+	Feed, FrameKind, InnerTrade, LaneKind, LaneReader, Lanes, LatencyConfig, Live, LiveClock, Local, Mc, McRoot, Oi, OiRoot, Precision, PrecisionPriceQty, ReadClock, Replay, RotationPolicy,
+	Row, ShadowBook, Side, Sink, Span, Trade, TradeBuf, TradeCols, Trades, Ts, UnixNanos, Usd, Venue, read_mc, read_oi, read_trades,
 };
 /// The period a `Bars<TF>` is over: naming one is now part of wiring a graph, and a facade-only
 /// consumer has no other route to the type.

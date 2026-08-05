@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use trading_data_dag::{Flat, Glance};
 
-use crate::{Aggregate, BookDelta, Exact, FrameKind, Local, PrecisionPriceQty, Price, Qty, Side, Span, Timestamped, Timestamps, Ts, Venue};
+use crate::{Aggregate, BookChunk, BookDelta, Exact, FrameKind, Local, PrecisionPriceQty, Price, Qty, Side, Span, Timestamped, Timestamps, Ts, Venue};
 
 /// (price, qty) levels for both sides of an orderbook, keyed by raw price.
 /// The wire/persist shape. Both BTreeMaps are ascending; [`Book`] holds the same levels best-first.
@@ -101,29 +101,76 @@ impl Book {
 		self.len() == 0
 	}
 
-	/// One fold step, the whole of it: a `monotonic_seq` discontinuity desyncs, a checkpoint reseeds
-	/// a book that has no place in the stream (new epoch), and frames fold only while synced.
-	/// Returns whether the book is readable afterwards.
+	/// One fold step, the whole of it. Returns whether the book is readable afterwards.
 	///
 	/// One entry point rather than four public verbs — a caller that could `apply` without first
-	/// checking `missed` is a caller that can fold onto stale state.
-	pub fn step(&mut self, anchor: Option<&BookShape>, levels: &[BookDelta]) -> bool {
-		if self.missed(levels) {
-			self.synced = false;
+	/// asking [`Reach`] is a caller that can fold onto stale state.
+	pub fn step(&mut self, anchor: Option<&BookShape>, chunk: &BookChunk) -> bool {
+		match self.synced.then(|| self.reach(chunk)) {
+			// the common case, and as cheap as it ever was: awake last tick, nothing skipped.
+			Some(Reach::Fresh) => {
+				self.apply(chunk.fresh());
+				return true;
+			}
+			// woke, or the chunk tumbled under us, but the net still reaches back over everything we
+			// have not folded — so a wake costs depth, not the length of the sleep.
+			Some(Reach::Net) => {
+				self.absorb(chunk);
+				return true;
+			}
+			Some(Reach::Gone) => self.synced = false,
+			None => (),
 		}
 		// A checkpoint is a seed, not an event. Our own chain is gapless, so while we are synced the
 		// checkpoint is the state we already hold — taking it would clone both maps and bump `epoch`
-		// for nothing. We take one exactly when we have no place in the stream: unseeded, or desynced
-		// by frames that went by while a gate was closed.
-		if !self.synced
-			&& let Some(s) = anchor
-		{
+		// for nothing. We take one exactly when we have no place in the stream: unseeded, or asleep
+		// past what the net covers.
+		if let Some(s) = anchor {
 			self.resync(s);
-		}
-		if self.synced {
-			self.apply(levels);
+			match chunk.contiguous() {
+				// The checkpoint stands at or after the period base, and the net's every level is that
+				// level's *final* value for the period — so folding it over the checkpoint is idempotent
+				// where they overlap and carries it forward where they do not.
+				true => self.absorb(chunk),
+				// A hole in our own recording: the net cannot speak for rows it never saw, and the
+				// checkpoint can. Take only what this tick carries, and let the chain re-seed from it.
+				false => self.apply(chunk.fresh()),
+			}
 		}
 		self.synced
+	}
+
+	/// How far this chunk reaches back towards what we hold.
+	fn reach(&self, chunk: &BookChunk) -> Reach {
+		let Some(seq) = chunk.seq() else { return Reach::Fresh }; // nothing has been folded, ever
+		let Some(last) = self.seq else {
+			// No place in the chain — a resync leaves us there. The only run we may accept is the one
+			// that opens the chunk's own period; anything later means rows went by while we were dark.
+			return match chunk.fresh().first() {
+				Some(f) if f.monotonic_seq == seq.start => Reach::Fresh,
+				None => Reach::Fresh,
+				Some(_) => Reach::Gone,
+			};
+		};
+		if chunk.fresh().first().is_none_or(|f| f.monotonic_seq == last + 1) {
+			return Reach::Fresh;
+		}
+		// A hole in our own recording is a hole in the net too: it cannot stand in for rows it never
+		// saw, however well its seqs bracket ours.
+		match chunk.contiguous() && last + 1 >= seq.start && last <= seq.end {
+			true => Reach::Net,
+			false => Reach::Gone,
+		}
+	}
+
+	/// Take the period's net, wholesale. O(depth), and independent of how long we were away.
+	fn absorb(&mut self, chunk: &BookChunk) {
+		let Some(seq) = chunk.seq() else { return };
+		for (side, price, qty) in chunk.net() {
+			self.set(side, price, qty);
+		}
+		self.span = Span::new(self.span.first.min(chunk.span().first), chunk.span().last);
+		self.seq = Some(seq.end);
 	}
 
 	fn resync(&mut self, s: &BookShape) {
@@ -139,16 +186,10 @@ impl Book {
 		self.seq = None;
 	}
 
-	/// A `monotonic_seq` discontinuity: frames were emitted that we did not fold, so whatever we
-	/// hold is stale. Same path covers a gated-off episode and an unseeded start.
-	fn missed(&self, levels: &[BookDelta]) -> bool {
-		let Some(first) = levels.first() else { return false };
-		self.seq.is_some_and(|last| first.monotonic_seq != last + 1)
-	}
-
 	/// Both kinds fold identically — a correction's levels are levels. What the kind decides is
 	/// whether a *derivation* downstream may read them as market activity.
 	fn apply(&mut self, rows: &[BookDelta]) {
+		assert!(self.synced, "a desynced book must not fold");
 		let (Some(first), Some(last)) = (rows.first(), rows.last()) else { return };
 		for d in rows {
 			assert_eq!(self.prec, d.prec, "book folded a level at a different precision");
@@ -211,6 +252,16 @@ impl Book {
 	}
 }
 
+/// What a [`BookChunk`] can do for the state a [`Book`] holds.
+enum Reach {
+	/// Fold this tick's rows on top, one by one.
+	Fresh,
+	/// Fold the whole period's net on top.
+	Net,
+	/// Neither: rows we never folded are behind what the net covers, so we are stale.
+	Gone,
+}
+
 /// Where `price` sits in a side held best-first: bids descending, asks ascending.
 fn seek(levels: &[(i32, u32)], side: Side, price: i32) -> Result<usize, usize> {
 	match side {
@@ -230,7 +281,8 @@ pub struct ShadowBook {
 	seq: u64,
 	cadence: Exact,
 	epoch_start: Option<Ts<Local>>,
-	last_checkpoint: Option<Ts<Local>>,
+	/// The `cadence` period a checkpoint has already been written in, floored from the epoch.
+	checkpointed: Option<i64>,
 }
 
 impl ShadowBook {
@@ -241,7 +293,7 @@ impl ShadowBook {
 			seq: 0,
 			cadence,
 			epoch_start: None,
-			last_checkpoint: None,
+			checkpointed: None,
 		}
 	}
 
@@ -249,16 +301,24 @@ impl ShadowBook {
 		&self.book
 	}
 
-	/// Our checkpoint, due once per `cadence` on a synced book. Emitted *before* the frames it
-	/// precedes are folded downstream, so a replay seeded from it reads a gapless chain.
+	/// Our checkpoint, due once per `cadence` *period* on a synced book — the boundary floored from
+	/// the epoch, not the time elapsed since the last one. Absolute because the reader's own
+	/// retention tumbles on that same grid: a book waking mid-period needs a checkpoint taken inside
+	/// it, and a relative cadence only promises one within a cadence of *some* earlier write.
+	///
+	/// Still emitted on arrival and never batched — this fires from `Live`'s ingest of a single
+	/// message, so the first arrival past a boundary carries it.
 	pub fn checkpoint(&mut self, recv: Ts<Local>) -> Option<BookShape> {
 		if !self.book.synced {
 			return None;
 		}
-		if self.last_checkpoint.is_some_and(|t| recv - t < self.cadence) {
+		let period = self.cadence.as_nanos();
+		assert!(period > 0, "a checkpoint cadence is a period, got {period}ns");
+		let base = recv.as_nanos().div_euclid(period);
+		if self.checkpointed == Some(base) {
 			return None;
 		}
-		self.last_checkpoint = Some(recv);
+		self.checkpointed = Some(base);
 		Some(self.book.shape(recv, self.epoch_start.expect("set whenever the book is synced")))
 	}
 
@@ -308,7 +368,8 @@ impl ShadowBook {
 	fn seed(&mut self, s: &BookShape, recv: Ts<Local>) {
 		self.book.resync(s);
 		self.epoch_start = Some(recv);
-		self.last_checkpoint = None;
+		// a fresh epoch is a fresh book, and the period it opens in has no checkpoint of *this* book
+		self.checkpointed = None;
 	}
 }
 
@@ -354,8 +415,18 @@ impl Glance for &Book {
 
 #[cfg(test)]
 mod tests {
+	use trading_data_dag::{Batch as _, Horizon};
+	use v_utils::TF_15MIN;
+
 	use super::*;
 	use crate::Precision;
+
+	/// The engine's side of a step: the frame's buffer folds the run into its chunk, then the node
+	/// reads it. Driving [`Book::step`] any other way would test a path the graph does not take.
+	fn step(b: &mut Book, chunk: &mut BookChunk, anchor: Option<&BookShape>, rows: &[BookDelta]) -> bool {
+		chunk.advance(rows, Horizon::Span(TF_15MIN));
+		b.step(anchor, chunk)
+	}
 
 	const PREC: PrecisionPriceQty = PrecisionPriceQty {
 		price: Precision(2),
@@ -439,9 +510,10 @@ mod tests {
 
 		// replay: fold the emitted stream from our checkpoint and land on the same book
 		let mut replayed = Book::default();
+		let mut chunk = BookChunk::default();
 		for (i, levels) in tape[from..].iter().enumerate() {
 			let anchor = (i == 0).then_some(&checkpoint);
-			assert!(replayed.step(anchor, levels), "replay must stay synced");
+			assert!(step(&mut replayed, &mut chunk, anchor, levels), "replay must stay synced");
 		}
 		assert_eq!(replayed.bids(), sb.book.bids());
 		assert_eq!(replayed.asks(), sb.book.asks());
@@ -451,17 +523,18 @@ mod tests {
 	fn a_missed_frame_desyncs_until_the_next_checkpoint() {
 		let mut b = Book::default();
 		let anchor = shape(&[(100, 5)], &[(101, 5)], 1);
+		let mut chunk = BookChunk::default();
 
-		assert!(b.step(Some(&anchor), &[row(1, FrameKind::Update, Side::Buy, 99, 3)]));
+		assert!(step(&mut b, &mut chunk, Some(&anchor), &[row(1, FrameKind::Update, Side::Buy, 99, 3)]));
 
 		// seq 2 never reached us
 		let gapped = [row(3, FrameKind::Update, Side::Buy, 98, 1)];
-		assert!(!b.step(None, &gapped), "a seq discontinuity must desync");
+		assert!(!step(&mut b, &mut chunk, None, &gapped), "a seq discontinuity must desync");
 		assert!(!b.bids().iter().any(|l| l.0 == 98), "a desynced book must not fold");
 
 		// the next checkpoint re-arms it, from the checkpoint's state — not the stale one
 		let epoch = b.epoch();
-		assert!(b.step(Some(&anchor), &gapped));
+		assert!(step(&mut b, &mut chunk, Some(&anchor), &[]));
 		assert_eq!(b.epoch(), epoch + 1);
 		assert!(!b.bids().iter().any(|l| l.0 == 99), "re-sync must not carry stale levels");
 	}

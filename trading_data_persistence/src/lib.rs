@@ -21,6 +21,7 @@ pub use trading_data_core::{
 	BatchTrades,
 	Book,
 	BookAnchors,
+	BookChunk,
 	BookDelta,
 	BookDeltas,
 	BookShape,

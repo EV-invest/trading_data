@@ -1,7 +1,9 @@
 use std::hint::black_box;
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
-use trading_data_core::{Aggregate, Book, BookDelta, BookShape, FrameKind, Local, Precision, PrecisionPriceQty, Side, Span, Ts, Venue};
+use trading_data_core::{Aggregate, Book, BookChunk, BookDelta, BookShape, FrameKind, Local, Precision, PrecisionPriceQty, Side, Span, Ts, Venue};
+use trading_data_dag::{Batch as _, Horizon};
+use v_utils::TF_15MIN;
 
 const FRAMES: usize = 50_000;
 const PER_FRAME: usize = 4;
@@ -52,9 +54,11 @@ fn stream(levels: i32) -> (BookShape, Vec<BookDelta>) {
 #[bench::depth200(args = (200), setup = stream)]
 fn fold_deltas((anchor, buf): (BookShape, Vec<BookDelta>)) {
 	let mut b = Book::default();
+	let mut chunk = BookChunk::default();
 	for f in 0..FRAMES {
 		let seed = (f == 0).then_some(&anchor);
-		black_box(b.step(seed, &buf[f * PER_FRAME..(f + 1) * PER_FRAME]));
+		chunk.advance(&buf[f * PER_FRAME..(f + 1) * PER_FRAME], Horizon::Span(TF_15MIN));
+		black_box(b.step(seed, &chunk));
 	}
 	black_box(&b);
 }

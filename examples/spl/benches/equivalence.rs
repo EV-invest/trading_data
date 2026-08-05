@@ -13,8 +13,8 @@
 use std::path::{Path, PathBuf};
 
 use trading_data::{
-	Armed, Bar, Book, BookDelta, BookShape, Buffering, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot, Node as _, Ohlc, Ohlcs, Oi,
-	OiRoot, ReadClock, Replay, TradeCols, Volume, Volumes, required_lanes,
+	Armed, Bar, Batch as _, Book, BookChunk, BookDelta, BookShape, Buffering, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot, Node as _,
+	Ohlc, Ohlcs, Oi, OiRoot, ReadClock, Replay, TradeCols, Volume, Volumes, required_lanes,
 };
 use trading_data_bench::ring::Ring;
 use trading_data_spl::{
@@ -112,6 +112,8 @@ struct Direct {
 	bars_1h: trading_data::Bars<{ TF_1H }>,
 	bars_4h: trading_data::Bars<{ TF_4H }>,
 	book: Book,
+	/// The frame's `Buffer<BookDeltas, 15m>`, by hand — the direct path owns every node the graph has.
+	chunk: BookChunk,
 	book_top: BookTop,
 
 	m1: Ring<Bar>,
@@ -190,7 +192,8 @@ impl Direct {
 		self.bars_4h.emit((o4, v4), b4);
 
 		self.b_top.clear();
-		let folded = self.book.advance((anchor, deltas));
+		self.chunk.advance(deltas, Horizon::Span(v_utils::TF_15MIN));
+		let folded = self.book.advance((anchor, &self.chunk));
 		self.book_top.emit((folded, deltas), &mut self.b_top);
 
 		self.m1.push(&self.b_bars[0]);
