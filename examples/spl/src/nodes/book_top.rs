@@ -46,7 +46,7 @@ impl Emit for BookTop {
 	type Deps = (Folding<trading_data::Book, { Horizon::Unbounded }>, BookDeltas);
 
 	const PLOTS: &'static [Plot] = &[Plot {
-		labels: &["bid", "ask", "bid_depth$", "ask_depth$"],
+		labels: &[&["bid", "ask", "bid_depth$", "ask_depth$"]],
 		..Plot::DEFAULT
 	}];
 

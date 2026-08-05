@@ -592,8 +592,9 @@ pub struct Plot {
 	/// Fixed y-scale, e.g. RSI (0, 100).
 	pub range: Option<(f64, f64)>,
 	pub guides: &'static [Guide],
-	/// Names for `slots`, positionally; `[]` = indices.
-	pub labels: &'static [&'static str],
+	/// Names for `slots`, one list per axis of the plot's shape; `[]` = indices. The axis lengths
+	/// multiply out to the plot's slot count, in the same row-major order the out flattens in.
+	pub labels: &'static [&'static [&'static str]],
 	/// Per-element; `[]` = [`Ink::MAIN`] for all.
 	pub inks: &'static [Ink],
 	/// Draw on the price pane instead of an own indicator pane; price-denominated.
@@ -624,8 +625,9 @@ impl Plot {
 	};
 
 	/// `[]` slots means "every slot", which two plots cannot both claim. A candle plot is four
-	/// price-denominated slots, so it names them and rides the price pane.
-	const fn coherent(plots: &'static [Plot]) -> bool {
+	/// price-denominated slots, so it names them and rides the price pane. `dims` is the out's own
+	/// shape, which a plot claiming all of it is named against.
+	const fn coherent(plots: &'static [Plot], dims: &'static [usize]) -> bool {
 		let mut i = 0;
 		while i < plots.len() {
 			if plots[i].slots.is_empty() && plots.len() > 1 {
@@ -633,6 +635,27 @@ impl Plot {
 			}
 			if plots[i].candles && (!plots[i].overlay || plots[i].slots.len() != 4) {
 				return false;
+			}
+			if !plots[i].labels.is_empty() {
+				let mut named = 1;
+				let mut a = 0;
+				while a < plots[i].labels.len() {
+					named *= plots[i].labels[a].len();
+					a += 1;
+				}
+				let mut drawn = 1;
+				if plots[i].slots.is_empty() {
+					let mut d = 0;
+					while d < dims.len() {
+						drawn *= dims[d];
+						d += 1;
+					}
+				} else {
+					drawn = plots[i].slots.len();
+				}
+				if named != drawn {
+					return false;
+				}
 			}
 			i += 1;
 		}
@@ -2217,8 +2240,8 @@ where
 	F: 't, {
 	const {
 		assert!(
-			Plot::coherent(N::PLOTS),
-			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay"
+			Plot::coherent(N::PLOTS, <N::Out<'static> as Flat>::DIMS),
+			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay; a plot's `labels` axes must multiply out to its slot count"
 		)
 	}
 
@@ -2292,8 +2315,8 @@ where
 	F: 't, {
 	const {
 		assert!(
-			Plot::coherent(<E as Emit>::PLOTS),
-			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay"
+			Plot::coherent(<E as Emit>::PLOTS, <E::Item as Flat>::DIMS),
+			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay; a plot's `labels` axes must multiply out to its slot count"
 		)
 	}
 	e.buf.clear();

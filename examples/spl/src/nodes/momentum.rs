@@ -67,7 +67,7 @@ impl Emit for Momentum {
 	);
 
 	const PLOTS: &'static [Plot] = &[Plot {
-		labels: &["sharpe"],
+		labels: &[&["sharpe"]],
 		..Plot::DEFAULT
 	}];
 

@@ -167,12 +167,12 @@ impl Emit for Deprecator {
 	const PLOTS: &'static [Plot] = &[
 		Plot {
 			slots: &[0, 1, 2, 3, 4],
-			labels: &["target_q", "base_q", "eval", "lambda_atr", "trail_fraction"],
+			labels: &[&["target_q", "base_q", "eval", "lambda_atr", "trail_fraction"]],
 			..Plot::DEFAULT
 		},
 		Plot {
 			slots: &[5, 6, 7],
-			labels: &["sl", "tp", "trail_stop"],
+			labels: &[&["sl", "tp", "trail_stop"]],
 			overlay: true,
 			..Plot::DEFAULT
 		},

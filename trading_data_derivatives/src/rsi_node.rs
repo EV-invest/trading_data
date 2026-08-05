@@ -200,7 +200,7 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Emit for Rsi<B, S> {
 	// here would pin a number the wiring is free to move.
 	const PLOTS: &'static [Plot] = &[Plot {
 		range: Some((0.0, 100.0)),
-		labels: &["actual", "smooth"],
+		labels: &[&["actual", "smooth"]],
 		..Plot::DEFAULT
 	}];
 
