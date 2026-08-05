@@ -63,5 +63,22 @@ fn fold_deltas((anchor, buf): (BookShape, Vec<BookDelta>)) {
 	black_box(&b);
 }
 
-library_benchmark_group!(name = book_fold; benchmarks = fold_deltas);
+// The same stream with the book dark throughout: the chunk still folds every row — that is the
+// retention's own price, and the only cost a gated book leaves behind — but the book itself steps
+// once at the end, off the net. `fold_deltas − wake_from_dark` is what going dark saves, and the
+// wake's own tail is bounded by depth rather than by the FRAMES it slept through.
+#[library_benchmark]
+#[bench::top20(args = (20), setup = stream)]
+#[bench::depth200(args = (200), setup = stream)]
+fn wake_from_dark((anchor, buf): (BookShape, Vec<BookDelta>)) {
+	let mut chunk = BookChunk::default();
+	for f in 0..FRAMES {
+		chunk.advance(&buf[f * PER_FRAME..(f + 1) * PER_FRAME], Horizon::Span(TF_15MIN));
+	}
+	let mut b = Book::default();
+	black_box(b.step(Some(&anchor), &chunk));
+	black_box(&b);
+}
+
+library_benchmark_group!(name = book_fold; benchmarks = fold_deltas, wake_from_dark);
 main!(library_benchmark_groups = book_fold);

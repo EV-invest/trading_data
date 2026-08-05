@@ -58,8 +58,8 @@ pub fn mc_type() -> nautilus_model::data::DataType {
 /// Registration order is the msgbus' dispatch order within a topic, and the chain below depends on
 /// it: everything that fills a ring off `bar1m` is registered before the screener that reads those
 /// rings, and the classifier after the six indies whose outputs it latches.
-pub fn run(name: &str, shallow_deep: bool, mut notes: Vec<String>) {
-	let (data, instrument) = tape();
+pub async fn run(name: &str, shallow_deep: bool, mut notes: Vec<String>) {
+	let (data, instrument) = tape().await;
 	let (trades, deltas) = data.iter().fold((0u64, 0u64), |(t, d), x| match x {
 		Data::Trade(_) => (t + 1, d),
 		Data::Deltas(x) => (t, d + x.deltas.len() as u64),
@@ -119,16 +119,16 @@ fn stamp(ns: i64) -> UnixNanos {
 /// The book is folded here by our own [`Book`] for one reason: it owns when a resync happens, and NT
 /// has to be told. Every epoch bump becomes a `Clear` plus the full ladder, so the two books hold the
 /// same levels at the same instants rather than merely starting the same.
-fn tape() -> (Vec<Data>, InstrumentAny) {
+pub async fn tape() -> (Vec<Data>, InstrumentAny) {
 	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
 	let situation = &cfg.situation;
-	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(&situation.bybit_symbol);
-	let catalog = ensure_lanes(&cache, situation);
+	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(situation.pair.replace("-", ""));
+	let catalog = ensure_lanes(&cache, situation).await;
 	let kinds = required_lanes::<Graph>();
 	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
 	let read_clock = ReadClock::from(Exact::from(cfg.backtest.read_clock.duration()));
 
-	let id = InstrumentId::new(Symbol::new(situation.bybit_symbol.replace('-', "")), Venue::new("BYBIT"));
+	let id = InstrumentId::new(Symbol::new(situation.pair.replace('-', "")), Venue::new("BYBIT"));
 	let mut out = Vec::new();
 	let mut book = Book::default();
 	// the frame's own retention, driven by hand: a `Feed` hands lanes, not the `Buffer` a graph grows.
@@ -191,7 +191,7 @@ fn tape() -> (Vec<Data>, InstrumentAny) {
 	let prec = prec.expect("the window carried neither a trade nor a delta");
 	let (pd, qd) = (prec.price.0 as u8, prec.qty.0 as u8);
 	let quote = Currency::from("USDT");
-	let base = Symbol::new(situation.bybit_symbol.replace('-', "").trim_end_matches("USDT").to_string());
+	let base = Symbol::new(situation.pair.replace('-', "").trim_end_matches("USDT").to_string());
 	let base = *CURRENCY_MAP
 		.lock()
 		.expect("currency map is not poisoned")

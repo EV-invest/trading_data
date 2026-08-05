@@ -9,7 +9,8 @@
 #[path = "nt/mod.rs"]
 mod nt;
 
-fn main() {
+#[tokio::main]
+async fn main() {
 	nt::run(
 		"optimized_nt",
 		true,
@@ -17,5 +18,6 @@ fn main() {
 			"book deltas subscribed only between a screener hit and the situation's terminal intent".into(),
 			"a reopened book starts empty, so imbalance/spread read None until both sides refill".into(),
 		],
-	);
+	)
+	.await;
 }

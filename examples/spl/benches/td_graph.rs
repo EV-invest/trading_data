@@ -13,13 +13,14 @@ use trading_data::{Exact, ExchangeName, Feed as _, LatencyConfig, ReadClock, Rep
 use trading_data_bench::{COUNTERS, Digest, Probe, Row, publish};
 use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, symbol, trading_days};
 
-fn main() {
+#[tokio::main]
+async fn main() {
 	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
 	let situation = &cfg.situation;
 	let mut graph = Graph::default();
 
-	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(&situation.bybit_symbol);
-	let catalog = ensure_lanes(&cache, situation);
+	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(situation.pair.replace("-", ""));
+	let catalog = ensure_lanes(&cache, situation).await;
 	let kinds = required_lanes::<Graph>();
 	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
 	let read_clock = ReadClock::from(Exact::from(cfg.backtest.read_clock.duration()));

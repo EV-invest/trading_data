@@ -76,11 +76,14 @@ node hoists `prec.price_scale()` once per run and divides inside the loop — on
 instead of a conversion per element, and no f64 round trip anywhere to lose a bit in. The single
 decimal→raw conversion left is at the CSV parse boundary, where the exactness assert belongs.
 
-Precision-on-the-holder is why a run stays whole: `Feather::extend(cols)` is one append and one
-rotation check for a whole venue message, where the row model was N pushes and N flush checks.
+The one lane that carries precision per *element* is the book's, and it says why the rule is
+otherwise: a retained lane is a run of items the engine hands out one at a time, so nothing holder-
+shaped survives to scale them by. Precision-on-the-holder is what keeps a run whole elsewhere —
+`Feather::extend(cols)` is one append and one rotation check for a whole venue message, where the
+row model was N pushes and N flush checks.
 
-Each lane keeps its natural shape — Oi/Mc are genuinely f64 and stay `&[Oi]`/`&[Mc]`. Uniformity was
-the old `Batch` enum's sin.
+Each lane keeps its natural shape — Oi/Mc are genuinely f64 and stay `&[Oi]`/`&[Mc]`. Uniformity
+across lanes was the sin of the tagged-union batch this replaced.
 
 ## Record the decision, not the evidence
 
@@ -94,8 +97,10 @@ market — stored raw, every replay would re-derive the reconciliation from whic
 happened to land, a cadence we neither control nor can reproduce. So `ShadowBook` consumes the venue
 stream at ingest and emits ours: the persisted delta lane is our own recollection, gapless and
 self-consistent, with checkpoints on our cadence and venue snapshots consumed but never stored. The
-reconciliation survives as the frame's *identity* — `Update` vs `Correction` — so a flow or imbalance
-node must say which it means and cannot fabricate signal out of a dropped websocket packet.
+reconciliation survives per row as `Update` vs `Correction`, so a flow or imbalance node must say
+which it means and cannot fabricate signal out of a dropped websocket packet. It used to be the
+frame's *identity*, unreachable without destructuring; retaining the lane cost that, and the trade
+is recorded in `weaver.typ` §1.8.
 
 The exception proves the rule: a historic row we were not present for has no recorded reception, so
 that one key is manufactured — deterministically, seeded on lane and symbol, so two runs of a range
@@ -133,7 +138,11 @@ consequences shape how a strategy is written; the mechanisms are `model.typ`'s s
 - **A dep says which *reading* of its producer it wants** — this tick's batch, a window, the last
   value whenever it came, or a claim to fold the series itself. The axis those spellings partition
   is *who holds the history*: history the engine holds re-warms through a skip, history a node holds
-  cannot — so the compiler refuses to gate a node that folds its own reach.
+  cannot — so the compiler refuses to gate a node that folds its own reach. *How* the engine holds it
+  is the series' own to say: the default keeps every row, and a series whose rows collapse — a book's
+  levels keep only the last qty per price — declares a fold instead and pays depth rather than
+  volume. That is what makes retention affordable for a lane no buffer could otherwise hold, and so
+  what makes the book gateable at all.
 - **Gating and demand are the same edge read in the two directions.** Gating states what a node
   needs; demand is whether anyone will read what it produces, derived per node from the gates
   dominating every path to an output. Neither is the author's to restate — a hand-written badge on

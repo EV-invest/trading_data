@@ -129,7 +129,7 @@ Six spellings, no seventh. Every structural fact about an edge is one of these.
  ─────────────────────────────────────────────────────────────────────────────────────────────────────────
  C                         C::Out<'t>               C                  Unit       false   false     No
  Gating<G: Gate>           bool  — permission       G                  Unit       false   false     YES
- Buffering<C: Series, H>   Hist<'t, C::Item>        Buffer<C, K≥H>     H          false   TRUE      No
+ Buffering<C: Series, H>   C::Batch's own view      Buffer<C, K≥H>     H          false   TRUE      No
  Sampling<C: Series>       Option<Item::Val>        Latest<C>          Unit       false   TRUE      No
  Folding<C, H>             C::Out<'t>  (a claim)    C                  H          TRUE    false     No
  Spanning<C, TF>           C::Out<'t>  (a claim)    C                  Span(TF)   TRUE    false     No
@@ -142,13 +142,24 @@ Six spellings, no seventh. Every structural fact about an edge is one of these.
  out of all of them. REACH / FOLDED / RETAINED / Gates are what then say WHICH reading of C is being
  asked for.
 
- `Hist<'t, T>` (what a `Buffering` reads) = past ++ fresh, cut to the CONSUMER's declared
- horizon — so a node reads what a frame buffering at exactly its own `H` would hold, and
- shortening some unrelated consumer's window cannot silently change this one's results.
+ WHAT a `Buffering` reads is the series' own to say: `Series::Batch` is how the engine ACCUMULATES
+ the reach, and its `View` is the out. `Rows<Item>` — every row, handed out as a `Hist` — is the
+ default and what every series but one takes.
+
+ `Hist<'t, T>` = past ++ fresh, cut to the CONSUMER's declared horizon — so a node reads what a
+ frame buffering at exactly its own `H` would hold, and shortening some unrelated consumer's window
+ cannot silently change this one's results.
    .fresh()        byte-identical to the unbuffered series out
    .past() .all()  the cross-rate view, for a consumer clocked by a faster series
    .trailing()     one window per fresh element — rate preservation for free
    .narrowed(h)    a shallower view; asserts the retained reach serves it
+
+ The cost of the seventh thing: `Horizon` means whatever the `Batch` impl makes it mean. `Rows`
+ SLIDES — it trims by `ts_ns` every tick, so `Span(tf)` is the last `tf` of wall clock ending now.
+ A batch that FOLDS cannot un-fold, so it has nothing to trim and can only TUMBLE: reset on the
+ absolute boundary, floored from the epoch. Same declaration, different window. What contains it is
+ that the views are different TYPES, so no consumer can read one as the other, and that the impl
+ owns the meaning and documents it (`trading_data_core::BookChunk` is the one such impl).
 ```
 
 _Who holds the history_ is the axis the wrappers actually partition:
@@ -160,6 +171,8 @@ _Who holds the history_ is the axis the wrappers actually partition:
         │   re-warms through a skip   │   CANNOT re-warm ⇒      │   monotone: once it  │
         │   ⇒ darkening a consumer    │   `Gating` + `Folding`  │   holds a level, it  │
         │     is cheap                │   is a COMPILE ERROR    │   holds one forever  │
+        │   a collapsing series pays  │                         │                      │
+        │   its OWN `Batch` for this  │                         │                      │
         │   RETAINED = true           │   RETAINED = false      │   RETAINED = true    │
         └─────────────────────────────┴─────────────────────────┴──────────────────────┘
                             the two carve-outs the whole design turns on
@@ -213,6 +226,11 @@ _Who holds the history_ is the axis the wrappers actually partition:
 
   edge(<perm>, <own>, "-|>", bend: -32deg, stroke: (paint: red, thickness: 0.7pt), label: text(fill: red, size: 7pt)[`Gating` + `Folding` = compile error]),
 ))
+
+The red edge is a fact about the SPELLING, not about any particular node — the fix is always to move
+the reach into the frame and read it as `Buffering`. `trading_data_core::Book` is what that looked
+like in practice: it held its own reach for as long as the delta lane was no `Series`, and became
+gateable the moment the lane became a run of rows the engine could retain for it.
 
 === 1.4 `Horizon` and `CLOCK` — how far back, and how often
 
