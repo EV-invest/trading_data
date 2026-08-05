@@ -878,7 +878,8 @@ impl<T: Latent> Dark<Yes> for T {
 
 pub trait Node: Cell {
 	type Deps: DepSet;
-	/// `&[]` draws nothing at all — the node stays in the topology and resolvable as a dep.
+	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep, and
+	/// the viz can still be asked for it.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
 }
@@ -897,7 +898,8 @@ pub trait Emit: Series
 where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
 	type Deps: DepSet;
-	/// `&[]` draws nothing at all — the node stays in the topology and resolvable as a dep.
+	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep, and
+	/// the viz can still be asked for it.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	fn emit<'t>(&mut self, deps: EmitOuts<'t, Self>, out: &mut alloc::vec::Vec<Self::Item>);
 }
