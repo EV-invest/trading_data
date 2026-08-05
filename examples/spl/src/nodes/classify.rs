@@ -1,9 +1,9 @@
 use core::fmt;
 
-use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Horizon, Ink, McRoot, Node, OiRoot, Plot, ProbabilisticDistribution, Sampling, Usd, node, value_nudge};
+use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Ink, McRoot, Node, OiRoot, Plot, ProbabilisticDistribution, Sampling, Usd, node, value_nudge};
 use v_utils::*;
 
-use super::{Change1d, Change3m, Imbalance, Screener, Spread, Volume1h, Volume1m, momentum, oi_delta::OI_REACH};
+use super::{Change1d, Change3m, Imbalance, Momentum, Screener, Spread, Volume1h, Volume1m, oi_delta::OI_REACH};
 
 /// The wire order of [`Classified`]'s slots, category-major.
 const CATEGORIES: [Category; 5] = [Category::Indeterminate, Category::Liquidations, Category::MmClosing, Category::Manipulation, Category::Momentum];
@@ -281,8 +281,7 @@ impl Node for Classify {
 	type Deps = (
 		Gating<Screener>,
 		trading_data::Bars<{ TF_1MIN }>,
-		Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>,
-		Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>,
+		Sampling<Momentum>,
 		Change1d,
 		Change3m,
 		Volume1m,
@@ -303,10 +302,10 @@ impl Node for Classify {
 		..Plot::DEFAULT
 	}];
 
-	fn advance<'t>(&'t mut self, (hit, m1, m5, h4, c1d, c3m, v1m, v1h, imb, spr, mc, oi): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (hit, m1, mom, c1d, c3m, v1m, v1h, imb, spr, mc, oi): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(hit, "a gating dep reads true inside `advance`");
 		Some(Classified::vote(&Situation {
-			momentum: momentum::standing(m5, h4),
+			momentum: mom,
 			market_cap: mc.map(|m| m.market_cap),
 			// the freshest close there is: the ratio against a USD market cap is the reading, and a
 			// stale leg of it would move the threshold rather than the measurement.

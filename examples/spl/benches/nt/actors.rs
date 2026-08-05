@@ -366,7 +366,7 @@ impl DataActor for Momenta {
 actor!(
 	/// The gate. Everything downstream of it subscribes to `screener` rather than to `bar1m`, so the
 	/// verdict and the bar it was computed from cannot arrive out of order.
-	Screen { node: StdScreener, mom: Vec<Option<f64>> });
+	Screen { node: StdScreener, mom: Option<f64> });
 
 impl DataActor for Screen {
 	fn on_start(&mut self) -> anyhow::Result<()> {
@@ -377,13 +377,15 @@ impl DataActor for Screen {
 
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
 		if signal.name == MOMENTUM {
-			self.mom = decode(signal);
+			// the frame's `Latest<Momentum>`: a level, so it is never cleared after a read.
+			if let Some(v) = decode::<Vec<Option<f64>>>(signal).iter().rev().find_map(|x| *x) {
+				self.mom = Some(v);
+			}
 			return Ok(());
 		}
 		let bar = [Bar::from(decode::<BarDto>(signal))];
 		COUNTERS.screener.fetch_add(1, Ordering::Relaxed);
-		let hit = self.node.advance((&bar, &self.mom));
-		self.mom.clear();
+		let hit = self.node.advance((&bar, self.mom));
 		self.publish_signal(SCREENER, encode(&(hit, BarDto::from(&bar[0]))), signal.ts_event);
 		Ok(())
 	}
@@ -521,12 +523,9 @@ impl DataActor for Spr {
 
 actor!(Classifier {
 	node: Classify,
-	m5: Ring<Bar>,
-	h4: Ring<Bar>,
 	oi: Ring<Oi>,
 	mc: Ring<Mc>,
-	pending5m: Vec<Bar>,
-	pending4h: Vec<Bar>,
+	mom: Option<f64>,
 	pending_oi: Vec<Oi>,
 	pending_mc: Vec<Mc>,
 	c1d: Vec<Option<f64>>,
@@ -539,7 +538,7 @@ actor!(Classifier {
 
 impl DataActor for Classifier {
 	fn on_start(&mut self) -> anyhow::Result<()> {
-		for name in [BAR5M, BAR4H, CHANGE1D, CHANGE3M, VOLUME1M, VOLUME1H, IMBALANCE, SPREAD, SCREENER] {
+		for name in [MOMENTUM, CHANGE1D, CHANGE3M, VOLUME1M, VOLUME1H, IMBALANCE, SPREAD, SCREENER] {
 			self.subscribe_signal(name, None);
 		}
 		self.subscribe_data(crate::nt::oi_type(), None, None);
@@ -567,8 +566,13 @@ impl DataActor for Classifier {
 
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
 		match signal.name.as_str() {
-			BAR5M => return Ok(self.pending5m.push(decode::<BarDto>(signal).into())),
-			BAR4H => return Ok(self.pending4h.push(decode::<BarDto>(signal).into())),
+			// the frame's `Latest<Momentum>`: a level, so it is never cleared after a read.
+			MOMENTUM => {
+				if let Some(v) = decode::<Vec<Option<f64>>>(signal).iter().rev().find_map(|x| *x) {
+					self.mom = Some(v);
+				}
+				return Ok(());
+			}
 			CHANGE1D => return Ok(self.c1d = decode(signal)),
 			CHANGE3M => return Ok(self.c3m = decode(signal)),
 			VOLUME1M => return Ok(self.v1m = decode(signal)),
@@ -578,10 +582,6 @@ impl DataActor for Classifier {
 			_ => (),
 		}
 		let (hit, bar) = decode::<Gate>(signal);
-		self.m5.push(&self.pending5m);
-		self.pending5m.clear();
-		self.h4.push(&self.pending4h);
-		self.pending4h.clear();
 		self.oi.push(&self.pending_oi);
 		self.pending_oi.clear();
 		self.mc.push(&self.pending_mc);
@@ -594,8 +594,7 @@ impl DataActor for Classifier {
 		let out = self.node.advance((
 			true,
 			&bar,
-			self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>>(),
-			self.h4.hist::<Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>>(),
+			self.mom,
 			&self.c1d,
 			&self.c3m,
 			&self.v1m,
@@ -637,7 +636,7 @@ actor!(
 	node: Deprecator,
 	armed: Armed<Deprecator>,
 	decision: Option<Decided>,
-	atr: Vec<Option<f64>>,
+	atr: Option<f64>,
 	out: Vec<Option<Intent>>,
 	pending: bool,
 	live: bool,
@@ -653,7 +652,14 @@ impl DataActor for Deprecate {
 
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
 		match signal.name.as_str() {
-			ATR => return Ok(self.atr = decode(signal)),
+			// the frame's `Latest<Atr>`: a level, and ungated, so neither a read nor the commutation
+			// below clears it.
+			ATR => {
+				if let Some(v) = decode::<Vec<Option<f64>>>(signal).iter().rev().find_map(|x| *x) {
+					self.atr = Some(v);
+				}
+				return Ok(());
+			}
 			DECISION => return Ok(self.decision = decode::<Option<DecidedDto>>(signal).map(Decided::from)),
 			_ => (),
 		}
@@ -666,9 +672,8 @@ impl DataActor for Deprecate {
 		self.out.clear();
 		COUNTERS.deprecator.fetch_add(1, Ordering::Relaxed);
 		if self.armed.advance((self.decision,)) {
-			self.node.emit((true, self.decision, &self.atr, &top), &mut self.out);
+			self.node.emit((true, self.decision, self.atr, &top), &mut self.out);
 		}
-		self.atr.clear();
 		self.decision = None;
 		if Episode::terminal(&self.out.as_slice()) {
 			self.pending = true;
