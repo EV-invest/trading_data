@@ -72,17 +72,38 @@ fn edges(st: &State, order: &[String], n: &NodeInfo) -> syn::Result<Vec<Edge>> {
 		.collect()
 }
 
-/// Per node in `State::order`, the gate nodes whose reading false makes its out unread — indices
-/// into the same order, empty where the node runs unconditionally.
-pub fn suppressors(st: &State) -> syn::Result<Vec<Vec<usize>>> {
+/// A node's demand, as the graph can state it: `⋁ over consumers c of (demand(c) ∧ ⋀ gates(c))`, in
+/// disjunctive normal form over gate node indices. One empty conjunct is `true` — the answer for an
+/// output and for anything pinned.
+///
+/// A set could only have meant AND, and two consumers behind *different* gates intersect to nothing,
+/// which reads as "always demanded" — sound, but the degenerate answer.
+pub type Dnf = Vec<Vec<usize>>;
+
+fn truth() -> Vec<BTreeSet<usize>> {
+	vec![BTreeSet::new()]
+}
+
+/// `a ∨ b`, kept from growing by absorption — `A ∨ (A∧B) = A`, which is also what collapses the whole
+/// formula the moment one disjunct is the empty conjunct.
+fn or(mut a: Vec<BTreeSet<usize>>, b: Vec<BTreeSet<usize>>) -> Vec<BTreeSet<usize>> {
+	a.extend(b);
+	a.sort();
+	a.dedup();
+	a.iter().filter(|c| !a.iter().any(|o| o.len() < c.len() && o.is_subset(c))).cloned().collect()
+}
+
+/// Per node in `State::order`, the condition under which its out is read by anybody.
+pub fn suppressors(st: &State) -> syn::Result<Vec<Dnf>> {
 	let order = &st.order;
 	let n = order.len();
 	let info: Vec<&NodeInfo> = order.iter().map(|k| st.known.iter().find(|x| x.key == *k).expect("an ordered node is known")).collect();
 	let edges: Vec<Vec<Edge>> = info.iter().map(|x| edges(st, order, x)).collect::<syn::Result<_>>()?;
 
 	let mut consumers: Vec<Vec<usize>> = vec![Vec::new(); n];
-	// the gates that dominate a node's own run, latches excluded: a latch is momentary, so everything
-	// upstream of a latch-gated node is standing demand — it must be warm before the episode arms.
+	// the gates that dominate a node's own run. A latch is among them, but only ever suppresses a node
+	// that declares `Cell::REWARMS` — that carve-out is the sweep's to emit, since a `const` is not
+	// something this pass can read.
 	let mut hard: Vec<Vec<usize>> = vec![Vec::new(); n];
 	let mut is_gate = vec![false; n];
 	for c in 0..n {
@@ -92,9 +113,7 @@ pub fn suppressors(st: &State) -> syn::Result<Vec<Vec<usize>>> {
 			consumers[i].push(c);
 			if e.gate {
 				is_gate[i] = true;
-				if !info[i].latch {
-					hard[c].push(i);
-				}
+				hard[c].push(i);
 			}
 		}
 	}
@@ -113,45 +132,34 @@ pub fn suppressors(st: &State) -> syn::Result<Vec<Vec<usize>>> {
 		}
 	}
 
-	let mut live: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n];
+	let mut live: Vec<Vec<BTreeSet<usize>>> = vec![Vec::new(); n];
 	for i in (0..n).rev() {
 		if pinned[i] || outputs.contains(&i) {
+			live[i] = truth();
 			continue;
 		}
 		assert!(!consumers[i].is_empty(), "`{}` is neither an output nor read by anything, yet the walk reached it", order[i]);
-		let mut acc: Option<BTreeSet<usize>> = None;
+		let mut acc: Vec<BTreeSet<usize>> = Vec::new();
 		for c in consumers[i].iter().copied() {
 			// a pinned consumer runs unconditionally, so what it reads is unconditionally demanded —
 			// which is how retention and folds carry demand upstream without a second closure pass.
-			let mut term = BTreeSet::new();
-			if !pinned[c] {
-				term.extend(live[c].iter().copied());
-				term.extend(hard[c].iter().copied());
-			}
-			acc = Some(match acc {
-				None => term,
-				Some(a) => a.intersection(&term).copied().collect(),
-			});
-			if acc.as_ref().expect("just set").is_empty() {
+			let term = match pinned[c] {
+				true => truth(),
+				false => live[c].iter().map(|conj| conj.iter().chain(&hard[c]).copied().collect()).collect(),
+			};
+			acc = or(acc, term);
+			if acc[0].is_empty() {
 				break;
 			}
 		}
-		live[i] = acc.unwrap_or_default();
-	}
-
-	// `gating_leads` plus a post-order walk already put a dominating gate ahead of what it dominates;
-	// here that stops being an argument and starts being checked.
-	for i in 0..n {
-		if let Some(g) = live[i].iter().find(|g| **g >= i) {
-			return Err(syn::Error::new(
-				Span::call_site(),
-				format!(
-					"`{}` is stepped before `{}`, which its demand reads — the sweep cannot ask a gate that has not resolved yet",
-					order[i], order[*g]
-				),
-			));
+		// a gate stepped after the node it would suppress has not resolved when the sweep asks, so that
+		// disjunct degrades to standing demand rather than failing the build — which is exactly the
+		// answer an intersection gave. A latch is exempt: its bit is read before the sweep starts.
+		if acc.iter().flatten().any(|g| *g >= i && !info[*g].latch) {
+			acc = truth();
 		}
+		live[i] = acc;
 	}
 
-	Ok(live.into_iter().map(|s| s.into_iter().collect()).collect())
+	Ok(live.into_iter().map(|d| d.into_iter().map(|c| c.into_iter().collect()).collect()).collect())
 }

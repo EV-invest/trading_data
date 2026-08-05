@@ -6,7 +6,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use trading_data_dag::{Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Flat, Gate, Gating, Glance, Hist, Horizon, Latch, Node, Stamped, slice_nudge};
+use trading_data_dag::{Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Flat, Gate, Gating, Glance, Hist, Horizon, Latch, Node, Stamped, slice_nudge, value_nudge};
 use trading_data_macros::{graph, node};
 
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.
@@ -216,6 +216,10 @@ impl Latch for Live {
 	fn commutate(&mut self) {
 		self.armed = false;
 	}
+
+	fn standing(&self) -> bool {
+		self.armed
+	}
 }
 
 static WARM: AtomicUsize = AtomicUsize::new(0);
@@ -280,4 +284,217 @@ fn a_latch_gate_does_not_suppress_what_stands_behind_it() {
 	let o = g.tick(0, EpisodicBatches { src: &b });
 	assert_eq!(o.ep, Some(Phase(1)));
 	assert_eq!(WARM.load(Ordering::Relaxed) - w0, 3);
+}
+
+// ---- graph three: two consumers behind *different* gates ----
+
+#[derive(Clone, Default)]
+struct Jumpy;
+impl Cell for Jumpy {
+	type Out<'t> = bool;
+}
+#[node]
+impl Node for Jumpy {
+	type Deps = (Src,);
+
+	fn advance<'t>(&'t mut self, (src,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		src.iter().any(|x| x.v.abs() > 10.0)
+	}
+}
+impl Gate for Jumpy {}
+value_nudge!(Jumpy);
+
+/// Reads `Jumpy` as data, not permission — which is also what puts *both* gates ahead of what they
+/// demand, since a gate the sweep has not resolved yet cannot suppress anything.
+#[derive(Clone, Default)]
+struct Rising;
+impl Cell for Rising {
+	type Out<'t> = bool;
+}
+#[node]
+impl Node for Rising {
+	type Deps = (Src, Jumpy);
+
+	fn advance<'t>(&'t mut self, (src, jumpy): DepOuts<'t, Self>) -> Self::Out<'t> {
+		!jumpy && src.iter().any(|x| x.v > 0.0)
+	}
+}
+impl Gate for Rising {}
+
+static SHARED: AtomicUsize = AtomicUsize::new(0);
+
+/// Read from behind `Rising` and from behind `Jumpy`. Their intersection is empty, so a demand that is a
+/// set can only call this unconditional; the disjunction is the true condition.
+#[derive(Clone, Default)]
+struct Shared;
+impl Cell for Shared {
+	type Out<'t> = &'t [P];
+}
+slice_nudge!(Shared, P);
+#[node]
+impl Emit for Shared {
+	type Deps = (Src,);
+
+	fn emit(&mut self, (src,): EmitOuts<'_, Self>, out: &mut Vec<P>) {
+		SHARED.fetch_add(1, Ordering::Relaxed);
+		out.extend_from_slice(src);
+	}
+}
+
+#[derive(Clone, Default)]
+struct Left;
+impl Cell for Left {
+	type Out<'t> = Option<f64>;
+}
+#[node]
+impl Node for Left {
+	type Deps = (Gating<Rising>, Shared);
+
+	fn advance<'t>(&'t mut self, (rising, s): DepOuts<'t, Self>) -> Self::Out<'t> {
+		assert!(rising, "a gating dep reads true inside `advance`");
+		Some(s.len() as f64)
+	}
+}
+
+#[derive(Clone, Default)]
+struct Right;
+impl Cell for Right {
+	type Out<'t> = Option<f64>;
+}
+#[node]
+impl Node for Right {
+	type Deps = (Gating<Jumpy>, Shared);
+
+	fn advance<'t>(&'t mut self, (jumpy, s): DepOuts<'t, Self>) -> Self::Out<'t> {
+		assert!(jumpy, "a gating dep reads true inside `advance`");
+		Some(s.len() as f64)
+	}
+}
+
+graph! {
+	struct Forked;
+	batches ForkedBatches;
+	roots { src: Src[P] };
+	out ForkedOut;
+	outputs { left: Left, right: Right }
+}
+
+#[test]
+fn two_consumers_behind_different_gates_demand_their_disjunction() {
+	let mut g = Forked::default();
+	let s0 = SHARED.load(Ordering::Relaxed);
+	let mut tick = |v: f64| {
+		let b = [p(v)];
+		let o = g.tick(0, ForkedBatches { src: &b });
+		(o.left, o.right, SHARED.load(Ordering::Relaxed) - s0)
+	};
+
+	// neither gate open: nobody reads it, so it does not run.
+	assert_eq!(tick(-1.0), (None, None, 0));
+	// `Rising` alone: it runs, and the reader that asked sees a full batch.
+	assert_eq!(tick(2.0), (Some(1.0), None, 1));
+	// `Jumpy` alone — the case a set-valued demand could not express, since the intersection of the two
+	// gates is empty and would have read as "always demanded".
+	assert_eq!(tick(-20.0), (None, Some(1.0), 2));
+	assert_eq!(tick(20.0), (None, Some(1.0), 3));
+	assert_eq!(tick(-1.0), (None, None, 3));
+}
+
+// ---- graph four: a latch suppresses what stands behind it, once that says it re-warms ----
+
+#[derive(Clone, Default)]
+struct Held {
+	armed: bool,
+}
+impl Cell for Held {
+	type Out<'t> = bool;
+}
+#[node(latch)]
+impl Node for Held {
+	type Deps = (Src,);
+
+	fn advance<'t>(&'t mut self, (src,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		self.armed |= src.iter().any(|x| x.v > 0.0);
+		self.armed
+	}
+}
+impl Gate for Held {}
+impl Latch for Held {
+	type Cut = Managed;
+
+	fn commutate(&mut self) {
+		self.armed = false;
+	}
+
+	fn standing(&self) -> bool {
+		self.armed
+	}
+}
+
+static REBUILT: AtomicUsize = AtomicUsize::new(0);
+
+/// Same shape as `Warm`, but it says a skipped tick is one it can recover — so the latch may darken
+/// it, a tick behind the arming.
+#[derive(Clone, Default)]
+struct Rebuilt;
+impl Cell for Rebuilt {
+	type Out<'t> = &'t [P];
+
+	const REWARMS: bool = true;
+}
+slice_nudge!(Rebuilt, P);
+#[node]
+impl Emit for Rebuilt {
+	type Deps = (Src,);
+
+	fn emit(&mut self, (src,): EmitOuts<'_, Self>, out: &mut Vec<P>) {
+		REBUILT.fetch_add(1, Ordering::Relaxed);
+		out.extend_from_slice(src);
+	}
+}
+
+#[derive(Clone, Default)]
+struct Managed {
+	t: u32,
+}
+impl Cell for Managed {
+	type Out<'t> = Option<Phase>;
+}
+#[node]
+impl Node for Managed {
+	type Deps = (Gating<Held>, Rebuilt);
+
+	fn advance<'t>(&'t mut self, (held, _): DepOuts<'t, Self>) -> Self::Out<'t> {
+		assert!(held, "a gating dep reads true inside `advance`");
+		self.t += 1;
+		Some(Phase(self.t))
+	}
+}
+
+graph! {
+	struct Latched;
+	batches LatchedBatches;
+	roots { src: Src[P] };
+	out LatchedOut;
+	outputs { ep: Managed }
+}
+
+#[test]
+fn a_latch_suppresses_what_declares_it_re_warms() {
+	let mut g = Latched::default();
+	let r0 = REBUILT.load(Ordering::Relaxed);
+	let mut tick = |v: f64| {
+		let b = [p(v)];
+		let o = g.tick(0, LatchedBatches { src: &b });
+		(o.ep, REBUILT.load(Ordering::Relaxed) - r0)
+	};
+
+	assert_eq!(tick(-1.0), (None, 0));
+	assert_eq!(tick(-1.0), (None, 0));
+	// the arming tick: `standing` is read before the sweep, so the contact is still open here and the
+	// episode's first tick reads an empty run. One tick of lag, and the graph says so.
+	assert_eq!(tick(1.0), (Some(Phase(1)), 0));
+	// terminal, so the contact drops — but only on the next tick's `apply_pending`.
+	assert_eq!(tick(-1.0), (Some(Phase(2)), 1));
+	assert_eq!(tick(-1.0), (None, 1));
 }

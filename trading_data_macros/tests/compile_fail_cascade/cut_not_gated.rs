@@ -58,6 +58,10 @@ impl Latch for L {
 	fn commutate(&mut self) {
 		self.0 = false;
 	}
+
+	fn standing(&self) -> bool {
+		self.0
+	}
 }
 
 #[derive(Clone, Default)]

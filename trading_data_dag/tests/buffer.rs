@@ -321,6 +321,10 @@ mod revive {
 		fn commutate(&mut self) {
 			self.armed = false;
 		}
+
+		fn standing(&self) -> bool {
+			self.armed
+		}
 	}
 
 	/// The revivable consumer: `t` makes a reset observable, the window length it reports makes a

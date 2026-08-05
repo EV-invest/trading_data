@@ -278,6 +278,18 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 	let lfields: Vec<&Ident> = latched.iter().map(|i| &fields[*i]).collect();
 	let latch_tys: Vec<&TokenStream> = latched.iter().map(|i| &node_tys[*i]).collect();
 
+	// a latch that some demand formula reads gets a local for its standing bit — the one gate whose
+	// value does not depend on where in the sweep it is asked, hoisted so it is taken exactly once.
+	let standing: Vec<Option<Ident>> = (0..nodes.len())
+		.map(|i| (nodes[i].latch && sup.iter().flatten().any(|conj| conj.contains(&i))).then(|| Ident::new(&format!("__standing{}", fields[i]), Span::call_site())))
+		.collect();
+	let standing_decls: Vec<TokenStream> = (0..nodes.len())
+		.filter_map(|i| {
+			let (id, f, t) = (standing[i].as_ref()?, &fields[i], &node_tys[i]);
+			Some(quote!(let #id = <#t as #dag::Latch>::standing(&self.#f);))
+		})
+		.collect();
+
 	let decls: Vec<TokenStream> = nodes.iter().map(|n| if n.emit { quote!(#dag::Emit) } else { quote!(#dag::Node) }).collect();
 	let node_deps: Vec<TokenStream> = node_tys.iter().zip(&decls).map(|(t, d)| quote!(<#t as #d>::Deps)).collect();
 	// an `emit` node's out is a run the engine buffers; the frame is still keyed on the node itself.
@@ -290,11 +302,29 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 
 	// the demand is hoisted into its own binding: as an argument it would sit after `f`, which the
 	// call moves before the gate reads could borrow it.
-	let steps = nodes.iter().zip(&fields).zip(&sup).map(|((n, f), s)| {
-		let gates: Vec<&TokenStream> = s.iter().map(|i| &node_tys[*i]).collect();
+	let steps = nodes.iter().zip(&fields).zip(&sup).zip(&node_tys).map(|(((n, f), s), ty)| {
 		// a `Gate`'s out *is* the `bool`, and `Gating::opens` is the identity — nothing to unwrap.
-		let demand = quote!(let d = #(#dag::Has::<#gates, _>::get(&f))&&*;);
-		match (n.emit, n.diff, s.is_empty()) {
+		let mut disj: Vec<TokenStream> = s
+			.iter()
+			.map(|conj| {
+				let terms = conj.iter().map(|g| match &standing[*g] {
+					Some(id) => quote!(#id),
+					None => {
+						let gt = &node_tys[*g];
+						quote!(#dag::Has::<#gt, _>::get(&f))
+					}
+				});
+				quote!((#(#terms)&&*))
+			})
+			.collect();
+		// a latch is read one tick ahead of the consumer it arms, so it may only darken a node that says
+		// the tick it loses is one a later tick rebuilds.
+		if s.iter().flatten().any(|g| nodes[*g].latch) {
+			disj.push(quote!(!const { <#ty as #dag::Cell>::REWARMS }));
+		}
+		let demand = quote!(let d = #(#disj)||*;);
+		let uncond = s.len() == 1 && s[0].is_empty();
+		match (n.emit, n.diff, uncond) {
 			(true, _, true) => quote!(let f = #dag::step_emit_obs(f, #f, true, ts, obs);),
 			(true, _, false) => quote!(#demand let f = #dag::step_emit_obs(f, #f, d, ts, obs);),
 			(false, true, true) => quote!(let f = #dag::step_exact(f, #f, obs);),
@@ -431,6 +461,9 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 			#vis fn tick_obs<'t>(&'t mut self, ts: i64, b: #batches<'t>, obs: &mut impl #dag::Observer) -> #out<'t> {
 				// deferred commutation: apply last tick's terminals before anything borrows self.
 				#(#apply_pending)*
+				// after the commutation, so a spent episode reads open here and nothing behind it stays
+				// dark a tick longer than the episode did.
+				#(#standing_decls)*
 
 				let #batches { #(#rfields,)* } = b;
 				let Self { #(#fields,)* __pending } = self;

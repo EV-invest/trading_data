@@ -312,6 +312,21 @@ pub trait Cell {
 	/// holds every input the node would have read.
 	const RETAINED: bool = false;
 
+	/// Whether a tick skipped costs this cell nothing a later tick cannot recover. False by default: a
+	/// node that folds a batch it will never see again is the usual case, and a pass-through is the
+	/// same thing one hop on.
+	///
+	/// This is what lets a *latch* enter the demand formula of something upstream of it. A gate stepped
+	/// earlier is read off the frame, so it darkens its producers on the same tick its consumer is
+	/// dark; a latch is read from [`Latch::standing`] at tick start, so it darkens them one tick ahead
+	/// of the consumer arming. Only a cell that says it survives that lost tick may be suppressed by
+	/// one.
+	///
+	/// Here rather than on [`Node`] for the reason [`CLOCK`](Cell::CLOCK) is — an [`Emit`] node has no
+	/// [`Node`] impl to state it on, and whether a skip is survivable is the cell's own to say either
+	/// way, not something each consumer restates.
+	const REWARMS: bool = false;
+
 	/// How often this cell publishes, stated on the cell because the rate is a property of what a
 	/// thing *is* and of nothing it reads (`rates.node.declared`). `None` — whenever its inputs do.
 	/// `Some(tf)` — over elements whose `tf` period has closed, never re-entered while one is in
@@ -1122,6 +1137,10 @@ where
 	/// through one of the two traits that declare them and rules out an [`Emit`] for nothing.
 	type Cut: Cell;
 	fn commutate(&mut self);
+	/// The contact as it stands *before* this tick's sweep — the one gate reading whose value does not
+	/// depend on sweep order, which is what lets it suppress what feeds it. Read after the deferred
+	/// commutation, so a spent episode is already open.
+	fn standing(&self) -> bool;
 }
 
 /// A node that runs a self-terminating episode, latched from inside the graph. `Trigger` is the one
@@ -1207,6 +1226,10 @@ where
 
 	fn commutate(&mut self) {
 		self.0 = false;
+	}
+
+	fn standing(&self) -> bool {
+		self.0
 	}
 }
 
