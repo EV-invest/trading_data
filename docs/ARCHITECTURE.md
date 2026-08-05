@@ -16,9 +16,13 @@ Two sentences hold up everything below, and each sub-crate is one of them made m
 - **A strategy may read only what it had already received.** So the stream's order is *reception*
   order, and reception is a reading only we can make — the venue's execution axis says what
   happened, never when we could have acted on it.
-- **Backtest and live are the same graph over the same event stream.** The seam between them is
-  only where events come from. Anything a node could observe about *how* a feed chunked those
-  events would break the equivalence, so nothing lets it.
+- **Backtest and live are the same graph over the same events — not the same run.** The seam
+  between them is only where events come from, and no node may read *whether* a dep produced on a
+  given tick, so a node's output is never a measurement of the feed's batching. What a backtest
+  does differ in is how often nodes get to look at all: it batches to finish faster, and inside a
+  batch the strategy never acts between events that arrived apart. That is the approximation, it is
+  deliberate, and [backtests are fundamentally imprecise](#live-never-clocks-a-backtest-is-expected-to)
+  because of it.
 
 ## Crates
 
@@ -63,7 +67,7 @@ they work.
 | document | covers |
 |---|---|
 | [`trading_data_dag/model.typ`](../trading_data_dag/model.typ) | declaration → derivation → sweep → observation; the six dep spellings and what each retains; the step family; `Horizon`/`CLOCK`; the out plane (`Flat`, `Diff`, `Latent`, …); every enforcement point; a compile-time census of which primitives the examples actually use |
-| [`trading_data_persistence/weaver.typ`](../trading_data_persistence/weaver.typ) | the `Arrival` key and the read clock; the lane; the merge step; the five lanes and their shapes; the two feeds; what the live/replay round-trip proves and at what strength |
+| [`trading_data_persistence/weaver.typ`](../trading_data_persistence/weaver.typ) | the `Arrival` key and the read clock; the lane; the merge step; the five lanes and their shapes; the two feeds; what the storage round-trip proves, and why it is not evidence that a backtest reproduces a live run |
 
 The same pattern is meant to repeat downward: a document reasons in the primitives of its own
 level and links out for the tier below.
@@ -162,9 +166,11 @@ required source lanes into one arrival-ordered stream of `Lanes` (a `Feed`) — 
 lanes that did not arrive empty. There is no routing discriminant: batch-ness needs no tag, it
 iterates, and an app's whole routing layer is `impl From<Lanes> for Batches`. `Replay`
 feeds from the catalog; `Live` feeds from push handles and *tees* every event into the same Feather
-lanes a backtest later reads — so a live recording replays into the identical *event* stream (the
-round-trip is the invariant test; batching never alters fold order). Node code is identical across
-the two.
+lanes a backtest later reads. Node code is identical across the two.
+
+What the tee guarantees is a **storage** claim and only that: everything `Live` recorded comes back
+out of `Replay`, in order, folding to the same book. It is not a claim that the two runs agree —
+see below.
 
 `Live` is **zero-cost**: an event is folded into a tick before the feed blocks on the next one, so
 choosing the engine costs nothing hand-rolling the same loop against the raw socket would not have
@@ -173,19 +179,42 @@ rules out every grid-shaped batching scheme that has to know a window is *closed
 emit it — stated, with its consequences, in [docs/spec/feeds.md](spec/feeds.md). A grouping rule
 may exist only if it degenerates to on-arrival under `Live` instead of being switched off there.
 
-Batch boundaries are **declared, not emergent**. Every feed states a `BatchWindow`: the most
-arrival-time one batch may group, measured absolutely so that which batch an event falls in is a
-property of the event alone. A venue message never splits, so the degenerate window is one message
-per tick — maximum fidelity is not a special path. Without it, how much of a lane lands in one tick
-would be decided by when an *unrelated* lane happened to tick, which silently starves anything
-reading a running extremum or a threshold crossing over *evaluated* states. Fold order is untouched
-either way; what the window buys is how often nodes get to look — a free knob on the CPU bill,
-precisely because chunking is unobservable to a node.
+### Live never clocks; a backtest is expected to
 
-The two feeds differ in cost profile, not in semantics. `Live` is streaming and memory-bounded: a
-long-lived session accumulates nothing and tees to disk incrementally. `Replay` eager-loads its
-range, so a window wider than memory is *chained* — successive `Replay`s over one long-lived graph,
-which carries its node state across. Both, and what the weave does and does not promise, in
+**`Live` states no rate, and cannot be given one.** It weaves on `ReadClock::ALL` — one cell over
+all of time — so whatever is buffered by the time it gets there is folded together. That is the
+same aggressive batching a backtest does; what is removed is the *waiting*. Live never holds an
+event back hoping another arrives, because an absolute cell of any finite size is a wait, and a
+`Live` that waits for a cell to close is a `Live` that trades late. How a live run happens to group
+is therefore a function of how busy the consumer was, not of a knob.
+
+**`Replay` states a `ReadClock`**, and that is the whole of what the type is for: it cuts arrival
+time into cells and hands the graph everything in one cell as a single step, so a backtest gets
+through a day faster than the day took. Cells are absolute — floored from the epoch, not from the
+last emission — so which cell an event falls in is a property of the event alone and a replay of a
+range groups identically every time. A venue message never splits, and `ReadClock::EVENT` is a
+zero-length cell, so "no batching" is the degenerate setting rather than a separate path.
+
+**Inside one cell, events get mixed up, and that is expected.** Two events that arrived a
+millisecond apart land in the same 100ms cell and reach the graph together; the strategy never gets
+to act between them, and so it can decide differently than it would have on the live wire. Fold
+*order* is untouched, and no node may read *whether* a dep produced on a given tick — so a node's
+output is never a measurement of the batching. What does change is how often nodes get to look at
+all, which for anything reading a running extremum or a threshold crossing over *evaluated* states
+is a real difference in what it sees.
+
+**We do not care about those mismatches, and nothing should assert them away.** A backtest is a
+model of a live run, and the batching above is exactly where it is lossy; the read clock is the dial
+between how fast the backtest finishes and how finely it resolves. Treating a backtest as though it
+reproduced a live run — asserting the two agree event for event, tuning until they do — buys a green
+check that means nothing and costs confusion later, when the difference that mattered gets read as a
+bug in the engine rather than as the approximation it always was. **Backtests are fundamentally
+imprecise.** Size the read clock for the question being asked, and read the answer as an estimate.
+
+The two feeds also differ in cost profile. `Live` is streaming and memory-bounded: a long-lived
+session accumulates nothing and tees to disk incrementally. `Replay` eager-loads its range, so a
+window wider than memory is *chained* — successive `Replay`s over one long-lived graph, which
+carries its node state across. Both, and what the weave does and does not promise, in
 [`weaver.typ`](../trading_data_persistence/weaver.typ) §1.7 and §1.9.
 
 ## Polars boundary

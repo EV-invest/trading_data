@@ -114,16 +114,19 @@ is evidence of anything: `Live` and `Replay` differ only in how a `Lane` gets fi
 
 ```
    ReadClock(Exact)      arrival time cut into cells; one tick carries AT MOST one cell.
-   ReadClock::EVENT      Exact(0) — every distinct arrival is its own cell. The degenerate case,
-                         reached through the same `cell_end`, not through a special path.
+   ReadClock::EVENT      Exact(0) — every distinct arrival is its own cell. The finest a replay
+                         reads at, reached through the same `cell_end`, not a special path.
+   ReadClock::ALL        Exact(i64::MAX) — one cell over all of time, so a run is bounded only by
+                         the next lane's head. What `Live` weaves on: batch what is ALREADY
+                         buffered, never wait for more. Also not a special path.
 
    cell_end(a)  =  floor(a, step) + step - 1        the last arrival still inside a's cell
 
    ABSOLUTE — floored from the epoch, never measured off the last emission. Which cell an event
    falls in is a property of THE EVENT ALONE: identical across runs, and independent of what the
    feed did before it. A relative window would make a run's contents a function of the feed's
-   idleness, and `Live` is idle in places `Replay` is not — the round-trip would break on grouping
-   before it ever reached a value.
+   idleness, so two replays of one range could group differently and a backtest would stop being
+   reproducible against itself.
 
    It never WAITS for a cell to fill. A cell that already holds data is handed over as it stands.
    That is `feeds.live.on-arrival` satisfied by construction rather than by a `Live`-only branch,
@@ -476,7 +479,8 @@ is evidence of anything: `Live` and `Replay` differ only in how a `Lane` gets fi
       Per-element `Stamped::ts_ns` — what a `Buffer` actually trims and partitions on — is sorted
       within a lane, which is where sortedness is needed.
     · how a run was CHUNKED is not a fact a node may read (`rates.deps.tick-opaque`), and the weaver
-      does not try to make chunking stable across feeds. §2 is what that costs and what it buys.
+      does not try to make chunking stable across feeds — `Live` and `Replay` group differently in
+      every run, by construction. §2 is what that costs and what it buys.
     · `Replay` is not memory-bounded. That is a stated ceiling, not an oversight.
 ```
 
@@ -511,35 +515,37 @@ is evidence of anything: `Live` and `Replay` differ only in how a `Lane` gets fi
 
 == 2. What the round-trip actually proves
 
-`examples/sync_round_trip.rs` records a `Live` session and replays the catalog it just wrote. It
-asserts two different things, at two different strengths, and the difference is the model.
+`examples/sync_round_trip.rs` records a `Live` session and replays the catalog it just wrote. What
+it asserts is a STORAGE claim, and only that.
 
 ```
-  main()  — every push happens BEFORE the first `next()`, so `Live` has the whole stream buffered
-            and groups by cell exactly as `Replay` does.
-            ⇒ STEP-FOR-STEP equality of runs: trade contents, delta contents, `Correction` flag,
-              anchor shape, oi — AND the `(epoch, len, best_bid, best_ask)` a consumer's `Book`
-              folds out of them at every step.
-            The book assertion is the one that pays for the shadow layer (§1.8): replaying our own
-            delta lane must land on a bit-identical book, not merely "a snapshot appeared in both".
+  `Live` weaves on `ReadClock::ALL` — whatever was buffered when it got there, which depends on
+  how busy the consumer was. `Replay` groups by a configured cell. So the two feeds group differently BY NATURE, in every run, and there
+  is no buffering coincidence under which they line up.
 
-  concurrent_streaming_matches_replay()
-          — a producer thread sleeps 100 µs between messages, so the consumer finds the channel
-            empty and BLOCKS. `Live` groups one message per tick; `Replay` still groups by cell.
-            ⇒ only the ELEMENT stream is comparable: `flat()` to `(lane_tag, seq)` per event,
-              "robust to batch chunking".
+  ⇒ what is comparable is the ELEMENT stream: one entry per event, keyed on `monotonic_seq`,
+    which is per-event. A run's reception reading is per-RUN and says how the feed grouped, so it
+    is deliberately not in the comparison.
+  ⇒ plus the `(epoch, len, best_bid, best_ask)` a consumer's `Book` folds out at the end. That is
+    the one that pays for the shadow layer (§1.8): replaying our own delta lane must land on a
+    bit-identical book, not merely "a snapshot appeared in both".
 
-  That asymmetry is not a weakness of the test. It IS `rates.deps.tick-opaque`, observed:
+  Together: nothing dropped, nothing reordered, nothing invented, and the book reconstructs. That
+  is the parquet layer's job and the whole of what this test is evidence for.
 
-      the STRONG form holds where the two feeds happen to see the same buffering
-      the WEAK form is what the framework actually promises
-      and a node is only allowed to depend on the weak one
+  IT IS NOT EVIDENCE THAT A BACKTEST REPRODUCES A LIVE RUN. It cannot be, and no test here should
+  try to be. Two events a millisecond apart land in one 100ms cell and reach the graph together;
+  the strategy never acts between them and can decide differently than it would have on the wire.
+  Backtests are fundamentally imprecise, the `ReadClock` is the dial for how imprecise, and that
+  imprecision is bought deliberately: it is what lets a backtest finish faster than the day it
+  replays. `spl` prints "N ticks in Ts on a <read clock> read clock" and tunes it from config.
 
-  Which is also why the `ReadClock` may exist at all. It changes chunking; chunking is unobservable;
-  therefore it is a free knob on the CPU bill — `spl` prints "N ticks in Ts on a <read clock> read
-  clock" and tunes it from config. A framework where a node could see the grouping would have no
-  such knob, and no round-trip either: the two feeds group differently BY NATURE, so any node that
-  could see the grouping would break the equivalence the round-trip exists to demonstrate.
+  Note what `rates.deps.tick-opaque` does and does not cover. It says a node may not read WHETHER
+  a dep produced on this tick — so fold order and dep-read semantics are chunk-invariant, and a
+  node's output is never a measurement of the feed's batching. It does NOT say chunking is
+  unobservable: a coarser cell means fewer points at which nodes evaluate at all, and anything
+  reading a running extremum or a threshold crossing over EVALUATED states sees that. The first is
+  an invariant we enforce; the second is the approximation we accept.
 ```
 
 ```

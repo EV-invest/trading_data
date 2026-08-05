@@ -2,9 +2,10 @@
 //! catalog; [`Live`] is the live feed over push handles, teeing into the same Feather lanes a
 //! backtest later reads.
 //!
-//! They are not the same run and are not meant to be. [`Replay`] batches on a [`ReadClock`] so a
-//! backtest outruns the market it replays, which means it hands the graph as one step what arrived
-//! as several. [`Live`] has no such knob: every message is processed the moment it lands.
+//! They are not the same run and are not meant to be. [`Replay`] batches on a configured
+//! [`ReadClock`] so a backtest outruns the market it replays, which means it hands the graph as one
+//! step what arrived as several. [`Live`] has no such knob — it folds whatever is buffered when it
+//! gets there, and never waits for more.
 //!
 //! Every event is keyed on an [`Arrival`]. For [`Replay`] that's the recorded reception, or a
 //! latency-simulation of the venue axis for historic (`None`) rows. For [`Live`] it is stamped at
@@ -458,10 +459,12 @@ struct Record {
 /// memory stays bounded to the un-emitted window regardless of session length. Recording tees
 /// incrementally. `None` once every sink is dropped and the buffer is drained.
 ///
-/// **No [`ReadClock`].** Batching exists to make a backtest finish sooner; live has nothing to
-/// hurry through, and grouping what has already arrived would only delay acting on it. So the
-/// weave runs at event rate and a replay of this recording will not reproduce these steps — it
-/// will contain the same events, grouped however its own read clock says.
+/// **No configured [`ReadClock`]** — [`ReadClock::ALL`], which is not a rate. Whatever is buffered
+/// by the time we are ready to fold is folded together, as aggressively as any backtest would; what
+/// live never does is *wait* to collect more, and an absolute cell of any finite size is a wait. So
+/// how these steps group is a function of how busy the consumer was, not of a knob, and a replay of
+/// this recording will not reproduce them — it will contain the same events, grouped however its
+/// own read clock says.
 pub struct Live {
 	rx: Receiver<LiveEvt>,
 	// dropped on first `next` so the channel disconnects once external sinks drop; also gates
@@ -492,7 +495,7 @@ impl Live {
 			mc: Feather::<Mc>::new(symbol.pair.base(), Mc::POLICY),
 			catalog,
 		});
-		let mut weaver = Weaver::new(ReadClock::EVENT);
+		let mut weaver = Weaver::new(ReadClock::ALL);
 		weaver.trades.buf.prec = prec;
 		weaver.deltas.buf.prec = prec;
 		Self {
