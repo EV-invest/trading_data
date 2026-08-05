@@ -2,7 +2,7 @@
 //! notional per trade), BookFlow (running signed level qty, market activity only), the folded
 //! `Book`, and 1m bars off the same trades — the bars are what the chart draws price from.
 
-use trading_data::{BookAnchors, BookDeltas, BookShape, Cell, DeltaFrame, Emit, EmitOuts, Folding, Horizon, Lanes, Side, TradeCols, Trades, node, slice_nudge};
+use trading_data::{BookAnchors, BookDelta, BookDeltas, BookShape, Cell, Emit, EmitOuts, Folding, FrameKind, Horizon, Lanes, Side, TradeCols, Trades, node, slice_nudge};
 use v_utils::*;
 
 /// Cumulative volume delta: running Σ signed notional, one element per trade.
@@ -46,14 +46,12 @@ impl Emit for BookFlow {
 	/// A running sum reaches to the start of the run.
 	type Deps = (Folding<BookDeltas, { Horizon::Unbounded }>,);
 
-	fn emit(&mut self, (frame,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (levels,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		// A correction is a dropped websocket packet, not market activity: folding one into flow
-		// fabricates signal. The enum is what makes ignoring that impossible to do by accident.
-		let DeltaFrame::Update(d) = frame else { return };
-		let qs = d.prec.qty.scale();
-		for i in 0..d.len() {
-			let q = d.qty[i] as f64 / qs;
-			self.sum += match d.side[i] {
+		// fabricates signal out of it.
+		for l in levels.iter().filter(|l| l.kind == FrameKind::Update) {
+			let q = l.qty as f64 / l.prec.qty.scale();
+			self.sum += match l.side {
 				Side::Buy => q,
 				Side::Sell => -q,
 			};
@@ -66,7 +64,7 @@ slice_nudge!(BookFlow, f64);
 trading_data::graph! {
 	pub struct Graph;
 	batches Batches;
-	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape] };
+	roots { trades: Trades[TradeCols], deltas: BookDeltas[BookDelta], anchors: BookAnchors[BookShape] };
 	out TickOut;
 	outputs { cvd: Cvd, book_flow: BookFlow, book: trading_data::Book, bar_1m: trading_data::Bars<{ TF_1MIN }> }
 }

@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use trading_data::{
-	Armed, Bar, Book, BookShape, Buffering, DeltaFrame, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot, Node as _, Ohlc, Ohlcs, Oi,
+	Armed, Bar, Book, BookDelta, BookShape, Buffering, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot, Node as _, Ohlc, Ohlcs, Oi,
 	OiRoot, ReadClock, Replay, TradeCols, Volume, Volumes, required_lanes,
 };
 use trading_data_bench::ring::Ring;
@@ -155,7 +155,7 @@ struct Direct {
 }
 
 impl Direct {
-	fn tick(&mut self, trades: TradeCols<'_>, deltas: DeltaFrame<'_>, anchor: Option<&BookShape>, oi: &[Oi], mc: &[Mc]) -> &[Option<Intent>] {
+	fn tick(&mut self, trades: TradeCols<'_>, deltas: &[BookDelta], anchor: Option<&BookShape>, oi: &[Oi], mc: &[Mc]) -> &[Option<Intent>] {
 		if self.pending {
 			self.pending = false;
 			self.armed.commutate();

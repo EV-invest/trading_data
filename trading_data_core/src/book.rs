@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use trading_data_dag::{Flat, Glance};
 
-use crate::{Aggregate, DeltaBuf, DeltaFrame, Exact, FrameKind, Local, PrecisionPriceQty, Price, Qty, Side, Span, Timestamped, Timestamps, Ts, Venue};
+use crate::{Aggregate, BookDelta, Exact, FrameKind, Local, PrecisionPriceQty, Price, Qty, Side, Span, Timestamped, Timestamps, Ts, Venue};
 
 /// (price, qty) levels for both sides of an orderbook, keyed by raw price.
 /// The wire/persist shape. Both BTreeMaps are ascending; [`Book`] holds the same levels best-first.
@@ -107,8 +107,8 @@ impl Book {
 	///
 	/// One entry point rather than four public verbs — a caller that could `apply` without first
 	/// checking `missed` is a caller that can fold onto stale state.
-	pub fn step(&mut self, anchor: Option<&BookShape>, frame: DeltaFrame<'_>) -> bool {
-		if self.missed(frame.cols().monotonic_seq) {
+	pub fn step(&mut self, anchor: Option<&BookShape>, levels: &[BookDelta]) -> bool {
+		if self.missed(levels) {
 			self.synced = false;
 		}
 		// A checkpoint is a seed, not an event. Our own chain is gapless, so while we are synced the
@@ -121,7 +121,7 @@ impl Book {
 			self.resync(s);
 		}
 		if self.synced {
-			self.apply(frame);
+			self.apply(levels);
 		}
 		self.synced
 	}
@@ -141,40 +141,41 @@ impl Book {
 
 	/// A `monotonic_seq` discontinuity: frames were emitted that we did not fold, so whatever we
 	/// hold is stale. Same path covers a gated-off episode and an unseeded start.
-	fn missed(&self, seq: &[u64]) -> bool {
-		let Some(&first) = seq.first() else { return false };
-		self.seq.is_some_and(|last| first != last + 1)
+	fn missed(&self, levels: &[BookDelta]) -> bool {
+		let Some(first) = levels.first() else { return false };
+		self.seq.is_some_and(|last| first.monotonic_seq != last + 1)
 	}
 
 	/// Both kinds fold identically — a correction's levels are levels. What the kind decides is
 	/// whether a *derivation* downstream may read them as market activity.
-	fn apply(&mut self, frame: DeltaFrame<'_>) {
-		let cols = frame.cols();
-		if cols.is_empty() {
-			return;
+	fn apply(&mut self, rows: &[BookDelta]) {
+		let (Some(first), Some(last)) = (rows.first(), rows.last()) else { return };
+		for d in rows {
+			assert_eq!(self.prec, d.prec, "book folded a level at a different precision");
+			self.set(d.side, d.price, d.qty);
 		}
-		assert_eq!(self.prec, cols.prec, "book folded a frame at a different precision");
-		for i in 0..cols.len() {
-			let side = cols.side[i];
-			let levels = match side {
-				Side::Buy => &mut self.bids,
-				Side::Sell => &mut self.asks,
-			};
-			// ponytail: sorted Vec wins to ~1k levels; past that, go back to a map.
-			debug_assert!(levels.len() <= 1024, "a full-depth feed would make the memmove the wrong trade");
-			match (seek(levels, side, cols.price[i]), cols.qty[i]) {
-				(Ok(j), 0) => {
-					levels.remove(j);
-				}
-				(Ok(j), q) => levels[j].1 = q,
-				// a delete of a level below our window
-				(Err(_), 0) => (),
-				(Err(j), q) => levels.insert(j, (cols.price[i], q)),
+		self.span = Span::new(self.span.first.min(first.ts_venue_exec), last.ts_venue_exec);
+		self.seq = Some(last.monotonic_seq);
+	}
+
+	/// One level, absolutely: `qty == 0` deletes. Idempotent in the price key, which is what lets a
+	/// period's *net* stand in for the rows that produced it.
+	fn set(&mut self, side: Side, price: i32, qty: u32) {
+		let levels = match side {
+			Side::Buy => &mut self.bids,
+			Side::Sell => &mut self.asks,
+		};
+		// ponytail: sorted Vec wins to ~1k levels; past that, go back to a map.
+		debug_assert!(levels.len() <= 1024, "a full-depth feed would make the memmove the wrong trade");
+		match (seek(levels, side, price), qty) {
+			(Ok(j), 0) => {
+				levels.remove(j);
 			}
+			(Ok(j), q) => levels[j].1 = q,
+			// a delete of a level below our window
+			(Err(_), 0) => (),
+			(Err(j), q) => levels.insert(j, (price, q)),
 		}
-		let exec = cols.exec();
-		self.span = Span::new(self.span.first.min(exec[0]), *exec.last().expect("non-empty"));
-		self.seq = cols.monotonic_seq.last().copied();
 	}
 
 	/// The levels that would carry `self` onto `other`, as raw (price, qty) pairs per side.
@@ -225,7 +226,7 @@ fn seek(levels: &[(i32, u32)], side: Side, price: i32) -> Result<usize, usize> {
 /// Venue snapshots are consumed, never emitted — checkpoints are ours, on our cadence.
 pub struct ShadowBook {
 	book: Book,
-	out: DeltaBuf,
+	out: Vec<BookDelta>,
 	seq: u64,
 	cadence: Exact,
 	epoch_start: Option<Ts<Local>>,
@@ -236,7 +237,7 @@ impl ShadowBook {
 	pub fn new(prec: PrecisionPriceQty, cadence: Exact) -> Self {
 		Self {
 			book: Book { prec, ..Default::default() },
-			out: DeltaBuf::new(prec),
+			out: Vec::new(),
 			seq: 0,
 			cadence,
 			epoch_start: None,
@@ -263,7 +264,7 @@ impl ShadowBook {
 
 	/// Consume one venue update, emit ours. `None` when the venue told us nothing we did not
 	/// already hold — an agreeing snapshot is not an event.
-	pub fn ingest(&mut self, u: &BookUpdate, recv: Ts<Local>) -> Option<DeltaFrame<'_>> {
+	pub fn ingest(&mut self, u: &BookUpdate, recv: Ts<Local>) -> Option<&[BookDelta]> {
 		self.out.clear();
 		let (kind, levels) = match u {
 			// An unseeded book has no chain to reconcile against, so the venue's own resync is ours.
@@ -289,11 +290,19 @@ impl ShadowBook {
 		let exec = u.shape().ts.venue_exec.last;
 		for (side, price, qty) in levels {
 			self.seq += 1;
-			self.out.push(exec, Some(recv), self.seq, kind, side, price, qty);
+			self.out.push(BookDelta {
+				prec: self.book.prec,
+				ts_venue_exec: exec,
+				ts_local_recv: recv,
+				monotonic_seq: self.seq,
+				kind,
+				side,
+				price,
+				qty,
+			});
 		}
-		let frame = self.out.frame(0..self.out.len());
-		self.book.apply(frame);
-		Some(frame)
+		self.book.apply(&self.out);
+		Some(&self.out)
 	}
 
 	fn seed(&mut self, s: &BookShape, recv: Ts<Local>) {
@@ -377,13 +386,22 @@ mod tests {
 		Ts::from_nanos(ns)
 	}
 
-	/// One frame as the persisted lane holds it — the kind plus its raw levels and their sequence.
-	type Frame = (FrameKind, Vec<(u64, Side, i32, u32)>);
+	fn row(seq: u64, kind: FrameKind, side: Side, price: i32, qty: u32) -> BookDelta {
+		BookDelta {
+			prec: PREC,
+			ts_venue_exec: Ts::from_nanos(0),
+			ts_local_recv: Ts::from_nanos(0),
+			monotonic_seq: seq,
+			kind,
+			side,
+			price,
+			qty,
+		}
+	}
 
-	fn record(sb: &mut ShadowBook, u: &BookUpdate, recv: Ts<Local>, tape: &mut Vec<Frame>) {
+	fn record(sb: &mut ShadowBook, u: &BookUpdate, recv: Ts<Local>, tape: &mut Vec<Vec<BookDelta>>) {
 		if let Some(f) = sb.ingest(u, recv) {
-			let c = f.cols();
-			tape.push((f.kind(), (0..c.len()).map(|i| (c.monotonic_seq[i], c.side[i], c.price[i], c.qty[i])).collect()));
+			tape.push(f.to_vec());
 		}
 	}
 
@@ -408,7 +426,7 @@ mod tests {
 		record(&mut sb, &delta(&[(97, 2)], &[], 6, false), local(6), &mut tape);
 
 		assert_eq!(
-			tape.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+			tape.iter().map(|f| f[0].kind).collect::<Vec<_>>(),
 			[FrameKind::Update, FrameKind::Update, FrameKind::Correction, FrameKind::Correction, FrameKind::Update],
 			"a gap and a snapshot disagreement must each surface as a Correction"
 		);
@@ -421,14 +439,9 @@ mod tests {
 
 		// replay: fold the emitted stream from our checkpoint and land on the same book
 		let mut replayed = Book::default();
-		let mut buf = DeltaBuf::new(PREC);
-		for (i, (kind, levels)) in tape[from..].iter().enumerate() {
-			buf.clear();
-			for &(seq, side, p, q) in levels {
-				buf.push(Ts::from_nanos(0), None, seq, *kind, side, p, q);
-			}
+		for (i, levels) in tape[from..].iter().enumerate() {
 			let anchor = (i == 0).then_some(&checkpoint);
-			assert!(replayed.step(anchor, buf.frame(0..buf.len())), "replay must stay synced");
+			assert!(replayed.step(anchor, levels), "replay must stay synced");
 		}
 		assert_eq!(replayed.bids(), sb.book.bids());
 		assert_eq!(replayed.asks(), sb.book.asks());
@@ -438,20 +451,17 @@ mod tests {
 	fn a_missed_frame_desyncs_until_the_next_checkpoint() {
 		let mut b = Book::default();
 		let anchor = shape(&[(100, 5)], &[(101, 5)], 1);
-		let mut buf = DeltaBuf::new(PREC);
 
-		buf.push(Ts::from_nanos(2), None, 1, FrameKind::Update, Side::Buy, 99, 3);
-		assert!(b.step(Some(&anchor), buf.frame(0..1)));
+		assert!(b.step(Some(&anchor), &[row(1, FrameKind::Update, Side::Buy, 99, 3)]));
 
 		// seq 2 never reached us
-		buf.clear();
-		buf.push(Ts::from_nanos(3), None, 3, FrameKind::Update, Side::Buy, 98, 1);
-		assert!(!b.step(None, buf.frame(0..1)), "a seq discontinuity must desync");
+		let gapped = [row(3, FrameKind::Update, Side::Buy, 98, 1)];
+		assert!(!b.step(None, &gapped), "a seq discontinuity must desync");
 		assert!(!b.bids().iter().any(|l| l.0 == 98), "a desynced book must not fold");
 
 		// the next checkpoint re-arms it, from the checkpoint's state — not the stale one
 		let epoch = b.epoch();
-		assert!(b.step(Some(&anchor), buf.frame(0..1)));
+		assert!(b.step(Some(&anchor), &gapped));
 		assert_eq!(b.epoch(), epoch + 1);
 		assert!(!b.bids().iter().any(|l| l.0 == 99), "re-sync must not carry stale levels");
 	}

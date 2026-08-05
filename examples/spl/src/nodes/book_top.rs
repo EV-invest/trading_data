@@ -50,14 +50,14 @@ impl Emit for BookTop {
 		..Plot::DEFAULT
 	}];
 
-	fn emit(&mut self, (book, frame): EmitOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) {
-		let Some(&ts) = frame.cols().exec().last() else { return };
+	fn emit(&mut self, (book, levels): EmitOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) {
+		let Some(last) = levels.last() else { return };
 		out.push(book.and_then(|b| {
 			let (ps, qs) = (b.prec().price.scale(), b.prec().qty.scale());
 			let (bid, ask) = (b.best_bid()?, b.best_ask()?);
 			let usd = |&(p, q): &(i32, u32)| (p as f64 / ps) * (q as f64 / qs);
 			Some(BookTopSnap {
-				ts_ns: ts.as_nanos(),
+				ts_ns: last.ts_venue_exec.as_nanos(),
 				best_bid: bid.0.as_f64(),
 				best_ask: ask.0.as_f64(),
 				top20_bid_depth_usd: b.bids().iter().take(DEPTH).map(usd).sum(),

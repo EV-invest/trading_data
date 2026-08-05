@@ -4,11 +4,11 @@ use std::{
 };
 
 use arrow::{array::RecordBatch, datatypes::SchemaRef};
-use trading_data_core::{Asset, DeltaFrame, ExchangeName, PrecisionPriceQty, Symbol, TradeCols, Ts};
+use trading_data_core::{Asset, BookDelta, ExchangeName, PrecisionPriceQty, Symbol, TradeCols, Ts};
 
 use crate::{
 	catalog::{Catalog, CatalogError, LaneKey},
-	row::{BookDelta, BookSnapshot, Mc, Oi, Row, Trade},
+	row::{BookSnapshot, Mc, Oi, Row, Trade},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -73,20 +73,9 @@ impl Feather<BookDelta> {
 		Self::init(LaneKey::BookDeltas { exchange, symbol }, prec, policy)
 	}
 
-	pub(crate) fn extend(&mut self, frame: DeltaFrame<'_>) {
-		let (kind, cols) = (frame.kind(), frame.cols());
-		assert_eq!(self.meta, cols.prec, "delta run's precision differs from the lane's");
-		let recv = cols.ts.recv;
-		for (i, &exec) in cols.exec().iter().enumerate() {
-			self.push(BookDelta {
-				ts_venue_exec: exec,
-				ts_local_recv: recv.map(|r| r.last).expect("a book lane is only ever written by a live recording"),
-				monotonic_seq: cols.monotonic_seq[i],
-				kind,
-				side: cols.side[i],
-				price: cols.price[i],
-				qty: cols.qty[i],
-			});
+	pub(crate) fn extend(&mut self, levels: &[BookDelta]) {
+		for &l in levels {
+			self.push(l);
 		}
 	}
 }
@@ -220,6 +209,7 @@ mod tests {
 		let catalog = Catalog::new(dir.path());
 		let mut feather = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), RotationPolicy { max_bytes: Some(1), max_age: None });
 		feather.push(BookDelta {
+			prec: prec(),
 			ts_venue_exec: venue(1),
 			ts_local_recv: local(1),
 			monotonic_seq: 1,
@@ -279,6 +269,7 @@ mod tests {
 		let cat = Catalog::new(dir.path());
 		let mut f = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		let row = BookDelta {
+			prec: prec(),
 			ts_venue_exec: venue(1),
 			ts_local_recv: local(2),
 			monotonic_seq: 9,

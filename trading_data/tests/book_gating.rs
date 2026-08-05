@@ -10,8 +10,7 @@
 //! checkpoint instead of from a warmup it can never recover.
 
 use trading_data::{
-	Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaBuf, DeltaFrame, DepOuts, FrameKind, Gate, Gating, Node, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades, Ts,
-	node,
+	Book, BookAnchors, BookDelta, BookDeltas, BookShape, Cell, DepOuts, FrameKind, Gate, Gating, Node, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades, Ts, node,
 };
 
 const PREC: PrecisionPriceQty = PrecisionPriceQty {
@@ -88,7 +87,7 @@ impl Node for Mid {
 trading_data::graph! {
 	pub struct G;
 	batches Batches;
-	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape] };
+	roots { trades: Trades[TradeCols], deltas: BookDeltas[BookDelta], anchors: BookAnchors[BookShape] };
 	out GOut;
 	outputs { mid: Mid, book: GatedBook }
 }
@@ -102,23 +101,29 @@ fn anchor(bids: &[(i32, u32)], asks: &[(i32, u32)]) -> BookShape {
 	}
 }
 
-/// One frame of levels at the given sequence numbers — the gapless chain the shadow book writes.
-fn frame(buf: &mut DeltaBuf, levels: &[(u64, Side, i32, u32)]) {
-	buf.clear();
-	buf.prec = PREC;
-	for &(seq, side, p, q) in levels {
-		buf.push(Ts::from_nanos(1), None, seq, FrameKind::Update, side, p, q);
-	}
+/// One run of levels at the given sequence numbers — the gapless chain the shadow book writes.
+fn frame(levels: &[(u64, Side, i32, u32)]) -> Vec<BookDelta> {
+	levels
+		.iter()
+		.map(|&(seq, side, price, qty)| BookDelta {
+			prec: PREC,
+			ts_venue_exec: Ts::from_nanos(1),
+			ts_local_recv: Ts::from_nanos(1),
+			monotonic_seq: seq,
+			kind: FrameKind::Update,
+			side,
+			price,
+			qty,
+		})
+		.collect()
 }
 
 #[test]
 fn gated_book_is_latent_closed_and_resyncs_from_a_checkpoint() {
 	let mut g = G::default();
 	let mut trades = TradeBuf::new(PREC);
-	let mut deltas = DeltaBuf::new(PREC);
-	let mut buf = DeltaBuf::new(PREC);
 
-	let tick = |g: &mut G, hot: bool, a: Option<&BookShape>, d: &DeltaBuf, trades: &mut TradeBuf| -> (Option<u64>, Option<f64>) {
+	let tick = |g: &mut G, hot: bool, a: Option<&BookShape>, d: &[BookDelta], trades: &mut TradeBuf| -> (Option<u64>, Option<f64>) {
 		trades.clear();
 		trades.prec = PREC;
 		if hot {
@@ -128,7 +133,7 @@ fn gated_book_is_latent_closed_and_resyncs_from_a_checkpoint() {
 			0,
 			Batches {
 				trades: trades.cols(0..trades.len()),
-				deltas: d.frame(0..d.len()),
+				deltas: d,
 				anchors: a,
 			},
 		);
@@ -136,31 +141,25 @@ fn gated_book_is_latent_closed_and_resyncs_from_a_checkpoint() {
 	};
 
 	// 1. gate open, but no checkpoint yet: the fold has nothing to be, and says so.
-	frame(&mut deltas, &[(1, Side::Buy, 9_900, 5)]);
-	assert_eq!(tick(&mut g, true, None, &deltas, &mut trades), (None, None));
+	assert_eq!(tick(&mut g, true, None, &frame(&[(1, Side::Buy, 9_900, 5)]), &mut trades), (None, None));
 
 	// 2. the first checkpoint arms it; the same step's frame folds on top.
 	let seed = anchor(&[(9_990, 3)], &[(10_010, 4)]);
-	frame(&mut deltas, &[(2, Side::Buy, 9_995, 7)]);
-	let (epoch, mid) = tick(&mut g, true, Some(&seed), &deltas, &mut trades);
+	let (epoch, mid) = tick(&mut g, true, Some(&seed), &frame(&[(2, Side::Buy, 9_995, 7)]), &mut trades);
 	assert_eq!(epoch, Some(1));
 	assert_eq!(mid, Some(100.025), "best bid must be the folded level, not the checkpoint's");
 
 	// 3. gate closed: latent, and the frames go by unread — a closed gate pulls no plain dep.
-	frame(&mut deltas, &[(3, Side::Sell, 10_005, 2)]);
-	assert_eq!(tick(&mut g, false, None, &deltas, &mut trades), (None, None));
-	frame(&mut deltas, &[(4, Side::Sell, 10_004, 2)]);
-	assert_eq!(tick(&mut g, false, None, &deltas, &mut trades), (None, None));
+	assert_eq!(tick(&mut g, false, None, &frame(&[(3, Side::Sell, 10_005, 2)]), &mut trades), (None, None));
+	assert_eq!(tick(&mut g, false, None, &frame(&[(4, Side::Sell, 10_004, 2)]), &mut trades), (None, None));
 
 	// 4. reopened, no checkpoint: seqs 3..4 are missing from our chain, so folding seq 5 onto what
 	//    we still hold would be folding onto stale state. It desyncs instead.
-	frame(&mut deltas, &[(5, Side::Buy, 9_996, 1)]);
-	assert_eq!(tick(&mut g, true, None, &deltas, &mut trades), (None, None));
+	assert_eq!(tick(&mut g, true, None, &frame(&[(5, Side::Buy, 9_996, 1)]), &mut trades), (None, None));
 
 	// 5. the next checkpoint re-arms it — from the checkpoint, not from the stale book.
 	let resync = anchor(&[(9_980, 3)], &[(10_020, 4)]);
-	frame(&mut buf, &[]);
-	let (epoch, mid) = tick(&mut g, true, Some(&resync), &buf, &mut trades);
+	let (epoch, mid) = tick(&mut g, true, Some(&resync), &[], &mut trades);
 	assert_eq!(epoch, Some(2), "a resync is a new epoch");
 	assert_eq!(mid, Some(100.0), "the re-armed book must read the checkpoint, not the pre-gate levels");
 }

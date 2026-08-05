@@ -23,7 +23,7 @@ use std::sync::{
 };
 
 use trading_data_core::{
-	Arrival, BatchTrades, BookShape, BookUpdate, DeltaBuf, DeltaFrame, Exact, ExchangeName, Local, PrecisionPriceQty, ReadClock, ShadowBook, Symbol, TradeBuf, TradeCols, Ts, Venue,
+	Arrival, BatchTrades, BookDelta, BookShape, BookUpdate, Exact, ExchangeName, Local, PrecisionPriceQty, ReadClock, ShadowBook, Symbol, TradeBuf, TradeCols, Ts, Venue,
 };
 use v_utils::distributions::LatencyConfig;
 
@@ -32,7 +32,7 @@ use crate::{
 	clock::Clock,
 	feather::Feather,
 	read::{lane_prec, pick_anchor, read_book_deltas, read_book_snapshots, read_mc, read_oi, read_trades, snapshot_shape},
-	row::{BookDelta, BookSnapshot, Mc, Oi, Row as _, Trade},
+	row::{BookSnapshot, Mc, Oi, Row as _, Trade},
 };
 
 /// How often we write a book checkpoint of our own. Bounds how far back a replay must read; drift
@@ -56,7 +56,7 @@ pub struct Lanes<'a> {
 	pub arrival: Arrival,
 	pub ts_venue: Ts<Venue>,
 	pub trades: TradeCols<'a>,
-	pub deltas: DeltaFrame<'a>,
+	pub deltas: &'a [BookDelta],
 	pub anchor: Option<&'a BookShape>,
 	pub oi: &'a [Oi],
 	pub mc: &'a [Mc],
@@ -84,16 +84,6 @@ impl<T> LaneBuf for Vec<T> {
 }
 
 impl LaneBuf for TradeBuf {
-	fn len(&self) -> usize {
-		self.len()
-	}
-
-	fn drain_prefix(&mut self, n: usize) {
-		self.drain_prefix(n);
-	}
-}
-
-impl LaneBuf for DeltaBuf {
 	fn len(&self) -> usize {
 		self.len()
 	}
@@ -185,27 +175,17 @@ impl Lane<TradeBuf> {
 	}
 }
 
-impl Lane<DeltaBuf> {
-	fn extend(&mut self, ts: Arrival, frame: DeltaFrame<'_>) {
-		let n = frame.cols().len();
-		self.buf.extend(frame);
-		self.key(ts, n);
-	}
-
-	fn run_end_of_kind(&self, bound: Arrival) -> usize {
-		let kind = self.buf.kind_at(self.cur);
-		let mut e = self.cur + 1;
-		while e < self.ts.len() && self.ts[e] <= bound && self.buf.kind_at(e) == kind {
-			e += 1;
-		}
-		e
+impl Lane<Vec<BookDelta>> {
+	fn extend(&mut self, ts: Arrival, levels: &[BookDelta]) {
+		self.buf.extend_from_slice(levels);
+		self.key(ts, levels.len());
 	}
 }
 
 #[derive(Default)]
 struct Weaver {
 	trades: Lane<TradeBuf>,
-	deltas: Lane<DeltaBuf>,
+	deltas: Lane<Vec<BookDelta>>,
 	anchors: Lane<Vec<BookShape>>,
 	oi: Lane<Vec<Oi>>,
 	mc: Lane<Vec<Mc>>,
@@ -253,10 +233,10 @@ impl Weaver {
 				self.trades.buf.exec_at(t.1 - 1)
 			}
 			1 => {
-				d = (self.deltas.cur, self.deltas.run_end_of_kind(bound));
+				d = (self.deltas.cur, self.deltas.run_end(bound));
 				self.deltas.cur = d.1;
 				self.prev_emit = self.deltas.ts[d.1 - 1];
-				self.deltas.buf.exec_at(d.1 - 1)
+				self.deltas.buf[d.1 - 1].ts_venue_exec
 			}
 			2 => {
 				a = (self.anchors.cur, self.anchors.run_end(bound));
@@ -282,7 +262,7 @@ impl Weaver {
 			arrival: self.prev_emit,
 			ts_venue,
 			trades: self.trades.buf.cols(t.0..t.1),
-			deltas: self.deltas.buf.frame(d.0..d.1),
+			deltas: &self.deltas.buf[d.0..d.1],
 			anchor: self.anchors.buf[a.0..a.1].last(),
 			oi: &self.oi.buf[o.0..o.1],
 			mc: &self.mc.buf[m.0..m.1],
@@ -365,11 +345,13 @@ impl Replay {
 					}
 				}
 				LaneKind::BookDeltas => {
-					weaver.deltas.buf.prec = prec(&[LaneKey::BookDeltas { exchange, symbol }, LaneKey::BookSnapshots { exchange, symbol }]);
+					// named for the assertion it carries: no file under either key means the catalog is
+					// missing a lane the caller asked to replay, and the rows themselves carry their own.
+					let _ = prec(&[LaneKey::BookDeltas { exchange, symbol }, LaneKey::BookSnapshots { exchange, symbol }]);
 					let mut s = sampler(lane);
 					for d in read_book_deltas(catalog, exchange, symbol, start, end).expect("open delta lane") {
 						let ts = effective(Some(d.ts_local_recv), d.ts_venue_exec, &mut s);
-						weaver.deltas.buf.push(d.ts_venue_exec, Some(d.ts_local_recv), d.monotonic_seq, d.kind, d.side, d.price, d.qty);
+						weaver.deltas.buf.push(d);
 						weaver.deltas.key(ts, 1);
 					}
 				}
@@ -494,7 +476,6 @@ impl Live {
 		});
 		let mut weaver = Weaver::new(ReadClock::EVENT);
 		weaver.trades.buf.prec = prec;
-		weaver.deltas.buf.prec = prec;
 		Self {
 			rx,
 			tx: Some(tx),
@@ -576,12 +557,12 @@ impl Live {
 	/// the cadence has elapsed (after the fold, so the checkpoint includes it).
 	fn ingest_book(&mut self, u: BookUpdate, ts: Arrival) {
 		let recv = Self::recv_of(ts);
-		if let Some(frame) = self.shadow.ingest(&u, recv) {
+		if let Some(levels) = self.shadow.ingest(&u, recv) {
 			if let Some(r) = &mut self.record {
-				r.deltas.extend(frame);
+				r.deltas.extend(levels);
 				r.deltas.maybe_flush(&r.catalog).expect("delta feather flush");
 			}
-			self.weaver.deltas.extend(ts, frame);
+			self.weaver.deltas.extend(ts, levels);
 		}
 		if let Some(shape) = self.shadow.checkpoint(recv) {
 			if let Some(r) = &mut self.record {

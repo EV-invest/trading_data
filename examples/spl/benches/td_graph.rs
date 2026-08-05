@@ -36,7 +36,7 @@ fn main() {
 		let mut f = feed(*d);
 		while let Some(l) = f.next() {
 			COUNTERS.trades.fetch_add(l.trades.len() as u64, Ordering::Relaxed);
-			COUNTERS.deltas.fetch_add(l.deltas.cols().len() as u64, Ordering::Relaxed);
+			COUNTERS.deltas.fetch_add(l.deltas.len() as u64, Ordering::Relaxed);
 			ticks += 1;
 			for intent in graph.tick(l.ts_venue.as_nanos(), l.into()).deprecator.iter().flatten() {
 				digest.feed(intent);

@@ -3,10 +3,10 @@
 //! `Cell`/`Node` are the dag's and these types are ours, so orphan rules make this the only crate
 //! that may write these impls. Nothing else here knows the dag exists.
 
-use trading_data_dag::{Cell, DepOuts, Folding, Horizon, Node, Nudge, node};
+use trading_data_dag::{Cell, DepOuts, Folding, Horizon, Node, Nudge, node, slice_nudge};
 use v_utils::TF_15MIN;
 
-use crate::{Book, BookShape, DeltaBuf, DeltaFrame, TradeBuf, TradeCols};
+use crate::{Book, BookDelta, BookShape, TradeBuf, TradeCols};
 
 pub struct Trades;
 impl Cell for Trades {
@@ -49,23 +49,10 @@ impl Nudge for BookAnchors {
 
 pub struct BookDeltas;
 impl Cell for BookDeltas {
-	type Out<'t> = DeltaFrame<'t>;
+	type Out<'t> = &'t [BookDelta];
 }
 
-impl Nudge for BookDeltas {
-	type Scratch = DeltaBuf;
-
-	fn stage<'t>(out: DeltaFrame<'t>, s: &mut DeltaBuf, bump: Option<usize>, h: f64) -> f64 {
-		s.clear();
-		s.prec = out.cols().prec;
-		s.extend(out);
-		bump.map_or(0.0, |slot| s.bump_last(slot, h))
-	}
-
-	fn view<'l>(s: &'l DeltaBuf) -> DeltaFrame<'l> {
-		s.frame(0..s.len())
-	}
-}
+slice_nudge!(BookDeltas, BookDelta);
 
 /// `Option<&Book>` is `Latent`, so the book **can be gated** — and a closed gate returns `None`
 /// without pulling deps, so no checkpoint and no frame is even read.

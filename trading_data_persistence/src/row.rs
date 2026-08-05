@@ -4,7 +4,7 @@ use arrow::{
 	array::{Array, ArrayRef, Float64Array, Float64Builder, Int32Array, Int64Array, ListArray, RecordBatch, UInt8Array, UInt32Array, UInt64Array},
 	datatypes::{DataType, Field, Schema, SchemaRef},
 };
-use trading_data_core::{FrameKind, Local, Precision, PrecisionPriceQty, Side, Ts, Venue};
+use trading_data_core::{BookDelta, FrameKind, Local, Precision, PrecisionPriceQty, Side, Ts, Venue};
 use trading_data_dag::{Bump, Cell, Flat, Glance, Stamped, always_present, slice_nudge};
 
 use crate::feather::RotationPolicy;
@@ -41,24 +41,6 @@ pub struct Trade {
 	pub qty: u32,
 }
 
-/// One stored level of our own recollection — see `ShadowBook`: the persisted delta lane is
-/// gapless and self-consistent, so `kind` (not the venue's `gapped` flag) is what a consumer reads.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BookDelta {
-	pub ts_venue_exec: Ts<Venue>,
-	/// Book lanes are only ever written by a live recording, and the adapter that took the frame
-	/// off the wire always knows its own reception time — so unlike the trade lane there is no
-	/// historic-ingest path that could leave this absent.
-	pub ts_local_recv: Ts<Local>,
-	pub monotonic_seq: u64,
-	pub kind: FrameKind,
-	/// Buy = bid, Sell = ask.
-	pub side: Side,
-	pub price: i32,
-	/// `0` means delete this level.
-	pub qty: u32,
-}
-
 /// Open interest, base units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Oi {
@@ -83,7 +65,7 @@ pub struct Mc {
 #[derive(Clone, Debug)]
 pub(crate) struct BookSnapshot {
 	pub ts_venue_exec: Ts<Venue>,
-	/// Always present: see [`BookDelta::ts_local_recv`].
+	/// Always present: see [`BookDelta`]'s own reception reading.
 	pub ts_local_recv: Ts<Local>,
 	pub monotonic_seq: u64,
 	pub bid_prices: Vec<i32>,
@@ -375,7 +357,8 @@ impl Sealed for BookDelta {
 		schema_with(fields, &prec_pairs(meta))
 	}
 
-	fn append(&self, b: &mut BookDeltaBuilders, _meta: PrecisionPriceQty) {
+	fn append(&self, b: &mut BookDeltaBuilders, meta: PrecisionPriceQty) {
+		assert_eq!(self.prec, meta, "a level's precision differs from the lane's");
 		b.ts_venue_exec.append_value(self.ts_venue_exec.as_nanos());
 		b.ts_local_recv.append_value(self.ts_local_recv.as_nanos());
 		b.monotonic_seq.append_value(self.monotonic_seq);
@@ -397,7 +380,8 @@ impl Sealed for BookDelta {
 		]
 	}
 
-	fn decode(batch: &RecordBatch, _file_schema: &Schema) -> Vec<Self> {
+	fn decode(batch: &RecordBatch, file_schema: &Schema) -> Vec<Self> {
+		let prec = prec_from_schema(file_schema);
 		let exec = col::<Int64Array>(batch, "ts_venue_exec");
 		let recv = col::<Int64Array>(batch, "ts_local_recv");
 		let monotonic = col::<UInt64Array>(batch, "monotonic_seq");
@@ -407,6 +391,7 @@ impl Sealed for BookDelta {
 		let qty = col::<UInt32Array>(batch, "qty_raw");
 		(0..batch.num_rows())
 			.map(|i| BookDelta {
+				prec,
 				ts_venue_exec: Ts::from_nanos(exec.value(i)),
 				ts_local_recv: Ts::from_nanos(recv.value(i)),
 				monotonic_seq: monotonic.value(i),

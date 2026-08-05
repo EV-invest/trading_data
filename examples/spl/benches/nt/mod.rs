@@ -29,7 +29,7 @@ use nautilus_model::{
 	types::{Currency, Money, Price, Quantity},
 };
 use nautilus_persistence_macros::custom_data;
-use trading_data::{Book, DeltaCols, Exact, ExchangeName, Feed as _, LatencyConfig, ReadClock, Replay, Side, required_lanes};
+use trading_data::{Book, BookDelta, Exact, ExchangeName, Feed as _, LatencyConfig, ReadClock, Replay, Side, required_lanes};
 use trading_data_bench::{COUNTERS, Digest, Probe, Row, publish};
 use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, symbol, trading_days};
 
@@ -159,15 +159,16 @@ fn tape() -> (Vec<Data>, InstrumentAny) {
 				}
 			}
 
-			let cols = l.deltas.cols();
 			let epoch = book.epoch();
 			// `step` is the only entry point that knows whether this frame folds at all; a frame that
 			// left our book desynced left it unreadable, and NT is told nothing rather than told a lie.
-			if book.step(l.anchor, l.deltas) && !cols.is_empty() {
-				prec.get_or_insert(cols.prec);
-				let ts = stamp(cols.exec()[cols.len() - 1].as_nanos());
+			if book.step(l.anchor, l.deltas)
+				&& let Some(last) = l.deltas.last()
+			{
+				prec.get_or_insert(last.prec);
+				let ts = stamp(last.ts_venue_exec.as_nanos());
 				let deltas = match book.epoch() == epoch {
-					true => incremental(id, cols),
+					true => incremental(id, l.deltas),
 					false => resync(id, &book, ts),
 				};
 				out.push(Data::Deltas(OrderBookDeltas_API::new(OrderBookDeltas::new(id, deltas))));
@@ -226,22 +227,23 @@ fn tape() -> (Vec<Data>, InstrumentAny) {
 
 /// qty 0 is a level deletion in our lane and a `Delete` in NT's; everything else is the level's new
 /// absolute size. `order_id` is left at 0 because `L2_MBP` overwrites it with a price-derived one.
-fn incremental(id: InstrumentId, cols: DeltaCols<'_>) -> Vec<OrderBookDelta> {
-	let (ps, qs) = (cols.prec.price.scale(), cols.prec.qty.scale());
-	let (pd, qd) = (cols.prec.price.0 as u8, cols.prec.qty.0 as u8);
-	(0..cols.len())
-		.map(|i| {
-			let ts = stamp(cols.exec()[i].as_nanos());
-			let side = match cols.side[i] {
+fn incremental(id: InstrumentId, levels: &[BookDelta]) -> Vec<OrderBookDelta> {
+	levels
+		.iter()
+		.map(|l| {
+			let (ps, qs) = (l.prec.price.scale(), l.prec.qty.scale());
+			let (pd, qd) = (l.prec.price.0 as u8, l.prec.qty.0 as u8);
+			let ts = stamp(l.ts_venue_exec.as_nanos());
+			let side = match l.side {
 				Side::Buy => OrderSide::Buy,
 				Side::Sell => OrderSide::Sell,
 			};
-			let action = match cols.qty[i] {
+			let action = match l.qty {
 				0 => BookAction::Delete,
 				_ => BookAction::Update,
 			};
-			let order = BookOrder::new(side, Price::new(cols.price[i] as f64 / ps, pd), Quantity::new(cols.qty[i] as f64 / qs, qd), 0);
-			OrderBookDelta::new(id, action, order, 0, cols.monotonic_seq[i], ts, ts)
+			let order = BookOrder::new(side, Price::new(l.price as f64 / ps, pd), Quantity::new(l.qty as f64 / qs, qd), 0);
+			OrderBookDelta::new(id, action, order, 0, l.monotonic_seq, ts, ts)
 		})
 		.collect()
 }
