@@ -1388,6 +1388,10 @@ impl<T: Glance> Glance for Hist<'_, T> {
 /// failure as two instances of one node type.
 pub struct Buffer<C: Series, const H: Horizon> {
 	buf: alloc::vec::Vec<C::Item>,
+	/// Where the retained window starts. Trimming by `drain(..n)` memmoved the whole window every
+	/// tick — the window is the point, so it is never small — where a cursor moves nothing and the
+	/// window stays the one contiguous slice [`Hist`] hands out.
+	cur: usize,
 	/// The highest `ts_ns` this buffer cannot speak for: the last one dropped, or — before the first
 	/// drop — the first one ever seen, since nothing proves the run reached back past it. A
 	/// [`Horizon::Span`] window is complete iff it begins strictly after this, which is exact where
@@ -1400,6 +1404,7 @@ impl<C: Series, const H: Horizon> Default for Buffer<C, H> {
 	fn default() -> Self {
 		Self {
 			buf: alloc::vec::Vec::new(),
+			cur: 0,
 			watermark: i64::MIN,
 		}
 	}
@@ -1407,15 +1412,19 @@ impl<C: Series, const H: Horizon> Default for Buffer<C, H> {
 impl<C: Series, const H: Horizon> Clone for Buffer<C, H> {
 	fn clone(&self) -> Self {
 		Self {
-			buf: self.buf.clone(),
+			buf: self.buf[self.cur..].to_vec(),
+			cur: 0,
 			watermark: self.watermark,
 		}
 	}
 
 	/// The one thing `derive(Clone)` would not have given: its `clone_from` is `*self = clone()`, and
-	/// a buffer holding a whole reach is what [`fd_col`] re-clones once per dep element.
+	/// a buffer holding a whole reach is what [`fd_col`] re-clones once per dep element. Only the
+	/// retained window is carried — the dropped prefix is waiting to be reclaimed, not state.
 	fn clone_from(&mut self, src: &Self) {
-		self.buf.clone_from(&src.buf);
+		self.buf.clear();
+		self.buf.extend_from_slice(&src.buf[src.cur..]);
+		self.cur = 0;
 		self.watermark = src.watermark;
 	}
 }
@@ -1454,20 +1463,29 @@ where
 		}
 		// Trim *before* the append: `past` must be what stood behind this tick's batch, or an
 		// intra-batch cursor walking several elements reads a window already trimmed by its own tail.
-		let drop = match H {
-			Horizon::Elems(k) => self.buf.len().saturating_sub(k),
-			Horizon::Span(tf) => match self.buf.last() {
-				Some(newest) => {
-					let cut = newest.ts_ns() - Horizon::ns(tf);
-					self.buf.partition_point(|x| x.ts_ns() <= cut)
-				}
-				None => 0,
-			},
-			_ => unreachable!(),
+		let drop = {
+			let win = &self.buf[self.cur..];
+			match H {
+				Horizon::Elems(k) => win.len().saturating_sub(k),
+				Horizon::Span(tf) => match win.last() {
+					Some(newest) => {
+						let cut = newest.ts_ns() - Horizon::ns(tf);
+						win.partition_point(|x| x.ts_ns() <= cut)
+					}
+					None => 0,
+				},
+				_ => unreachable!(),
+			}
 		};
 		if drop > 0 {
-			self.watermark = self.watermark.max(self.buf[drop - 1].ts_ns());
-			self.buf.drain(..drop);
+			self.watermark = self.watermark.max(self.buf[self.cur + drop - 1].ts_ns());
+			self.cur += drop;
+			// Reclaim only once the dropped prefix dominates, as `sync::Lane::compact` does: amortized
+			// O(1) an element, against a memmove of the whole window on every tick.
+			if self.cur * 2 >= self.buf.len() {
+				self.buf.drain(..self.cur);
+				self.cur = 0;
+			}
 		}
 		if self.watermark == i64::MIN
 			&& let Some(first) = fresh.first()
@@ -1476,7 +1494,7 @@ where
 		}
 		self.buf.extend_from_slice(fresh);
 		Hist {
-			all: &self.buf,
+			all: &self.buf[self.cur..],
 			fresh: fresh.len(),
 			horizon: H,
 			watermark: self.watermark,
