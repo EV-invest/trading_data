@@ -44,18 +44,8 @@ impl Feather<Trade> {
 	/// left anywhere on this path is the one at the CSV parse boundary.
 	pub fn extend(&mut self, cols: TradeCols<'_>) {
 		assert_eq!(self.meta, cols.prec, "trade run's precision differs from the lane's");
-		let recv = cols.ts.recv;
-		for (i, &exec) in cols.exec().iter().enumerate() {
-			self.push(Trade {
-				ts_venue_exec: exec,
-				ts_venue_send: cols.ts.send.map(|s| s[i]),
-				ts_local_recv: recv.map(|r| r.last),
-				monotonic_seq: cols.monotonic_seq[i],
-				side: cols.side[i],
-				price: cols.price[i],
-				qty: cols.qty[i],
-			});
-		}
+		self.builders.extend(cols);
+		self.ran(cols.exec());
 	}
 }
 
@@ -77,20 +67,10 @@ impl Feather<BookDelta> {
 	}
 
 	pub(crate) fn extend(&mut self, frame: DeltaFrame<'_>) {
-		let (kind, cols) = (frame.kind(), frame.cols());
+		let cols = frame.cols();
 		assert_eq!(self.meta, cols.prec, "delta run's precision differs from the lane's");
-		let recv = cols.ts.recv;
-		for (i, &exec) in cols.exec().iter().enumerate() {
-			self.push(BookDelta {
-				ts_venue_exec: exec,
-				ts_local_recv: recv.map(|r| r.last).expect("a book lane is only ever written by a live recording"),
-				monotonic_seq: cols.monotonic_seq[i],
-				kind,
-				side: cols.side[i],
-				price: cols.price[i],
-				qty: cols.qty[i],
-			});
-		}
+		self.builders.extend(frame);
+		self.ran(cols.exec());
 	}
 }
 
@@ -130,6 +110,23 @@ impl<T: Row> Feather<T> {
 		let was_empty = self.oldest_ts.is_none();
 		self.oldest_ts = Some(self.oldest_ts.map_or(ts, |o| o.min(ts)));
 		self.newest_ts = Some(self.newest_ts.map_or(ts, |n| n.max(ts)));
+		if was_empty && let Some(age) = self.policy.max_age {
+			self.age_deadline = Some(Instant::now() + age);
+		}
+	}
+
+	/// [`Self::push`]'s bookkeeping for a whole run appended columnar. Only the two fixed-width lanes
+	/// have a columnar source, and for those `PER_ROW_MIN` *is* the row size — so it is the run's
+	/// estimate here, not a floor.
+	fn ran(&mut self, axis: &[Ts<T::Axis>]) {
+		let Some((&lo, &hi)) = axis.iter().min().zip(axis.iter().max()) else {
+			return;
+		};
+		self.rows += axis.len();
+		self.approx_bytes += axis.len() * T::PER_ROW_MIN;
+		let was_empty = self.oldest_ts.is_none();
+		self.oldest_ts = Some(self.oldest_ts.map_or(lo, |o| o.min(lo)));
+		self.newest_ts = Some(self.newest_ts.map_or(hi, |n| n.max(hi)));
 		if was_empty && let Some(age) = self.policy.max_age {
 			self.age_deadline = Some(Instant::now() + age);
 		}
