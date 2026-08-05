@@ -110,7 +110,6 @@
 
             `nix develop` adds `viz <simple|live|spl>`, the same runner against your working tree,
             and `measure` on PATH.
-            `cargo r -p trading_data_live_equiv` is the headless live≡replay proof — 15s, no server.
             Args after `--` reach the app: `nix run .#spl -- --config other.nix`. The examples build
             debug; `-r` there builds release, which `spl`'s two-day replay wants.
             EOF

@@ -1,8 +1,7 @@
 #![feature(default_field_values)]
 // the graph resolves its node set by trampolining between `#[node]` shims and the driver.
 #![recursion_limit = "512"]
-//! The live graph and the ws plumbing that feeds it, shared by the two things that want them: the
-//! watchpoint binary here, and `trading_data_live_equiv`'s live≡replay proof.
+//! The live graph and the ws plumbing that feeds it, for the watchpoint binary here.
 //!
 //! The v_exchanges → push-handle layer is a temporary bridge; when v_exchanges learns a native
 //! `Listener` it dies. Kept thin and self-contained accordingly.

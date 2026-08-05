@@ -26,8 +26,8 @@ use std::{
 
 use indicatif::{MultiProgress, ProgressBar};
 use trading_data::{
-	Aggregate, Asset, BookShape, BookUpdate, Catalog, Clock, Exact, ExchangeName, Feather, Feed as _, Instrument, Live, Local, Mc, Oi, Pair, PrecisionPriceQty, ReadClock, Row as _, Side,
-	Sink, Span, Symbol, Trade, TradeBuf, Ts, Venue, read_mc, read_oi, read_trades,
+	Aggregate, Asset, BookShape, BookUpdate, Catalog, Clock, ExchangeName, Feather, Feed as _, Instrument, Live, Local, Mc, Oi, Pair, PrecisionPriceQty, Row as _, Side, Sink, Span, Symbol,
+	Trade, TradeBuf, Ts, Venue, read_mc, read_oi, read_trades,
 };
 use v_exchanges::core::{Exchange, ExchangeInit as _, ExchangeStream, History, RequestRange};
 
@@ -188,10 +188,7 @@ async fn ensure_book(bybit: &dyn Exchange, cache: &Path, catalog: &Catalog, s: &
 		pump: AtomicI64::new(0),
 		consumed: AtomicI64::new(0),
 	});
-	// The tee writes per ingest, not per weave, so nothing recorded depends on how this session
-	// groups — the coarse clock just spares the drain loop an iteration per message.
-	let read = ReadClock::from(Exact::from_nanos(60_000_000_000));
-	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(s), prec, true, clock.clone(), read);
+	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(s), prec, true, clock.clone());
 	let sink = live.sink();
 	// Its own thread and its own runtime, because the fold has to run *while* this thread drains
 	// `Live` — the leash below is a two-way conversation, and both halves block.

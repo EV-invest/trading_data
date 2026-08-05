@@ -5322,20 +5322,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "trading_data_live_equiv"
-version = "0.3.0"
-dependencies = [
- "color-eyre",
- "miette",
- "tokio",
- "tracing",
- "trading_data",
- "trading_data_live_example",
- "v_exchanges",
- "v_utils",
-]
-
-[[package]]
 name = "trading_data_live_example"
 version = "0.3.0"
 dependencies = [

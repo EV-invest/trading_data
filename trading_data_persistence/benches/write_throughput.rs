@@ -3,7 +3,7 @@ use std::{hint::black_box, sync::Arc};
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use tempfile::TempDir;
 use trading_data_core::{Aggregate, ExchangeName, Instrument, Local, Precision, PrecisionPriceQty, Side, Span, Symbol, Ts, Venue};
-use trading_data_persistence::{BookShape, BookUpdate, Catalog, Feather, Feed, Live, LiveClock, ReadClock, RotationPolicy, Trade, TradeBuf};
+use trading_data_persistence::{BookShape, BookUpdate, Catalog, Feather, Feed, Live, LiveClock, RotationPolicy, Trade, TradeBuf};
 
 const N_TRADES: u64 = 100_000;
 const N_SNAPSHOTS: u64 = 200;
@@ -48,7 +48,7 @@ fn push_200_snapshots() {
 	let dir = TempDir::new().unwrap();
 	let cat = Catalog::new(dir.path());
 	let symbol = test_symbol();
-	let mut live = Live::new(cat, ExchangeName::Binance, symbol, prec(), true, Arc::new(LiveClock), ReadClock::EVENT);
+	let mut live = Live::new(cat, ExchangeName::Binance, symbol, prec(), true, Arc::new(LiveClock));
 	let sink = live.sink();
 	for i in 0..N_SNAPSHOTS {
 		let shape = BookShape {

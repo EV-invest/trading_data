@@ -3,7 +3,6 @@ cargo-features = ["codegen-backend"]
 [workspace]
 members = [
     "examples/live",
-    "examples/live_equiv",
     "examples/simple",
     "examples/spl",
     "trading_data",

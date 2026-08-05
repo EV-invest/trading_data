@@ -40,7 +40,6 @@ trading_data_macros         proc-macro home of `#[node]` and `graph!`: the first
                    ▲
     trading_data_simple (examples/simple)   one day, one root, one RSI chain — the cheap framework testbed
     trading_data_live_example (examples/live)   real Bybit trades+book, live until ctrl-c, watchable as it runs
-    trading_data_live_equiv (examples/live_equiv)   that same graph recorded then replayed identically — the live≡backtest proof
     trading_data_spl (examples/spl)     a whole strategy (scam_pump_liqs); its bus plumbing becomes `type Deps`
 ```
 

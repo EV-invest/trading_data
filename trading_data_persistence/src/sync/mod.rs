@@ -1,6 +1,10 @@
 //! Central replay: one graph, one router, two feeds. [`Replay`] is the backtest feed over a
 //! catalog; [`Live`] is the live feed over push handles, teeing into the same Feather lanes a
-//! backtest later reads — so a live recording replays into the *identical* event stream.
+//! backtest later reads.
+//!
+//! They are not the same run and are not meant to be. [`Replay`] batches on a [`ReadClock`] so a
+//! backtest outruns the market it replays, which means it hands the graph as one step what arrived
+//! as several. [`Live`] has no such knob: every message is processed the moment it lands.
 //!
 //! Every event is keyed on an [`Arrival`]. For [`Replay`] that's the recorded reception, or a
 //! latency-simulation of the venue axis for historic (`None`) rows. For [`Live`] it is stamped at
@@ -452,8 +456,12 @@ struct Record {
 /// Live feed. [`Feed::next`] drains what's currently available (blocking for the first event),
 /// stamps each message with a monotonic arrival time, weaves one step, and drops consumed rows —
 /// memory stays bounded to the un-emitted window regardless of session length. Recording tees
-/// incrementally, so a live recording replays into the identical event stream (the live≡backtest
-/// invariant). `None` once every sink is dropped and the buffer is drained.
+/// incrementally. `None` once every sink is dropped and the buffer is drained.
+///
+/// **No [`ReadClock`].** Batching exists to make a backtest finish sooner; live has nothing to
+/// hurry through, and grouping what has already arrived would only delay acting on it. So the
+/// weave runs at event rate and a replay of this recording will not reproduce these steps — it
+/// will contain the same events, grouped however its own read clock says.
 pub struct Live {
 	rx: Receiver<LiveEvt>,
 	// dropped on first `next` so the channel disconnects once external sinks drop; also gates
@@ -474,7 +482,7 @@ pub struct Live {
 }
 
 impl Live {
-	pub fn new(catalog: Catalog, exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, record: bool, clock: Arc<dyn Clock>, read: ReadClock) -> Self {
+	pub fn new(catalog: Catalog, exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, record: bool, clock: Arc<dyn Clock>) -> Self {
 		let (tx, rx) = channel();
 		let record = record.then(|| Record {
 			trades: Feather::<Trade>::new(exchange, symbol, prec, Trade::POLICY),
@@ -484,7 +492,7 @@ impl Live {
 			mc: Feather::<Mc>::new(symbol.pair.base(), Mc::POLICY),
 			catalog,
 		});
-		let mut weaver = Weaver::new(read);
+		let mut weaver = Weaver::new(ReadClock::EVENT);
 		weaver.trades.buf.prec = prec;
 		weaver.deltas.buf.prec = prec;
 		Self {

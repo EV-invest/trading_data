@@ -121,14 +121,24 @@ impl Arrival {
 	}
 }
 
-/// The rate a feed is read at. Arrival time is cut into cells of this length, and one tick carries
-/// at most one cell: the reader never *waits* for a cell to fill, so a cell that already holds data
-/// is handed over as it stands rather than batched further.
+/// **How coarsely a backtest batches, so that it runs faster than the market it replays.** That is
+/// the whole of it. Arrival time is cut into cells of this length and everything landing in one cell
+/// is handed to the graph as a single step, so a replay does a day's work in as many steps as the
+/// cell size buys rather than one per message.
+///
+/// Batching is *lossy on purpose*: a coarser cell means the strategy sees a trade and the book move
+/// that followed it as one event instead of two, so it can decide differently than it would have
+/// live. That is the trade being made — speed for fidelity — and it is the caller's to make, which
+/// is why there is no default and why it belongs in config rather than in a const somewhere.
+///
+/// Live has no read clock. Data is processed the moment it arrives, because there is nothing to
+/// hurry through — see [`Live`](../../trading_data_persistence/sync/struct.Live.html). Do not go
+/// looking for a backtest that reproduces a live run event for event; a backtest is a lossy model
+/// of one, and the batching here is the loss.
 ///
 /// Cells are absolute — floored from the epoch, not from the last emission — so which cell an event
-/// falls in is a property of the event alone, identical across runs and independent of what the
-/// feed did before it. Always set: the rate a graph is stepped at is a thing the caller states, not
-/// one that falls out of which lane happened to tick.
+/// falls in is a property of the event alone and a replay of the same range groups identically
+/// every time.
 ///
 /// A newtype rather than a bare [`Exact`] so that quantizing an [`Arrival`] is the *only*
 /// arithmetic an arrival admits.
@@ -136,8 +146,8 @@ impl Arrival {
 pub struct ReadClock(Exact);
 
 impl ReadClock {
-	/// The feed's own rate: every distinct arrival is its own cell. The degenerate case, not a
-	/// special path.
+	/// No batching: every distinct arrival is its own step. What live runs on, and the only honest
+	/// setting for a replay that is being read as a description of events rather than raced through.
 	pub const EVENT: Self = Self(Exact(0));
 
 	pub const fn from(e: Exact) -> Self {
