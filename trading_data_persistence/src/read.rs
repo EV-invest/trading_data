@@ -1,14 +1,12 @@
 use std::time::Duration;
 
-use arrow::{
-	array::RecordBatch,
-	datatypes::{Schema, SchemaRef},
-};
+use arrow::datatypes::{Schema, SchemaRef};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
 use trading_data_core::{Aggregate, Asset, Book, BookShape, Exact, ExchangeName, Local, PrecisionPriceQty, Span, Symbol, Ts, Venue};
 use trading_data_dag::{DepSet, Horizon, Node};
 
 use crate::{
-	catalog::{Catalog, CatalogError, FileEntry, LaneKey},
+	catalog::{Catalog, CatalogError, FileEntry, LaneKey, open},
 	row::{BookDelta, BookSnapshot, FileSig, Mc, Oi, Row, SCHEMA_VERSION, Trade, prec_from_schema, sealed::Sealed},
 };
 
@@ -34,9 +32,8 @@ const MAX_ANCHOR_AGE: Duration = Duration::from_millis(match <<Book as Node>::De
 /// Streams one lane's rows in `[start, end]`, one parquet file at a time. No whole-lane
 /// materialization; a mid-stream read failure of a catalog-owned file is unrecoverable and panics.
 pub struct LaneReader<T: Row> {
-	catalog: Catalog,
 	files: std::vec::IntoIter<FileEntry>,
-	batches: std::vec::IntoIter<RecordBatch>,
+	batches: Option<ParquetRecordBatchReader>,
 	rows: std::vec::IntoIter<T>,
 	// current file's schema: per-batch schemas drop the key-value metadata decode needs
 	file_schema: Option<SchemaRef>,
@@ -56,13 +53,14 @@ impl<T: Row> Iterator for LaneReader<T> {
 					return Some(r);
 				}
 			}
-			if let Some(batch) = self.batches.next() {
+			if let Some(batch) = self.batches.as_mut().and_then(Iterator::next) {
+				let batch = batch.expect("catalog file unreadable during read");
 				let schema = self.file_schema.as_ref().expect("set when file opened");
 				self.rows = T::decode(&batch, schema).into_iter();
 				continue;
 			}
 			let file = self.files.next()?;
-			let (schema, batches) = self.catalog.read(&file.path).expect("catalog file unreadable during read");
+			let (schema, batches) = open(&file.path).expect("catalog file unreadable during read");
 			assert_schema_version(schema.as_ref());
 			if let Some(sig) = T::file_sig(schema.as_ref()) {
 				match self.sig {
@@ -71,7 +69,7 @@ impl<T: Row> Iterator for LaneReader<T> {
 				}
 			}
 			self.file_schema = Some(schema);
-			self.batches = batches.into_iter();
+			self.batches = Some(batches);
 		}
 	}
 }
@@ -81,9 +79,8 @@ fn lane_reader<T: Row>(catalog: &Catalog, key: LaneKey, start: Ts<T::Axis>, end:
 	// here, where the row type names it.
 	let files = catalog.list_range(&key, start.as_nanos(), end.as_nanos())?;
 	Ok(LaneReader {
-		catalog: catalog.clone(),
 		files: files.into_iter(),
-		batches: Vec::new().into_iter(),
+		batches: None,
 		rows: Vec::new().into_iter(),
 		file_schema: None,
 		sig: None,
@@ -141,7 +138,7 @@ pub(crate) fn snapshot_shape(row: &BookSnapshot, prec: PrecisionPriceQty) -> Boo
 pub(crate) fn lane_prec(catalog: &Catalog, keys: &[LaneKey]) -> Result<Option<PrecisionPriceQty>, CatalogError> {
 	for key in keys {
 		if let Some(file) = catalog.list(key)?.first() {
-			let (schema, _) = catalog.read(&file.path)?;
+			let (schema, _) = open(&file.path)?;
 			assert_schema_version(schema.as_ref());
 			return Ok(Some(prec_from_schema(schema.as_ref())));
 		}
@@ -158,11 +155,11 @@ pub(crate) fn pick_anchor(catalog: &Catalog, exchange: ExchangeName, symbol: Sym
 
 	if let Some(file) = candidate {
 		let mut newest: Option<BookSnapshot> = None;
-		let (schema, batches) = catalog.read(&file.path)?;
+		let (schema, batches) = open(&file.path)?;
 		assert_schema_version(schema.as_ref());
 		let prec = prec_from_schema(schema.as_ref());
 		for batch in batches {
-			for row in BookSnapshot::decode(&batch, schema.as_ref()) {
+			for row in BookSnapshot::decode(&batch?, schema.as_ref()) {
 				if row.ts_venue_exec > start {
 					continue;
 				}
@@ -212,7 +209,11 @@ mod tests {
 		}
 	}
 
-	const FOREVER: RotationPolicy = RotationPolicy { max_bytes: None, max_age: None };
+	const FOREVER: RotationPolicy = RotationPolicy {
+		max_bytes: None,
+		max_age: None,
+		zstd_level: 3,
+	};
 
 	fn venue(ns: i64) -> Ts<Venue> {
 		Ts::from_nanos(ns)

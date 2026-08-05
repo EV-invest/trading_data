@@ -1,12 +1,17 @@
 use std::{
+	collections::{HashMap, hash_map},
 	fs,
 	path::{Path, PathBuf},
+	sync::{Arc, Mutex},
 };
 
 use arrow::{array::RecordBatch, datatypes::SchemaRef};
 use parquet::{
-	arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
-	basic::Compression,
+	arrow::{
+		ArrowWriter,
+		arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder},
+	},
+	basic::{Compression, ZstdLevel},
 	file::properties::WriterProperties,
 };
 use thiserror::Error;
@@ -17,10 +22,17 @@ use crate::row::UnixNanos;
 #[derive(Clone, Debug)]
 pub struct Catalog {
 	root: PathBuf,
+	/// A lane's listing only ever changes through [`Catalog::write`] — refusing overlaps already
+	/// assumes nothing else writes here — so each is read off the disk once and maintained in
+	/// memory after. Shared across clones, because two handles to one root are one writer.
+	listings: Arc<Mutex<HashMap<LaneKey, Vec<FileEntry>>>>,
 }
 impl Catalog {
 	pub fn new(root: impl Into<PathBuf>) -> Self {
-		Self { root: root.into() }
+		Self {
+			root: root.into(),
+			listings: Arc::default(),
+		}
 	}
 
 	pub fn root(&self) -> &Path {
@@ -43,14 +55,25 @@ impl Catalog {
 		}
 	}
 
-	pub(crate) fn write(&self, key: &LaneKey, batch: &RecordBatch, ts_min: UnixNanos, ts_max: UnixNanos) -> Result<PathBuf, CatalogError> {
+	pub(crate) fn write(&self, p: Pending) -> Result<PathBuf, CatalogError> {
+		let Pending {
+			key,
+			batch,
+			ts_min,
+			ts_max,
+			zstd_level,
+		} = p;
 		assert!(ts_min <= ts_max, "ts_min must be <= ts_max");
 
-		let dir = self.lane_dir(key);
+		let dir = self.lane_dir(&key);
 		fs::create_dir_all(&dir)?;
 
-		let existing = self.list(key)?;
-		for e in &existing {
+		let mut listings = self.listings.lock().expect("a poisoned catalog has already lost a write");
+		let entries = match listings.entry(key) {
+			hash_map::Entry::Occupied(e) => e.into_mut(),
+			hash_map::Entry::Vacant(e) => e.insert(scan(&dir)?),
+		};
+		for e in entries.iter() {
 			if intervals_overlap((e.ts_min, e.ts_max), (ts_min, ts_max)) {
 				return Err(CatalogError::OverlappingInterval {
 					existing: (e.ts_min, e.ts_max),
@@ -61,52 +84,39 @@ impl Catalog {
 
 		let path = dir.join(format!("{ts_min}_{ts_max}.parquet"));
 		let file = fs::File::create(&path)?;
-		let props = WriterProperties::builder().set_compression(Compression::ZSTD(parquet::basic::ZstdLevel::default())).build();
+		let zstd = ZstdLevel::try_new(zstd_level).expect("a lane's rotation policy names a zstd level in range");
+		let props = WriterProperties::builder().set_compression(Compression::ZSTD(zstd)).build();
 		let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
-		writer.write(batch)?;
+		writer.write(&batch)?;
 		writer.close()?;
+
+		let at = entries.partition_point(|e| e.ts_min < ts_min);
+		entries.insert(at, FileEntry { path: path.clone(), ts_min, ts_max });
 		Ok(path)
 	}
 
 	pub(crate) fn list(&self, key: &LaneKey) -> Result<Vec<FileEntry>, CatalogError> {
-		let dir = self.lane_dir(key);
-		if !dir.exists() {
-			return Ok(Vec::new());
+		let mut listings = self.listings.lock().expect("a poisoned catalog has already lost a write");
+		Ok(match listings.entry(*key) {
+			hash_map::Entry::Occupied(e) => e.into_mut(),
+			hash_map::Entry::Vacant(e) => e.insert(scan(&self.lane_dir(key))?),
 		}
-		let mut entries = Vec::new();
-		for ent in fs::read_dir(&dir)? {
-			let ent = ent?;
-			let path = ent.path();
-			if path.extension().and_then(|s| s.to_str()) != Some("parquet") {
-				continue;
-			}
-			let stem = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| CatalogError::BadFilename(path.display().to_string()))?;
-			let (lo, hi) = stem.split_once('_').ok_or_else(|| CatalogError::BadFilename(path.display().to_string()))?;
-			let ts_min: i64 = lo.parse().map_err(|_| CatalogError::BadFilename(path.display().to_string()))?;
-			let ts_max: i64 = hi.parse().map_err(|_| CatalogError::BadFilename(path.display().to_string()))?;
-			entries.push(FileEntry { path, ts_min, ts_max });
-		}
-		entries.sort_by_key(|e| e.ts_min);
-		Ok(entries)
+		.clone())
 	}
 
 	pub(crate) fn list_range(&self, key: &LaneKey, start: UnixNanos, end: UnixNanos) -> Result<Vec<FileEntry>, CatalogError> {
 		Ok(self.list(key)?.into_iter().filter(|e| e.ts_max >= start && e.ts_min <= end).collect())
 	}
+}
 
-	/// Returns the file-level schema alongside the batches: per-batch schemas drop the
-	/// key-value metadata (precisions) that decode needs.
-	pub(crate) fn read(&self, path: &Path) -> Result<(SchemaRef, Vec<RecordBatch>), CatalogError> {
-		let file = fs::File::open(path)?;
-		let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-		let schema = builder.schema().clone();
-		let reader = builder.build()?;
-		let mut out = Vec::new();
-		for batch in reader {
-			out.push(batch?);
-		}
-		Ok((schema, out))
-	}
+/// Returns the file-level schema alongside a reader over its batches: per-batch schemas drop the
+/// key-value metadata (precisions) that decode needs. The reader is where the decompression
+/// happens, so a caller that wants only the schema pays for none of it — and one that wants the
+/// rows holds a batch at a time rather than the whole file inflated.
+pub(crate) fn open(path: &Path) -> Result<(SchemaRef, ParquetRecordBatchReader), CatalogError> {
+	let builder = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(path)?)?;
+	let schema = builder.schema().clone();
+	Ok((schema, builder.build()?))
 }
 
 #[derive(Debug, Error)]
@@ -133,6 +143,17 @@ pub(crate) enum LaneKey {
 	Mc { asset: Asset },
 }
 
+/// A finished batch and everywhere it goes. Detached from the [`Feather`](crate::Feather) that
+/// built it so the encode — up to a second of ZSTD on a full lane — can be spent somewhere other
+/// than the thread that filled it.
+pub(crate) struct Pending {
+	pub key: LaneKey,
+	pub batch: RecordBatch,
+	pub ts_min: UnixNanos,
+	pub ts_max: UnixNanos,
+	pub zstd_level: i32,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct FileEntry {
 	pub path: PathBuf,
@@ -142,6 +163,28 @@ pub(crate) struct FileEntry {
 
 fn intervals_overlap(a: (UnixNanos, UnixNanos), b: (UnixNanos, UnixNanos)) -> bool {
 	a.0 <= b.1 && b.0 <= a.1
+}
+
+/// Sorted by `ts_min`, which every reader of a listing relies on.
+fn scan(dir: &Path) -> Result<Vec<FileEntry>, CatalogError> {
+	if !dir.exists() {
+		return Ok(Vec::new());
+	}
+	let mut entries = Vec::new();
+	for ent in fs::read_dir(dir)? {
+		let ent = ent?;
+		let path = ent.path();
+		if path.extension().and_then(|s| s.to_str()) != Some("parquet") {
+			continue;
+		}
+		let stem = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| CatalogError::BadFilename(path.display().to_string()))?;
+		let (lo, hi) = stem.split_once('_').ok_or_else(|| CatalogError::BadFilename(path.display().to_string()))?;
+		let ts_min: i64 = lo.parse().map_err(|_| CatalogError::BadFilename(path.display().to_string()))?;
+		let ts_max: i64 = hi.parse().map_err(|_| CatalogError::BadFilename(path.display().to_string()))?;
+		entries.push(FileEntry { path, ts_min, ts_max });
+	}
+	entries.sort_by_key(|e| e.ts_min);
+	Ok(entries)
 }
 
 #[cfg(test)]
@@ -199,8 +242,9 @@ mod tests {
 		assert_eq!(listed[0].ts_min, 110);
 		assert_eq!(listed[0].ts_max, 110);
 
-		let (schema, read) = cat.read(&listed[0].path).unwrap();
+		let (schema, read) = open(&listed[0].path).unwrap();
 		assert!(schema.metadata().contains_key("price_precision"));
+		let read: Vec<RecordBatch> = read.map(Result::unwrap).collect();
 		assert_eq!(read.len(), 1);
 		assert_eq!(read[0].num_rows(), 1);
 	}

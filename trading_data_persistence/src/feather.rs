@@ -7,7 +7,7 @@ use arrow::{array::RecordBatch, datatypes::SchemaRef};
 use trading_data_core::{Asset, DeltaFrame, ExchangeName, PrecisionPriceQty, Symbol, TradeCols, Ts};
 
 use crate::{
-	catalog::{Catalog, CatalogError, LaneKey},
+	catalog::{Catalog, CatalogError, LaneKey, Pending},
 	row::{BookDelta, BookSnapshot, Mc, Oi, Row, Trade},
 };
 
@@ -15,6 +15,9 @@ use crate::{
 pub struct RotationPolicy {
 	pub max_bytes: Option<usize>,
 	pub max_age: Option<Duration>,
+	/// 1..=22. Archival lanes want the default 3; a live tee wants 1, where the encode is several
+	/// times faster for a few percent of size — the trade a recording that must not stall makes.
+	pub zstd_level: i32,
 }
 
 /// Typed lane writer: a key/schema mismatch is unrepresentable, push is monomorphic.
@@ -29,7 +32,7 @@ pub struct Feather<T: Row> {
 	oldest_ts: Option<Ts<T::Axis>>,
 	newest_ts: Option<Ts<T::Axis>>,
 	age_deadline: Option<Instant>,
-	next_check_at_rows: usize,
+	next_check_at_rows: Option<usize>,
 }
 
 impl Feather<Trade> {
@@ -41,18 +44,8 @@ impl Feather<Trade> {
 	/// left anywhere on this path is the one at the CSV parse boundary.
 	pub fn extend(&mut self, cols: TradeCols<'_>) {
 		assert_eq!(self.meta, cols.prec, "trade run's precision differs from the lane's");
-		let recv = cols.ts.recv;
-		for (i, &exec) in cols.exec().iter().enumerate() {
-			self.push(Trade {
-				ts_venue_exec: exec,
-				ts_venue_send: cols.ts.send.map(|s| s[i]),
-				ts_local_recv: recv.map(|r| r.last),
-				monotonic_seq: cols.monotonic_seq[i],
-				side: cols.side[i],
-				price: cols.price[i],
-				qty: cols.qty[i],
-			});
-		}
+		self.builders.extend(cols);
+		self.ran(cols.exec());
 	}
 }
 
@@ -74,20 +67,10 @@ impl Feather<BookDelta> {
 	}
 
 	pub(crate) fn extend(&mut self, frame: DeltaFrame<'_>) {
-		let (kind, cols) = (frame.kind(), frame.cols());
+		let cols = frame.cols();
 		assert_eq!(self.meta, cols.prec, "delta run's precision differs from the lane's");
-		let recv = cols.ts.recv;
-		for (i, &exec) in cols.exec().iter().enumerate() {
-			self.push(BookDelta {
-				ts_venue_exec: exec,
-				ts_local_recv: recv.map(|r| r.last).expect("a book lane is only ever written by a live recording"),
-				monotonic_seq: cols.monotonic_seq[i],
-				kind,
-				side: cols.side[i],
-				price: cols.price[i],
-				qty: cols.qty[i],
-			});
-		}
+		self.builders.extend(frame);
+		self.ran(cols.exec());
 	}
 }
 
@@ -99,19 +82,21 @@ impl Feather<BookSnapshot> {
 
 impl<T: Row> Feather<T> {
 	fn init(key: LaneKey, meta: T::Meta, policy: RotationPolicy) -> Self {
-		let next_check_at_rows = policy.max_bytes.map(|m| (m / T::PER_ROW_MIN).max(64)).unwrap_or(usize::MAX);
+		let rows_per_batch = policy.max_bytes.map(|m| (m / T::PER_ROW_MIN).max(64));
 		Self {
 			key,
 			schema: T::schema(meta),
 			meta,
 			policy,
-			builders: T::Builders::default(),
+			// `None` is a lane bounded by age alone — `Oi` and `Mc`, hundreds of rows a day between
+			// them — which is nothing to reserve for, and `with_capacity(0)` does not allocate.
+			builders: T::builders(rows_per_batch.unwrap_or(0)),
 			rows: 0,
 			approx_bytes: 0,
 			oldest_ts: None,
 			newest_ts: None,
 			age_deadline: None,
-			next_check_at_rows,
+			next_check_at_rows: rows_per_batch,
 		}
 	}
 
@@ -125,6 +110,23 @@ impl<T: Row> Feather<T> {
 		let was_empty = self.oldest_ts.is_none();
 		self.oldest_ts = Some(self.oldest_ts.map_or(ts, |o| o.min(ts)));
 		self.newest_ts = Some(self.newest_ts.map_or(ts, |n| n.max(ts)));
+		if was_empty && let Some(age) = self.policy.max_age {
+			self.age_deadline = Some(Instant::now() + age);
+		}
+	}
+
+	/// [`Self::push`]'s bookkeeping for a whole run appended columnar. Only the two fixed-width lanes
+	/// have a columnar source, and for those `PER_ROW_MIN` *is* the row size — so it is the run's
+	/// estimate here, not a floor.
+	fn ran(&mut self, axis: &[Ts<T::Axis>]) {
+		let Some((&lo, &hi)) = axis.iter().min().zip(axis.iter().max()) else {
+			return;
+		};
+		self.rows += axis.len();
+		self.approx_bytes += axis.len() * T::PER_ROW_MIN;
+		let was_empty = self.oldest_ts.is_none();
+		self.oldest_ts = Some(self.oldest_ts.map_or(lo, |o| o.min(lo)));
+		self.newest_ts = Some(self.newest_ts.map_or(hi, |n| n.max(hi)));
 		if was_empty && let Some(age) = self.policy.max_age {
 			self.age_deadline = Some(Instant::now() + age);
 		}
@@ -154,9 +156,11 @@ impl<T: Row> Feather<T> {
 		self.age_deadline.is_some_and(|t| Instant::now() >= t)
 	}
 
-	pub fn flush(&mut self, catalog: &Catalog) -> Result<Option<PathBuf>, CatalogError> {
+	/// The batch, and the feather back to empty. Splitting this out of [`Self::flush`] is what lets
+	/// a caller hand the encode to another thread instead of standing in it.
+	pub(crate) fn take(&mut self) -> Option<Pending> {
 		if self.rows == 0 {
-			return Ok(None);
+			return None;
 		}
 		let ts_min = self.oldest_ts.expect("set on first push");
 		let ts_max = self.newest_ts.expect("set on first push");
@@ -167,15 +171,28 @@ impl<T: Row> Feather<T> {
 		self.oldest_ts = None;
 		self.newest_ts = None;
 		self.age_deadline = None;
-		let path = catalog.write(&self.key, &batch, ts_min.as_nanos(), ts_max.as_nanos())?;
-		Ok(Some(path))
+		Some(Pending {
+			key: self.key,
+			batch,
+			ts_min: ts_min.as_nanos(),
+			ts_max: ts_max.as_nanos(),
+			zstd_level: self.policy.zstd_level,
+		})
+	}
+
+	pub(crate) fn maybe_take(&mut self) -> Option<Pending> {
+		if self.next_check_at_rows.is_none_or(|n| self.rows < n) && !self.age_deadline_passed() {
+			return None;
+		}
+		self.should_flush().then(|| self.take()).flatten()
+	}
+
+	pub fn flush(&mut self, catalog: &Catalog) -> Result<Option<PathBuf>, CatalogError> {
+		self.take().map(|p| catalog.write(p)).transpose()
 	}
 
 	pub fn maybe_flush(&mut self, catalog: &Catalog) -> Result<Option<PathBuf>, CatalogError> {
-		if self.rows < self.next_check_at_rows && !self.age_deadline_passed() {
-			return Ok(None);
-		}
-		if self.should_flush() { self.flush(catalog) } else { Ok(None) }
+		self.maybe_take().map(|p| catalog.write(p)).transpose()
 	}
 }
 
@@ -205,11 +222,16 @@ mod tests {
 		Ts::from_nanos(ns)
 	}
 
-	const FOREVER: RotationPolicy = RotationPolicy { max_bytes: None, max_age: None };
+	const FOREVER: RotationPolicy = RotationPolicy {
+		max_bytes: None,
+		max_age: None,
+		zstd_level: 3,
+	};
 
 	fn round_trip_batch<T: Row>(f: &mut Feather<T>, cat: &Catalog) -> Vec<T> {
 		let path = f.flush(cat).unwrap().expect("flush wrote a file");
-		let (schema, batches) = cat.read(&path).unwrap();
+		let (schema, batches) = crate::catalog::open(&path).unwrap();
+		let batches: Vec<_> = batches.map(Result::unwrap).collect();
 		assert_eq!(batches.len(), 1);
 		T::decode(&batches[0], schema.as_ref())
 	}
@@ -218,7 +240,16 @@ mod tests {
 	fn flush_writes_parquet_on_bytes_policy() {
 		let dir = tempdir().unwrap();
 		let catalog = Catalog::new(dir.path());
-		let mut feather = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), RotationPolicy { max_bytes: Some(1), max_age: None });
+		let mut feather = Feather::<BookDelta>::new(
+			ExchangeName::Binance,
+			test_symbol(),
+			prec(),
+			RotationPolicy {
+				max_bytes: Some(1),
+				max_age: None,
+				zstd_level: 3,
+			},
+		);
 		feather.push(BookDelta {
 			ts_venue_exec: venue(1),
 			ts_local_recv: local(1),

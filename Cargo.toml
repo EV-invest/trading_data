@@ -57,7 +57,9 @@ derive_more = { version = "^2.1", features = ["full"] }
 # feature (the wasm front-end) is never enabled from here.
 exec_viz = { path = "../exec_viz/exec_viz" }
 eyre = "^0.6"
-flate2 = "^1"
+# Named rather than inherited: `parquet` is what turns `zlib-rs` on today, and every trade archive
+# we inflate rides on that staying true. Dropping to the `miniz_oxide` default would be silent.
+flate2 = { version = "^1", features = ["zlib-rs"] }
 iai-callgrind = "0.16"
 indicatif = "^0.18"
 insta = "^1"

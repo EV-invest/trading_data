@@ -1,7 +1,7 @@
 //! Diamond over two multi-rate roots: `None` propagation through the DAG, plus an
 //! inference-stress graph (chain depth 10 + one arity-8 node, zero call-site annotations).
 
-use trading_data_dag::{Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Want, step, step_obs, value_nudge};
+use trading_data_dag::{Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Sweep, Want, step, step_obs, value_nudge};
 
 struct Trades;
 impl Cell for Trades {
@@ -123,14 +123,16 @@ fn trim(name: &str) -> &str {
 fn observer_sees_topo_order_deps_and_values() {
 	let mut rec = Rec::default();
 	let (mut a, mut b, mut c, mut d, mut cross) = (A, B, C, D, Cross);
+	let mut sweep = Sweep::default();
 	let mut tick = |trades: Option<f64>, quotes: Option<f64>, rec: &mut Rec| {
+		let sweep = &mut sweep;
 		let f = Cons::<Trades, Nil> { out: trades, tail: Nil };
 		let f = Cons::<Quotes, _> { out: quotes, tail: f };
-		let f = step_obs(f, &mut a, rec);
-		let f = step_obs(f, &mut b, rec);
-		let f = step_obs(f, &mut c, rec);
-		let f = step_obs(f, &mut d, rec);
-		let f = step_obs(f, &mut cross, rec);
+		let f = step_obs(f, &mut a, sweep, rec);
+		let f = step_obs(f, &mut b, sweep, rec);
+		let f = step_obs(f, &mut c, sweep, rec);
+		let f = step_obs(f, &mut d, sweep, rec);
+		let f = step_obs(f, &mut cross, sweep, rec);
 		(f.tail.head(), f.head())
 	};
 
@@ -232,7 +234,7 @@ impl Observer for JacRec {
 fn fd_linear_dep() {
 	let mut rec = JacRec::default();
 	let f = Cons::<Trades, Nil> { out: Some(2.0), tail: Nil };
-	step_obs(f, &mut A, &mut rec);
+	step_obs(f, &mut A, &mut Sweep::default(), &mut rec);
 	let jac = rec.0[0].as_ref().expect("A fired");
 	assert!((jac[0] - 2.0).abs() < 1e-3, "{jac:?}");
 }
@@ -261,7 +263,7 @@ fn fd_unfired_dep_nan_column() {
 	let mut rec = JacRec::default();
 	let f = Cons::<Trades, Nil> { out: None, tail: Nil };
 	let f = Cons::<Quotes, _> { out: Some(5.0), tail: f };
-	step_obs(f, &mut Level, &mut rec);
+	step_obs(f, &mut Level, &mut Sweep::default(), &mut rec);
 	let jac = rec.0[0].as_ref().expect("Level always fires");
 	assert!(jac[0].is_nan(), "{jac:?}");
 	assert!((jac[1] - 3.0).abs() < 1e-3, "{jac:?}");
@@ -289,7 +291,7 @@ impl Node for OnOff {
 fn fd_discrete_dep_nan_column() {
 	let mut rec = JacRec::default();
 	let f = Cons::<Gate, Nil> { out: true, tail: Nil };
-	step_obs(f, &mut OnOff, &mut rec);
+	step_obs(f, &mut OnOff, &mut Sweep::default(), &mut rec);
 	let jac = rec.0[0].as_deref().expect("OnOff always fires");
 	assert!(jac[0].is_nan(), "a dep that cannot be perturbed has no slope, not a zero one: {jac:?}");
 }
@@ -311,7 +313,7 @@ impl Node for Under {
 fn fd_bump_unfired_nan_column() {
 	let mut rec = JacRec::default();
 	let f = Cons::<Trades, Nil> { out: Some(1.0), tail: Nil };
-	step_obs(f, &mut Under, &mut rec);
+	step_obs(f, &mut Under, &mut Sweep::default(), &mut rec);
 	let jac = rec.0[0].as_ref().expect("fires at the boundary");
 	assert!(jac[0].is_nan(), "{jac:?}");
 }
