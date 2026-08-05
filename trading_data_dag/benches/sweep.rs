@@ -86,7 +86,7 @@ struct Probe {
 	sink: f64,
 }
 impl Observer for Probe {
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		self.want
 	}
 

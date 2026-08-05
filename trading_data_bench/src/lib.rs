@@ -259,7 +259,7 @@ struct Seen {
 }
 
 impl Observer for Census {
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		Want::Vals
 	}
 

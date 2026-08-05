@@ -5319,6 +5319,7 @@ name = "trading_data_expr"
 version = "0.3.0"
 dependencies = [
  "iai-callgrind",
+ "libm",
 ]
 
 [[package]]

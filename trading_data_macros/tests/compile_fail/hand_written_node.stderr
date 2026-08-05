@@ -1,0 +1,8 @@
+error: `impl Node` is written by `#[node]`, not by hand: a node declares which kernel computes it. Write `impl Symbolic` for an `Expr` body, or `impl Blind` — the stated hatch, which needs a `const WHY`
+  --> $DIR/trading_data_macros/tests/compile_fail/hand_written_node.rs:LL:CC
+  |
+LL | impl Node for Plain {
+  |      ^^^^
+
+error: aborting due to 1 previous error
+

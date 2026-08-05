@@ -55,7 +55,7 @@ SWEEP ── `tick(ts, Batches)`, one straight-line monomorphized fn; no dispatc
         │
         ▼
 OBSERVATION ── the same sweep, read. `()` observer ⇒ `want() = Nothing` ⇒ erased entirely.
-   Observer::on(name, dep names, dep gate flags, Fire { vals, jac, exact_jac, formula, … })
+   Observer::on(name, dep names, dep gate flags, Fire { vals, jac, exact, formula, … })
    Step order IS topo order, so the observed sequence doubles as the static topology; a dep
    name never seen as a stepped node is a root.
 ```
@@ -103,7 +103,6 @@ OBSERVATION ── the same sweep, read. `()` observer ⇒ `want() = Nothing` �
                     plain           gate-closed       no standing demand      + observer
   level node        step            step   (Dark)     step_when_obs (Latent)  step_obs
   emit node         step_emit       step_emit         step_emit(demanded=0)   step_emit_obs
-  Diff node         —               (forbidden)       step_exact_when         step_exact
 
    Dark<B: Bit> dispatches on `DepSet::Lead` — the LEADING dep's `Cell::Gates`:
       Dark<No>  ⇒ unreachable!()      an ungated node has no dark branch to evaluate
@@ -113,8 +112,8 @@ OBSERVATION ── the same sweep, read. `()` observer ⇒ `want() = Nothing` �
    own `Deps` say. That is the whole obligation the demand pass puts back on an author, and
    it asks for the TYPE: an out with no unfired reading cannot be skipped, and says so at
    compile time.
-   `step_exact` const-asserts its node is ungated: exact partials are stated over deps it
-   pulls every tick.
+   One observed step family, not two: what a fired node reports is its `Level` kernel's
+   business, so an exact reading and a finite-difference one are the same call.
    A declared `CLOCK` adds no row: `Emitter::opens` is read INSIDE `step_emit`, after the gate — so
    a shut node consumes no period, and the first tick it is let through is a boundary rather than
    the remainder of one it slept out.
@@ -268,9 +267,13 @@ _Who holds the history_ is the axis the wrappers actually partition:
   Cell                      type Out<'t>: Copy · NAME · REACH · FOLDED · RETAINED · CLOCK · Gates
    │                        the floor. A root is a Cell with no Node impl.
    │
-   ├── Node                 fn advance<'t>(&'t mut self, DepOuts<'t,Self>) -> Out<'t>
-   │    │                   SELF-BORROWS ⇒ a node lends its own buffer for the whole tick.
-   │    │                   ("nodes are Copy values" is dead; the buffer outlives the tick.)
+   ├── Node                 type Kernel: Level<Self>   — NO METHOD. Written by `#[node]`,
+   │    │                   never by hand: a node names the kernel that computes it, and the
+   │    │                   set is SEALED, so there is no body the engine cannot also read.
+   │    │                     Level::advance   the value
+   │    │                     Level::pre/jac   the derivative, priced per `Want`
+   │    │                     Level::formula   the equation, where the kernel has one
+   │    │                     Level::WHY       None ⇔ it has one
    │    │
    │    ├── Gate            Out<'t> = bool. Scalar-out always; the gated node may be batch,
    │    │    │              so a gated batch node's episode boundary is quantized to its
@@ -284,12 +287,19 @@ _Who holds the history_ is the axis the wrappers actually partition:
    │    │         └── Armed<N: Episodic>    the sealed-in latch: Cut = N by construction,
    │    │                                   Deps = (Folding<N::Trigger, Unbounded>,)
    │    │
-   │    └── Symbolic        fn body(&self, Vars) -> impl Expr    (Out = f64)
-   │                        ⇒ earns `Node` AND `Diff` by blanket impl, so it CANNOT compute
-   │                        any other way — the algebra is load-bearing. ≤ MAX_VARS = 8 deps,
-   │                        every dep scalar (const-asserted: a vector dep desyncs Var<I>).
+   │    ├── Symbolic       fn body(&self, Vars) -> impl Expr    (Out = f64)  ⇒ kernel `Pure`
+   │    │                   the algebra is load-bearing: there is no other way to state the
+   │    │                   value. ≤ MAX_VARS = 8 deps, every dep scalar (const-asserted: a
+   │    │                   vector dep desyncs Var<I>). Its Jacobian is `grad` — exact, one
+   │    │                   pass, no clone and no re-advance.
+   │    │
+   │    └── Blind           const WHY · fn advance(&'t mut self, ..)          ⇒ kernel `Opaque`
+   │                        SELF-BORROWS ⇒ a node lends its own buffer for the whole tick.
+   │                        The stated hatch: `WHY` is the cost of using it, and `graph!`
+   │                        counts it into `OPAQUE`. `Clone` is a supertrait because the
+   │                        finite-difference witness is what it has instead of a derivative.
    │
-   ├── Emit: Series         fn emit(&mut self, EmitOuts, out: &mut Vec<Item>)
+   ├── Emit: Series         const WHY · fn emit(&mut self, EmitOuts, out: &mut Vec<Item>)
    │                        Out<'t> = &'t [Item]. The ENGINE owns the run (`Emitter<E>`), so
    │                        the struct holds only what it remembers between ticks — and
    │                        `emit` cannot read what it wrote last tick. `&mut self`, not
@@ -318,7 +328,7 @@ _Who holds the history_ is the axis the wrappers actually partition:
   node((0, 0), align(center)[`Cell` \ #text(7pt)[`Out<'t>: Copy` · `NAME` · `REACH` · `FOLDED` · `RETAINED` · `CLOCK` · `Gates`]], fill: luma(235), name: <cell>),
 
   node((-2.4, 1.3), align(center)[`Symbolic` \ #text(7pt)[`body -> impl Expr`]], name: <sy>),
-  node((-1.1, 1.3), align(center)[`Node` \ #text(7pt)[`advance` self-borrows]], name: <nd>),
+  node((-1.1, 1.3), align(center)[`Node` \ #text(7pt)[`type Kernel`, no method]], name: <nd>),
   node((0.2, 1.3), align(center)[`Emit: Series` \ #text(7pt)[engine owns the run]], name: <em>),
   node((2.4, 1.3), align(center)[`Episodic` \ #text(7pt)[`Trigger` · `arms`]], name: <ep>),
 
@@ -327,11 +337,14 @@ _Who holds the history_ is the axis the wrappers actually partition:
   edge(<cell>, <em>, "->"),
   edge(<cell>, <ep>, "->"),
 
-  node((-2.4, 2.7), align(center)[`Diff` \ #text(7pt)[`exact_jac` · `formula`]], name: <di>),
+  node((-3.6, 1.3), align(center)[`Blind` \ #text(7pt)[`WHY` · `advance` self-borrows]], name: <bl>),
+  node((-3.0, 2.7), align(center)[`Level` (sealed) \ #text(7pt)[`Pure` · `Opaque`]], fill: rgb("#eef0e4"), name: <lv>),
   node((1.1, 2.7), align(center)[`Gate` \ #text(7pt)[`Out = bool`]], name: <ga>),
 
-  edge(<sy>, <nd>, "->", label: [blanket], label-size: 7pt),
-  edge(<sy>, <di>, "->", label: [blanket], label-size: 7pt),
+  edge(<cell>, <bl>, "->"),
+  edge(<sy>, <lv>, "->", label: [`Pure`], label-size: 7pt),
+  edge(<bl>, <lv>, "->", label: [`Opaque`], label-size: 7pt),
+  edge(<lv>, <nd>, "->", label: [`type Kernel`], label-size: 7pt),
   edge(<nd>, <ga>, "->"),
 
   node((-1.1, 4.1), align(center)[engine-owned nodes \ #text(7pt)[`Buffer<C,H>` · `Latest<C>`] \ #text(7pt)[ungated · historic · every tick]], fill: rgb("#e4edf5"), name: <eng2>),
@@ -367,8 +380,10 @@ _Who holds the history_ is the axis the wrappers actually partition:
               reason re-`advance`ing a short-lived clone typechecks against a self-borrow.
               Declared by `slice_nudge!` / `value_nudge!`.
   DepFlat     the whole dep tuple concatenated, in `Deps` order ⇒ one FD column per element
-  Diff        exact_jac + formula: Ast — free for every `Symbolic`, hand-impl'able for a
-              black-box stateful node with analytic partials
+  Jac         deps + their flattening + the row-major out_len × dep_len buffer a kernel
+              fills. ONE array, never two: an exact column and a finite-difference one are
+              the same quantity (a one-step impulse response), so `Fire` carries the array
+              and an `exact` flag beside it (`r[kernels.jac.one-reading]`).
   Glance      the one compact line a card shows; display-dual of `Flat`
   Episode     terminal() — `&[T]` is terminal if ANY element is (deliberately not `.last()`:
               that reads the value standing at end-of-batch, this asks whether the boundary
@@ -403,6 +418,9 @@ _Who holds the history_ is the axis the wrappers actually partition:
                and leave the buffer indistinguishable from an unfired one, which is the one way
                absence could come to mean two things (§1.6).
   Plot         `Plot::coherent` — a multi-plot node must name each plot's slots.
+  Level        sealed by a private supertrait — the kernel set is the framework's, and each
+               kernel demands its body trait, so naming one you have no body for does not
+               compile (`r[kernels.closed]`).
   Symbolic     every dep scalar, arity ≤ MAX_VARS.
   graph!       `distinct` node names · `cut_gated` · `deadlocked` · `clock_divides(CLOCK, CLOCKS)`
                — a node's declared rate must be a whole multiple of every rate feeding it, else it
@@ -471,6 +489,7 @@ _Who holds the history_ is the axis the wrappers actually partition:
   ("impl Cell", "\bimpl\b[^\n{;]*\bCell\b[^\n{;]*\bfor\b"),
   ("impl Emit", "\bimpl\b[^\n{;]*\bEmit\b[^\n{;]*\bfor\b"),
   ("impl Symbolic", "\bimpl\b[^\n{;]*\bSymbolic\b[^\n{;]*\bfor\b"),
+  ("impl Blind", "\bimpl\b[^\n{;]*\bBlind\b[^\n{;]*\bfor\b"),
   ("impl Gate", "\bimpl\b[^\n{;]*\bGate\b[^\n{;]*\bfor\b"),
   ("impl Episodic", "\bimpl\b[^\n{;]*\bEpisodic\b[^\n{;]*\bfor\b"),
   ("Armed<_>", "\bArmed\s*<"),

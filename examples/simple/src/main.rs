@@ -179,7 +179,7 @@ struct SignalDoc {
 }
 impl Observer for SignalDoc {
 	/// The formula and its derivatives are the `Jac` reading, so that is what it asks for.
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		Want::Jac
 	}
 

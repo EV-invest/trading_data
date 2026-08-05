@@ -63,7 +63,7 @@ they work.
 
 | document | covers |
 |---|---|
-| [`trading_data_dag/model.typ`](../trading_data_dag/model.typ) | declaration → derivation → sweep → observation; the six dep spellings and what each retains; the step family; `Horizon`/`CLOCK`; the out plane (`Flat`, `Diff`, `Latent`, …); every enforcement point; a compile-time census of which primitives the examples actually use |
+| [`trading_data_dag/model.typ`](../trading_data_dag/model.typ) | declaration → derivation → sweep → observation; the six dep spellings and what each retains; the step family; `Horizon`/`CLOCK`; the out plane (`Flat`, `Jac`, `Latent`, …); every enforcement point; a compile-time census of which primitives the examples actually use |
 | [`trading_data_persistence/weaver.typ`](../trading_data_persistence/weaver.typ) | the `Arrival` key and the read clock; the lane; the merge step; the five lanes and their shapes; the two feeds; what the live/replay round-trip proves and at what strength |
 
 The same pattern is meant to repeat downward: a document reasons in the primitives of its own

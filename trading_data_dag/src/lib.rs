@@ -2278,16 +2278,21 @@ pub enum Want {
 /// Step order IS topo order, so the observed sequence doubles as the graph's static topology; dep
 /// names never seen as stepped nodes are roots — apps seed root activations via [`observe_root`].
 pub trait Observer {
-	/// Asked once per step. No default: an observer that has not said what it reads is one nobody
-	/// priced, and the answer costs the graph a re-advance per dep slot.
-	fn want(&self) -> Want;
+	/// Asked once per step, of the node about to run. No default: an observer that has not said what
+	/// it reads is one nobody priced, and the answer can cost that node a re-advance per dep slot.
+	///
+	/// Per-node, so only the node actually being inspected pays. Sound because a Jacobian is
+	/// node-local — nothing downstream can see whether an upstream node was observed
+	/// (`r[observe.noninvasive]`) — which is what lets a consumer schedule the expensive reading
+	/// instead of amortizing it.
+	fn want(&self, node: &'static str) -> Want;
 	/// `gates` is [`DepSet::GATES`]: positional with `deps`, marking the ones that are control edges
 	/// rather than data. All-`false` for ungated nodes, empty for roots.
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>);
 }
 
 impl Observer for () {
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		Want::Nothing
 	}
 
@@ -2296,8 +2301,8 @@ impl Observer for () {
 
 /// So a long-lived observer can be composed into a per-tick pair without being moved into it.
 impl<O: Observer + ?Sized> Observer for &mut O {
-	fn want(&self) -> Want {
-		(**self).want()
+	fn want(&self, node: &'static str) -> Want {
+		(**self).want(node)
 	}
 
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
@@ -2307,8 +2312,8 @@ impl<O: Observer + ?Sized> Observer for &mut O {
 
 /// Two interpretations of the same sweep — e.g. an app's own assertions next to a viz recorder.
 impl<A: Observer, B: Observer> Observer for (A, B) {
-	fn want(&self) -> Want {
-		self.0.want().max(self.1.want())
+	fn want(&self, node: &'static str) -> Want {
+		self.0.want(node).max(self.1.want(node))
 	}
 
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
@@ -2431,7 +2436,7 @@ where
 		)
 	}
 
-	let want = obs.want();
+	let want = obs.want(N::NAME);
 
 	// gate closed or nobody reading: no advance, no dep flatten, no derivative — an unfired `Fire` is
 	// the honest view.
@@ -2523,7 +2528,7 @@ where
 		)
 	}
 	e.buf.clear();
-	let want = obs.want();
+	let want = obs.want(E::NAME);
 
 	// gate closed, nobody reading, or the period still running: no emit, no dep flatten, no FD — the
 	// empty run is the honest view.
@@ -2745,7 +2750,7 @@ where
 	C: Cell,
 	C::Out<'t>: Flat + Glance,
 	O: Observer, {
-	if obs.want() == Want::Nothing {
+	if obs.want(C::NAME) == Want::Nothing {
 		return;
 	}
 	let mut vals = alloc::vec![f64::NAN; <C::Out<'t> as Flat>::LEN];

@@ -131,6 +131,23 @@ trading_data::graph! {
 	outputs { bar_1m: trading_data::Bars<{ TF_1MIN }>, deprecator: Deprecator, rsi: Rsi }
 }
 
+/// The hatch, pinned (`r[kernels.opaque.stated]`). Every node here computes in Rust and says so; the
+/// number may fall silently, and it may only rise in a diff that argues for it.
+const HATCH: usize = {
+	let (mut n, mut i) = (0, 0);
+	while i < Graph::OPAQUE.len() {
+		if Graph::OPAQUE[i].1.is_some() {
+			n += 1;
+		}
+		i += 1;
+	}
+	n
+};
+const _: () = assert!(
+	HATCH == 31,
+	"the opaque count moved: write algebra, or say in the commit why this graph needs another hand-written node"
+);
+
 /// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that
 /// declined this tick is not a publish, so the cached level stands.
 fn latest<T: Copy>(slot: &mut Option<T>, dep: &[Option<T>], ticks: usize) {

@@ -214,7 +214,7 @@ impl Bill {
 }
 
 impl Observer for Bill {
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		Want::Jac
 	}
 
@@ -261,7 +261,7 @@ struct Probe {
 }
 
 impl Observer for Probe {
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		self.want
 	}
 

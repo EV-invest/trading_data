@@ -203,7 +203,7 @@ fn flat_reads_fresh_only() {
 		src: Option<(usize, Vec<f64>)>,
 	}
 	impl Observer for Rec {
-		fn want(&self) -> Want {
+		fn want(&self, _: &'static str) -> Want {
 			Want::Vals
 		}
 

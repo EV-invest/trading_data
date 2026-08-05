@@ -120,7 +120,7 @@ fn diamond_option_propagation() {
 #[derive(Default)]
 struct Rec(Vec<(&'static str, &'static [&'static str], String)>);
 impl Observer for Rec {
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		Want::Vals
 	}
 
@@ -247,7 +247,7 @@ fn inference_stress_depth_10_arity_8() {
 #[derive(Default)]
 struct JacRec(Vec<Option<Vec<f64>>>);
 impl Observer for JacRec {
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		Want::Jac
 	}
 
@@ -296,6 +296,58 @@ fn fd_unfired_dep_nan_column() {
 	let jac = rec.0[0].as_ref().expect("Level always fires");
 	assert!(jac[0].is_nan(), "{jac:?}");
 	assert!((jac[1] - 3.0).abs() < 1e-3, "{jac:?}");
+}
+
+/// A node that *remembers*, so "observing does not move the graph" is a claim with something to be
+/// wrong about: the finite-difference witness re-advances a clone `dep_len` times, and every one of
+/// those advances would show up in `sum` if it touched the real node.
+#[derive(Clone, Default)]
+struct Tally {
+	sum: f64,
+}
+impl Cell for Tally {
+	type Out<'t> = f64;
+}
+value_nudge!(Tally);
+#[node]
+impl Blind for Tally {
+	type Deps = (Trades, Quotes);
+
+	const WHY: &'static str = "a state fixture: what it accumulates is the point, not what it computes";
+
+	fn advance<'t>(&'t mut self, (t, q): DepOuts<'t, Self>) -> Self::Out<'t> {
+		self.sum += t.unwrap_or(0.0) + q.unwrap_or(0.0);
+		self.sum
+	}
+}
+
+/// Reads whatever it is told to, and keeps only the outs — the two runs differ in `Want` and in
+/// nothing else.
+struct AtWant(Want);
+impl Observer for AtWant {
+	fn want(&self, _: &'static str) -> Want {
+		self.0
+	}
+
+	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], _: Fire<'_>) {}
+}
+
+// r[verify observe.noninvasive]
+#[test]
+fn a_tick_lands_where_it_would_have_unobserved() {
+	fn run(want: Want) -> Vec<f64> {
+		let (mut tally, mut obs) = (Tally::default(), AtWant(want));
+		(1..=5)
+			.map(|i| {
+				let f = Cons::<Trades, Nil> { out: Some(i as f64), tail: Nil };
+				let f = Cons::<Quotes, _> { out: Some(i as f64 * 0.5), tail: f };
+				step_obs(f, &mut tally, &mut obs).head()
+			})
+			.collect()
+	}
+	let unobserved = run(Want::Nothing);
+	assert_eq!(unobserved, run(Want::Vals));
+	assert_eq!(unobserved, run(Want::Jac), "a Jacobian is taken off a clone, so the run it is taken during is the same run");
 }
 
 struct Gate;
