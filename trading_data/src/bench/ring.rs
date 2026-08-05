@@ -3,7 +3,7 @@
 //!
 //! `Hist`'s fields are private and only [`crate::Buffering`] constructs one — but
 //! `Buffering<C, H>: Nudge` is public, and `Nudge::view` is exactly "read this scratch back as the
-//! dep's out". So the scratch tuple *is* the buffer, and this owns one.
+//! dep's out". So the scratch *is* the buffer's [`Rows`], and this owns one.
 //!
 //! Retention is unbounded where the frame's `Buffer<C, K>` trims to `K`, and the two are
 //! nonetheless the same reading. `Hist::all` re-cuts to the consumer's declared horizon, so extra
@@ -17,35 +17,28 @@
 //! rows, and OI publishes 288 times. Trim to the join of the declared reaches if a window ever runs
 //! long enough for that to matter.
 
-use crate::{Nudge, Stamped};
+use crate::{Batch as _, Horizon, Nudge, Rows, Stamped};
 
 pub struct Ring<T> {
-	/// `<Buffering<C, H> as Nudge>::Scratch` — (all, fresh, watermark), spelled structurally because
-	/// naming it needs the `H` each reader declares.
-	scratch: (Vec<T>, usize, i64),
+	rows: Rows<T>,
 }
-impl<T: Clone + Stamped> Ring<T> {
+
+// hand-written: `derive` would demand `T: Default`, which no retained row is.
+impl<T> Default for Ring<T> {
+	fn default() -> Self {
+		Self { rows: Rows::default() }
+	}
+}
+impl<T: Copy + Stamped> Ring<T> {
 	/// One tick's batch, empty batches included — `fresh` is what the reading is rate-preserving
 	/// against, so a tick that published nothing has to say so.
 	pub fn push(&mut self, fresh: &[T]) {
-		if self.scratch.2 == i64::MIN
-			&& let Some(f) = fresh.first()
-		{
-			self.scratch.2 = f.ts_ns();
-		}
-		self.scratch.0.extend_from_slice(fresh);
-		self.scratch.1 = fresh.len();
+		self.rows.advance(fresh, Horizon::Elems(usize::MAX));
 	}
 
 	/// The history as the reader's own `Buffering<C, H>` sees it. `B` is that dep, written out at
 	/// the call site — the horizon lives in the type, and nothing else can supply it.
-	pub fn hist<B: Nudge<Scratch = (Vec<T>, usize, i64)>>(&self) -> B::Out<'_> {
-		B::view(&self.scratch)
-	}
-}
-
-impl<T> Default for Ring<T> {
-	fn default() -> Self {
-		Self { scratch: (Vec::new(), 0, i64::MIN) }
+	pub fn hist<B: Nudge<Scratch = Rows<T>>>(&self) -> B::Out<'_> {
+		B::view(&self.rows)
 	}
 }

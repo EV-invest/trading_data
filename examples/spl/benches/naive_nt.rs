@@ -4,7 +4,8 @@
 #[path = "nt/mod.rs"]
 mod nt;
 
-fn main() {
+#[tokio::main]
+async fn main() {
 	nt::run(
 		"naive_nt",
 		false,
@@ -12,5 +13,6 @@ fn main() {
 			"every feed subscribed for the whole run".into(),
 			"every indie recomputed on every event it clocks off, hit or miss".into(),
 		],
-	);
+	)
+	.await;
 }

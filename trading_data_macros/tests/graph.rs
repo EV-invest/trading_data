@@ -93,6 +93,10 @@ impl Latch for Live {
 	fn commutate(&mut self) {
 		self.armed = false;
 	}
+
+	fn standing(&self) -> bool {
+		self.armed
+	}
 }
 
 /// Episode: two degrading ticks, terminal on the third. Fresh from `Default`.

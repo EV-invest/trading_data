@@ -2,12 +2,12 @@ use std::time::Duration;
 
 use arrow::datatypes::{Schema, SchemaRef};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
-use trading_data_core::{Aggregate, Asset, Book, BookShape, Exact, ExchangeName, Local, PrecisionPriceQty, Span, Symbol, Ts, Venue};
+use trading_data_core::{Aggregate, Asset, Book, BookDelta, BookShape, Exact, ExchangeName, Local, PrecisionPriceQty, Span, Symbol, Ts, Venue};
 use trading_data_dag::{DepSet, Horizon, Node};
 
 use crate::{
 	catalog::{Catalog, CatalogError, FileEntry, LaneKey, open},
-	row::{BookDelta, BookSnapshot, FileSig, Mc, Oi, Row, SCHEMA_VERSION, Trade, prec_from_schema, sealed::Sealed},
+	row::{BookSnapshot, FileSig, Mc, Oi, Row, SCHEMA_VERSION, Trade, prec_from_schema, sealed::Sealed},
 };
 
 /// A stored file's `schema_version` must match ours exactly — no silent cross-version reads.
@@ -236,6 +236,7 @@ mod tests {
 	fn write_delta(cat: &Catalog, ts: i64, mseq: u64) {
 		let mut f = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), FOREVER);
 		f.push(BookDelta {
+			prec: prec(),
 			ts_venue_exec: venue(ts),
 			ts_local_recv: Ts::from_nanos(ts),
 			monotonic_seq: mseq,

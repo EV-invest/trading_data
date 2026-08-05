@@ -62,8 +62,9 @@ LIVE ── the recording direction                          REPLAY ── the r
  Arrival = max(clock.now_ns(), last+1)   ◀── THE DECISION      asserts schema_version and metadata
    │                                                          consistency across the whole range
    ├─ recv_of(a) ⇒ Ts<Local> written onto every row ─────┐            │
-   ├─ ShadowBook::ingest  ⇒ DeltaFrame{Update|Correction}│            ▼  effective(recv, axis, sampler)
-   │  ShadowBook::checkpoint ⇒ BookShape (our cadence)   │      Some(recv) ⇒ that IS the live key, read back
+   ├─ ShadowBook::ingest  ⇒ &[BookDelta] (each carries   │            ▼  effective(recv, axis, sampler)
+   │     kind = Update | Correction)                     │      Some(recv) ⇒ that IS the live key, read back
+   │  ShadowBook::checkpoint ⇒ BookShape (period base)   │
    ├─ tee ⇒ Feather<T> builders ⇒ RecordBatch ⇒ parquet ─┘      None       ⇒ seeded latency draw off the
    └─ Lane<C>: buf.extend(cols) ; ts.resize(+n, a)                          venue axis (historic ingest)
                     │                                                       │
@@ -173,9 +174,11 @@ is evidence of anything: `Live` and `Replay` differ only in how a `Lane` gets fi
                  (no other lane has a head ⇒ i64::MAX: nothing left to interleave against)
   4.  assert     win_ts >= prev_emit                       the whole weave, in one line
   5.  run      = buf[cur .. run_end(bound)]                maximal prefix whose keys stay <= bound
-                 deltas use `run_end_of_kind`: a run also breaks where `FrameKind` changes, because
-                 a `DeltaFrame` wraps the RUN, not the row — an Update and a Correction are not the
-                 same kind of thing and must not reach a consumer as one frame.
+                 EVERY lane cuts on the same bound, deltas included. Until the delta lane became a
+                 run of rows it cut on `run_end_of_kind` as well — a `DeltaFrame` wrapped the RUN,
+                 so an Update and a Correction could not reach a consumer as one frame. `kind` is
+                 per row now (it always was, on disk), so that break has nothing left to protect
+                 and is gone. See §1.8.
   6.  prev_emit = the run's LAST key; that is also `Lanes::arrival`.
       ts_venue  = the run's LAST element's venue reading — the tick's event time.
 ```
@@ -191,7 +194,7 @@ is evidence of anything: `Live` and `Replay` differ only in how a `Lane` gets fi
 
   And a run's shape is that lane's nature:
      TradeCols<'t> / &[Oi] / &[Mc]        a FLOW      — every element is an event
-     DeltaFrame<'t>                       a flow WITH IDENTITY — hence the kind break
+     &[BookDelta]                         a FLOW whose elements CARRY their identity (`kind`)
      Option<&BookShape>                   a LEVEL     — `buf[a.0..a.1].last()`: a run of
                                                         checkpoints collapses to the newest, because
                                                         the older ones are superseded, not skipped
@@ -283,7 +286,12 @@ is evidence of anything: `Live` and `Replay` differ only in how a `Lane` gets fi
   table.header([*lane*], [*row*], [*axis*], [*weave shape*], [*key comes from*], [*notes*]),
   [`Trades`], [`Trade`], [`Venue`], [`TradeCols<'t>`], [recorded or sampled], [`ts_local_recv: Option` — absent means historic ingest, we were not there.],
 
-  [`BookDeltas`], [`BookDelta`], [`Venue`], [`DeltaFrame<'t>`], [recorded], [written ONLY by a live recording, so `ts_local_recv` is not optional. Carries `kind`, not the venue's `gapped`.],
+  [`BookDeltas`],
+  [`BookDelta`],
+  [`Venue`],
+  [`&'t [BookDelta]`],
+  [recorded],
+  [written ONLY by a live recording, so `ts_local_recv` is not optional. Carries `kind`, not the venue's `gapped`.],
 
   [`BookAnchors`], [`BookSnapshot`], [`Venue`], [`Option<&BookShape>`], [recorded, or `Arrival::MIN`], [our checkpoints, on our cadence (60 s). The pre-range one is state carried in.],
 
@@ -376,17 +384,32 @@ is evidence of anything: `Live` and `Replay` differ only in how a `Lane` gets fi
 
      venue input                    emitted                       persisted
      ─────────────────────────────────────────────────────────────────────────────────────
-     delta, chain intact            DeltaFrame::Update            the levels, verbatim
-     delta, gapped                  DeltaFrame::Correction        levels + kind
+     delta, chain intact            rows with kind = Update       the levels, verbatim
+     delta, gapped                  rows with kind = Correction   levels + kind
      snapshot agreeing with us      nothing                       nothing
-     snapshot disagreeing           DeltaFrame::Correction        exactly the diffs
-     our cadence elapsed            BookShape checkpoint          a snapshot row
+     snapshot disagreeing           rows with kind = Correction   exactly the diffs
+     our cadence PERIOD opened      BookShape checkpoint          a snapshot row
      venue snapshot                 —                             NEVER stored
 
   So the delta lane on disk is our own recollection, gapless and self-consistent; `Book::step` folds
-  both kinds identically, and the kind survives as the frame's IDENTITY so a flow or imbalance node
-  must say which it means and cannot fabricate signal out of a dropped websocket packet. The one
-  step that was nondeterministic has been moved off the replay path entirely.
+  both kinds identically, and the kind rides along per row so a flow or imbalance node must say
+  which it means and cannot fabricate signal out of a dropped websocket packet. The one step that
+  was nondeterministic has been moved off the replay path entirely.
+
+  §1.8 — WHAT THE PER-ROW KIND GAVE UP. It used to be the FRAME's identity: a consumer could not
+  reach the levels without destructuring `DeltaFrame`, so ignoring the distinction was a thing you
+  had to do on purpose. It is a field now, and a filter is easy to forget where a `match` was not.
+  That was paid for deliberately: `Buffering` needs a `Series`, a `Series` is a run of items, and a
+  run of items is what makes the book gateable at all (see `trading_data_dag/model.typ` §1.3). The
+  weaver kept runs kind-homogeneous for exactly one live reader; disk rows and the accumulator's
+  own `kind` column were per row throughout, so the run-level enum was a proxy the weaver worked to
+  maintain rather than a fact it recorded.
+
+  The checkpoint cadence is likewise ABSOLUTE now — the period floored from the epoch, not the time
+  since the last write. A reader's retention tumbles on that same grid, and a book waking mid-period
+  needs a checkpoint taken INSIDE that period; a relative cadence only ever promises one within a
+  cadence of some earlier write. Live still emits on arrival and never batches: `checkpoint` is
+  called per ingested message, so the first arrival past a boundary carries it.
 
   The exception proves the rule: a row whose `ts_local_recv` is `None` had no decision recorded
   because we were not there. That one is re-derived — and made deterministic by seeding the sampler

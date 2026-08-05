@@ -183,8 +183,9 @@ impl Horizon {
 		}
 	}
 
-	/// Only a [`Horizon::Span`] has one; the caller has already matched the variant.
-	const fn ns(tf: Timeframe) -> i64 {
+	/// Only a [`Horizon::Span`] has one; the caller has already matched the variant. Public because a
+	/// [`Batch`] written outside this crate has to turn its declared reach into a period.
+	pub const fn ns(tf: Timeframe) -> i64 {
 		(tf.0 * 1_000_000) as i64
 	}
 }
@@ -321,6 +322,21 @@ pub trait Cell {
 	/// ever sees again. Hence [`Emitter::opens`]: the engine enforces a declared rate only where it
 	/// holds every input the node would have read.
 	const RETAINED: bool = false;
+
+	/// Whether a tick skipped costs this cell nothing a later tick cannot recover. False by default: a
+	/// node that folds a batch it will never see again is the usual case, and a pass-through is the
+	/// same thing one hop on.
+	///
+	/// This is what lets a *latch* enter the demand formula of something upstream of it. A gate stepped
+	/// earlier is read off the frame, so it darkens its producers on the same tick its consumer is
+	/// dark; a latch is read from [`Latch::standing`] at tick start, so it darkens them one tick ahead
+	/// of the consumer arming. Only a cell that says it survives that lost tick may be suppressed by
+	/// one.
+	///
+	/// Here rather than on [`Node`] for the reason [`CLOCK`](Cell::CLOCK) is — an [`Emit`] node has no
+	/// [`Node`] impl to state it on, and whether a skip is survivable is the cell's own to say either
+	/// way, not something each consumer restates.
+	const REWARMS: bool = false;
 
 	/// How often this cell publishes, stated on the cell because the rate is a property of what a
 	/// thing *is* and of nothing it reads (`rates.node.declared`). `None` — whenever its inputs do.
@@ -772,12 +788,14 @@ pub trait Nudge: Cell {
 /// declaration — "this out is a run of `$E`" is exactly what both traits need to know.
 ///
 /// A generic node writes its parameters (bounds and all) in leading brackets:
-/// `slice_nudge!([B: Series<Item = Bar>] RsiDelta<B>, f64)`.
+/// `slice_nudge!([B: Series<Item = Bar>] RsiDelta<B>, f64)`. A third argument names a [`Batch`]
+/// other than the default [`Rows`].
 #[macro_export]
 macro_rules! slice_nudge {
-	([$($g:tt)*] $C:ty, $E:ty) => {
+	([$($g:tt)*] $C:ty, $E:ty, $B:ty) => {
 		impl<$($g)*> $crate::Series for $C {
 			type Item = $E;
+			type Batch = $B;
 		}
 
 		impl<$($g)*> $crate::Nudge for $C {
@@ -801,8 +819,14 @@ macro_rules! slice_nudge {
 			}
 		}
 	};
+	([$($g:tt)*] $C:ty, $E:ty) => {
+		$crate::slice_nudge!([$($g)*] $C, $E, $crate::Rows<$E>);
+	};
+	($C:ty, $E:ty, $B:ty) => {
+		$crate::slice_nudge!([] $C, $E, $B);
+	};
 	($C:ty, $E:ty) => {
-		$crate::slice_nudge!([] $C, $E);
+		$crate::slice_nudge!([] $C, $E, $crate::Rows<$E>);
 	};
 }
 
@@ -1291,6 +1315,10 @@ where
 	/// through one of the two traits that declare them and rules out an [`Emit`] for nothing.
 	type Cut: Cell;
 	fn commutate(&mut self);
+	/// The contact as it stands *before* this tick's sweep — the one gate reading whose value does not
+	/// depend on sweep order, which is what lets it suppress what feeds it. Read after the deferred
+	/// commutation, so a spent episode is already open.
+	fn standing(&self) -> bool;
 }
 
 /// A node that runs a self-terminating episode, latched from inside the graph. `Trigger` is the one
@@ -1387,6 +1415,10 @@ where
 	fn commutate(&mut self) {
 		self.0 = false;
 	}
+
+	fn standing(&self) -> bool {
+		self.0
+	}
 }
 
 /// Uniform binder-correct dep-tuple type for `advance` impls (concrete types there hit E0195).
@@ -1436,6 +1468,169 @@ where
 	/// `'static` because [`Cell::Out`] carries no where-clause an impl could widen: an element that
 	/// itself borrows the tick could never satisfy `Hist<'t, Item>`.
 	type Item: Copy + 'static;
+	/// How a [`Buffer`] over this series accumulates its reach. [`Rows`] — every row, handed out as a
+	/// [`Hist`] — unless the series says otherwise. Unbounded here: only a *buffered* series owes a
+	/// working [`Batch`], and the `Item: Stamped` [`Rows`] needs is not every series' to carry.
+	type Batch: 'static;
+}
+
+/// How a [`Buffer`] holds a [`Series`]' retained reach. The default [`Rows`] keeps every row; a
+/// series whose rows collapse — a book's levels keep only the last qty per price — implements its
+/// own and pays its own state rather than the row count.
+///
+/// **[`Horizon`] means whatever the impl makes it mean.** [`Rows`] slides: it trims by `ts_ns` on
+/// every tick, so `Span(tf)` is the last `tf` of wall clock ending now. A batch that folds cannot
+/// un-fold, so it has nothing to trim and can only *tumble* — reset on the absolute period boundary,
+/// floored from the epoch. Both are the same declaration and different windows. What contains it is
+/// that the views are different types, so no consumer can read one as the other.
+/// `Clone` because [`fd_col`] re-owns the whole frame once per dep element — a retention that
+/// cannot be copied cannot be differenced.
+pub trait Batch<T>: Clone + Default {
+	type View<'t>: Copy
+	where
+		Self: 't,
+		T: 't;
+
+	/// Trim to `h`, then append `fresh`. Trimming *before* the append is what makes `past` mean "what
+	/// stood behind this tick's batch" — see the note at [`Buffer`].
+	fn advance(&mut self, fresh: &[T], h: Horizon);
+
+	/// What stands retained, read at the reach `h` its consumer declared.
+	fn view(&self, h: Horizon) -> Self::View<'_>;
+
+	/// The same, for a consumer holding only a view — [`Buffering`]'s read of the frame's [`Buffer`],
+	/// whose `K` the const-assert there has already proven [`serves`](Horizon::serves) `h`.
+	fn narrow<'t>(view: Self::View<'t>, h: Horizon) -> Self::View<'t>
+	where
+		Self: 't,
+		T: 't;
+
+	/// [`Nudge::stage`] for the retention: re-own `view`, perturbing its newest item when asked.
+	fn stage(&mut self, view: Self::View<'_>, bump: Option<usize>, h: f64) -> f64
+	where
+		T: Bump;
+}
+
+/// The default [`Batch`]: every row, trimmed on timestamps, handed out as a [`Hist`].
+pub struct Rows<T> {
+	buf: alloc::vec::Vec<T>,
+	/// Where the retained window starts. Trimming by `drain(..n)` memmoved the whole window every
+	/// tick — the window is the point, so it is never small — where a cursor moves nothing and the
+	/// window stays the one contiguous slice [`Hist`] hands out.
+	cur: usize,
+	/// The highest `ts_ns` this batch cannot speak for: the last one dropped, or — before the first
+	/// drop — the first one ever seen, since nothing proves the run reached back past it. A
+	/// [`Horizon::Span`] window is complete iff it begins strictly after this, which is exact where
+	/// "have I been running long enough" is a guess.
+	watermark: i64,
+	fresh: usize,
+}
+
+// hand-written: `derive` would demand `T: Default` / `T: Clone`, which a retained item need not be.
+impl<T> Default for Rows<T> {
+	fn default() -> Self {
+		Self {
+			buf: alloc::vec::Vec::new(),
+			cur: 0,
+			watermark: i64::MIN,
+			fresh: 0,
+		}
+	}
+}
+impl<T: Clone> Clone for Rows<T> {
+	fn clone(&self) -> Self {
+		Self {
+			buf: self.buf[self.cur..].to_vec(),
+			cur: 0,
+			watermark: self.watermark,
+			fresh: self.fresh,
+		}
+	}
+
+	/// The one thing `derive(Clone)` would not have given: its `clone_from` is `*self = clone()`, and
+	/// a batch holding a whole reach is what [`fd_col`] re-clones once per dep element. Only the
+	/// retained window is carried — the dropped prefix is waiting to be reclaimed, not state.
+	fn clone_from(&mut self, src: &Self) {
+		self.buf.clear();
+		self.buf.extend_from_slice(&src.buf[src.cur..]);
+		self.cur = 0;
+		self.watermark = src.watermark;
+		self.fresh = src.fresh;
+	}
+}
+
+impl<T: Copy + Stamped> Batch<T> for Rows<T> {
+	type View<'t>
+		= Hist<'t, T>
+	where
+		T: 't;
+
+	fn advance(&mut self, fresh: &[T], h: Horizon) {
+		let drop = {
+			let win = &self.buf[self.cur..];
+			match h {
+				Horizon::Elems(k) => win.len().saturating_sub(k),
+				Horizon::Span(tf) => match win.last() {
+					Some(newest) => {
+						let cut = newest.ts_ns() - Horizon::ns(tf);
+						win.partition_point(|x| x.ts_ns() <= cut)
+					}
+					None => 0,
+				},
+				_ => unreachable!("a buffer is const-asserted bounded"),
+			}
+		};
+		if drop > 0 {
+			self.watermark = self.watermark.max(self.buf[self.cur + drop - 1].ts_ns());
+			self.cur += drop;
+			// Reclaim only once the dropped prefix dominates, as `sync::Lane::compact` does: amortized
+			// O(1) an element, against a memmove of the whole window on every tick.
+			if self.cur * 2 >= self.buf.len() {
+				self.buf.drain(..self.cur);
+				self.cur = 0;
+			}
+		}
+		if self.watermark == i64::MIN
+			&& let Some(first) = fresh.first()
+		{
+			self.watermark = first.ts_ns();
+		}
+		self.buf.extend_from_slice(fresh);
+		self.fresh = fresh.len();
+	}
+
+	fn view(&self, h: Horizon) -> Hist<'_, T> {
+		Hist {
+			all: &self.buf[self.cur..],
+			fresh: self.fresh,
+			horizon: h,
+			watermark: self.watermark,
+		}
+	}
+
+	fn narrow<'t>(view: Hist<'t, T>, h: Horizon) -> Hist<'t, T>
+	where
+		T: 't, {
+		Hist { horizon: h, ..view }
+	}
+
+	fn stage(&mut self, view: Hist<'_, T>, bump: Option<usize>, h: f64) -> f64
+	where
+		T: Bump, {
+		self.buf.clear();
+		self.buf.extend_from_slice(view.all);
+		self.cur = 0;
+		self.fresh = view.fresh;
+		self.watermark = view.watermark;
+		match (bump, self.buf.last_mut()) {
+			(Some(slot), Some(last)) => {
+				let (e, dh) = Bump::bump(*last, slot, h);
+				*last = e;
+				dh
+			}
+			_ => 0.0,
+		}
+	}
 }
 
 /// A [`Series`] item read as "did this element carry anything" — what [`Latest`] must ask before it
@@ -1598,45 +1793,28 @@ impl<T: Glance> Glance for Hist<'_, T> {
 /// One `Buffer<C, _>` per series per frame — two make every `Buffering<C, _>` ambiguous, the same
 /// failure as two instances of one node type.
 pub struct Buffer<C: Series, const H: Horizon> {
-	buf: alloc::vec::Vec<C::Item>,
-	/// Where the retained window starts. Trimming by `drain(..n)` memmoved the whole window every
-	/// tick — the window is the point, so it is never small — where a cursor moves nothing and the
-	/// window stays the one contiguous slice [`Hist`] hands out.
-	cur: usize,
-	/// The highest `ts_ns` this buffer cannot speak for: the last one dropped, or — before the first
-	/// drop — the first one ever seen, since nothing proves the run reached back past it. A
-	/// [`Horizon::Span`] window is complete iff it begins strictly after this, which is exact where
-	/// "have I been running long enough" is a guess.
-	watermark: i64,
+	batch: C::Batch,
 }
 
 // hand-written: `derive` would demand `C: Default` / `C: Clone`, which the source node need not be.
-impl<C: Series, const H: Horizon> Default for Buffer<C, H> {
+impl<C: Series, const H: Horizon> Default for Buffer<C, H>
+where
+	C::Batch: Batch<C::Item>,
+{
 	fn default() -> Self {
-		Self {
-			buf: alloc::vec::Vec::new(),
-			cur: 0,
-			watermark: i64::MIN,
-		}
+		Self { batch: C::Batch::default() }
 	}
 }
-impl<C: Series, const H: Horizon> Clone for Buffer<C, H> {
+impl<C: Series, const H: Horizon> Clone for Buffer<C, H>
+where
+	C::Batch: Clone,
+{
 	fn clone(&self) -> Self {
-		Self {
-			buf: self.buf[self.cur..].to_vec(),
-			cur: 0,
-			watermark: self.watermark,
-		}
+		Self { batch: self.batch.clone() }
 	}
 
-	/// The one thing `derive(Clone)` would not have given: its `clone_from` is `*self = clone()`, and
-	/// a buffer holding a whole reach is what [`fd_col`] re-clones once per dep element. Only the
-	/// retained window is carried — the dropped prefix is waiting to be reclaimed, not state.
 	fn clone_from(&mut self, src: &Self) {
-		self.buf.clear();
-		self.buf.extend_from_slice(&src.buf[src.cur..]);
-		self.cur = 0;
-		self.watermark = src.watermark;
+		self.batch.clone_from(&src.batch);
 	}
 }
 
@@ -1645,8 +1823,11 @@ impl<C: Series, const H: Horizon> Buffer<C, H> {
 	const TAG: Tag = Tag::of("Buffer", &[C::NAME, Self::REACH_TAG.as_str()]);
 }
 
-impl<C: Series, const H: Horizon> Cell for Buffer<C, H> {
-	type Out<'t> = Hist<'t, C::Item>;
+impl<C: Series, const H: Horizon> Cell for Buffer<C, H>
+where
+	C::Batch: Batch<C::Item>,
+{
+	type Out<'t> = <C::Batch as Batch<C::Item>>::View<'t>;
 
 	/// Unlike its [`Buffering`]/[`Folding`] siblings this is a frame cell of its own, so it takes a
 	/// name of its own — and `exec_viz` finds the buffer serving a dep by matching `Buffer<C, `,
@@ -1657,7 +1838,7 @@ impl<C: Series, const H: Horizon> Cell for Buffer<C, H> {
 
 impl<C: Series, const H: Horizon> Node for Buffer<C, H>
 where
-	C::Item: Stamped,
+	C::Batch: Batch<C::Item>,
 {
 	type Deps = <Self as Blind>::Deps;
 	type Kernel = Opaque;
@@ -1665,7 +1846,7 @@ where
 
 impl<C: Series, const H: Horizon> Blind for Buffer<C, H>
 where
-	C::Item: Stamped,
+	C::Batch: Batch<C::Item>,
 {
 	type Deps = (Folding<C, H>,);
 
@@ -1682,44 +1863,8 @@ where
 				"a buffer retains a bounded reach: Horizon::Elems(k >= 1) or Horizon::Span(tf > 0)"
 			)
 		}
-		// Trim *before* the append: `past` must be what stood behind this tick's batch, or an
-		// intra-batch cursor walking several elements reads a window already trimmed by its own tail.
-		let drop = {
-			let win = &self.buf[self.cur..];
-			match H {
-				Horizon::Elems(k) => win.len().saturating_sub(k),
-				Horizon::Span(tf) => match win.last() {
-					Some(newest) => {
-						let cut = newest.ts_ns() - Horizon::ns(tf);
-						win.partition_point(|x| x.ts_ns() <= cut)
-					}
-					None => 0,
-				},
-				_ => unreachable!(),
-			}
-		};
-		if drop > 0 {
-			self.watermark = self.watermark.max(self.buf[self.cur + drop - 1].ts_ns());
-			self.cur += drop;
-			// Reclaim only once the dropped prefix dominates, as `sync::Lane::compact` does: amortized
-			// O(1) an element, against a memmove of the whole window on every tick.
-			if self.cur * 2 >= self.buf.len() {
-				self.buf.drain(..self.cur);
-				self.cur = 0;
-			}
-		}
-		if self.watermark == i64::MIN
-			&& let Some(first) = fresh.first()
-		{
-			self.watermark = first.ts_ns();
-		}
-		self.buf.extend_from_slice(fresh);
-		Hist {
-			all: &self.buf[self.cur..],
-			fresh: fresh.len(),
-			horizon: H,
-			watermark: self.watermark,
-		}
+		self.batch.advance(fresh, H);
+		self.batch.view(H)
 	}
 }
 
@@ -1728,8 +1873,11 @@ where
 /// the declared reach [`serves`](Horizon::serves) the request.
 pub struct Buffering<C: Series, const H: Horizon>(core::marker::PhantomData<C>);
 
-impl<C: Series, const H: Horizon> Cell for Buffering<C, H> {
-	type Out<'t> = Hist<'t, C::Item>;
+impl<C: Series, const H: Horizon> Cell for Buffering<C, H>
+where
+	C::Batch: Batch<C::Item>,
+{
+	type Out<'t> = <C::Batch as Batch<C::Item>>::View<'t>;
 
 	/// Forwarded, for the same reason [`Folding`]'s is: the graph predicates match dep names against
 	/// frame cell names, and a wrapper that renamed its dep would drop out of every one of them.
@@ -1740,45 +1888,35 @@ impl<C: Series, const H: Horizon> Cell for Buffering<C, H> {
 	const RETAINED: bool = true;
 }
 
-impl<'t, C: Series, const K: Horizon, const H: Horizon, T> Has<'t, Buffering<C, H>, Here> for Cons<'t, Buffer<C, K>, T> {
-	fn get(&self) -> Hist<'t, C::Item> {
+impl<'t, C: Series, const K: Horizon, const H: Horizon, T> Has<'t, Buffering<C, H>, Here> for Cons<'t, Buffer<C, K>, T>
+where
+	C::Batch: Batch<C::Item>,
+{
+	fn get(&self) -> <C::Batch as Batch<C::Item>>::View<'t> {
 		const {
 			assert!(!matches!(H, Horizon::Unit), "Buffering at Unit is the bare dep C — drop the wrapper");
 			assert!(!matches!(H, Horizon::Unbounded), "a buffer is a bounded thing; Unbounded names no window");
 			assert!(K.serves(H), "the frame's Buffer<C, K> does not reach as far back as this Buffering<C, H> asks for");
 		}
-		Hist { horizon: H, ..self.out }
+		C::Batch::narrow(self.out, H)
 	}
 }
 
+/// The scratch is the batch itself: what a retention hands out is its own to re-own, and the
+/// three hand-decomposed `Hist` fields this replaces were only ever [`Rows`]' way of saying so.
 impl<C: Series, const H: Horizon> Nudge for Buffering<C, H>
 where
 	C::Item: Bump,
+	C::Batch: Batch<C::Item>,
 {
-	type Scratch = (alloc::vec::Vec<C::Item>, usize, i64);
+	type Scratch = C::Batch;
 
-	fn stage<'t>(out: Hist<'t, C::Item>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
-		s.0.clear();
-		s.0.extend_from_slice(out.all);
-		s.1 = out.fresh;
-		s.2 = out.watermark;
-		match (bump, s.0.last_mut()) {
-			(Some(slot), Some(last)) => {
-				let (e, dh) = Bump::bump(*last, slot, h);
-				*last = e;
-				dh
-			}
-			_ => 0.0,
-		}
+	fn stage<'t>(out: Self::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
+		s.stage(out, bump, h)
 	}
 
-	fn view<'l>(s: &'l Self::Scratch) -> Hist<'l, C::Item> {
-		Hist {
-			all: &s.0,
-			fresh: s.1,
-			horizon: H,
-			watermark: s.2,
-		}
+	fn view<'l>(s: &'l Self::Scratch) -> Self::Out<'l> {
+		s.view(H)
 	}
 }
 

@@ -24,6 +24,7 @@
     "Change3m",
     "Volume1m",
     "Volume1h",
+    "Buffer<BookDeltas>",
     "Book",
     "BookTop",
     "Imbalance",
@@ -55,8 +56,8 @@
       "node": "Latest<trading_data_spl::nodes::atr::Atr>"
     },
     {
-      "glance": 1909869,
-      "node": "trading_data_spl::nodes::book_top::BookTop"
+      "glance": 1631643,
+      "node": "Buffer<trading_data_core::cells::BookDeltas, Span(15m)>"
     },
     {
       "glance": 955260,
@@ -184,6 +185,10 @@
     },
     {
       "glance": 0,
+      "node": "trading_data_spl::nodes::book_top::BookTop"
+    },
+    {
+      "glance": 0,
       "node": "trading_data_spl::nodes::imbalance::Imbalance"
     },
     {
@@ -223,55 +228,55 @@
     {
       "group": "the feed",
       "label": "parquet decode + latency sample",
-      "secs": 0.853780478
+      "secs": 0.467311172
     },
     {
       "group": "the feed",
       "label": "the weave (arrival merge)",
-      "secs": 0.016864600000000007
+      "secs": 0.010527936000000016
     },
     {
       "group": "the graph",
       "label": "every derived node",
-      "secs": 0.008552216999999973
+      "secs": -0.0007990660000000149
     },
     {
       "group": "reaching the observer",
       "label": "flatten (Want::Vals)",
-      "secs": 0.27266653200000013
+      "secs": 0.215008778
     },
     {
       "group": "reaching the observer",
       "label": "finite-diff Jacobian (Want::Jac)",
-      "secs": 0.4679831539999999
+      "secs": 0.26589715699999994
     },
     {
       "group": "the tape's `on`",
       "label": "bookkeeping",
-      "secs": 0.09477253299999999
+      "secs": 0.05589407700000015
     },
     {
       "group": "the tape's `on`",
       "label": "glance (the node's own one-liner)",
-      "secs": 0.3196877
+      "secs": 0.24213775199999987
     },
     {
       "group": "the tape's `on`",
       "label": "vals+jac columns",
-      "secs": 0.014697748000000121
+      "secs": 0.03343007099999995
     },
     {
       "group": "the tape's `on`",
       "label": "handoff (channel + absorb)",
-      "secs": 0.811104877
+      "secs": 0.7412215469999999
     },
     {
       "group": "the tape's `on`",
       "label": "backpressure wait",
-      "secs": -0.007614232000000332
+      "secs": -0.05350401399999982
     }
   ],
-  "tape_s": 1.2326486259999998,
+  "tape_s": 1.0191794330000001,
   "ticks": 159210,
-  "total_s": 2.852495607
+  "total_s": 1.97712541
 }

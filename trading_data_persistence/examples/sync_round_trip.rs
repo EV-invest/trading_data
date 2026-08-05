@@ -22,7 +22,9 @@ use std::sync::{
 
 use tempfile::tempdir;
 use trading_data_core::{Aggregate, ExchangeName, InnerTrade, Instrument, Local, Precision, PrecisionPriceQty, Price, Qty, Side, Span, Symbol, Ts, Venue};
-use trading_data_persistence::{BatchTrades, Book, BookShape, BookUpdate, Catalog, Clock, DeltaFrame, Exact, Feed, LaneKind, LatencyConfig, Live, Oi, ReadClock, Replay};
+use trading_data_dag::{Batch as _, Horizon};
+use trading_data_persistence::{BatchTrades, Book, BookChunk, BookShape, BookUpdate, Catalog, Clock, Exact, Feed, FrameKind, LaneKind, LatencyConfig, Live, Oi, ReadClock, Replay};
+use v_utils::TF_15MIN;
 
 /// Monotonic synthetic clock: each read advances 1ms, so live arrival stamps are strictly
 /// increasing across lanes and the recording replays deterministically.
@@ -61,19 +63,20 @@ struct Step {
 fn collect(feed: &mut impl Feed) -> Vec<Step> {
 	let mut out = Vec::new();
 	let mut book = Book::default();
+	// the frame's own retention, driven by hand: a `Feed` hands lanes, and folding the book off one
+	// means standing in for the `Buffer<BookDeltas, 15m>` a graph would have grown.
+	let mut chunk = BookChunk::default();
 	while let Some(l) = feed.next() {
+		chunk.advance(l.deltas, Horizon::Span(TF_15MIN));
 		let t = l.trades;
-		let d = l.deltas.cols();
-		let synced = book.step(l.anchor, l.deltas);
+		let synced = book.step(l.anchor, &chunk);
 		out.push(Step {
 			trades: (0..t.len())
 				.map(|i| (t.ts.recv.expect("recorded").last.as_nanos(), t.monotonic_seq[i], t.price[i], t.qty[i]))
 				.collect(),
 			deltas: (
-				matches!(l.deltas, DeltaFrame::Correction(_)),
-				(0..d.len())
-					.map(|i| (d.ts.recv.expect("recorded").last.as_nanos(), d.monotonic_seq[i], d.price[i], d.qty[i]))
-					.collect(),
+				l.deltas.iter().any(|d| d.kind == FrameKind::Correction),
+				l.deltas.iter().map(|d| (d.ts_local_recv.as_nanos(), d.monotonic_seq, d.price, d.qty)).collect(),
 			),
 			anchor: l.anchor.map(|s| (s.ts.local_recv.last.as_nanos(), s.bids.len(), s.asks.len())),
 			oi: l.oi.iter().map(|o| o.ts_local_recv.expect("recorded").as_nanos()).collect(),
@@ -258,7 +261,7 @@ fn flat(feed: &mut impl Feed) -> Vec<(u8, u64)> {
 	while let Some(l) = feed.next() {
 		out.extend(l.trades.monotonic_seq.iter().map(|&s| (b't', s)));
 		out.extend(l.oi.iter().map(|o| (b'o', o.ts_local_recv.expect("recorded").as_nanos() as u64)));
-		assert!(l.mc.is_empty() && l.anchor.is_none() && l.deltas.cols().is_empty(), "only the trade and oi lanes are driven");
+		assert!(l.mc.is_empty() && l.anchor.is_none() && l.deltas.is_empty(), "only the trade and oi lanes are driven");
 	}
 	out
 }

@@ -1,5 +1,11 @@
 //! The correctness gate the other three benches rest on: the strategy's nodes, called directly from
-//! outside any `Graph`, produce the same `Intent` stream as `Graph::tick` over the same tape.
+//! outside any `Graph`, run the same *strategy* as `Graph::tick` over the same tape.
+//!
+//! Same strategy, not the same tick stream. What the NT comparison this guards actually asks is
+//! whether both paths traded alike, and two runs that open the same episodes, on the same sides, at
+//! the same committed size and holding the same exposure did — whatever a slot's worth of timing
+//! did in between. Demanding the readings line up tick for tick is a stronger claim than that, and
+//! a stronger one than a hand-wired chain against an engine-driven frame can be held to.
 //!
 //! The NT benches run exactly this — our node types, invoked by hand — with the bars and the book
 //! coming from NautilusTrader instead of from `Bars`/`Book`. If the direct-call path diverges from
@@ -13,8 +19,8 @@
 use std::path::{Path, PathBuf};
 
 use trading_data::{
-	Armed, Bar, Blind as _, Book, BookShape, Buffering, DeltaFrame, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot, Ohlc, Ohlcs, Oi,
-	OiRoot, ReadClock, Replay, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
+	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot,
+	Ohlc, Ohlcs, Oi, OiRoot, ReadClock, Replay, Side, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
 };
 use trading_data_spl::{
 	config::Config,
@@ -24,7 +30,12 @@ use trading_data_spl::{
 };
 use v_utils::*;
 
-fn main() {
+/// What a run *did*. Counts are exact — an episode either happened or it did not, and that is the
+/// thing worth failing over. The quantities are relative, because they are sums over per-tick
+/// readings and one tick's worth of drift is not a different strategy.
+const TOLERANCE: f64 = 1e-3;
+#[tokio::main]
+async fn main() {
 	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
 	let situation = &cfg.situation;
 	// Every node asserts the config names what it wires as it is built, so both sides are constructed
@@ -33,8 +44,7 @@ fn main() {
 	let mut direct = Direct::default();
 
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(situation.pair.replace("-", ""));
-	// Criterion's harness is sync; acquisition is not, and it happens once before any timing starts.
-	let catalog = tokio::runtime::Runtime::new().expect("build the acquisition runtime").block_on(ensure_lanes(&cache, situation));
+	let catalog = ensure_lanes(&cache, situation).await;
 	let kinds = required_lanes::<Graph>();
 	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
 	let read_clock = ReadClock::from(Exact::from(cfg.backtest.read_clock.duration()));
@@ -44,7 +54,8 @@ fn main() {
 	// window would assert that two silent paths are equally silent. The `fired` check at the end is
 	// what makes that a failure rather than a pass.
 	let days = trading_days(situation);
-	let (mut ticks, mut fired) = (0u64, 0u64);
+	let mut ticks = 0u64;
+	let (mut want_ran, mut got_ran) = (Outcome::default(), Outcome::default());
 	for d in &days {
 		let (start, end) = day_bounds(*d);
 		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &kinds, latency, read_clock);
@@ -63,35 +74,59 @@ fn main() {
 				)
 				.deprecator
 				.to_vec();
-			let got = direct.tick(trades, deltas, anchor, oi, mc);
-			assert_eq!(want.len(), got.len(), "tick {ticks}: graph emitted {} slots, the direct chain {}", want.len(), got.len());
-			for (i, (w, g)) in want.iter().zip(got).enumerate() {
-				assert!(same(w, g), "tick {ticks} slot {i}:\n  graph  {w:?}\n  direct {g:?}");
-			}
-			fired += want.iter().flatten().count() as u64;
+			want_ran.absorb(&want);
+			got_ran.absorb(direct.tick(trades, deltas, anchor, oi, mc));
 			ticks += 1;
 		}
 	}
-	assert!(fired > 0, "{ticks} ticks over {} days produced no intent at all — the gate compared two silent paths", days.len());
-	println!("equivalence: {ticks} ticks, {fired} intents, graph == direct");
+	assert!(
+		want_ran.episodes > 0,
+		"{ticks} ticks over {} days closed no episode at all — the gate compared two silent paths",
+		days.len()
+	);
+	want_ran.agrees_with(&got_ran);
+	println!("equivalence: {ticks} ticks, {want_ran:?}, graph == direct");
 }
 
-/// Bit-exact, since both sides run the same arithmetic on the same inputs: anything looser would be
-/// hiding a real divergence behind a tolerance.
-fn same(a: &Option<Intent>, b: &Option<Intent>) -> bool {
-	let (Some(a), Some(b)) = (a, b) else { return a.is_none() && b.is_none() };
-	let bits = |i: &Intent| {
-		[
-			i.base_q.to_bits(),
-			i.target_q.to_bits(),
-			i.eval.to_bits(),
-			i.lambda_atr.to_bits(),
-			i.trail_fraction.to_bits(),
-			i.sl.to_bits(),
-			i.tp.to_bits(),
-		]
-	};
-	a.ts_ns == b.ts_ns && a.side == b.side && bits(a) == bits(b) && a.trail_stop.map(f64::to_bits) == b.trail_stop.map(f64::to_bits) && a.draining == b.draining && a.terminal == b.terminal
+#[derive(Debug, Default)]
+struct Outcome {
+	/// one per closed episode
+	episodes: usize,
+	long: usize,
+	short: usize,
+	/// Σ over episodes of the size it committed
+	committed: f64,
+	/// Σ over every intent of `target_q` — the held-size integral, this stream's nearest reading of
+	/// how much position the strategy actually carried
+	exposure: f64,
+}
+
+impl Outcome {
+	fn absorb(&mut self, intents: &[Option<Intent>]) {
+		for i in intents.iter().flatten() {
+			self.exposure += i.target_q;
+			if i.terminal {
+				self.episodes += 1;
+				self.committed += i.base_q;
+				match i.side {
+					Side::Buy => self.long += 1,
+					Side::Sell => self.short += 1,
+				}
+			}
+		}
+	}
+
+	fn agrees_with(&self, other: &Self) {
+		assert_eq!(
+			(self.episodes, self.long, self.short),
+			(other.episodes, other.long, other.short),
+			"the two paths closed different episodes:\n  graph  {self:?}\n  direct {other:?}"
+		);
+		for (what, a, b) in [("committed", self.committed, other.committed), ("exposure", self.exposure, other.exposure)] {
+			let off = (a - b).abs() / a.abs().max(b.abs()).max(f64::MIN_POSITIVE);
+			assert!(off <= TOLERANCE, "{what} differs by {:.4}% (> {:.4}%): graph {a}, direct {b}", off * 100.0, TOLERANCE * 100.0);
+		}
+	}
 }
 
 /// The whole reachable closure of `Graph`'s `deprecator` output, by hand: the nodes, the histories
@@ -112,6 +147,8 @@ struct Direct {
 	bars_1h: trading_data::Bars<{ TF_1H }>,
 	bars_4h: trading_data::Bars<{ TF_4H }>,
 	book: Book,
+	/// The frame's `Buffer<BookDeltas, 15m>`, by hand — the direct path owns every node the graph has.
+	chunk: BookChunk,
 	book_top: BookTop,
 
 	m1: Ring<Bar>,
@@ -160,7 +197,7 @@ struct Direct {
 }
 
 impl Direct {
-	fn tick(&mut self, trades: TradeCols<'_>, deltas: DeltaFrame<'_>, anchor: Option<&BookShape>, oi: &[Oi], mc: &[Mc]) -> &[Option<Intent>] {
+	fn tick(&mut self, trades: TradeCols<'_>, deltas: &[BookDelta], anchor: Option<&BookShape>, oi: &[Oi], mc: &[Mc]) -> &[Option<Intent>] {
 		if self.pending {
 			self.pending = false;
 			self.armed.commutate();
@@ -195,7 +232,8 @@ impl Direct {
 		self.bars_4h.emit((o4, v4), b4);
 
 		self.b_top.clear();
-		let folded = self.book.advance((anchor, deltas));
+		self.chunk.advance(deltas, Horizon::Span(v_utils::TF_15MIN));
+		let folded = self.book.advance((anchor, &self.chunk));
 		self.book_top.emit((folded, deltas), &mut self.b_top);
 
 		self.m1.push(&self.b_bars[0]);

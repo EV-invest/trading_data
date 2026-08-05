@@ -30,7 +30,7 @@ use nautilus_model::{
 };
 use nautilus_persistence_macros::custom_data;
 use trading_data::{
-	Book, DeltaCols, Exact, ExchangeName, Feed as _, LatencyConfig, ReadClock, Replay, Side,
+	Batch as _, Book, BookChunk, BookDelta, Exact, ExchangeName, Feed as _, Horizon, LatencyConfig, ReadClock, Replay, Side,
 	bench::{COUNTERS, Digest, Probe, Row, publish},
 	required_lanes,
 };
@@ -61,8 +61,8 @@ pub fn mc_type() -> nautilus_model::data::DataType {
 /// Registration order is the msgbus' dispatch order within a topic, and the chain below depends on
 /// it: everything that fills a ring off `bar1m` is registered before the screener that reads those
 /// rings, and the classifier after the six indies whose outputs it latches.
-pub fn run(name: &str, shallow_deep: bool, mut notes: Vec<String>) {
-	let (data, instrument) = tape();
+pub async fn run(name: &str, shallow_deep: bool, mut notes: Vec<String>) {
+	let (data, instrument) = tape().await;
 	let (trades, deltas) = data.iter().fold((0u64, 0u64), |(t, d), x| match x {
 		Data::Trade(_) => (t + 1, d),
 		Data::Deltas(x) => (t, d + x.deltas.len() as u64),
@@ -110,24 +110,16 @@ pub fn run(name: &str, shallow_deep: bool, mut notes: Vec<String>) {
 	// handle rather than unwrapped out of it.
 	publish(Row::new(name, events, &digest.borrow(), total, feed_s, notes));
 }
-/// `ts_event = ts_init = venue execution time`. The archive carries no per-element local stamp — the
-/// receive column is a span over the whole batch — and the exec clock is the one NT's bar aggregator
-/// must bucket on for its boundaries to be our `Ohlcs`' boundaries.
-fn stamp(ns: i64) -> UnixNanos {
-	UnixNanos::from(u64::try_from(ns).expect("the archive's window is after the epoch"))
-}
-
 /// The whole window as NT `Data`, plus the instrument the graph's precision implies.
 ///
 /// The book is folded here by our own [`Book`] for one reason: it owns when a resync happens, and NT
 /// has to be told. Every epoch bump becomes a `Clear` plus the full ladder, so the two books hold the
 /// same levels at the same instants rather than merely starting the same.
-fn tape() -> (Vec<Data>, InstrumentAny) {
+pub async fn tape() -> (Vec<Data>, InstrumentAny) {
 	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
 	let situation = &cfg.situation;
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(situation.pair.replace("-", ""));
-	// Criterion's harness is sync; acquisition is not, and it happens once before any timing starts.
-	let catalog = tokio::runtime::Runtime::new().expect("build the acquisition runtime").block_on(ensure_lanes(&cache, situation));
+	let catalog = ensure_lanes(&cache, situation).await;
 	let kinds = required_lanes::<Graph>();
 	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
 	let read_clock = ReadClock::from(Exact::from(cfg.backtest.read_clock.duration()));
@@ -135,6 +127,8 @@ fn tape() -> (Vec<Data>, InstrumentAny) {
 	let id = InstrumentId::new(Symbol::new(situation.pair.replace('-', "")), Venue::new("BYBIT"));
 	let mut out = Vec::new();
 	let mut book = Book::default();
+	// the frame's own retention, driven by hand: a `Feed` hands lanes, not the `Buffer` a graph grows.
+	let mut chunk = BookChunk::default();
 	let mut prec = None;
 
 	for d in trading_days(situation) {
@@ -163,15 +157,17 @@ fn tape() -> (Vec<Data>, InstrumentAny) {
 				}
 			}
 
-			let cols = l.deltas.cols();
+			chunk.advance(l.deltas, Horizon::Span(v_utils::TF_15MIN));
 			let epoch = book.epoch();
 			// `step` is the only entry point that knows whether this frame folds at all; a frame that
 			// left our book desynced left it unreadable, and NT is told nothing rather than told a lie.
-			if book.step(l.anchor, l.deltas) && !cols.is_empty() {
-				prec.get_or_insert(cols.prec);
-				let ts = stamp(cols.exec()[cols.len() - 1].as_nanos());
+			if book.step(l.anchor, &chunk)
+				&& let Some(last) = l.deltas.last()
+			{
+				prec.get_or_insert(last.prec);
+				let ts = stamp(last.ts_venue_exec.as_nanos());
 				let deltas = match book.epoch() == epoch {
-					true => incremental(id, cols),
+					true => incremental(id, l.deltas),
 					false => resync(id, &book, ts),
 				};
 				out.push(Data::Deltas(OrderBookDeltas_API::new(OrderBookDeltas::new(id, deltas))));
@@ -227,25 +223,32 @@ fn tape() -> (Vec<Data>, InstrumentAny) {
 	));
 	(out, instrument)
 }
+/// `ts_event = ts_init = venue execution time`. The archive carries no per-element local stamp — the
+/// receive column is a span over the whole batch — and the exec clock is the one NT's bar aggregator
+/// must bucket on for its boundaries to be our `Ohlcs`' boundaries.
+fn stamp(ns: i64) -> UnixNanos {
+	UnixNanos::from(u64::try_from(ns).expect("the archive's window is after the epoch"))
+}
 
 /// qty 0 is a level deletion in our lane and a `Delete` in NT's; everything else is the level's new
 /// absolute size. `order_id` is left at 0 because `L2_MBP` overwrites it with a price-derived one.
-fn incremental(id: InstrumentId, cols: DeltaCols<'_>) -> Vec<OrderBookDelta> {
-	let (ps, qs) = (cols.prec.price.scale(), cols.prec.qty.scale());
-	let (pd, qd) = (cols.prec.price.0 as u8, cols.prec.qty.0 as u8);
-	(0..cols.len())
-		.map(|i| {
-			let ts = stamp(cols.exec()[i].as_nanos());
-			let side = match cols.side[i] {
+fn incremental(id: InstrumentId, levels: &[BookDelta]) -> Vec<OrderBookDelta> {
+	levels
+		.iter()
+		.map(|l| {
+			let (ps, qs) = (l.prec.price.scale(), l.prec.qty.scale());
+			let (pd, qd) = (l.prec.price.0 as u8, l.prec.qty.0 as u8);
+			let ts = stamp(l.ts_venue_exec.as_nanos());
+			let side = match l.side {
 				Side::Buy => OrderSide::Buy,
 				Side::Sell => OrderSide::Sell,
 			};
-			let action = match cols.qty[i] {
+			let action = match l.qty {
 				0 => BookAction::Delete,
 				_ => BookAction::Update,
 			};
-			let order = BookOrder::new(side, Price::new(cols.price[i] as f64 / ps, pd), Quantity::new(cols.qty[i] as f64 / qs, qd), 0);
-			OrderBookDelta::new(id, action, order, 0, cols.monotonic_seq[i], ts, ts)
+			let order = BookOrder::new(side, Price::new(l.price as f64 / ps, pd), Quantity::new(l.qty as f64 / qs, qd), 0);
+			OrderBookDelta::new(id, action, order, 0, l.monotonic_seq, ts, ts)
 		})
 		.collect()
 }

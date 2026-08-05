@@ -11,9 +11,9 @@ pub use trading_data_core::{Asset, ExchangeName, Instrument, Pair, Symbol};
 #[doc(hidden)]
 pub use trading_data_dag as __dag;
 pub use trading_data_dag::{
-	__graph_resolve, Armed, Blind, Buffer, Buffering, Bump, Cell, Cons, DepOuts, Emit, EmitOuts, Episode, Episodic, Fidelity, Fire, Flat, Folding, Gate, Gating, Glance, Guide, Hist,
-	Horizon, Ink, Jac, Latch, Latest, Level, Nil, Node, Nudge, Observer, Opaque, Plot, Present, ProbabilisticDistribution, Pure, Roots, Sampling, Series, Spanning, Stamped, Sweep, Symbolic,
-	Tag, TriggerOut, Want, always_present, graph, node, node_alias, observe_root, slice_nudge, step, step_obs, value_nudge,
+	__graph_resolve, Armed, Batch, Blind, Buffer, Buffering, Bump, Cell, Cons, DepOuts, Emit, EmitOuts, Episode, Episodic, Fidelity, Fire, Flat, Folding, Gate, Gating, Glance, Guide, Hist,
+	Horizon, Ink, Jac, Latch, Latest, Level, Nil, Node, Nudge, Observer, Opaque, Plot, Present, ProbabilisticDistribution, Pure, Roots, Rows, Sampling, Series, Spanning, Stamped, Sweep,
+	Symbolic, Tag, TriggerOut, Want, always_present, graph, node, node_alias, observe_root, slice_nudge, step, step_obs, value_nudge,
 };
 pub use trading_data_derivatives::{
 	// the dep shims: a `#[node]` writes one at its own crate's root, and a graph naming the cell
@@ -45,9 +45,9 @@ pub use trading_data_derivatives::{
 };
 pub use trading_data_expr::{Abs, Add, Ast, Const, Div, Ex, Expr, Mul, Neg, Square, Sub, Sum, Trace, Var, Vars, abs, constant, square, sum};
 pub use trading_data_persistence::{
-	__td_node_Book, Aggregate, Arrival, BatchTrades, Book, BookAnchors, BookDeltas, BookShape, BookUpdate, Catalog, CatalogError, Clock, DeltaBuf, DeltaCols, DeltaFrame, Direction, Exact,
-	Feather, Feed, FrameKind, InnerTrade, LaneKind, LaneReader, Lanes, LatencyConfig, Live, LiveClock, Local, Mc, McRoot, Oi, OiRoot, Precision, PrecisionPriceQty, ReadClock, Replay,
-	RotationPolicy, Row, ShadowBook, Side, Sink, Span, Trade, TradeBuf, TradeCols, Trades, Ts, UnixNanos, Usd, Venue, read_mc, read_oi, read_trades,
+	__td_node_Book, Aggregate, Arrival, BatchTrades, Book, BookAnchors, BookChunk, BookDelta, BookDeltas, BookShape, BookUpdate, Catalog, CatalogError, Clock, Direction, Exact, Feather,
+	Feed, FrameKind, InnerTrade, LaneKind, LaneReader, Lanes, LatencyConfig, Live, LiveClock, Local, Mc, McRoot, Oi, OiRoot, Precision, PrecisionPriceQty, ReadClock, Replay, RotationPolicy,
+	Row, ShadowBook, Side, Sink, Span, Trade, TradeBuf, TradeCols, Trades, Ts, UnixNanos, Usd, Venue, read_mc, read_oi, read_trades,
 };
 /// The period a `Bars<TF>` is over: naming one is now part of wiring a graph, and a facade-only
 /// consumer has no other route to the type.
@@ -66,7 +66,7 @@ pub fn required_lanes<G: Roots>() -> Vec<LaneKind> {
 		// one-to-one table it is.
 		let lane = match id {
 			i if i == TypeId::of::<TradeCols<'static>>() => LaneKind::Trades,
-			i if i == TypeId::of::<DeltaFrame<'static>>() => LaneKind::BookDeltas,
+			i if i == TypeId::of::<BookDelta>() => LaneKind::BookDeltas,
 			i if i == TypeId::of::<BookShape>() => LaneKind::BookAnchors,
 			i if i == TypeId::of::<Oi>() => LaneKind::Oi,
 			i if i == TypeId::of::<Mc>() => LaneKind::Mc,

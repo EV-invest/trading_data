@@ -108,7 +108,7 @@ pub use rsi::{AvgGain, AvgLoss, Knobs, Rsi, RsiDelta, RsiSeries};
 pub use rsi_screener::RsiScreener;
 pub use spread::Spread;
 pub use std_screener::StdScreener;
-use trading_data::{Armed, BookAnchors, BookDeltas, BookShape, DeltaFrame, Fidelity, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
+use trading_data::{Armed, BookAnchors, BookDelta, BookDeltas, BookShape, Fidelity, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
 pub use trading_data::{Bar, RsiValues};
 // a `type Deps` const expression is re-expanded here, so the `TF_*` a dep names has to resolve here too.
 use v_utils::*;
@@ -126,7 +126,7 @@ pub use volume_4h::Volume4h;
 trading_data::graph! {
 	pub struct Graph;
 	batches Batches;
-	roots { trades: Trades[TradeCols], deltas: BookDeltas[DeltaFrame], anchors: BookAnchors[BookShape], oi: OiRoot[Oi], mc: McRoot[Mc] };
+	roots { trades: Trades[TradeCols], deltas: BookDeltas[BookDelta], anchors: BookAnchors[BookShape], oi: OiRoot[Oi], mc: McRoot[Mc] };
 	out TickOut;
 	outputs { bar_1m: trading_data::Bars<{ TF_1MIN }>, deprecator: Deprecator, rsi: Rsi }
 }

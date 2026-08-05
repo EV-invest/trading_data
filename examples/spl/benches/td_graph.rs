@@ -16,14 +16,14 @@ use trading_data::{
 };
 use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, symbol, trading_days};
 
-fn main() {
+#[tokio::main]
+async fn main() {
 	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
 	let situation = &cfg.situation;
 	let mut graph = Graph::default();
 
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(situation.pair.replace("-", ""));
-	// Criterion's harness is sync; acquisition is not, and it happens once before any timing starts.
-	let catalog = tokio::runtime::Runtime::new().expect("build the acquisition runtime").block_on(ensure_lanes(&cache, situation));
+	let catalog = ensure_lanes(&cache, situation).await;
 	let kinds = required_lanes::<Graph>();
 	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
 	let read_clock = ReadClock::from(Exact::from(cfg.backtest.read_clock.duration()));
@@ -40,7 +40,7 @@ fn main() {
 		let mut f = feed(*d);
 		while let Some(l) = f.next() {
 			COUNTERS.trades.fetch_add(l.trades.len() as u64, Ordering::Relaxed);
-			COUNTERS.deltas.fetch_add(l.deltas.cols().len() as u64, Ordering::Relaxed);
+			COUNTERS.deltas.fetch_add(l.deltas.len() as u64, Ordering::Relaxed);
 			ticks += 1;
 			for intent in graph.tick(l.ts_venue.as_nanos(), l.into()).deprecator.iter().flatten() {
 				digest.feed(intent);

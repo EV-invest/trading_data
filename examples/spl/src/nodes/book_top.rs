@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{BookDeltas, Cell, Emit, EmitOuts, Folding, Glance, Horizon, Plot, node, slice_nudge};
+use trading_data::{BookDeltas, Cell, Emit, EmitOuts, Glance, Plot, node, slice_nudge};
 
 use crate::DEPTH;
 
@@ -38,12 +38,15 @@ impl Glance for BookTopSnap {
 pub struct BookTop;
 impl Cell for BookTop {
 	type Out<'t> = &'t [Option<BookTopSnap>];
+
+	/// A reading not taken, not a reading lost: the top of the book is whatever it is next tick.
+	const REWARMS: bool = true;
 }
 #[node]
 impl Emit for BookTop {
-	// the book is the accumulation of every delta since its anchor, so a gate closing over it would
-	// lose a state no later tick can rebuild — the reach says so, and nothing may shadow this.
-	type Deps = (Folding<trading_data::Book, { Horizon::Unbounded }>, BookDeltas);
+	// the reach is the book's own — a `Buffering` it holds, not a `Folding` declared here — so this
+	// edge carries no claim about its producer, and demand is free to darken both ends of it.
+	type Deps = (trading_data::Book, BookDeltas);
 
 	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &[&["bid", "ask", "bid_depth$", "ask_depth$"]],
@@ -51,14 +54,14 @@ impl Emit for BookTop {
 	}];
 	const WHY: &'static str = "reading the top of a book is a lookup into a fold, not an expression over it";
 
-	fn emit(&mut self, (book, frame): EmitOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) {
-		let Some(&ts) = frame.cols().exec().last() else { return };
+	fn emit(&mut self, (book, levels): EmitOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) {
+		let Some(last) = levels.last() else { return };
 		out.push(book.and_then(|b| {
 			let (ps, qs) = (b.prec().price.scale(), b.prec().qty.scale());
 			let (bid, ask) = (b.best_bid()?, b.best_ask()?);
 			let usd = |&(p, q): &(i32, u32)| (p as f64 / ps) * (q as f64 / qs);
 			Some(BookTopSnap {
-				ts_ns: ts.as_nanos(),
+				ts_ns: last.ts_venue_exec.as_nanos(),
 				best_bid: bid.0.as_f64(),
 				best_ask: ask.0.as_f64(),
 				top20_bid_depth_usd: b.bids().iter().take(DEPTH).map(usd).sum(),
