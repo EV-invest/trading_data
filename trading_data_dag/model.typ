@@ -34,9 +34,10 @@ DERIVATION ── proc-macro walk of `type Deps`, backwards from `outputs`
    │               type system, so a mis-ordered sweep is a compile error, not a bug.
    ├─ buffers      one `Buffer<C, K>` per series, K = ⋁ { J : some consumer said
    │               `Buffering<C, J>` }. K is nobody's to declare.
-   ├─ demand       per node: ∩ over its consumers of (consumer's own suppressors ∪ the
-   │               gates that consumer sits behind). ∅ ⇒ somebody reads it always.
-   │                 · a latch never dominates      (momentary — upstream is standing demand)
+   ├─ demand       per node, a formula in DNF: ⋁ over consumers c of (demand(c) ∧ ⋀ gates(c)).
+   │               `true` ⇒ somebody reads it always.
+   │                 · a latch dominates only what declares `Cell::REWARMS` (it is read one
+   │                   tick ahead — §1.3), and a gate the sweep has not reached yet not at all
    │                 · anything holding history is pinned  (Folding/Spanning dep, Buffer,
    │                   latch, gate itself — state cannot re-warm through a skip)
    ├─ latches      `Cut` must gate on the latch (`cut_gated`); the arm must not be gated
@@ -183,6 +184,30 @@ _Who holds the history_ is the axis the wrappers actually partition:
  skipped is a batch nobody sees again.
 ```
 
+Demand reads these edges backwards, and what it derives is a FORMULA, not a set:
+
+```
+   demand(i) = ⋁ over consumers c of ( demand(c) ∧ ⋀ gates(c) )
+   demand(i) = true   where i is an output, or pinned (own fold · a frame buffer · a latch · a gate)
+
+ A set could only have meant AND, and two consumers behind DIFFERENT gates intersect to ∅ — which
+ reads as "always demanded". Sound, and the degenerate answer. `{A}` and `{A,B}` still give `A`;
+ `{A}` and `{B}` now give `A ∨ B` where the set gave `true`.
+
+ WHICH gates may appear turns on WHEN a gate is readable, not on what it is:
+
+   stepped earlier  read off the frame     ⇒ suppresses upstream on the SAME tick the consumer
+                                             is dark — co-extensive, always safe, nothing declared
+   a latch          read from `standing()` ⇒ suppresses ONE TICK AHEAD of the consumer arming,
+                    at tick start             so only where the node says it survives that tick
+
+ `Cell::REWARMS` is that permission, false by default — so no existing graph changes, and a node
+ that does not opt in is unconditionally demanded wherever a latch reaches it. The consequence is
+ not hidden: on the tick a latch ARMS, a node darkened by it is still dark, and wakes the tick
+ after. A gate the sweep has not resolved yet is the other exemption — that disjunct degrades to
+ standing demand rather than failing the build, which is exactly the answer the intersection gave.
+```
+
 #align(center, diagram(
   spacing: (15mm, 10mm),
   node-corner-radius: 2pt,
@@ -283,7 +308,8 @@ gateable the moment the lane became a run of rows the engine could retain for it
 === 1.5 Node kinds — how a cell computes
 
 ```
-  Cell                      type Out<'t>: Copy · NAME · REACH · FOLDED · RETAINED · CLOCK · Gates
+  Cell                      type Out<'t>: Copy · NAME · REACH · FOLDED · RETAINED · REWARMS
+   │                                              · CLOCK · Gates
    │                        the floor. A root is a Cell with no Node impl.
    │
    ├── Node                 fn advance<'t>(&'t mut self, DepOuts<'t,Self>) -> Out<'t>
@@ -299,6 +325,10 @@ gateable the moment the lane became a run of rows the engine could retain for it
    │    │         │         gated on it to `Default` at the NEXT tick's start (deferred: the
    │    │         │         frame still borrows batch fields at end-of-tick). One episode at
    │    │         │         a time; triggers during one are absorbed.
+   │    │         │         + fn standing() -> bool — the contact BEFORE this tick's sweep, the
+   │    │         │         one gate whose reading does not depend on sweep order and so the
+   │    │         │         only one that can suppress what feeds it (§1.3). Read after the
+   │    │         │         commutation, so a spent episode already reads open.
    │    │         └── Armed<N: Episodic>    the sealed-in latch: Cut = N by construction,
    │    │                                   Deps = (Folding<N::Trigger, Unbounded>,)
    │    │
@@ -333,7 +363,7 @@ gateable the moment the lane became a run of rows the engine could retain for it
   node-stroke: 0.7pt,
   label-size: 7.5pt,
 
-  node((0, 0), align(center)[`Cell` \ #text(7pt)[`Out<'t>: Copy` · `NAME` · `REACH` · `FOLDED` · `RETAINED` · `CLOCK` · `Gates`]], fill: luma(235), name: <cell>),
+  node((0, 0), align(center)[`Cell` \ #text(7pt)[`Out<'t>: Copy` · `NAME` · `REACH` · `FOLDED` · `RETAINED` · `REWARMS` · `CLOCK` · `Gates`]], fill: luma(235), name: <cell>),
 
   node((-2.4, 1.3), align(center)[`Symbolic` \ #text(7pt)[`body -> impl Expr`]], name: <sy>),
   node((-1.1, 1.3), align(center)[`Node` \ #text(7pt)[`advance` self-borrows]], name: <nd>),
@@ -353,7 +383,7 @@ gateable the moment the lane became a run of rows the engine could retain for it
   edge(<nd>, <ga>, "->"),
 
   node((-1.1, 4.1), align(center)[engine-owned nodes \ #text(7pt)[`Buffer<C,H>` · `Latest<C>`] \ #text(7pt)[ungated · historic · every tick]], fill: rgb("#e4edf5"), name: <eng2>),
-  node((1.1, 4.1), align(center)[`Latch` \ #text(7pt)[`Cut` · `commutate`]], name: <la>),
+  node((1.1, 4.1), align(center)[`Latch` \ #text(7pt)[`Cut` · `commutate` · `standing`]], name: <la>),
   node((2.4, 4.1), align(center)[`Armed<N>` \ #text(7pt)[`Cut = N` by construction]], fill: rgb("#f6e6e6"), name: <ar>),
 
   edge(<nd>, <eng2>, "->"),

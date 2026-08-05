@@ -58,6 +58,13 @@ slice_nudge!(BookDeltas, BookDelta, BookChunk);
 /// without pulling deps, so no checkpoint and no frame is even read.
 impl Cell for Book {
 	type Out<'t> = Option<&'t Book>;
+
+	/// Deliberately **not** `REWARMS`. `Reach::Net` spends a sleep that stayed inside one chunk period,
+	/// but a sleep past a boundary needs a checkpoint, and one arrives on the anchor cadence rather
+	/// than on the tick that woke — so a later tick recovers the book only *eventually*, and a consumer
+	/// that wanted it now reads `None` until then. `trading_data/tests/book_gating.rs` claim (4) is that
+	/// window; `REWARMS` is a claim about the tick, not about eventually.
+	const REWARMS: bool = false;
 }
 
 #[node]

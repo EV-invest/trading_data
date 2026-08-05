@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{BookDeltas, Cell, Emit, EmitOuts, Folding, Glance, Horizon, Plot, node, slice_nudge};
+use trading_data::{BookDeltas, Cell, Emit, EmitOuts, Glance, Plot, node, slice_nudge};
 
 use crate::DEPTH;
 
@@ -38,12 +38,15 @@ impl Glance for BookTopSnap {
 pub struct BookTop;
 impl Cell for BookTop {
 	type Out<'t> = &'t [Option<BookTopSnap>];
+
+	/// A reading not taken, not a reading lost: the top of the book is whatever it is next tick.
+	const REWARMS: bool = true;
 }
 #[node]
 impl Emit for BookTop {
-	// the book is the accumulation of every delta since its anchor, so a gate closing over it would
-	// lose a state no later tick can rebuild — the reach says so, and nothing may shadow this.
-	type Deps = (Folding<trading_data::Book, { Horizon::Unbounded }>, BookDeltas);
+	// the reach is the book's own — a `Buffering` it holds, not a `Folding` declared here — so this
+	// edge carries no claim about its producer, and demand is free to darken both ends of it.
+	type Deps = (trading_data::Book, BookDeltas);
 
 	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &[&["bid", "ask", "bid_depth$", "ask_depth$"]],

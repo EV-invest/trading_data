@@ -148,6 +148,13 @@ consequences shape how a strategy is written; the mechanisms are `model.typ`'s s
   dominating every path to an output. Neither is the author's to restate — a hand-written badge on
   six indicators is six restatements of what one edge already said. What a skip costs the author is
   a *type*: an out with no unfired reading cannot be skipped, and says so at compile time.
+  Demand is a *formula*, not a set: `⋁ over consumers c of (demand(c) ∧ ⋀ gates(c))`. A set could
+  only have meant AND, and two consumers behind different gates would intersect to nothing — which
+  reads as "always on", the degenerate answer and exactly the one the interesting cases hit. The one
+  thing an author does state is whether a skipped tick is recoverable (`Cell::REWARMS`), because that
+  is what decides whether a *latch* may appear in the formula: a gate stepped earlier is read off the
+  frame and darkens its producers on the same tick, a latch is read from its standing bit and darkens
+  them one tick ahead of the consumer arming.
 - **A node owns its rate.** How often a node publishes is declared on the node, never in `Deps` — so
   no consumer can change the rate of what it reads, and a node clocked to a timeframe sees completed
   elements only. The counterpart obligation is on the dep side: a read never says whether that dep
