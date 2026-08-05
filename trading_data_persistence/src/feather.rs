@@ -7,7 +7,7 @@ use arrow::{array::RecordBatch, datatypes::SchemaRef};
 use trading_data_core::{Asset, DeltaFrame, ExchangeName, PrecisionPriceQty, Symbol, TradeCols, Ts};
 
 use crate::{
-	catalog::{Catalog, CatalogError, LaneKey},
+	catalog::{Catalog, CatalogError, LaneKey, Pending},
 	row::{BookDelta, BookSnapshot, Mc, Oi, Row, Trade},
 };
 
@@ -15,6 +15,9 @@ use crate::{
 pub struct RotationPolicy {
 	pub max_bytes: Option<usize>,
 	pub max_age: Option<Duration>,
+	/// 1..=22. Archival lanes want the default 3; a live tee wants 1, where the encode is several
+	/// times faster for a few percent of size — the trade a recording that must not stall makes.
+	pub zstd_level: i32,
 }
 
 /// Typed lane writer: a key/schema mismatch is unrepresentable, push is monomorphic.
@@ -156,9 +159,11 @@ impl<T: Row> Feather<T> {
 		self.age_deadline.is_some_and(|t| Instant::now() >= t)
 	}
 
-	pub fn flush(&mut self, catalog: &Catalog) -> Result<Option<PathBuf>, CatalogError> {
+	/// The batch, and the feather back to empty. Splitting this out of [`Self::flush`] is what lets
+	/// a caller hand the encode to another thread instead of standing in it.
+	pub(crate) fn take(&mut self) -> Option<Pending> {
 		if self.rows == 0 {
-			return Ok(None);
+			return None;
 		}
 		let ts_min = self.oldest_ts.expect("set on first push");
 		let ts_max = self.newest_ts.expect("set on first push");
@@ -169,15 +174,28 @@ impl<T: Row> Feather<T> {
 		self.oldest_ts = None;
 		self.newest_ts = None;
 		self.age_deadline = None;
-		let path = catalog.write(&self.key, &batch, ts_min.as_nanos(), ts_max.as_nanos())?;
-		Ok(Some(path))
+		Some(Pending {
+			key: self.key,
+			batch,
+			ts_min: ts_min.as_nanos(),
+			ts_max: ts_max.as_nanos(),
+			zstd_level: self.policy.zstd_level,
+		})
+	}
+
+	pub(crate) fn maybe_take(&mut self) -> Option<Pending> {
+		if self.next_check_at_rows.is_none_or(|n| self.rows < n) && !self.age_deadline_passed() {
+			return None;
+		}
+		self.should_flush().then(|| self.take()).flatten()
+	}
+
+	pub fn flush(&mut self, catalog: &Catalog) -> Result<Option<PathBuf>, CatalogError> {
+		self.take().map(|p| catalog.write(p)).transpose()
 	}
 
 	pub fn maybe_flush(&mut self, catalog: &Catalog) -> Result<Option<PathBuf>, CatalogError> {
-		if self.next_check_at_rows.is_none_or(|n| self.rows < n) && !self.age_deadline_passed() {
-			return Ok(None);
-		}
-		if self.should_flush() { self.flush(catalog) } else { Ok(None) }
+		self.maybe_take().map(|p| catalog.write(p)).transpose()
 	}
 }
 
@@ -207,7 +225,11 @@ mod tests {
 		Ts::from_nanos(ns)
 	}
 
-	const FOREVER: RotationPolicy = RotationPolicy { max_bytes: None, max_age: None };
+	const FOREVER: RotationPolicy = RotationPolicy {
+		max_bytes: None,
+		max_age: None,
+		zstd_level: 3,
+	};
 
 	fn round_trip_batch<T: Row>(f: &mut Feather<T>, cat: &Catalog) -> Vec<T> {
 		let path = f.flush(cat).unwrap().expect("flush wrote a file");
@@ -221,7 +243,16 @@ mod tests {
 	fn flush_writes_parquet_on_bytes_policy() {
 		let dir = tempdir().unwrap();
 		let catalog = Catalog::new(dir.path());
-		let mut feather = Feather::<BookDelta>::new(ExchangeName::Binance, test_symbol(), prec(), RotationPolicy { max_bytes: Some(1), max_age: None });
+		let mut feather = Feather::<BookDelta>::new(
+			ExchangeName::Binance,
+			test_symbol(),
+			prec(),
+			RotationPolicy {
+				max_bytes: Some(1),
+				max_age: None,
+				zstd_level: 3,
+			},
+		);
 		feather.push(BookDelta {
 			ts_venue_exec: venue(1),
 			ts_local_recv: local(1),

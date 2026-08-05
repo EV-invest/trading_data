@@ -98,6 +98,7 @@ impl Row for Trade {
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: Some(50 * 1024 * 1024),
 		max_age: Some(std::time::Duration::from_secs(24 * 3600)),
+		zstd_level: 3,
 	};
 
 	fn ts_axis(&self) -> Ts<Venue> {
@@ -110,6 +111,7 @@ impl Row for BookDelta {
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: Some(256 * 1024 * 1024),
 		max_age: Some(std::time::Duration::from_secs(3600)),
+		zstd_level: 3,
 	};
 
 	fn ts_axis(&self) -> Ts<Venue> {
@@ -122,6 +124,7 @@ impl Row for BookSnapshot {
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: Some(64 * 1024 * 1024),
 		max_age: Some(std::time::Duration::from_secs(6 * 3600)),
+		zstd_level: 3,
 	};
 
 	fn ts_axis(&self) -> Ts<Venue> {
@@ -134,6 +137,7 @@ impl Row for Oi {
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: None,
 		max_age: Some(std::time::Duration::from_secs(7 * 24 * 3600)),
+		zstd_level: 3,
 	};
 
 	fn ts_axis(&self) -> Ts<Venue> {
@@ -146,6 +150,7 @@ impl Row for Mc {
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: None,
 		max_age: Some(std::time::Duration::from_secs(7 * 24 * 3600)),
+		zstd_level: 3,
 	};
 
 	fn ts_axis(&self) -> Ts<Local> {

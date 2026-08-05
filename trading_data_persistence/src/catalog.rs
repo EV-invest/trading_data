@@ -11,7 +11,7 @@ use parquet::{
 		ArrowWriter,
 		arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder},
 	},
-	basic::Compression,
+	basic::{Compression, ZstdLevel},
 	file::properties::WriterProperties,
 };
 use thiserror::Error;
@@ -55,14 +55,21 @@ impl Catalog {
 		}
 	}
 
-	pub(crate) fn write(&self, key: &LaneKey, batch: &RecordBatch, ts_min: UnixNanos, ts_max: UnixNanos) -> Result<PathBuf, CatalogError> {
+	pub(crate) fn write(&self, p: Pending) -> Result<PathBuf, CatalogError> {
+		let Pending {
+			key,
+			batch,
+			ts_min,
+			ts_max,
+			zstd_level,
+		} = p;
 		assert!(ts_min <= ts_max, "ts_min must be <= ts_max");
 
-		let dir = self.lane_dir(key);
+		let dir = self.lane_dir(&key);
 		fs::create_dir_all(&dir)?;
 
 		let mut listings = self.listings.lock().expect("a poisoned catalog has already lost a write");
-		let entries = match listings.entry(*key) {
+		let entries = match listings.entry(key) {
 			hash_map::Entry::Occupied(e) => e.into_mut(),
 			hash_map::Entry::Vacant(e) => e.insert(scan(&dir)?),
 		};
@@ -77,9 +84,10 @@ impl Catalog {
 
 		let path = dir.join(format!("{ts_min}_{ts_max}.parquet"));
 		let file = fs::File::create(&path)?;
-		let props = WriterProperties::builder().set_compression(Compression::ZSTD(parquet::basic::ZstdLevel::default())).build();
+		let zstd = ZstdLevel::try_new(zstd_level).expect("a lane's rotation policy names a zstd level in range");
+		let props = WriterProperties::builder().set_compression(Compression::ZSTD(zstd)).build();
 		let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
-		writer.write(batch)?;
+		writer.write(&batch)?;
 		writer.close()?;
 
 		let at = entries.partition_point(|e| e.ts_min < ts_min);
@@ -133,6 +141,17 @@ pub(crate) enum LaneKey {
 	BookDeltas { exchange: ExchangeName, symbol: Symbol },
 	Oi { exchange: ExchangeName, symbol: Symbol },
 	Mc { asset: Asset },
+}
+
+/// A finished batch and everywhere it goes. Detached from the [`Feather`](crate::Feather) that
+/// built it so the encode — up to a second of ZSTD on a full lane — can be spent somewhere other
+/// than the thread that filled it.
+pub(crate) struct Pending {
+	pub key: LaneKey,
+	pub batch: RecordBatch,
+	pub ts_min: UnixNanos,
+	pub ts_max: UnixNanos,
+	pub zstd_level: i32,
 }
 
 #[derive(Clone, Debug)]

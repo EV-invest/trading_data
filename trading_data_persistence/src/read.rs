@@ -209,7 +209,11 @@ mod tests {
 		}
 	}
 
-	const FOREVER: RotationPolicy = RotationPolicy { max_bytes: None, max_age: None };
+	const FOREVER: RotationPolicy = RotationPolicy {
+		max_bytes: None,
+		max_age: None,
+		zstd_level: 3,
+	};
 
 	fn venue(ns: i64) -> Ts<Venue> {
 		Ts::from_nanos(ns)
