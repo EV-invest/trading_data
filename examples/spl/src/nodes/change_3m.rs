@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Horizon, node, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Over, node, slice_nudge};
 use v_utils::*;
 
 /// Percent change over the trailing three minutes, off the closed 1m bars inside it. SPL's backtest
@@ -10,7 +10,7 @@ impl Cell for Change3m {
 }
 #[node]
 impl Emit for Change3m {
-	type Deps = (Buffering<trading_data::Bars<{ TF_1MIN }>, { Horizon::Over(TF_3MIN) }>,);
+	type Deps = (Buffering<trading_data::Bars<{ TF_1MIN }>, Over<TF_3MIN>>,);
 
 	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
 

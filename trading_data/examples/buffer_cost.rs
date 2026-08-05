@@ -6,11 +6,11 @@
 
 use std::hint::black_box;
 
-use trading_data::{Blind, Buffer, Buffering, Bump, Cell, DepOuts, Flat, Glance, Horizon, Stamped, graph, node, slice_nudge};
+use trading_data::{Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Flat, Glance, Reach, Stamped, graph, node, slice_nudge};
 
 const TICKS: usize = 200_000;
 /// Deep enough that the memmove dominates, and of the order an indicator's window actually is.
-const REACH: Horizon = Horizon::Elems(512);
+type Win = Elems<512>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Tick {
@@ -58,7 +58,7 @@ impl Cell for Ends {
 }
 #[node]
 impl Blind for Ends {
-	type Deps = (Buffering<Src, REACH>,);
+	type Deps = (Buffering<Src, Win>,);
 
 	const WHY: &'static str = "the bench's consumer: what it measures is the window's retention, not the arithmetic it reads off the ends";
 
@@ -76,7 +76,7 @@ graph! {
 	batches Batches;
 	roots { src: Src[f64] };
 	out GOut;
-	outputs { ends: Ends, hist: Buffer<Src, REACH> }
+	outputs { ends: Ends, hist: Buffer<Src, { <Win as Reach>::HORIZON }> }
 }
 
 fn main() {
@@ -88,5 +88,5 @@ fn main() {
 		}];
 		black_box(g.tick(one[0].ts, Batches { src: &one }));
 	}
-	println!("{TICKS} ticks over a {REACH:?} window");
+	println!("{TICKS} ticks over a {:?} window", <Win as Reach>::HORIZON);
 }

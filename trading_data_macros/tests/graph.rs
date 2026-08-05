@@ -5,7 +5,7 @@
 
 use core::any::TypeId;
 
-use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Horizon, Latch, Roots, Stamped, Symbolic, slice_nudge, value_nudge};
+use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Episode, Flat, Gate, Gating, Glance, Latch, Roots, Stamped, Symbolic, slice_nudge, value_nudge};
 use trading_data_expr::{Expr, Vars, constant};
 use trading_data_macros::{graph, node};
 
@@ -241,7 +241,7 @@ impl Cell for Last {
 }
 #[node]
 impl Blind for Last {
-	type Deps = (Buffering<Src, { Horizon::Elems(1) }>,);
+	type Deps = (Buffering<Src, Elems<1>>,);
 
 	const WHY: &'static str = "a graph fixture";
 
@@ -259,7 +259,7 @@ impl Cell for Sum3 {
 }
 #[node]
 impl Blind for Sum3 {
-	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
+	type Deps = (Buffering<Src, Elems<3>>,);
 
 	const WHY: &'static str = "a buffer fixture";
 

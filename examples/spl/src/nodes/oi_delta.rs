@@ -1,9 +1,9 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Horizon, Oi, OiRoot, Stamped as _, node, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Oi, OiRoot, Over, Stamped as _, node, slice_nudge};
 use v_utils::*;
 
 /// `TF_5MIN` is Bybit's open-interest publish cadence: every leg reads the publish standing a whole
 /// number of those back, so the retained reach is one past the longest one.
-pub const OI_REACH: Horizon = Horizon::Over(Timeframe(4 * TF_5MIN.0));
+pub type OiReach = Over<{ Timeframe(4 * TF_5MIN.0) }>;
 
 /// Percent change of the `i`th fresh publish against the one standing `steps` cadences before it. A
 /// gap that leaves none within a publish interval of that instant declines, rather than passing a
@@ -30,7 +30,7 @@ macro_rules! oi_deltas {
 		}
 		#[node]
 		impl Emit for $ty {
-			type Deps = (Buffering<OiRoot, OI_REACH>,);
+			type Deps = (Buffering<OiRoot, OiReach>,);
 			const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
 
 			fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {

@@ -3,7 +3,7 @@
 //! `Cell`/`Node` are the dag's and these types are ours, so orphan rules make this the only crate
 //! that may write these impls. Nothing else here knows the dag exists.
 
-use trading_data_dag::{Blind, Buffering, Cell, DepOuts, Horizon, Nudge, node, slice_nudge};
+use trading_data_dag::{Blind, Buffering, Cell, DepOuts, Nudge, Over, node, slice_nudge};
 use v_utils::TF_15MIN;
 
 use crate::{Book, BookChunk, BookDelta, BookShape, TradeBuf, TradeCols};
@@ -75,7 +75,7 @@ impl Blind for Book {
 	///
 	/// The `BookChunk` behind it tumbles on the same absolute boundary the checkpoint is written on,
 	/// so a wake is one resync plus one net — depth, not the length of the sleep.
-	type Deps = (BookAnchors, Buffering<BookDeltas, { Horizon::Over(TF_15MIN) }>);
+	type Deps = (BookAnchors, Buffering<BookDeltas, Over<TF_15MIN>>);
 
 	const WHY: &'static str = "an order book fold is not a scalar function of its deltas";
 

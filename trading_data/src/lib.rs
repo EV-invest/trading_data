@@ -11,9 +11,9 @@ pub use trading_data_core::{Asset, ExchangeName, Instrument, Pair, Symbol};
 #[doc(hidden)]
 pub use trading_data_dag as __dag;
 pub use trading_data_dag::{
-	__graph_resolve, Armed, Batch, Blind, Buffer, Buffering, Bump, Cell, Cons, DepOuts, Emit, EmitOuts, Episode, Episodic, Fidelity, Fire, Flat, Folding, Gate, Gating, Glance, Guide, Hist,
-	Horizon, Ink, Jac, Latch, Latest, Level, Nil, Node, Nudge, Observer, Opaque, Plot, Present, ProbabilisticDistribution, Pure, Roots, Rows, Sampling, Series, Spanning, Stamped, Sweep,
-	Symbolic, Tag, TriggerOut, Want, always_present, graph, node, node_alias, observe_root, slice_nudge, step, step_obs, value_nudge,
+	__graph_resolve, Armed, At, Batch, Blind, Buffer, Buffering, Bump, Cell, Cons, DepOuts, Elems, Emit, EmitOuts, Episode, Episodic, Fidelity, Fire, Flat, Folding, Gate, Gating, Glance,
+	Guide, Hist, Horizon, Ink, Jac, Latch, Latest, Level, Nil, Node, Nudge, Observer, Opaque, Over, Plot, Present, ProbabilisticDistribution, Pure, Reach, Roots, Rows, Sampling, Series,
+	Stamped, Sweep, Symbolic, Tag, TriggerOut, Unbounded, Want, always_present, graph, node, node_alias, observe_root, slice_nudge, step, step_obs, value_nudge,
 };
 pub use trading_data_derivatives::{
 	// the dep shims: a `#[node]` writes one at its own crate's root, and a graph naming the cell

@@ -19,13 +19,13 @@
 use std::path::{Path, PathBuf};
 
 use trading_data::{
-	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot,
-	Ohlc, Ohlcs, Oi, OiRoot, ReadClock, Replay, Side, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
+	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Elems, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc,
+	McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, ReadClock, Replay, Side, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
 };
 use trading_data_spl::{
 	config::Config,
 	day_bounds, ensure_lanes,
-	nodes::{Atr, Batches, BookTop, BookTopSnap, Change1d, Change3m, Classify, Decision, Deprecator, Graph, Imbalance, Intent, Momentum, OI_REACH, Spread, StdScreener, Volume1h, Volume1m},
+	nodes::{Atr, Batches, BookTop, BookTopSnap, Change1d, Change3m, Classify, Decision, Deprecator, Graph, Imbalance, Intent, Momentum, OiReach, Spread, StdScreener, Volume1h, Volume1m},
 	symbol, trading_days,
 };
 use v_utils::*;
@@ -248,8 +248,8 @@ impl Direct {
 		self.b_mom.clear();
 		self.momentum.emit(
 			(
-				self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>>(),
-				self.h4.hist::<Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>>(),
+				self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, Elems<181>>>(),
+				self.h4.hist::<Buffering<trading_data::Bars<{ TF_4H }>, Elems<181>>>(),
 			),
 			&mut self.b_mom,
 		);
@@ -274,17 +274,15 @@ impl Direct {
 			self.change_1d.emit(
 				(
 					&self.b_bars[0],
-					self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Over(Timeframe(TF_1D.0 + TF_1H.0)) }>>(),
+					self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Over<{ Timeframe(TF_1D.0 + TF_1H.0) }>>>(),
 				),
 				&mut self.b_c1d,
 			);
 			self.change_3m
-				.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, { Horizon::Over(TF_3MIN) }>>(),), &mut self.b_c3m);
+				.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, Over<TF_3MIN>>>(),), &mut self.b_c3m);
 			self.volume_1m.emit((&self.b_bars[0],), &mut self.b_v1m);
-			self.volume_1h.emit(
-				(&self.b_bars[0], self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Elems(1) }>>()),
-				&mut self.b_v1h,
-			);
+			self.volume_1h
+				.emit((&self.b_bars[0], self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Elems<1>>>()), &mut self.b_v1h);
 			self.imbalance.emit((&self.b_top,), &mut self.b_imb);
 			self.spread.emit((&self.b_top,), &mut self.b_spr);
 			let classified = self.classify.advance((
@@ -299,8 +297,8 @@ impl Direct {
 				&self.b_spr,
 				// `Ring` bridges into `Hist` alone, and an `Mc` is never an absence — so the newest row it
 				// ever held is what the frame's `Latest<McRoot>` holds.
-				self.mc.hist::<Buffering<McRoot, { Horizon::Elems(1) }>>().all().last().copied(),
-				self.oi.hist::<Buffering<OiRoot, OI_REACH>>(),
+				self.mc.hist::<Buffering<McRoot, Elems<1>>>().all().last().copied(),
+				self.oi.hist::<Buffering<OiRoot, OiReach>>(),
 			));
 			self.decision.advance((classified,))
 		} else {

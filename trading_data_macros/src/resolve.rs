@@ -127,9 +127,15 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 	let (cell, wrap) = ty::unwrap_dep(&full);
 	let key = ty::norm(&cell);
 
-	if let Wrap::Buf(reach) = wrap {
+	if let Wrap::Buf { reach, typed } = wrap {
 		let dag = &st.cfg.dag;
-		let reach = reach.unwrap_or_else(|| quote!(#dag::Horizon::Unit));
+		// `Buffer<C, K>` states a `Horizon` and `Buffering<C, R>` a [`Reach`] type; the join is over
+		// values, so the type is projected here and the two meet as one list.
+		let reach = match (reach, typed) {
+			(Some(r), true) => quote!(<#r as #dag::Reach>::HORIZON),
+			(Some(r), false) => r,
+			(None, _) => quote!(#dag::Horizon::Unit),
+		};
 		let bkey = format!("Buffer<{key}>");
 		match st.bufs.iter_mut().find(|b| b.key == bkey) {
 			Some(b) => b.reaches.push(reach),
@@ -171,7 +177,7 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 				latch: false,
 				deps: vec![Dep {
 					shim: dep.shim,
-					ty: quote!(#dag::Folding<#cell, { #dag::Horizon::Unbounded }>),
+					ty: quote!(#dag::Folding<#cell, #dag::Unbounded>),
 				}],
 			},
 		)

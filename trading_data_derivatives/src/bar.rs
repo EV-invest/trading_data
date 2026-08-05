@@ -1,7 +1,7 @@
 use core::fmt;
 
 use trading_data_core::{Exact, Timestamped, Timestamps, TradeCols, Trades, Ts, Venue};
-use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Glance, Plot, Spanning, Stamped, Tag, always_present, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Over, Plot, Stamped, Tag, always_present, node, slice_nudge};
 use v_utils::Timeframe;
 
 #[derive(Clone, Copy, Debug)]
@@ -201,7 +201,7 @@ impl<const TF: Timeframe> Cell for Ohlcs<TF> {
 impl<const TF: Timeframe> Emit for Ohlcs<TF> {
 	/// The partial bar is the whole of the state, so the trades it holds reach back exactly one
 	/// period.
-	type Deps = (Spanning<Trades, TF>,);
+	type Deps = (Folding<Trades, Over<TF>>,);
 
 	/// [`Bars`] joins this with [`Volumes`] and draws for all three.
 	const PLOTS: &'static [Plot] = &[];
@@ -226,7 +226,7 @@ impl<const TF: Timeframe> Cell for Volumes<TF> {
 }
 #[node]
 impl<const TF: Timeframe> Emit for Volumes<TF> {
-	type Deps = (Spanning<Trades, TF>,);
+	type Deps = (Folding<Trades, Over<TF>>,);
 
 	/// [`Bars`] joins this with [`Ohlcs`] and draws for all three.
 	const PLOTS: &'static [Plot] = &[];

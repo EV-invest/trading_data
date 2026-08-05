@@ -191,6 +191,45 @@ impl Horizon {
 	}
 }
 
+/// A reach in *dep* position, where [`Horizon`] is the same thing as a value — what the engine joins
+/// and compares. The two vocabularies coexist deliberately: [`Buffer<C, K>`](Buffer) takes a
+/// `Horizon` because [`graph!`] computes `K` as the join of every read of the series, and no type
+/// could name a join over reads that have not been seen yet.
+///
+/// This exists because a braced const argument may not mention a generic parameter, so
+/// `Folding<C, { Horizon::Over(TF) }>` does not parse — but an associated const on a *type* may read
+/// its impl's generics freely.
+pub trait Reach {
+	const HORIZON: Horizon;
+}
+
+/// A window of wall clock — [`Horizon::Over`] as a type.
+pub struct Over<const TF: Timeframe>;
+impl<const TF: Timeframe> Reach for Over<TF> {
+	const HORIZON: Horizon = Horizon::Over(TF);
+}
+
+/// A count of elements — [`Horizon::Elems`] as a type.
+pub struct Elems<const N: usize>;
+impl<const N: usize> Reach for Elems<N> {
+	const HORIZON: Horizon = Horizon::Elems(N);
+}
+
+/// Reaches to the start of the run — [`Horizon::Unbounded`] as a type.
+pub struct Unbounded;
+impl Reach for Unbounded {
+	const HORIZON: Horizon = Horizon::Unbounded;
+}
+
+/// The identity lift, and the one place the two vocabularies have to meet: [`Buffer`] is
+/// const-generic over the reach it retains (the join `graph!` computed, which no type can name) and
+/// still has to state that reach in dep position. Nothing else should reach for this — a dep that
+/// knows its own reach spells it [`Over`] or [`Elems`].
+pub struct At<const H: Horizon>;
+impl<const H: Horizon> Reach for At<H> {
+	const HORIZON: Horizon = H;
+}
+
 /// A [`Cell::NAME`] a parameter can reach. `NAME` is a `const &'static str`, and nothing that
 /// formats at runtime can produce one — so the parts are spelled into a fixed buffer, in an
 /// *associated* const, whose value outlives the `NAME` borrowing it. That an associated const may
@@ -315,7 +354,7 @@ pub trait Cell {
 
 	/// Whether reading this in dep position reads something the *engine* keeps — [`Buffering`] and
 	/// [`Sampling`], against the [`Buffer`]/[`Latest`] beside the source. Everything else is this
-	/// tick's batch and nothing more: a bare cell, a [`Folding`]/[`Spanning`] reach the node holds, a
+	/// tick's batch and nothing more: a bare cell, a [`Folding`] reach the node holds, a
 	/// [`Gating`] permission.
 	///
 	/// This is what says whether a tick may be *withheld* from a consumer. A retained dep is there
@@ -1022,7 +1061,7 @@ where
 	///
 	/// Only a node reading what the engine keeps ([`Cell::RETAINED`]) is one the engine may withhold
 	/// a tick from: a withheld tick is a batch never delivered, and a pass-through dep — a bare cell,
-	/// a [`Folding`]/[`Spanning`] reach, a [`Gating`] permission — has no second showing of it. Such a
+	/// a [`Folding`] reach, a [`Gating`] permission — has no second showing of it. Such a
 	/// node is clocked by the element walk it already runs (`rates.folds.exactly-once`), and the
 	/// declaration is all the engine takes from it.
 	fn opens(&mut self, ts: i64) -> bool {
@@ -1387,7 +1426,7 @@ impl<N: Episodic> Blind for Armed<N>
 where
 	for<'t> N::Out<'t>: Episode,
 {
-	type Deps = (Folding<N::Trigger, { Horizon::Unbounded }>,);
+	type Deps = (Folding<N::Trigger, Unbounded>,);
 
 	const WHY: &'static str = "a latch is a bit that stays set: `arms` is a predicate over an episode, not a value with a slope";
 
@@ -1705,7 +1744,7 @@ impl<'t, T: Stamped> Hist<'t, T> {
 	/// find the run standing at its own deadline.
 	///
 	/// Cut to the *declared* reach by the same predicate [`Buffer`] trims on, so a node reads what a
-	/// frame buffering at exactly its `Buffering<C, H>` would hold. Without the cut, a run is only as
+	/// frame buffering at exactly its `Buffering<C, R>` would hold. Without the cut, a run is only as
 	/// long as the deepest unrelated consumer of the same series happens to ask for, and shortening
 	/// that one silently changes this one's results.
 	pub fn all(self) -> &'t [T] {
@@ -1779,7 +1818,7 @@ impl<T: Glance> Glance for Hist<'_, T> {
 	}
 }
 
-/// Engine-owned retention over a [`Series`] — an ordinary node (`Deps = (Folding<C, H>,)`, ungated)
+/// Engine-owned retention over a [`Series`] — an ordinary node (`Deps = (Folding<C, At<H>>,)`, ungated)
 /// sitting *next to* its source in the frame, not over it. It advances every
 /// tick regardless of what is dark downstream, because being warm is its whole job: a consumer
 /// switched off and revived reads a full window on its first tick back, where a client-owned window
@@ -1849,7 +1888,7 @@ impl<C: Series, const H: Horizon> Blind for Buffer<C, H>
 where
 	C::Batch: Batch<C::Item>,
 {
-	type Deps = (Folding<C, H>,);
+	type Deps = (Folding<C, At<H>>,);
 
 	const WHY: &'static str = "a retention window is the engine's bookkeeping over a run, not a function of its elements";
 
@@ -1869,12 +1908,12 @@ where
 	}
 }
 
-/// Dep position only, never a frame field: "this series, retained at least `H` back". Resolves
+/// Dep position only, never a frame field: "this series, retained at least `R` back". Resolves
 /// against the frame's [`Buffer<C, K>`] through the [`Has`] impl below, whose const-assert proves
 /// the declared reach [`serves`](Horizon::serves) the request.
-pub struct Buffering<C: Series, const H: Horizon>(core::marker::PhantomData<C>);
+pub struct Buffering<C: Series, R: Reach>(core::marker::PhantomData<(C, R)>);
 
-impl<C: Series, const H: Horizon> Cell for Buffering<C, H>
+impl<C: Series, R: Reach> Cell for Buffering<C, R>
 where
 	C::Batch: Batch<C::Item>,
 {
@@ -1885,27 +1924,27 @@ where
 	/// `REACH`/`FOLDED` are what then say it is the retention and not the cell itself being asked for.
 	const CLOCK: Option<Timeframe> = C::CLOCK;
 	const NAME: &'static str = C::NAME;
-	const REACH: Horizon = H;
+	const REACH: Horizon = R::HORIZON;
 	const RETAINED: bool = true;
 }
 
-impl<'t, C: Series, const K: Horizon, const H: Horizon, T> Has<'t, Buffering<C, H>, Here> for Cons<'t, Buffer<C, K>, T>
+impl<'t, C: Series, const K: Horizon, R: Reach, T> Has<'t, Buffering<C, R>, Here> for Cons<'t, Buffer<C, K>, T>
 where
 	C::Batch: Batch<C::Item>,
 {
 	fn get(&self) -> <C::Batch as Batch<C::Item>>::View<'t> {
 		const {
-			assert!(!matches!(H, Horizon::Unit), "Buffering at Unit is the bare dep C — drop the wrapper");
-			assert!(!matches!(H, Horizon::Unbounded), "a buffer is a bounded thing; Unbounded names no window");
-			assert!(K.serves(H), "the frame's Buffer<C, K> does not reach as far back as this Buffering<C, H> asks for");
+			assert!(!matches!(R::HORIZON, Horizon::Unit), "Buffering at Unit is the bare dep C — drop the wrapper");
+			assert!(!matches!(R::HORIZON, Horizon::Unbounded), "a buffer is a bounded thing; Unbounded names no window");
+			assert!(K.serves(R::HORIZON), "the frame's Buffer<C, K> does not reach as far back as this Buffering<C, R> asks for");
 		}
-		C::Batch::narrow(self.out, H)
+		C::Batch::narrow(self.out, R::HORIZON)
 	}
 }
 
 /// The scratch is the batch itself: what a retention hands out is its own to re-own, and the
 /// three hand-decomposed `Hist` fields this replaces were only ever [`Rows`]' way of saying so.
-impl<C: Series, const H: Horizon> Nudge for Buffering<C, H>
+impl<C: Series, R: Reach> Nudge for Buffering<C, R>
 where
 	C::Item: Bump,
 	C::Batch: Batch<C::Item>,
@@ -1917,12 +1956,12 @@ where
 	}
 
 	fn view<'l>(s: &'l Self::Scratch) -> Self::Out<'l> {
-		s.view(H)
+		s.view(R::HORIZON)
 	}
 }
 
 /// Engine-owned point-level over a [`Series`] — [`Buffer`]'s sibling, an ordinary node (ungated,
-/// `Deps = (Folding<C, {Horizon::Unbounded}>,)`) sitting *next to* its source in the frame. Unbounded
+/// `Deps = (Folding<C, Unbounded>,)`) sitting *next to* its source in the frame. Unbounded
 /// because a level it never saw is one it can never stand on, and it retains nothing: one item, not
 /// a window.
 ///
@@ -1982,7 +2021,7 @@ impl<C: Series> Blind for Latest<C>
 where
 	C::Item: Present,
 {
-	type Deps = (Folding<C, { Horizon::Unbounded }>,);
+	type Deps = (Folding<C, Unbounded>,);
 
 	const WHY: &'static str = "holding the last value across a silence is a carry, and a carry has no slope of its own";
 
@@ -2058,9 +2097,9 @@ where
 /// reason they are two types: a gate can re-warm what the engine holds and cannot re-warm what the
 /// node does, and their `Has` routes resolve off different frame cells anyway — one `Buffer<C, K>`,
 /// the other `C` — which a single wrapper could not disambiguate in a frame carrying both.
-pub struct Folding<C: Cell, const H: Horizon>(core::marker::PhantomData<C>);
+pub struct Folding<C: Cell, R: Reach>(core::marker::PhantomData<(C, R)>);
 
-impl<C: Cell, const H: Horizon> Cell for Folding<C, H> {
+impl<C: Cell, R: Reach> Cell for Folding<C, R> {
 	type Out<'t> = C::Out<'t>;
 
 	const CLOCK: Option<Timeframe> = C::CLOCK;
@@ -2068,50 +2107,17 @@ impl<C: Cell, const H: Horizon> Cell for Folding<C, H> {
 	/// Forwarded: `Roots::required_events` matches dep names against frame cell names, and a wrapper
 	/// that renamed its dep would drop out of it.
 	const NAME: &'static str = C::NAME;
-	const REACH: Horizon = H;
+	const REACH: Horizon = R::HORIZON;
 }
 
-impl<'t, C: Cell, const H: Horizon, T> Has<'t, Folding<C, H>, Here> for Cons<'t, C, T> {
+impl<'t, C: Cell, R: Reach, T> Has<'t, Folding<C, R>, Here> for Cons<'t, C, T> {
 	fn get(&self) -> C::Out<'t> {
-		const { assert!(!matches!(H, Horizon::Unit), "a Folding at Unit is the bare dep C — drop the wrapper") }
+		const { assert!(!matches!(R::HORIZON, Horizon::Unit), "a Folding at Unit is the bare dep C — drop the wrapper") }
 		self.out
 	}
 }
 
-impl<C: Nudge, const H: Horizon> Nudge for Folding<C, H> {
-	type Scratch = C::Scratch;
-
-	fn stage<'t>(out: C::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
-		C::stage(out, s, bump, h)
-	}
-
-	fn view<'l>(s: &'l Self::Scratch) -> C::Out<'l> {
-		C::view(s)
-	}
-}
-
-/// [`Folding`] with the span spelled as the period it is — what a node parameterised by a timeframe
-/// writes in dep position. Its own type because `Folding<C, { Horizon::Over(TF) }>` does not parse:
-/// an enum constructor applied to a generic parameter is rejected in const-argument position, so the
-/// construction moves into an associated const, which is a type.
-pub struct Spanning<C: Cell, const TF: Timeframe>(core::marker::PhantomData<C>);
-
-impl<C: Cell, const TF: Timeframe> Cell for Spanning<C, TF> {
-	type Out<'t> = C::Out<'t>;
-
-	const CLOCK: Option<Timeframe> = C::CLOCK;
-	const FOLDED: bool = true;
-	const NAME: &'static str = C::NAME;
-	const REACH: Horizon = Horizon::Over(TF);
-}
-
-impl<'t, C: Cell, const TF: Timeframe, T> Has<'t, Spanning<C, TF>, Here> for Cons<'t, C, T> {
-	fn get(&self) -> C::Out<'t> {
-		self.out
-	}
-}
-
-impl<C: Nudge, const TF: Timeframe> Nudge for Spanning<C, TF> {
+impl<C: Nudge, R: Reach> Nudge for Folding<C, R> {
 	type Scratch = C::Scratch;
 
 	fn stage<'t>(out: C::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
@@ -2253,7 +2259,7 @@ macro_rules! impl_arity {
 					);
 					assert!(
 						!any(<Self as DepSet>::GATES) || !any(<Self as DepSet>::FOLDS),
-						"a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (write the dep as `Buffering<C, H>`), or drop the `Gating` dep"
+						"a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (write the dep as `Buffering<C, R>`), or drop the `Gating` dep"
 					);
 				}
 				true $(&& (!<$T::Gates as Bit>::VALUE || $T::opens(Has::<'t, $T, $I>::get(f))))+

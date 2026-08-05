@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Horizon, Plot, node, slice_nudge};
+use trading_data::{Buffering, Cell, Elems, Emit, EmitOuts, Hist, Plot, node, slice_nudge};
 use v_utils::*;
 
 use super::Bar;
@@ -54,10 +54,7 @@ impl Cell for Momentum {
 }
 #[node]
 impl Emit for Momentum {
-	type Deps = (
-		Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>,
-		Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>,
-	);
+	type Deps = (Buffering<trading_data::Bars<{ TF_5MIN }>, Elems<181>>, Buffering<trading_data::Bars<{ TF_4H }>, Elems<181>>);
 
 	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &[&["sharpe"]],

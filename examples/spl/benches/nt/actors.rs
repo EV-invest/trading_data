@@ -27,12 +27,12 @@ use nautilus_model::{
 };
 use serde::{Deserialize, Serialize};
 use trading_data::{
-	Armed, Bar, Blind as _, Buffering, Direction, Emit as _, Episode, Horizon, Latch as _, Local, Mc, McRoot, Oi, OiRoot, Ts, Usd,
+	Armed, Bar, Blind as _, Buffering, Direction, Elems, Emit as _, Episode, Latch as _, Local, Mc, McRoot, Oi, OiRoot, Over, Ts, Usd,
 	bench::{COUNTERS, Digest, ring::Ring},
 };
 use trading_data_spl::{
 	DEPTH,
-	nodes::{Atr, BookTopSnap, Change1d, Change3m, Classified, Classify, Decided, Decision, Deprecator, Imbalance, Intent, Momentum, OI_REACH, Spread, StdScreener, Volume1h, Volume1m},
+	nodes::{Atr, BookTopSnap, Change1d, Change3m, Classified, Classify, Decided, Decision, Deprecator, Imbalance, Intent, Momentum, OiReach, Spread, StdScreener, Volume1h, Volume1m},
 };
 use v_utils::*;
 
@@ -355,8 +355,8 @@ impl DataActor for Momenta {
 		self.out.clear();
 		self.node.emit(
 			(
-				self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>>(),
-				self.h4.hist::<Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>>(),
+				self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, Elems<181>>>(),
+				self.h4.hist::<Buffering<trading_data::Bars<{ TF_4H }>, Elems<181>>>(),
 			),
 			&mut self.out,
 		);
@@ -417,7 +417,7 @@ impl DataActor for C1d {
 		self.pending.clear();
 		self.out.clear();
 		self.node.emit(
-			(&bar, self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Over(Timeframe(TF_1D.0 + TF_1H.0)) }>>()),
+			(&bar, self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Over<{ Timeframe(TF_1D.0 + TF_1H.0) }>>>()),
 			&mut self.out,
 		);
 		self.publish_signal(CHANGE1D, encode(&self.out), signal.ts_event);
@@ -436,8 +436,7 @@ impl DataActor for C3m {
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
 		self.m1.push(&[Bar::from(decode::<BarDto>(signal))]);
 		self.out.clear();
-		self.node
-			.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, { Horizon::Over(TF_3MIN) }>>(),), &mut self.out);
+		self.node.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, Over<TF_3MIN>>>(),), &mut self.out);
 		self.publish_signal(CHANGE3M, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -478,8 +477,7 @@ impl DataActor for V1h {
 		self.h1.push(&self.pending);
 		self.pending.clear();
 		self.out.clear();
-		self.node
-			.emit((&bar, self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Elems(1) }>>()), &mut self.out);
+		self.node.emit((&bar, self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Elems<1>>>()), &mut self.out);
 		self.publish_signal(VOLUME1H, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -605,8 +603,8 @@ impl DataActor for Classifier {
 			&self.spr,
 			// `Ring` bridges into `Hist` alone, and an `Mc` is never an absence — so the newest row it
 			// ever held is what the frame's `Latest<McRoot>` holds.
-			self.mc.hist::<Buffering<McRoot, { Horizon::Elems(1) }>>().all().last().copied(),
-			self.oi.hist::<Buffering<OiRoot, OI_REACH>>(),
+			self.mc.hist::<Buffering<McRoot, Elems<1>>>().all().last().copied(),
+			self.oi.hist::<Buffering<OiRoot, OiReach>>(),
 		));
 		self.publish_signal(CLASSIFIED, encode(&out.map(|c| c.0.to_vec())), signal.ts_event);
 		Ok(())

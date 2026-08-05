@@ -6,7 +6,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Flat, Gate, Gating, Glance, Hist, Horizon, Latch, Stamped, slice_nudge, value_nudge};
+use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Emit, EmitOuts, Episode, Flat, Gate, Gating, Glance, Hist, Latch, Stamped, slice_nudge, value_nudge};
 use trading_data_macros::{graph, node};
 
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.
@@ -133,7 +133,7 @@ impl Cell for Watch {
 }
 #[node]
 impl Blind for Watch {
-	type Deps = (Buffering<Kept, { Horizon::Elems(2) }>,);
+	type Deps = (Buffering<Kept, Elems<2>>,);
 
 	const WHY: &'static str = "a demand fixture";
 

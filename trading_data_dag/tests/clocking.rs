@@ -2,7 +2,7 @@
 //! the boundary. The question the whole thing answers is which of two readings a consumer holds —
 //! the one taken when the period closed, or the one the last tick happened to revise.
 
-use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Horizon, Sampling, Stamped, always_present, graph, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Horizon, Over, Sampling, Stamped, always_present, graph, node, slice_nudge};
 use v_utils::Timeframe;
 
 const MIN: Timeframe = Timeframe(60_000);
@@ -100,7 +100,7 @@ impl Cell for Closes {
 }
 #[node]
 impl Emit for Closes {
-	type Deps = (Folding<Src, { Horizon::Over(MIN) }>,);
+	type Deps = (Folding<Src, Over<MIN>>,);
 
 	const WHY: &'static str = "a clocking fixture";
 

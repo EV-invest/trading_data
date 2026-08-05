@@ -2,7 +2,7 @@
 //! notional per trade), BookFlow (running signed level qty, market activity only), the folded
 //! `Book`, and 1m bars off the same trades — the bars are what the chart draws price from.
 
-use trading_data::{BookAnchors, BookDelta, BookDeltas, BookShape, Cell, Emit, EmitOuts, Folding, FrameKind, Horizon, Lanes, Side, TradeCols, Trades, node, slice_nudge};
+use trading_data::{BookAnchors, BookDelta, BookDeltas, BookShape, Cell, Emit, EmitOuts, Folding, FrameKind, Lanes, Over, Side, TradeCols, Trades, Unbounded, node, slice_nudge};
 use v_utils::*;
 
 /// Cumulative volume delta: running Σ signed notional, one element per trade.
@@ -16,7 +16,7 @@ impl Cell for Cvd {
 #[node]
 impl Emit for Cvd {
 	/// A running sum reaches to the start of the run.
-	type Deps = (Folding<Trades, { Horizon::Unbounded }>,);
+	type Deps = (Folding<Trades, Unbounded>,);
 
 	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
 
@@ -46,7 +46,7 @@ impl Cell for BookFlow {
 #[node]
 impl Emit for BookFlow {
 	/// A running sum reaches to the start of the run.
-	type Deps = (Folding<BookDeltas, { Horizon::Unbounded }>,);
+	type Deps = (Folding<BookDeltas, Unbounded>,);
 
 	const WHY: &'static str = "a book fold read for flow, which is not a scalar function of its deltas";
 

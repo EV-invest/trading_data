@@ -4,7 +4,7 @@
 //! the point of engine-owned retention.
 
 use trading_data_dag::{
-	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Stamped, Want, graph, node, slice_nudge,
+	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Emit, EmitOuts, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Stamped, Want, graph, node, slice_nudge,
 };
 use v_utils::{Timeframe, TimeframeDesignator};
 
@@ -75,7 +75,7 @@ impl Cell for Sum3 {
 }
 #[node]
 impl Emit for Sum3 {
-	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
+	type Deps = (Buffering<Src, Elems<3>>,);
 
 	const WHY: &'static str = "a buffer fixture";
 
@@ -94,7 +94,7 @@ impl Cell for Split {
 }
 #[node]
 impl Emit for Split {
-	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
+	type Deps = (Buffering<Src, Elems<3>>,);
 
 	const WHY: &'static str = "a buffer fixture";
 
@@ -119,7 +119,7 @@ impl Cell for Level {
 }
 #[node]
 impl Blind for Level {
-	type Deps = (Buffering<Src, { Horizon::Elems(1) }>,);
+	type Deps = (Buffering<Src, Elems<1>>,);
 
 	const WHY: &'static str = "a retention fixture";
 
@@ -380,7 +380,7 @@ mod revive {
 	}
 	#[node]
 	impl Blind for Episodic {
-		type Deps = (Gating<Live>, Buffering<Src, { Horizon::Elems(3) }>);
+		type Deps = (Gating<Live>, Buffering<Src, Elems<3>>);
 
 		const WHY: &'static str = "a buffer fixture";
 

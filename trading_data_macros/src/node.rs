@@ -52,7 +52,7 @@ struct Sig {
 
 impl Sig {
 	/// The substitution list `ty::shimify` rewrites against — const parameters included, so a
-	/// `Spanning<Trades, TF>` dep becomes `Spanning<Trades, $TF>`.
+	/// `Folding<Trades, Over<TF>>` dep becomes `Folding<Trades, Over<$TF>>`.
 	fn idents(&self) -> Vec<Ident> {
 		self.params.iter().map(|(i, _)| i.clone()).collect()
 	}

@@ -3,7 +3,7 @@ use core::fmt;
 use trading_data::{Blind, Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Ink, McRoot, OiRoot, Plot, ProbabilisticDistribution, Sampling, Usd, node, value_nudge};
 use v_utils::*;
 
-use super::{Change1d, Change3m, Imbalance, Momentum, Screener, Spread, Volume1h, Volume1m, oi_delta::OI_REACH};
+use super::{Change1d, Change3m, Imbalance, Momentum, Screener, Spread, Volume1h, Volume1m, oi_delta::OiReach};
 
 /// The wire order of [`Classified`]'s slots, category-major.
 const CATEGORIES: [Category; 5] = [Category::Indeterminate, Category::Liquidations, Category::MmClosing, Category::Manipulation, Category::Momentum];
@@ -284,7 +284,7 @@ impl Blind for Classify {
 		Imbalance,
 		Spread,
 		Sampling<McRoot>,
-		Buffering<OiRoot, OI_REACH>,
+		Buffering<OiRoot, OiReach>,
 	);
 
 	/// The out is a distribution, so the slots stack to a full bar and the scale is fixed to it.

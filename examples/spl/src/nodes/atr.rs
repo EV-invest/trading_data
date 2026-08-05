@@ -1,4 +1,4 @@
-use trading_data::{Cell, Emit, EmitOuts, Folding, Horizon, WilderAtr, node, slice_nudge};
+use trading_data::{Cell, Emit, EmitOuts, Folding, Unbounded, WilderAtr, node, slice_nudge};
 use v_utils::*;
 
 use crate::config::strategy;
@@ -22,7 +22,7 @@ impl Cell for Atr {
 #[node]
 impl Emit for Atr {
 	/// A Wilder recurrence reaches to the start of the run.
-	type Deps = (Folding<trading_data::Bars<{ TF_1MIN }>, { Horizon::Unbounded }>,);
+	type Deps = (Folding<trading_data::Bars<{ TF_1MIN }>, Unbounded>,);
 
 	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
 

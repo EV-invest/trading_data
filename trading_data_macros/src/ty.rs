@@ -11,8 +11,12 @@ pub enum Wrap {
 	Fold,
 	/// The reach the *engine* is asked to retain, which is what a `Buffer` field is sized on. `None`
 	/// where the dep omitted it: the default is `Horizon::Unit`, and only the driver knows the dag's
-	/// path to spell it under.
-	Buf(Option<TokenStream>),
+	/// path to spell it under. `typed` says which vocabulary it came in as — a `Buffering`'s reach is
+	/// a [`Reach`] type, a `Buffer`'s is the `Horizon` value the driver joins.
+	Buf {
+		reach: Option<TokenStream>,
+		typed: bool,
+	},
 	/// The point-level read. No reach to carry: a `Latest` field holds one item, whatever was asked.
 	Sample,
 	Gate,
@@ -22,7 +26,7 @@ pub fn parse_type(ts: &TokenStream) -> syn::Result<Type> {
 	syn::parse2(ts.clone())
 }
 
-/// `Folding<C, H>` / `Buffering<C, H>` / `Sampling<C>` / `Gating<C>` → `C` plus which of them it
+/// `Folding<C, R>` / `Buffering<C, R>` / `Sampling<C>` / `Gating<C>` → `C` plus which of them it
 /// was. Matched on the last path segment, so a wrapper named through any path spelling still reads
 /// as one.
 ///
@@ -35,16 +39,22 @@ pub fn unwrap_dep(ty: &Type) -> (Type, Wrap) {
 	let PathArguments::AngleBracketed(args) = &seg.arguments else {
 		return (ty.clone(), Wrap::Bare);
 	};
-	// positional, not by `GenericArgument` kind: a horizon written as a bare const path
-	// (`Buffering<OiRoot, OI_REACH>`) is indistinguishable from a type to the parser.
+	// positional, not by `GenericArgument` kind: a `Buffer`'s reach is a const and a `Buffering`'s is a
+	// type, and the parser cannot tell one bare path from the other.
 	let mut it = args.args.iter().filter(|a| !matches!(a, GenericArgument::Lifetime(_)));
 	let (Some(GenericArgument::Type(cell)), reach) = (it.next(), it.next()) else {
 		return (ty.clone(), Wrap::Bare);
 	};
 	match seg.ident.to_string().as_str() {
-		"Folding" | "Spanning" => (cell.clone(), Wrap::Fold),
+		"Folding" => (cell.clone(), Wrap::Fold),
 		"Gating" => (cell.clone(), Wrap::Gate),
-		"Buffering" | "Buffer" => (cell.clone(), Wrap::Buf(reach.map(ToTokens::to_token_stream))),
+		"Buffering" | "Buffer" => (
+			cell.clone(),
+			Wrap::Buf {
+				reach: reach.map(ToTokens::to_token_stream),
+				typed: seg.ident == "Buffering",
+			},
+		),
 		"Sampling" | "Latest" => (cell.clone(), Wrap::Sample),
 		_ => (ty.clone(), Wrap::Bare),
 	}

@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Exact, Horizon, closed_by, node, slice_nudge};
+use trading_data::{Buffering, Cell, Emit, EmitOuts, Exact, Over, closed_by, node, slice_nudge};
 use v_utils::*;
 
 /// Percent change against the 1h close standing a day back, asked once per closed 1m bar.
@@ -12,10 +12,7 @@ impl Emit for Change1d {
 	/// A day of wall clock, not "24 bars": an hour nothing traded emits no bar. The retained run is
 	/// that day plus one period of the buffered series itself — the 1m bar asking the question stands
 	/// up to a whole period past the newest close of it.
-	type Deps = (
-		trading_data::Bars<{ TF_1MIN }>,
-		Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Over(Timeframe(TF_1D.0 + TF_1H.0)) }>,
-	);
+	type Deps = (trading_data::Bars<{ TF_1MIN }>, Buffering<trading_data::Bars<{ TF_1H }>, Over<{ Timeframe(TF_1D.0 + TF_1H.0) }>>);
 
 	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
 

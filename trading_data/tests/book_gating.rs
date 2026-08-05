@@ -15,7 +15,7 @@
 //! the deltas as a *net*, so a wake costs depth rather than the length of the sleep.
 
 use trading_data::{
-	Blind, Book, BookAnchors, BookDelta, BookDeltas, BookShape, Buffering, Cell, DepOuts, FrameKind, Gate, Gating, Horizon, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols,
+	Blind, Book, BookAnchors, BookDelta, BookDeltas, BookShape, Buffering, Cell, DepOuts, FrameKind, Gate, Gating, Nudge, Over, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols,
 	Trades, Ts, node,
 };
 use v_utils::TF_15MIN;
@@ -24,7 +24,7 @@ const PREC: PrecisionPriceQty = PrecisionPriceQty {
 	price: Precision(2),
 	qty: Precision(4),
 };
-const REACH: Horizon = Horizon::Over(TF_15MIN);
+type Reach15m = Over<TF_15MIN>;
 /// One tumble of the retained net, in nanoseconds — the same grid the checkpoint is written on.
 const PERIOD: i64 = 900_000_000_000;
 
@@ -53,7 +53,7 @@ impl Nudge for GatedBook {
 impl Blind for GatedBook {
 	/// The claim under test, and until the deltas became a retained [`Buffering`] it did not compile:
 	/// a `Folding` dep on a gated node is the one thing the const-assert refuses.
-	type Deps = (Gating<Hot>, BookAnchors, Buffering<BookDeltas, REACH>);
+	type Deps = (Gating<Hot>, BookAnchors, Buffering<BookDeltas, Reach15m>);
 
 	const WHY: &'static str = "a book-gating fixture";
 

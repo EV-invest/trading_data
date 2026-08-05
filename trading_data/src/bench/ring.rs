@@ -2,7 +2,7 @@
 //! can hand a node, built outside a `Graph`.
 //!
 //! `Hist`'s fields are private and only [`crate::Buffering`] constructs one — but
-//! `Buffering<C, H>: Nudge` is public, and `Nudge::view` is exactly "read this scratch back as the
+//! `Buffering<C, R>: Nudge` is public, and `Nudge::view` is exactly "read this scratch back as the
 //! dep's out". So the scratch *is* the buffer's [`Rows`], and this owns one.
 //!
 //! Retention is unbounded where the frame's `Buffer<C, K>` trims to `K`, and the two are
@@ -36,7 +36,7 @@ impl<T: Copy + Stamped> Ring<T> {
 		self.rows.advance(fresh, Horizon::Elems(usize::MAX));
 	}
 
-	/// The history as the reader's own `Buffering<C, H>` sees it. `B` is that dep, written out at
+	/// The history as the reader's own `Buffering<C, R>` sees it. `B` is that dep, written out at
 	/// the call site — the horizon lives in the type, and nothing else can supply it.
 	pub fn hist<B: Nudge<Scratch = Rows<T>>>(&self) -> B::Out<'_> {
 		B::view(&self.rows)

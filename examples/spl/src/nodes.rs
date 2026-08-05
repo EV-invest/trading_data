@@ -103,12 +103,12 @@ pub use decision::{Decided, Decision};
 pub use deprecator::{Deprecator, Intent, TrailingStop};
 pub use imbalance::Imbalance;
 pub use momentum::{LEGS, Momentum};
-pub use oi_delta::{OI_REACH, OiDelta5m, OiDelta15m};
+pub use oi_delta::{OiDelta5m, OiDelta15m, OiReach};
 pub use rsi::{AvgGain, AvgLoss, Knobs, Rsi, RsiDelta, RsiSeries};
 pub use rsi_screener::RsiScreener;
 pub use spread::Spread;
 pub use std_screener::StdScreener;
-use trading_data::{Armed, BookAnchors, BookDelta, BookDeltas, BookShape, Fidelity, Horizon, Lanes, Mc, McRoot, Oi, OiRoot, TradeCols, Trades};
+use trading_data::{Armed, BookAnchors, BookDelta, BookDeltas, BookShape, Elems, Fidelity, Lanes, Mc, McRoot, Oi, OiRoot, Over, TradeCols, Trades};
 pub use trading_data::{Bar, RsiValues};
 // a `type Deps` const expression is re-expanded here, so the `TF_*` a dep names has to resolve here too.
 use v_utils::*;

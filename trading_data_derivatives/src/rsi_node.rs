@@ -1,6 +1,6 @@
 use core::{fmt, marker::PhantomData};
 
-use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Horizon, Plot, Series, Tag, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, Elems, Emit, EmitOuts, Flat, Folding, Glance, Plot, Series, Tag, Unbounded, node, slice_nudge};
 
 use crate::{Wilder, bar::Bar, rsi};
 
@@ -51,7 +51,7 @@ impl<B: Series<Item = Bar>> Cell for RsiDelta<B> {
 }
 #[node]
 impl<B: Series<Item = Bar>> Emit for RsiDelta<B> {
-	type Deps = (Folding<B, { Horizon::Elems(1) }>,);
+	type Deps = (Folding<B, Elems<1>>,);
 
 	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
 
@@ -102,7 +102,7 @@ macro_rules! wilder_half {
 		#[node]
 		impl<B: Series<Item = Bar>, S: RsiSpec> Emit for $ty<B, S> {
 			/// A Wilder recurrence reaches to the start of the run.
-			type Deps = (Folding<crate::RsiDelta<B>, { Horizon::Unbounded }>,);
+			type Deps = (Folding<crate::RsiDelta<B>, Unbounded>,);
 			const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
 
 			fn emit(&mut self, (deltas,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
@@ -197,7 +197,7 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Cell for Rsi<B, S> {
 #[node]
 impl<B: Series<Item = Bar>, S: RsiSpec> Emit for Rsi<B, S> {
 	/// The smoothing EMA is a recurrence over both legs, so it reaches to the start of the run.
-	type Deps = (Folding<crate::AvgGain<B, S>, { Horizon::Unbounded }>, Folding<crate::AvgLoss<B, S>, { Horizon::Unbounded }>);
+	type Deps = (Folding<crate::AvgGain<B, S>, Unbounded>, Folding<crate::AvgLoss<B, S>, Unbounded>);
 
 	// No threshold guide: whoever wires this owns the trigger and `Plot` is a const, so drawing one
 	// here would pin a number the wiring is free to move.

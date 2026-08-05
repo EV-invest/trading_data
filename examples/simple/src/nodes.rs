@@ -6,8 +6,8 @@
 use core::fmt;
 
 use trading_data::{
-	Buffering, Bump, Cell, Emit, EmitOuts, Exact, Expr, Flat, Folding, Glance, Horizon, Lanes, RsiSpec, Side, Stamped, Symbolic, TradeCols, Trades, Vars, always_present, constant, node,
-	slice_nudge,
+	Buffering, Bump, Cell, Elems, Emit, EmitOuts, Exact, Expr, Flat, Folding, Glance, Horizon, Lanes, Over, Reach, RsiSpec, Side, Stamped, Symbolic, TradeCols, Trades, Vars, always_present,
+	constant, node, slice_nudge,
 };
 use v_utils::*;
 
@@ -19,7 +19,8 @@ trading_data::node_alias! { pub Rsi14 = trading_data::Rsi<trading_data::Bars<{ T
 pub const LAMBDA_WINDOW: usize = 60;
 /// The reach both windowed readings are served from: λ's `window + 1`, which the hour of volume
 /// rides along inside.
-const REACH: Horizon = Horizon::Elems(LAMBDA_WINDOW + 1);
+type Win = Elems<{ LAMBDA_WINDOW + 1 }>;
+const REACH: Horizon = <Win as Reach>::HORIZON;
 /// Wilder's own lengths, and the whole of what this graph configures.
 pub struct Len14;
 impl RsiSpec for Len14 {
@@ -124,7 +125,7 @@ impl Cell for Flow1m {
 #[node]
 impl Emit for Flow1m {
 	/// The partial minute is the whole of the state, so the trades it holds reach back exactly one.
-	type Deps = (Folding<Trades, { Horizon::Over(TF_1MIN) }>,);
+	type Deps = (Folding<Trades, Over<TF_1MIN>>,);
 
 	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
@@ -161,7 +162,7 @@ impl Cell for Lambda1m {
 }
 #[node]
 impl Emit for Lambda1m {
-	type Deps = (Buffering<Flow1m, REACH>,);
+	type Deps = (Buffering<Flow1m, Win>,);
 
 	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
@@ -183,7 +184,7 @@ impl Cell for VolUsd1h {
 }
 #[node]
 impl Emit for VolUsd1h {
-	type Deps = (Buffering<trading_data::Bars<{ TF_1MIN }>, REACH>,);
+	type Deps = (Buffering<trading_data::Bars<{ TF_1MIN }>, Win>,);
 
 	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 

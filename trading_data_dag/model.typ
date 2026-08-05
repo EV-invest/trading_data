@@ -38,7 +38,7 @@ DERIVATION ── proc-macro walk of `type Deps`, backwards from `outputs`
    │               `true` ⇒ somebody reads it always.
    │                 · a latch dominates only what declares `Cell::REWARMS` (it is read one
    │                   tick ahead — §1.3), and a gate the sweep has not reached yet not at all
-   │                 · anything holding history is pinned  (Folding/Spanning dep, Buffer,
+   │                 · anything holding history is pinned  (Folding dep, Buffer,
    │                   latch, gate itself — state cannot re-warm through a skip)
    ├─ latches      `Cut` must gate on the latch (`cut_gated`); the arm must not be gated
    │               by it (`deadlocked`) — a latch whose arm it darkens never re-arms.
@@ -122,20 +122,25 @@ OBSERVATION ── the same sweep, read. `()` observer ⇒ `want() = Nothing` �
 
 === 1.3 The dep vocabulary — `type Deps` *is* the graph
 
-Six spellings, no seventh. Every structural fact about an edge is one of these.
+Five spellings, no sixth. Every structural fact about an edge is one of these.
 
 ```
- spelling                  out read                 resolves against   REACH      FOLDED  RETAINED  Gates
- ─────────────────────────────────────────────────────────────────────────────────────────────────────────
- C                         C::Out<'t>               C                  Unit       false   false     No
- Gating<G: Gate>           bool  — permission       G                  Unit       false   false     YES
- Buffering<C: Series, H>   C::Batch's own view      Buffer<C, K≥H>     H          false   TRUE      No
- Sampling<C: Series>       Option<Item::Val>        Latest<C>          Unit       false   TRUE      No
- Folding<C, H>             C::Out<'t>  (a claim)    C                  H          TRUE    false     No
- Spanning<C, TF>           C::Out<'t>  (a claim)    C                  Span(TF)   TRUE    false     No
+ spelling                  out read                 resolves against   REACH        FOLDED  RETAINED  Gates
+ ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+ C                         C::Out<'t>               C                  Unit         false   false     No
+ Gating<G: Gate>           bool  — permission       G                  Unit         false   false     YES
+ Buffering<C: Series, R>   C::Batch's own view      Buffer<C, K≥R>     R::HORIZON   false   TRUE      No
+ Sampling<C: Series>       Option<Item::Val>        Latest<C>          Unit         false   TRUE      No
+ Folding<C, R>             C::Out<'t>  (a claim)    C                  R::HORIZON   TRUE    false     No
 
- `Spanning` exists only because `Folding<C, { Horizon::Over(TF) }>` does not parse: an enum
- constructor applied to a generic parameter is rejected in const-argument position.
+ A reach in DEP position is a TYPE — `Over<TF>` / `Elems<N>` / `Unbounded`, each an impl of `Reach`
+ carrying one `HORIZON` const. That is what lets a node parameterised by a timeframe write
+ `Folding<Trades, Over<TF>>`: a braced const argument may not mention a generic parameter, but an
+ associated const on a type reads its impl's generics freely.
+
+ `Horizon` stays the VALUE vocabulary, where the engine joins and compares — `Buffer<C, {join}>`
+ cannot take a `Reach`, since no type names a join over reads the macro has not seen yet. `At<H>` is
+ the identity lift, and the only place the two meet: `Buffer`'s own dep on the series it retains.
 
  Every wrapper forwards `Cell::NAME = C::NAME` and `Cell::CLOCK = C::CLOCK` — the graph predicates
  match dep names against frame cell names, and a wrapper that renamed or re-rated its dep would drop
@@ -166,7 +171,7 @@ _Who holds the history_ is the axis the wrappers actually partition:
 
 ```
         ┌── engine holds it ──────────┬── node holds it ────────┬── engine holds ONE ──┐
-        │   Buffering<C, H>           │   Folding / Spanning    │   Sampling<C>        │
+        │   Buffering<C, R>           │   Folding<C, R>         │   Sampling<C>        │
         │   → Buffer<C, K>  (a node)  │   → nothing retained    │   → Latest<C> (node) │
         │   re-warms through a skip   │   CANNOT re-warm ⇒      │   monotone: once it  │
         │   ⇒ darkening a consumer    │   `Gating` + `Folding`  │   holds a level, it  │
@@ -219,7 +224,7 @@ Demand reads these edges backwards, and what it derives is a FORMULA, not a set:
   node((-0.5, 1.3), [`Gating<G>`], fill: rgb("#f6e6e6"), name: <gat>),
   node((0.6, 1.3), [`Buffering<C,H>`], fill: rgb("#e4edf5"), name: <buf>),
   node((1.8, 1.3), [`Sampling<C>`], fill: rgb("#e4edf5"), name: <sam>),
-  node((3.0, 1.3), align(center)[`Folding<C,H>` \ `Spanning<C,TF>`], fill: rgb("#e9f1e4"), name: <fold>),
+  node((3.0, 1.3), align(center)[`Folding<C,R>` \ `Over<TF>`/`Elems<N>`], fill: rgb("#e9f1e4"), name: <fold>),
 
   edge(<cons>, <bare>, "->"),
   edge(<cons>, <gat>, "->"),
@@ -294,14 +299,14 @@ gateable the moment the lane became a run of rows the engine could retain for it
   nobody. A node reading a batch is already clocked by the element walk it runs over it
   (`rates.folds.exactly-once`), and the engine takes the declaration and nothing else.
 
-     Ohlcs<TF>   Spanning<Trades, TF>          not retained ⇒ its own boundary walk is the rate
+     Ohlcs<TF>   Folding<Trades, Over<TF>>     not retained ⇒ its own boundary walk is the rate
      Bars<TF>    (Ohlcs<TF>, Volumes<TF>)      bare deps    ⇒ publishes when its producers do
      an indie    Sampling<C> / Buffering<C,H>  retained     ⇒ the engine opens it once per period
 
   `clock_divides` (§1.7) is what keeps a declaration honest: every feeding rate must tile it. That
   also pins a period spelled twice — `Bars<TF>` names TF in its type and reads `Ohlcs<TF>`, so any
   CLOCK but `Some(TF)` fails to build. It is the check standing in for a type-level equality Rust
-  has no way to write: `Deps = (Spanning<Trades, {C::TF}>,)` wants `generic_const_exprs`.
+  has no way to write: `Deps = (Folding<Trades, Over<{C::TF}>>,)` wants `generic_const_exprs`.
 ```
 
 === 1.5 Node kinds — how a cell computes
@@ -525,10 +530,9 @@ gateable the moment the lane became a run of rows the engine could retain for it
 }
 
 #census((
-  ("Buffering<C, H>", "\bBuffering\s*<"),
-  ("Folding<C, H>", "\bFolding\s*<"),
+  ("Buffering<C, R>", "\bBuffering\s*<"),
+  ("Folding<C, R>", "\bFolding\s*<"),
   ("Gating<G>", "\bGating\s*<"),
-  ("Spanning<C, TF>", "\bSpanning\s*<"),
   ("Sampling<C>", "\bSampling\s*<"),
 ))
 
