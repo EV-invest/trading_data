@@ -4,7 +4,7 @@ use arrow::{
 	array::{Array, ArrayRef, Float64Array, Float64Builder, Int32Array, Int64Array, ListArray, RecordBatch, UInt8Array, UInt32Array, UInt64Array},
 	datatypes::{DataType, Field, Schema, SchemaRef},
 };
-use trading_data_core::{FrameKind, Local, Precision, PrecisionPriceQty, Side, Ts, Venue};
+use trading_data_core::{DeltaFrame, FrameKind, Local, Precision, PrecisionPriceQty, Side, TradeCols, Ts, Venue};
 use trading_data_dag::{Bump, Cell, Flat, Glance, Stamped, always_present, slice_nudge};
 
 use crate::feather::RotationPolicy;
@@ -98,6 +98,7 @@ impl Row for Trade {
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: Some(50 * 1024 * 1024),
 		max_age: Some(std::time::Duration::from_secs(24 * 3600)),
+		zstd_level: 3,
 	};
 
 	fn ts_axis(&self) -> Ts<Venue> {
@@ -110,6 +111,7 @@ impl Row for BookDelta {
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: Some(256 * 1024 * 1024),
 		max_age: Some(std::time::Duration::from_secs(3600)),
+		zstd_level: 3,
 	};
 
 	fn ts_axis(&self) -> Ts<Venue> {
@@ -122,6 +124,7 @@ impl Row for BookSnapshot {
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: Some(64 * 1024 * 1024),
 		max_age: Some(std::time::Duration::from_secs(6 * 3600)),
+		zstd_level: 3,
 	};
 
 	fn ts_axis(&self) -> Ts<Venue> {
@@ -134,6 +137,7 @@ impl Row for Oi {
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: None,
 		max_age: Some(std::time::Duration::from_secs(7 * 24 * 3600)),
+		zstd_level: 3,
 	};
 
 	fn ts_axis(&self) -> Ts<Venue> {
@@ -146,6 +150,7 @@ impl Row for Mc {
 	const POLICY: RotationPolicy = RotationPolicy {
 		max_bytes: None,
 		max_age: Some(std::time::Duration::from_secs(7 * 24 * 3600)),
+		zstd_level: 3,
 	};
 
 	fn ts_axis(&self) -> Ts<Local> {
@@ -157,10 +162,15 @@ pub(crate) mod sealed {
 	use super::*;
 
 	pub trait Sealed: Sized {
-		type Builders: Default;
+		type Builders;
 		/// Precision context for scaled-int lanes; `()` for f64-native lanes.
 		type Meta: Copy;
 		const PER_ROW_MIN: usize;
+		/// `rows` is what the rotation policy says the batch reaches before it is written, or 0 when
+		/// the policy does not bound it. Half-measures are pointless here — a `Vec` growing to `n`
+		/// copies ~`2n` bytes whatever it starts at, and the final doubling alone outweighs every one
+		/// before it — so this is the whole count or nothing.
+		fn builders(rows: usize) -> Self::Builders;
 		fn schema(meta: Self::Meta) -> SchemaRef;
 		fn append(&self, b: &mut Self::Builders, meta: Self::Meta);
 		fn finish(b: &mut Self::Builders) -> Vec<ArrayRef>;
@@ -266,7 +276,6 @@ fn opt_ts<A>(a: &Int64Array, i: usize) -> Option<Ts<A>> {
 	(!a.is_null(i)).then(|| Ts::from_nanos(a.value(i)))
 }
 
-#[derive(Default)]
 pub struct TradeBuilders {
 	ts_venue_exec: arrow::array::Int64Builder,
 	ts_venue_send: arrow::array::Int64Builder,
@@ -277,11 +286,54 @@ pub struct TradeBuilders {
 	qty_raw: arrow::array::UInt32Builder,
 }
 
+impl TradeBuilders {
+	/// A run arrives as columns and lands as columns; routing it through a [`Trade`] per row put a
+	/// capacity check and a validity-bit write on all seven fields of every one of them. The three
+	/// columns whose element type already matches the builder's go across whole.
+	pub(crate) fn extend(&mut self, cols: TradeCols<'_>) {
+		self.monotonic_seq.append_slice(cols.monotonic_seq);
+		self.price_raw.append_slice(cols.price);
+		self.qty_raw.append_slice(cols.qty);
+		// `Ts` and `Side` are newtypes over the stored representation, and reading them as one would
+		// take the `unsafe` this pass is spending nothing on.
+		for &t in cols.exec() {
+			self.ts_venue_exec.append_value(t.as_nanos());
+		}
+		match cols.ts.send {
+			Some(send) =>
+				for &t in send {
+					self.ts_venue_send.append_value(t.as_nanos());
+				},
+			None => self.ts_venue_send.append_nulls(cols.len()),
+		}
+		match cols.ts.recv {
+			// One reception reading covers the whole run: the relay read its clock once.
+			Some(r) => self.ts_local_recv.append_value_n(r.last.as_nanos(), cols.len()),
+			None => self.ts_local_recv.append_nulls(cols.len()),
+		}
+		for &s in cols.side {
+			self.side.append_value(side_u8(s));
+		}
+	}
+}
+
 impl Sealed for Trade {
 	type Builders = TradeBuilders;
 	type Meta = PrecisionPriceQty;
 
 	const PER_ROW_MIN: usize = 48;
+
+	fn builders(rows: usize) -> TradeBuilders {
+		TradeBuilders {
+			ts_venue_exec: arrow::array::Int64Builder::with_capacity(rows),
+			ts_venue_send: arrow::array::Int64Builder::with_capacity(rows),
+			ts_local_recv: arrow::array::Int64Builder::with_capacity(rows),
+			monotonic_seq: arrow::array::UInt64Builder::with_capacity(rows),
+			side: arrow::array::UInt8Builder::with_capacity(rows),
+			price_raw: arrow::array::Int32Builder::with_capacity(rows),
+			qty_raw: arrow::array::UInt32Builder::with_capacity(rows),
+		}
+	}
 
 	fn schema(meta: PrecisionPriceQty) -> SchemaRef {
 		let mut fields = venue_ts_fields().to_vec();
@@ -346,7 +398,6 @@ impl Sealed for Trade {
 	}
 }
 
-#[derive(Default)]
 pub struct BookDeltaBuilders {
 	ts_venue_exec: arrow::array::Int64Builder,
 	ts_local_recv: arrow::array::Int64Builder,
@@ -357,11 +408,42 @@ pub struct BookDeltaBuilders {
 	qty_raw: arrow::array::UInt32Builder,
 }
 
+impl BookDeltaBuilders {
+	/// See [`TradeBuilders::extend`]. A frame carries one `kind` for all of its levels.
+	pub(crate) fn extend(&mut self, frame: DeltaFrame<'_>) {
+		let (kind, cols) = (frame.kind(), frame.cols());
+		self.monotonic_seq.append_slice(cols.monotonic_seq);
+		self.price_raw.append_slice(cols.price);
+		self.qty_raw.append_slice(cols.qty);
+		self.kind.append_value_n(kind_u8(kind), cols.len());
+		for &t in cols.exec() {
+			self.ts_venue_exec.append_value(t.as_nanos());
+		}
+		let recv = cols.ts.recv.expect("a book lane is only ever written by a live recording");
+		self.ts_local_recv.append_value_n(recv.last.as_nanos(), cols.len());
+		for &s in cols.side {
+			self.side.append_value(side_u8(s));
+		}
+	}
+}
+
 impl Sealed for BookDelta {
 	type Builders = BookDeltaBuilders;
 	type Meta = PrecisionPriceQty;
 
 	const PER_ROW_MIN: usize = 40;
+
+	fn builders(rows: usize) -> BookDeltaBuilders {
+		BookDeltaBuilders {
+			ts_venue_exec: arrow::array::Int64Builder::with_capacity(rows),
+			ts_local_recv: arrow::array::Int64Builder::with_capacity(rows),
+			monotonic_seq: arrow::array::UInt64Builder::with_capacity(rows),
+			kind: arrow::array::UInt8Builder::with_capacity(rows),
+			side: arrow::array::UInt8Builder::with_capacity(rows),
+			price_raw: arrow::array::Int32Builder::with_capacity(rows),
+			qty_raw: arrow::array::UInt32Builder::with_capacity(rows),
+		}
+	}
 
 	fn schema(meta: PrecisionPriceQty) -> SchemaRef {
 		let mut fields = book_ts_fields().to_vec();
@@ -427,7 +509,6 @@ impl Sealed for BookDelta {
 	}
 }
 
-#[derive(Default)]
 pub struct BookSnapshotBuilders {
 	ts_venue_exec: arrow::array::Int64Builder,
 	ts_local_recv: arrow::array::Int64Builder,
@@ -443,6 +524,18 @@ impl Sealed for BookSnapshot {
 	type Meta = PrecisionPriceQty;
 
 	const PER_ROW_MIN: usize = 32;
+
+	fn builders(rows: usize) -> BookSnapshotBuilders {
+		BookSnapshotBuilders {
+			ts_venue_exec: arrow::array::Int64Builder::with_capacity(rows),
+			ts_local_recv: arrow::array::Int64Builder::with_capacity(rows),
+			monotonic_seq: arrow::array::UInt64Builder::with_capacity(rows),
+			bid_prices: arrow::array::ListBuilder::with_capacity(arrow::array::Int32Builder::new(), rows),
+			bid_qtys: arrow::array::ListBuilder::with_capacity(arrow::array::UInt32Builder::new(), rows),
+			ask_prices: arrow::array::ListBuilder::with_capacity(arrow::array::Int32Builder::new(), rows),
+			ask_qtys: arrow::array::ListBuilder::with_capacity(arrow::array::UInt32Builder::new(), rows),
+		}
+	}
 
 	fn schema(meta: PrecisionPriceQty) -> SchemaRef {
 		let i32_list = || DataType::List(Arc::new(Field::new("item", DataType::Int32, true)));
@@ -496,19 +589,21 @@ impl Sealed for BookSnapshot {
 		let exec = col::<Int64Array>(batch, "ts_venue_exec");
 		let recv = col::<Int64Array>(batch, "ts_local_recv");
 		let monotonic = col::<UInt64Array>(batch, "monotonic_seq");
-		let bid_prices = col_i32_list(batch, "bid_prices");
-		let bid_qtys = col_u32_list(batch, "bid_qtys");
-		let ask_prices = col_i32_list(batch, "ask_prices");
-		let ask_qtys = col_u32_list(batch, "ask_qtys");
+		let mut bid_prices = col_i32_list(batch, "bid_prices");
+		let mut bid_qtys = col_u32_list(batch, "bid_qtys");
+		let mut ask_prices = col_i32_list(batch, "ask_prices");
+		let mut ask_qtys = col_u32_list(batch, "ask_qtys");
+		// The columns are consumed row by row and never read again, so each level vector moves into
+		// its snapshot; cloning built every one of them twice, at 200 levels a side.
 		(0..batch.num_rows())
 			.map(|i| BookSnapshot {
 				ts_venue_exec: Ts::from_nanos(exec.value(i)),
 				ts_local_recv: Ts::from_nanos(recv.value(i)),
 				monotonic_seq: monotonic.value(i),
-				bid_prices: bid_prices[i].clone(),
-				bid_qtys: bid_qtys[i].clone(),
-				ask_prices: ask_prices[i].clone(),
-				ask_qtys: ask_qtys[i].clone(),
+				bid_prices: std::mem::take(&mut bid_prices[i]),
+				bid_qtys: std::mem::take(&mut bid_qtys[i]),
+				ask_prices: std::mem::take(&mut ask_prices[i]),
+				ask_qtys: std::mem::take(&mut ask_qtys[i]),
 			})
 			.collect()
 	}
@@ -522,7 +617,6 @@ impl Sealed for BookSnapshot {
 	}
 }
 
-#[derive(Default)]
 pub struct OiBuilders {
 	ts_venue_exec: arrow::array::Int64Builder,
 	ts_venue_send: arrow::array::Int64Builder,
@@ -535,6 +629,15 @@ impl Sealed for Oi {
 	type Meta = ();
 
 	const PER_ROW_MIN: usize = 32;
+
+	fn builders(rows: usize) -> OiBuilders {
+		OiBuilders {
+			ts_venue_exec: arrow::array::Int64Builder::with_capacity(rows),
+			ts_venue_send: arrow::array::Int64Builder::with_capacity(rows),
+			ts_local_recv: arrow::array::Int64Builder::with_capacity(rows),
+			oi: Float64Builder::with_capacity(rows),
+		}
+	}
 
 	fn schema(_meta: ()) -> SchemaRef {
 		let mut fields = venue_ts_fields().to_vec();
@@ -582,7 +685,6 @@ impl Sealed for Oi {
 	}
 }
 
-#[derive(Default)]
 pub struct McBuilders {
 	ts_local_exec: arrow::array::Int64Builder,
 	market_cap: Float64Builder,
@@ -594,6 +696,14 @@ impl Sealed for Mc {
 	type Meta = ();
 
 	const PER_ROW_MIN: usize = 20;
+
+	fn builders(rows: usize) -> McBuilders {
+		McBuilders {
+			ts_local_exec: arrow::array::Int64Builder::with_capacity(rows),
+			market_cap: Float64Builder::with_capacity(rows),
+			rank: arrow::array::UInt32Builder::with_capacity(rows),
+		}
+	}
 
 	fn schema(_meta: ()) -> SchemaRef {
 		schema_with(
@@ -646,7 +756,7 @@ fn col_i32_list(b: &RecordBatch, name: &str) -> Vec<Vec<i32>> {
 		.map(|i| {
 			let start = offsets[i] as usize;
 			let end = offsets[i + 1] as usize;
-			(start..end).map(|j| values.value(j)).collect()
+			values.values()[start..end].to_vec()
 		})
 		.collect()
 }
@@ -659,7 +769,7 @@ fn col_u32_list(b: &RecordBatch, name: &str) -> Vec<Vec<u32>> {
 		.map(|i| {
 			let start = offsets[i] as usize;
 			let end = offsets[i + 1] as usize;
-			(start..end).map(|j| values.value(j)).collect()
+			values.values()[start..end].to_vec()
 		})
 		.collect()
 }

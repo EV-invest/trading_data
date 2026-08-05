@@ -81,22 +81,26 @@ fn ingest(gz: &Path, catalog: &Catalog) {
 	let mut day = TradeBuf::new(PREC);
 
 	let file = fs::File::open(gz).expect("open archive");
-	let mut lines = BufReader::new(flate2::read::GzDecoder::new(file)).lines();
-	let header = lines.next().expect("empty archive").expect("read header");
-	assert!(header.starts_with("timestamp,symbol,side,size,price"), "unexpected header: {header}");
+	let mut reader = BufReader::new(flate2::read::GzDecoder::new(file));
+	let mut line = String::new();
+	reader.read_line(&mut line).expect("read header");
+	assert!(line.starts_with("timestamp,symbol,side,size,price"), "unexpected header: {line}");
 
 	let mut prev_ts = i64::MIN;
-	for (i, line) in lines.enumerate() {
-		let line = line.expect("read line");
+	for i in 0.. {
+		line.clear();
+		if reader.read_line(&mut line).expect("read line") == 0 {
+			break;
+		}
+		let line = line.trim_end();
 		let mut cols = line.split(',');
 		let mut col = || cols.next().unwrap_or_else(|| panic!("malformed line {i}: {line}"));
-		let ts_sec: f64 = col().parse().unwrap_or_else(|e| panic!("bad ts on line {i}: {e}"));
+		let ts = Precision(9).parse_i64(col());
 		assert_eq!(col(), BYBIT_SYMBOL, "foreign symbol on line {i}");
 		let side: Side = col().parse().unwrap_or_else(|e| panic!("bad side on line {i}: {e}"));
 		let qty_raw = PREC.qty.parse_u32(col());
 		let price_raw = PREC.price.parse_i32(col());
 
-		let ts = (ts_sec * 1e9).round() as i64;
 		assert!(ts >= prev_ts, "trades not time-ordered at line {i}: {prev_ts} > {ts}");
 		prev_ts = ts;
 

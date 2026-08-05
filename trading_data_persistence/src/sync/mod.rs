@@ -29,9 +29,9 @@ use trading_data_core::{
 use v_utils::distributions::LatencyConfig;
 
 use crate::{
-	catalog::{Catalog, LaneKey},
+	catalog::{Catalog, LaneKey, Pending},
 	clock::Clock,
-	feather::Feather,
+	feather::{Feather, RotationPolicy},
 	read::{lane_prec, pick_anchor, read_book_deltas, read_book_snapshots, read_mc, read_oi, read_trades, snapshot_shape},
 	row::{BookDelta, BookSnapshot, Mc, Oi, Row as _, Trade},
 };
@@ -444,14 +444,71 @@ impl Sink {
 	}
 }
 
-/// Optional record tee: the same Feather lanes a backtest later reads.
+/// Optional record tee: the same Feather lanes a backtest later reads. `writer` is declared last so
+/// it outlives the feathers that feed it.
 struct Record {
-	catalog: Catalog,
 	trades: Feather<Trade>,
 	snapshots: Feather<BookSnapshot>,
 	deltas: Feather<BookDelta>,
 	oi: Feather<Oi>,
 	mc: Feather<Mc>,
+	writer: Writer,
+}
+
+/// The parquet encode, moved off the thread holding the wire. A full `BookDelta` batch is 256 MiB
+/// by its own rotation policy, which is the better part of a second of ZSTD — spent on the ingest
+/// thread that is a gap in the recording, not merely a slow write.
+///
+/// Not `thread::scope`: a scope would have to wrap every caller's session, and `Live` is handed out
+/// as a value. Owning the handle and joining it in `Drop` bounds the thread just as tightly — it
+/// cannot outlive the recording, and nothing here is detached.
+struct Writer {
+	tx: Option<Sender<Pending>>,
+	thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Writer {
+	fn new(catalog: Catalog) -> Self {
+		let (tx, rx) = channel::<Pending>();
+		let thread = std::thread::Builder::new()
+			.name("td-catalog-writer".into())
+			.spawn(move || {
+				for p in rx {
+					catalog.write(p).expect("catalog write");
+				}
+			})
+			.expect("spawn the catalog writer");
+		Self { tx: Some(tx), thread: Some(thread) }
+	}
+
+	fn send(&self, pending: Option<Pending>) {
+		if let Some(p) = pending {
+			self.tx
+				.as_ref()
+				.expect("a lane is only taken while the writer runs")
+				.send(p)
+				.expect("the writer thread outlives every send");
+		}
+	}
+
+	/// Blocks until everything sent is on disk. Only ever called once the session is over, where
+	/// there is nothing left to keep off this thread — and a reader opening the catalog right after
+	/// must not race the tail.
+	fn finish(&mut self) {
+		drop(self.tx.take());
+		if let Some(t) = self.thread.take()
+			&& t.join().is_err()
+			&& !std::thread::panicking()
+		{
+			panic!("the catalog writer died with a lane in flight");
+		}
+	}
+}
+
+impl Drop for Writer {
+	fn drop(&mut self) {
+		self.finish();
+	}
 }
 
 /// Live feed. [`Feed::next`] drains what's currently available (blocking for the first event),
@@ -487,13 +544,19 @@ pub struct Live {
 impl Live {
 	pub fn new(catalog: Catalog, exchange: ExchangeName, symbol: Symbol, prec: PrecisionPriceQty, record: bool, clock: Arc<dyn Clock>) -> Self {
 		let (tx, rx) = channel();
-		let record = record.then(|| Record {
-			trades: Feather::<Trade>::new(exchange, symbol, prec, Trade::POLICY),
-			snapshots: Feather::<BookSnapshot>::new(exchange, symbol, prec, BookSnapshot::POLICY),
-			deltas: Feather::<BookDelta>::new(exchange, symbol, prec, BookDelta::POLICY),
-			oi: Feather::<Oi>::new(exchange, symbol, Oi::POLICY),
-			mc: Feather::<Mc>::new(symbol.pair.base(), Mc::POLICY),
-			catalog,
+		let record = record.then(|| {
+			// A recording is written once and read many times, but not at the price of stalling the
+			// thread it is recorded from: level 1 encodes several times faster for a few percent of
+			// size, and the writer thread hides even that.
+			let tee = |p: RotationPolicy| RotationPolicy { zstd_level: 1, ..p };
+			Record {
+				trades: Feather::<Trade>::new(exchange, symbol, prec, tee(Trade::POLICY)),
+				snapshots: Feather::<BookSnapshot>::new(exchange, symbol, prec, tee(BookSnapshot::POLICY)),
+				deltas: Feather::<BookDelta>::new(exchange, symbol, prec, tee(BookDelta::POLICY)),
+				oi: Feather::<Oi>::new(exchange, symbol, tee(Oi::POLICY)),
+				mc: Feather::<Mc>::new(symbol.pair.base(), tee(Mc::POLICY)),
+				writer: Writer::new(catalog),
+			}
 		});
 		let mut weaver = Weaver::new(ReadClock::ALL);
 		weaver.trades.buf.prec = prec;
@@ -550,7 +613,7 @@ impl Live {
 				let cols = self.staging.cols(0..self.staging.len());
 				if let Some(r) = &mut self.record {
 					r.trades.extend(cols);
-					r.trades.maybe_flush(&r.catalog).expect("trade feather flush");
+					r.writer.send(r.trades.maybe_take());
 				}
 				self.weaver.trades.extend(ts, cols);
 			}
@@ -558,7 +621,7 @@ impl Live {
 				o.ts_local_recv = Some(Self::recv_of(ts));
 				if let Some(r) = &mut self.record {
 					r.oi.push(o);
-					r.oi.maybe_flush(&r.catalog).expect("oi feather flush");
+					r.writer.send(r.oi.maybe_take());
 				}
 				self.weaver.oi.push(ts, o);
 			}
@@ -566,7 +629,7 @@ impl Live {
 				m.ts_local_exec = Self::recv_of(ts);
 				if let Some(r) = &mut self.record {
 					r.mc.push(m);
-					r.mc.maybe_flush(&r.catalog).expect("mc feather flush");
+					r.writer.send(r.mc.maybe_take());
 				}
 				self.weaver.mc.push(ts, m);
 			}
@@ -582,7 +645,7 @@ impl Live {
 		if let Some(frame) = self.shadow.ingest(&u, recv) {
 			if let Some(r) = &mut self.record {
 				r.deltas.extend(frame);
-				r.deltas.maybe_flush(&r.catalog).expect("delta feather flush");
+				r.writer.send(r.deltas.maybe_take());
 			}
 			self.weaver.deltas.extend(ts, frame);
 		}
@@ -597,7 +660,7 @@ impl Live {
 					ask_prices: shape.asks.keys().copied().collect(),
 					ask_qtys: shape.asks.values().copied().collect(),
 				});
-				r.snapshots.maybe_flush(&r.catalog).expect("snapshot feather flush");
+				r.writer.send(r.snapshots.maybe_take());
 			}
 			self.weaver.anchors.push(ts, shape);
 		}
@@ -605,11 +668,13 @@ impl Live {
 
 	fn final_flush(&mut self) {
 		if let Some(r) = &mut self.record {
-			r.trades.flush(&r.catalog).expect("trade flush");
-			r.snapshots.flush(&r.catalog).expect("snapshot flush");
-			r.deltas.flush(&r.catalog).expect("delta flush");
-			r.oi.flush(&r.catalog).expect("oi flush");
-			r.mc.flush(&r.catalog).expect("mc flush");
+			r.writer.send(r.trades.take());
+			r.writer.send(r.snapshots.take());
+			r.writer.send(r.deltas.take());
+			r.writer.send(r.oi.take());
+			r.writer.send(r.mc.take());
+			// A drained feed is a catalog someone is about to read.
+			r.writer.finish();
 		}
 	}
 }

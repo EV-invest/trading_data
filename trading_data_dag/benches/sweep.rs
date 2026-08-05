@@ -17,7 +17,7 @@
 use std::hint::black_box;
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
-use trading_data_dag::{Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Want, step, step_obs, value_nudge};
+use trading_data_dag::{Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Sweep, Want, step, step_obs, value_nudge};
 
 const TICKS: usize = 1_000;
 
@@ -50,6 +50,7 @@ macro_rules! chain {
 		#[derive(Default)]
 		struct Chain {
 			$($f: $n,)+
+			sweep: Sweep,
 		}
 		impl Chain {
 			fn tick(&mut self, root: Option<f64>) -> Option<f64> {
@@ -59,8 +60,9 @@ macro_rules! chain {
 			}
 
 			fn tick_obs<O: Observer>(&mut self, root: Option<f64>, obs: &mut O) -> Option<f64> {
+				let sweep = &mut self.sweep;
 				let f = Cons::<Root, Nil> { out: root, tail: Nil };
-				$(let f = step_obs(f, &mut self.$f, obs);)+
+				$(let f = step_obs(f, &mut self.$f, sweep, obs);)+
 				f.head()
 			}
 		}

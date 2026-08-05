@@ -24,7 +24,16 @@ fn prec() -> PrecisionPriceQty {
 fn push_100k_trades() {
 	let dir = TempDir::new().unwrap();
 	let cat = Catalog::new(dir.path());
-	let mut f = Feather::<Trade>::new(ExchangeName::Binance, test_symbol(), prec(), RotationPolicy { max_bytes: None, max_age: None });
+	let mut f = Feather::<Trade>::new(
+		ExchangeName::Binance,
+		test_symbol(),
+		prec(),
+		RotationPolicy {
+			max_bytes: None,
+			max_age: None,
+			zstd_level: 3,
+		},
+	);
 	// one columnar append and one rotation check per run, and no scale conversion at all
 	let mut run = TradeBuf::new(prec());
 	for i in 0..N_TRADES {
