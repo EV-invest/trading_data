@@ -17,7 +17,7 @@ impl Cell for Plain {
 
 #[node]
 impl Node for Plain {
-	//~ ERROR: `impl Node` is written by `#[node]`, not by hand
+	//~^ ERROR: `impl Node` is written by `#[node]`, not by hand
 	type Deps = (Src,);
 
 	fn advance<'t>(&'t mut self, (s,): DepOuts<'t, Self>) -> Self::Out<'t> {
