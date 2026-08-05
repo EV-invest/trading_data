@@ -14,7 +14,7 @@ impl Emit for Change1d {
 	/// up to a whole period past the newest close of it.
 	type Deps = (
 		trading_data::Bars<{ TF_1MIN }>,
-		Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Span(Timeframe(TF_1D.0 + TF_1H.0)) }>,
+		Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Over(Timeframe(TF_1D.0 + TF_1H.0)) }>,
 	);
 
 	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";

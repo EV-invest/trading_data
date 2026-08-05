@@ -424,7 +424,7 @@ mod tests {
 	/// The engine's side of a step: the frame's buffer folds the run into its chunk, then the node
 	/// reads it. Driving [`Book::step`] any other way would test a path the graph does not take.
 	fn step(b: &mut Book, chunk: &mut BookChunk, anchor: Option<&BookShape>, rows: &[BookDelta]) -> bool {
-		chunk.advance(rows, Horizon::Span(TF_15MIN));
+		chunk.advance(rows, Horizon::Over(TF_15MIN));
 		b.step(anchor, chunk)
 	}
 

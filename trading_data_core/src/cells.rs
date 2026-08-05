@@ -75,7 +75,7 @@ impl Blind for Book {
 	///
 	/// The `BookChunk` behind it tumbles on the same absolute boundary the checkpoint is written on,
 	/// so a wake is one resync plus one net — depth, not the length of the sleep.
-	type Deps = (BookAnchors, Buffering<BookDeltas, { Horizon::Span(TF_15MIN) }>);
+	type Deps = (BookAnchors, Buffering<BookDeltas, { Horizon::Over(TF_15MIN) }>);
 
 	const WHY: &'static str = "an order book fold is not a scalar function of its deltas";
 

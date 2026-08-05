@@ -57,7 +57,7 @@
     },
     {
       "glance": 1631643,
-      "node": "Buffer<trading_data_core::cells::BookDeltas, Span(15m)>"
+      "node": "Buffer<trading_data_core::cells::BookDeltas, Over(15m)>"
     },
     {
       "glance": 955260,
@@ -97,7 +97,7 @@
     },
     {
       "glance": 15453,
-      "node": "Buffer<Bar:1m, Span(3m)>"
+      "node": "Buffer<Bar:1m, Over(3m)>"
     },
     {
       "glance": 5875,
@@ -137,7 +137,7 @@
     },
     {
       "glance": 1653,
-      "node": "Buffer<trading_data_persistence::row::OiRoot, Span(20m)>"
+      "node": "Buffer<trading_data_persistence::row::OiRoot, Over(20m)>"
     },
     {
       "glance": 1201,
@@ -157,7 +157,7 @@
     },
     {
       "glance": 273,
-      "node": "Buffer<Bar:1h, Span(25h)>"
+      "node": "Buffer<Bar:1h, Over(25h)>"
     },
     {
       "glance": 128,

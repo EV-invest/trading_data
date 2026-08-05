@@ -10,7 +10,7 @@ impl Cell for Change3m {
 }
 #[node]
 impl Emit for Change3m {
-	type Deps = (Buffering<trading_data::Bars<{ TF_1MIN }>, { Horizon::Span(TF_3MIN) }>,);
+	type Deps = (Buffering<trading_data::Bars<{ TF_1MIN }>, { Horizon::Over(TF_3MIN) }>,);
 
 	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
 

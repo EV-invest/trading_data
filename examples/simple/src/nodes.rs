@@ -124,7 +124,7 @@ impl Cell for Flow1m {
 #[node]
 impl Emit for Flow1m {
 	/// The partial minute is the whole of the state, so the trades it holds reach back exactly one.
-	type Deps = (Folding<Trades, { Horizon::Span(TF_1MIN) }>,);
+	type Deps = (Folding<Trades, { Horizon::Over(TF_1MIN) }>,);
 
 	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 

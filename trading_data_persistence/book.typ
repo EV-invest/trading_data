@@ -97,7 +97,7 @@ struct BookChunk {                                // Batch<BookDelta>: the delta
 struct BookAnchors;   // Cell::Out = Option<&BookShape>   Nudge::Scratch = Option<BookShape>
 struct BookDeltas;    // Cell::Out = &[BookDelta]         Series::Batch  = BookChunk
 impl  Cell for Book { type Out<'t> = Option<&'t Book>; }   // Option ⇒ Latent
-impl  Node for Book { type Deps = (BookAnchors, Buffering<BookDeltas, {Horizon::Span(TF_15MIN)}>); }
+impl  Node for Book { type Deps = (BookAnchors, Buffering<BookDeltas, {Horizon::Over(TF_15MIN)}>); }
                       // Buffering, not Folding: the engine's retention accumulates through a dark
                       // stretch, which is the whole of what makes this node GATEABLE.
 
@@ -415,7 +415,7 @@ pub(crate) struct BookSnapshot {             // one row per checkpoint  ·  64 M
 
   MAX_ANCHOR_AGE is read off the graph:
 
-      <<Book as Node>::Deps as DepSet>::REACH[1]   must be a `Horizon::Span(tf)`, else compile error
+      <<Book as Node>::Deps as DepSet>::REACH[1]   must be a `Horizon::Over(tf)`, else compile error
                                                    ⇒ TF_15MIN, today
 
   So the reader looks back as far as the folding node declares it reaches. A range with no
@@ -435,7 +435,7 @@ pub(crate) struct BookSnapshot {             // one row per checkpoint  ·  64 M
                    `Bump for BookDelta` returns 0.0: perturbing a level is structural
 
   Book             Cell::Out = Option<&Book>        Nudge::Scratch = Option<Book>
-                   Deps = (BookAnchors, Buffering<BookDeltas, {Horizon::Span(TF_15MIN)}>)
+                   Deps = (BookAnchors, Buffering<BookDeltas, {Horizon::Over(TF_15MIN)}>)
                    advance = `self.step(anchor, chunk).then_some(&*self)`
 
      `Buffering`, so the reach is the ENGINE's: `Buffer<BookDeltas, 15m>` is its own frame node,
@@ -508,7 +508,7 @@ pub(crate) struct BookSnapshot {             // one row per checkpoint  ·  64 M
                       a plain `Ts<Local>`
   read.rs             assert: `schema_version` matches exactly · file metadata consistent across
                       the read range
-  read.rs             const:  MAX_ANCHOR_AGE is a `Horizon::Span` on `Book`'s declared reach, or it
+  read.rs             const:  MAX_ANCHOR_AGE is a `Horizon::Over` on `Book`'s declared reach, or it
                       does not compile
   Replay::new         panic:  no file under any candidate key, so no precision to hoist
   Pull::open          const:  `Gating` + `Folding` on one node does not compile

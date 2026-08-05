@@ -57,7 +57,7 @@ fn fold_deltas((anchor, buf): (BookShape, Vec<BookDelta>)) {
 	let mut chunk = BookChunk::default();
 	for f in 0..FRAMES {
 		let seed = (f == 0).then_some(&anchor);
-		chunk.advance(&buf[f * PER_FRAME..(f + 1) * PER_FRAME], Horizon::Span(TF_15MIN));
+		chunk.advance(&buf[f * PER_FRAME..(f + 1) * PER_FRAME], Horizon::Over(TF_15MIN));
 		black_box(b.step(seed, &chunk));
 	}
 	black_box(&b);
@@ -73,7 +73,7 @@ fn fold_deltas((anchor, buf): (BookShape, Vec<BookDelta>)) {
 fn wake_from_dark((anchor, buf): (BookShape, Vec<BookDelta>)) {
 	let mut chunk = BookChunk::default();
 	for f in 0..FRAMES {
-		chunk.advance(&buf[f * PER_FRAME..(f + 1) * PER_FRAME], Horizon::Span(TF_15MIN));
+		chunk.advance(&buf[f * PER_FRAME..(f + 1) * PER_FRAME], Horizon::Over(TF_15MIN));
 	}
 	let mut b = Book::default();
 	black_box(b.step(Some(&anchor), &chunk));

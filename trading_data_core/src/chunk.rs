@@ -15,7 +15,7 @@ use crate::{BookDelta, Side, Span, Venue};
 ///
 /// **Tumbling, not sliding.** [`Rows`](trading_data_dag::Rows) trims by timestamp every tick; a
 /// folded level cannot be un-folded, so there is nothing here to trim. It resets on the absolute
-/// `Horizon::Span` boundary instead — floored from the epoch, the same grid
+/// `Horizon::Over` boundary instead — floored from the epoch, the same grid
 /// [`ReadClock::cell_end`](crate::ReadClock::cell_end) cuts on — which is why a wake pairs with the
 /// checkpoint written at that same boundary.
 #[derive(Clone, Debug)]
@@ -135,8 +135,8 @@ impl Batch<BookDelta> for BookChunk {
 
 	fn advance(&mut self, fresh: &[BookDelta], h: Horizon) {
 		let period = match h {
-			Horizon::Span(tf) => Horizon::ns(tf),
-			h => panic!("a book chunk tumbles on a period boundary, which only Horizon::Span names: {h:?}"),
+			Horizon::Over(tf) => Horizon::ns(tf),
+			h => panic!("a book chunk tumbles on a period boundary, which only Horizon::Over names: {h:?}"),
 		};
 		self.fresh.clear();
 		self.fresh.extend_from_slice(fresh);

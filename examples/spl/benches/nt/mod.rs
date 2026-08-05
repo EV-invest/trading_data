@@ -157,7 +157,7 @@ pub async fn tape() -> (Vec<Data>, InstrumentAny) {
 				}
 			}
 
-			chunk.advance(l.deltas, Horizon::Span(v_utils::TF_15MIN));
+			chunk.advance(l.deltas, Horizon::Over(v_utils::TF_15MIN));
 			let epoch = book.epoch();
 			// `step` is the only entry point that knows whether this frame folds at all; a frame that
 			// left our book desynced left it unreadable, and NT is told nothing rather than told a lie.

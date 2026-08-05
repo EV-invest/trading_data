@@ -24,7 +24,7 @@ const PREC: PrecisionPriceQty = PrecisionPriceQty {
 	price: Precision(2),
 	qty: Precision(4),
 };
-const REACH: Horizon = Horizon::Span(TF_15MIN);
+const REACH: Horizon = Horizon::Over(TF_15MIN);
 /// One tumble of the retained net, in nanoseconds — the same grid the checkpoint is written on.
 const PERIOD: i64 = 900_000_000_000;
 

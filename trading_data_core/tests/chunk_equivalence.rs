@@ -13,7 +13,7 @@ const PREC: PrecisionPriceQty = PrecisionPriceQty {
 	price: Precision(2),
 	qty: Precision(4),
 };
-const REACH: Horizon = Horizon::Span(TF_15MIN);
+const REACH: Horizon = Horizon::Over(TF_15MIN);
 const DEPTH: i32 = 40;
 
 fn anchor() -> BookShape {

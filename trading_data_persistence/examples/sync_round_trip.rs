@@ -67,7 +67,7 @@ fn collect(feed: &mut impl Feed) -> Vec<Step> {
 	// means standing in for the `Buffer<BookDeltas, 15m>` a graph would have grown.
 	let mut chunk = BookChunk::default();
 	while let Some(l) = feed.next() {
-		chunk.advance(l.deltas, Horizon::Span(TF_15MIN));
+		chunk.advance(l.deltas, Horizon::Over(TF_15MIN));
 		let t = l.trades;
 		let synced = book.step(l.anchor, &chunk);
 		out.push(Step {

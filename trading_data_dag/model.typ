@@ -134,7 +134,7 @@ Six spellings, no seventh. Every structural fact about an edge is one of these.
  Folding<C, H>             C::Out<'t>  (a claim)    C                  H          TRUE    false     No
  Spanning<C, TF>           C::Out<'t>  (a claim)    C                  Span(TF)   TRUE    false     No
 
- `Spanning` exists only because `Folding<C, { Horizon::Span(TF) }>` does not parse: an enum
+ `Spanning` exists only because `Folding<C, { Horizon::Over(TF) }>` does not parse: an enum
  constructor applied to a generic parameter is rejected in const-argument position.
 
  Every wrapper forwards `Cell::NAME = C::NAME` and `Cell::CLOCK = C::CLOCK` — the graph predicates
@@ -155,7 +155,7 @@ Six spellings, no seventh. Every structural fact about an edge is one of these.
    .narrowed(h)    a shallower view; asserts the retained reach serves it
 
  The cost of the seventh thing: `Horizon` means whatever the `Batch` impl makes it mean. `Rows`
- SLIDES — it trims by `ts_ns` every tick, so `Span(tf)` is the last `tf` of wall clock ending now.
+ SLIDES — it trims by `ts_ns` every tick, so `Over(tf)` is the last `tf` of wall clock ending now.
  A batch that FOLDS cannot un-fold, so it has nothing to trim and can only TUMBLE: reset on the
  absolute boundary, floored from the epoch. Same declaration, different window. What contains it is
  that the views are different TYPES, so no consumer can read one as the other, and that the impl
@@ -259,26 +259,26 @@ gateable the moment the lane became a run of rows the engine could retain for it
 === 1.4 `Horizon` and `CLOCK` — how far back, and how often
 
 ```
-   Unit ──────── Elems(n) ──────── Span(tf) ──────── Unbounded         totally ordered
+   Unit ──────── Elems(n) ──────── Over(tf) ──────── Unbounded         totally ordered
    this tick     n elements        wall clock        start of the run (recurrence / CVD)
 
    serves(self, req)   Elems(k) ⊒ Elems(j) ⟺ k ≥ j
-                       Span(k)  ⊒ Span(j)  ⟺ k ≥ j
-                       Span(_)  ⊒ Elems(_) always   (what it dropped is strictly older than
+                       Over(k)  ⊒ Over(j)  ⟺ k ≥ j
+                       Over(_)  ⊒ Elems(_) always   (what it dropped is strictly older than
                                                      anything it kept)
-                       Elems(_) ⊒ Span(_)  never    (a count cannot promise a span)
+                       Elems(_) ⊒ Over(_)  never    (a count cannot promise a span)
 
    join    the buffer's K. Total order ⇒ a graph can never ask for two reaches that cannot
            both be met at once.
 
-   A `Buffer` const-asserts BOUNDED (Elems(k≥1) | Span(tf>0)). `Unit`/`Unbounded` in a
+   A `Buffer` const-asserts BOUNDED (Elems(k≥1) | Over(tf>0)). `Unit`/`Unbounded` in a
    `Buffering` are compile errors: Unit is the bare dep, Unbounded names no window.
-   `Buffer::watermark` — the highest ts_ns it cannot speak for — is what makes "is this Span
+   `Buffer::watermark` — the highest ts_ns it cannot speak for — is what makes "is this Over
    window complete" exact where "have I been running long enough" is a guess.
 
-   span(self, clock)   Elems(n) ↦ n·clock   Span(tf) ↦ tf   Unit ↦ clock   Unbounded ↦ panic
+   span(self, clock)   Elems(n) ↦ n·clock   Over(tf) ↦ tf   Unit ↦ clock   Unbounded ↦ panic
            a count is a duration only once the PRODUCER's rate is known, and duration is what a
-           replay preloads. The inverse (Span ↦ Elems) yields buffer capacity, which `Buffer`
+           replay preloads. The inverse (Over ↦ Elems) yields buffer capacity, which `Buffer`
            already gets by trimming on timestamps — no count needed.
 ```
 
@@ -534,7 +534,7 @@ gateable the moment the lane became a run of rows the engine could retain for it
 
 #census((
   ("Elems(N)", "\bElems\s*\("),
-  ("Span(TF)", "\bSpan\s*\("),
+  ("Over(TF)", "\bOver\s*\("),
   ("Unbounded", "\bUnbounded\b"),
   ("Unit", "\bUnit\b"),
   ("CLOCK", "\bCLOCK\b"),

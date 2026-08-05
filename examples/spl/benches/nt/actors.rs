@@ -417,7 +417,7 @@ impl DataActor for C1d {
 		self.pending.clear();
 		self.out.clear();
 		self.node.emit(
-			(&bar, self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Span(Timeframe(TF_1D.0 + TF_1H.0)) }>>()),
+			(&bar, self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Over(Timeframe(TF_1D.0 + TF_1H.0)) }>>()),
 			&mut self.out,
 		);
 		self.publish_signal(CHANGE1D, encode(&self.out), signal.ts_event);
@@ -437,7 +437,7 @@ impl DataActor for C3m {
 		self.m1.push(&[Bar::from(decode::<BarDto>(signal))]);
 		self.out.clear();
 		self.node
-			.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, { Horizon::Span(TF_3MIN) }>>(),), &mut self.out);
+			.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, { Horizon::Over(TF_3MIN) }>>(),), &mut self.out);
 		self.publish_signal(CHANGE3M, encode(&self.out), signal.ts_event);
 		Ok(())
 	}

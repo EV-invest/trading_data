@@ -63,7 +63,7 @@ fn a_buffer_names_itself_from_its_source_and_its_reach() {
 	assert_eq!(Horizon::Unit.tag().as_str(), "Unit");
 	assert_eq!(Horizon::Unbounded.tag().as_str(), "Unbounded");
 	assert_eq!(Horizon::Elems(61).tag().as_str(), "Elems(61)");
-	assert_eq!(Horizon::Span(Timeframe::from_naive(3, TimeframeDesignator::Minutes)).tag().as_str(), "Span(3m)");
+	assert_eq!(Horizon::Over(Timeframe::from_naive(3, TimeframeDesignator::Minutes)).tag().as_str(), "Over(3m)");
 	assert_eq!(<Buffer<Src, { Horizon::Elems(61) }> as Cell>::NAME, format!("Buffer<{}, Elems(61)>", Src::NAME));
 }
 
@@ -263,7 +263,7 @@ fn a_window_reader_gets_one_column_for_its_whole_reach() {
 	assert!((jac[0] - 1.0).abs() < 1e-3, "the newest element's partial, and only it: {jac:?}");
 }
 
-/// Span retention over an irregular stream: what a window reaches back over is wall clock, so a gap
+/// Window retention over an irregular stream: what a window reaches back over is wall clock, so a gap
 /// wider than the span leaves the current element alone in it rather than a stale one that would be
 /// read as a whole span's worth of change.
 mod span {
@@ -274,7 +274,7 @@ mod span {
 		batches SBatches;
 		roots { src: Src[f64] };
 		out SOut;
-		outputs { hist: Buffer<Src, { Horizon::Span(Timeframe::from_naive(10, TimeframeDesignator::Seconds)) }> }
+		outputs { hist: Buffer<Src, { Horizon::Over(Timeframe::from_naive(10, TimeframeDesignator::Seconds)) }> }
 	}
 
 	#[test]

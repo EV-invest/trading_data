@@ -8,7 +8,7 @@
 //! Retention is unbounded where the frame's `Buffer<C, K>` trims to `K`, and the two are
 //! nonetheless the same reading. `Hist::all` re-cuts to the consumer's declared horizon, so extra
 //! history behind it is invisible; `trailing_at` at `Horizon::Elems` never consults the watermark;
-//! and at `Horizon::Span` the window is complete iff `cut >= watermark`, which holds here exactly
+//! and at `Horizon::Over` the window is complete iff `cut >= watermark`, which holds here exactly
 //! when it holds there — a trimming buffer's watermark is the last *dropped* stamp, always at or
 //! behind `cut`, and before its first drop it is the first stamp ever seen, which is what this
 //! holds forever.

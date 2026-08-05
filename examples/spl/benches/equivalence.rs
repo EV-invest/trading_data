@@ -232,7 +232,7 @@ impl Direct {
 		self.bars_4h.emit((o4, v4), b4);
 
 		self.b_top.clear();
-		self.chunk.advance(deltas, Horizon::Span(v_utils::TF_15MIN));
+		self.chunk.advance(deltas, Horizon::Over(v_utils::TF_15MIN));
 		let folded = self.book.advance((anchor, &self.chunk));
 		self.book_top.emit((folded, deltas), &mut self.b_top);
 
@@ -274,12 +274,12 @@ impl Direct {
 			self.change_1d.emit(
 				(
 					&self.b_bars[0],
-					self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Span(Timeframe(TF_1D.0 + TF_1H.0)) }>>(),
+					self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Over(Timeframe(TF_1D.0 + TF_1H.0)) }>>(),
 				),
 				&mut self.b_c1d,
 			);
 			self.change_3m
-				.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, { Horizon::Span(TF_3MIN) }>>(),), &mut self.b_c3m);
+				.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, { Horizon::Over(TF_3MIN) }>>(),), &mut self.b_c3m);
 			self.volume_1m.emit((&self.b_bars[0],), &mut self.b_v1m);
 			self.volume_1h.emit(
 				(&self.b_bars[0], self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Elems(1) }>>()),

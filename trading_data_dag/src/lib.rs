@@ -111,8 +111,9 @@ pub enum Horizon {
 	Unit,
 	Elems(usize),
 	/// A window of wall clock, stated as the timeframe it is — the unit travels with the number
-	/// instead of being a convention the reader has to know.
-	Span(Timeframe),
+	/// instead of being a convention the reader has to know. *Un*located, unlike `core`'s `ts::Span`,
+	/// which this used to shadow: a duration, not an `Instant..Instant`.
+	Over(Timeframe),
 	/// Reaches to the start of the run: a recurrence (Wilder RSI) or a running sum (CVD). Nothing
 	/// recovers such a node, so it must advance every tick.
 	Unbounded,
@@ -125,8 +126,8 @@ impl Horizon {
 	pub const fn serves(self, req: Horizon) -> bool {
 		match (self, req) {
 			(Horizon::Elems(k), Horizon::Elems(j)) => k >= j,
-			(Horizon::Span(k), Horizon::Span(j)) => k.0 >= j.0,
-			(Horizon::Span(_), Horizon::Elems(_)) => true,
+			(Horizon::Over(k), Horizon::Over(j)) => k.0 >= j.0,
+			(Horizon::Over(_), Horizon::Elems(_)) => true,
 			_ => false,
 		}
 	}
@@ -137,8 +138,8 @@ impl Horizon {
 	pub const fn join(self, other: Horizon) -> Horizon {
 		match (self, other) {
 			(Horizon::Unbounded, _) | (_, Horizon::Unbounded) => Horizon::Unbounded,
-			(Horizon::Span(a), Horizon::Span(b)) => Horizon::Span(if a.0 >= b.0 { a } else { b }),
-			(Horizon::Span(s), _) | (_, Horizon::Span(s)) => Horizon::Span(s),
+			(Horizon::Over(a), Horizon::Over(b)) => Horizon::Over(if a.0 >= b.0 { a } else { b }),
+			(Horizon::Over(s), _) | (_, Horizon::Over(s)) => Horizon::Over(s),
 			(Horizon::Elems(a), Horizon::Elems(b)) => Horizon::Elems(if a >= b { a } else { b }),
 			(Horizon::Elems(k), Horizon::Unit) | (Horizon::Unit, Horizon::Elems(k)) => Horizon::Elems(k),
 			(Horizon::Unit, Horizon::Unit) => Horizon::Unit,
@@ -157,8 +158,8 @@ impl Horizon {
 				let len = digits(&mut buf, len, n as u64);
 				write(&mut buf, len, b")")
 			}
-			Horizon::Span(tf) => {
-				let len = write(&mut buf, len, b"Span(");
+			Horizon::Over(tf) => {
+				let len = write(&mut buf, len, b"Over(");
 				let len = timeframe(&mut buf, len, tf);
 				write(&mut buf, len, b")")
 			}
@@ -172,18 +173,18 @@ impl Horizon {
 	/// with every producer's clock static, a consumer's declared reach resolves to a depth at compile
 	/// time instead of being a hand-picked replay range.
 	///
-	/// The inverse is not the useful one. `Span → Elems` yields a buffer capacity, and [`Buffer`]
+	/// The inverse is not the useful one. `Over → Elems` yields a buffer capacity, and [`Buffer`]
 	/// already trims on timestamps (see [`Hist::all`]) without ever needing a count.
 	pub const fn span(self, clock: Timeframe) -> Timeframe {
 		match self {
 			Horizon::Unit => clock,
 			Horizon::Elems(n) => Timeframe(clock.0 * n as u64),
-			Horizon::Span(tf) => tf,
+			Horizon::Over(tf) => tf,
 			Horizon::Unbounded => panic!("an unbounded reach is no duration: nothing recovers such a node, so no depth warms it"),
 		}
 	}
 
-	/// Only a [`Horizon::Span`] has one; the caller has already matched the variant. Public because a
+	/// Only a [`Horizon::Over`] has one; the caller has already matched the variant. Public because a
 	/// [`Batch`] written outside this crate has to turn its declared reach into a period.
 	pub const fn ns(tf: Timeframe) -> i64 {
 		(tf.0 * 1_000_000) as i64
@@ -285,7 +286,7 @@ const fn timeframe(buf: &mut [u8; 256], len: usize, tf: Timeframe) -> usize {
 }
 
 /// A retained item's own event time. Required of every [`Buffer`]ed item — a history you cannot
-/// index by time is one you can only read at an assumed cadence, which is the bug [`Horizon::Span`]
+/// index by time is one you can only read at an assumed cadence, which is the bug [`Horizon::Over`]
 /// replaces.
 pub trait Stamped {
 	fn ts_ns(&self) -> i64;
@@ -1479,7 +1480,7 @@ where
 /// own and pays its own state rather than the row count.
 ///
 /// **[`Horizon`] means whatever the impl makes it mean.** [`Rows`] slides: it trims by `ts_ns` on
-/// every tick, so `Span(tf)` is the last `tf` of wall clock ending now. A batch that folds cannot
+/// every tick, so `Over(tf)` is the last `tf` of wall clock ending now. A batch that folds cannot
 /// un-fold, so it has nothing to trim and can only *tumble* — reset on the absolute period boundary,
 /// floored from the epoch. Both are the same declaration and different windows. What contains it is
 /// that the views are different types, so no consumer can read one as the other.
@@ -1520,7 +1521,7 @@ pub struct Rows<T> {
 	cur: usize,
 	/// The highest `ts_ns` this batch cannot speak for: the last one dropped, or — before the first
 	/// drop — the first one ever seen, since nothing proves the run reached back past it. A
-	/// [`Horizon::Span`] window is complete iff it begins strictly after this, which is exact where
+	/// [`Horizon::Over`] window is complete iff it begins strictly after this, which is exact where
 	/// "have I been running long enough" is a guess.
 	watermark: i64,
 	fresh: usize,
@@ -1570,7 +1571,7 @@ impl<T: Copy + Stamped> Batch<T> for Rows<T> {
 			let win = &self.buf[self.cur..];
 			match h {
 				Horizon::Elems(k) => win.len().saturating_sub(k),
-				Horizon::Span(tf) => match win.last() {
+				Horizon::Over(tf) => match win.last() {
 					Some(newest) => {
 						let cut = newest.ts_ns() - Horizon::ns(tf);
 						win.partition_point(|x| x.ts_ns() <= cut)
@@ -1717,7 +1718,7 @@ impl<'t, T: Stamped> Hist<'t, T> {
 			// keyed on the pre-batch newest rather than the batch's own tail — the reference [`Buffer`]
 			// itself trims against, so what a frame retains at `H` and what a consumer reads at `H` are
 			// one statement.
-			Horizon::Span(tf) => {
+			Horizon::Over(tf) => {
 				let cut = self.all[newest].ts_ns() - Horizon::ns(tf);
 				self.all[..past].partition_point(|x| x.ts_ns() <= cut)
 			}
@@ -1727,7 +1728,7 @@ impl<'t, T: Stamped> Hist<'t, T> {
 	}
 
 	/// The window ending at `fresh()[i]`, per the declared [`Horizon`]; `None` when it is incomplete
-	/// — fewer than `Elems(n)` retained, or a `Span` reaching past what the buffer has dropped.
+	/// — fewer than `Elems(n)` retained, or an `Over` reaching past what the buffer has dropped.
 	pub fn trailing_at(self, i: usize) -> Option<&'t [T]> {
 		let end = self.all.len() - self.fresh + i + 1;
 		assert!(end <= self.all.len(), "trailing_at: {i} past this tick's {} fresh elements", self.fresh);
@@ -1738,7 +1739,7 @@ impl<'t, T: Stamped> Hist<'t, T> {
 			}
 			// exclusive: the window is the last `ms` of wall clock, the same predicate the buffer trims
 			// on — so what it retains and what a consumer reads are one statement.
-			Horizon::Span(tf) => {
+			Horizon::Over(tf) => {
 				let cut = self.all[end - 1].ts_ns() - Horizon::ns(tf);
 				(cut >= self.watermark).then(|| &self.all[self.all[..end].partition_point(|x| x.ts_ns() <= cut)..end])
 			}
@@ -1857,10 +1858,10 @@ where
 			assert!(
 				match H {
 					Horizon::Elems(k) => k >= 1,
-					Horizon::Span(tf) => tf.0 > 0,
+					Horizon::Over(tf) => tf.0 > 0,
 					_ => false,
 				},
-				"a buffer retains a bounded reach: Horizon::Elems(k >= 1) or Horizon::Span(tf > 0)"
+				"a buffer retains a bounded reach: Horizon::Elems(k >= 1) or Horizon::Over(tf > 0)"
 			)
 		}
 		self.batch.advance(fresh, H);
@@ -2090,7 +2091,7 @@ impl<C: Nudge, const H: Horizon> Nudge for Folding<C, H> {
 }
 
 /// [`Folding`] with the span spelled as the period it is — what a node parameterised by a timeframe
-/// writes in dep position. Its own type because `Folding<C, { Horizon::Span(TF) }>` does not parse:
+/// writes in dep position. Its own type because `Folding<C, { Horizon::Over(TF) }>` does not parse:
 /// an enum constructor applied to a generic parameter is rejected in const-argument position, so the
 /// construction moves into an associated const, which is a type.
 pub struct Spanning<C: Cell, const TF: Timeframe>(core::marker::PhantomData<C>);
@@ -2101,7 +2102,7 @@ impl<C: Cell, const TF: Timeframe> Cell for Spanning<C, TF> {
 	const CLOCK: Option<Timeframe> = C::CLOCK;
 	const FOLDED: bool = true;
 	const NAME: &'static str = C::NAME;
-	const REACH: Horizon = Horizon::Span(TF);
+	const REACH: Horizon = Horizon::Over(TF);
 }
 
 impl<'t, C: Cell, const TF: Timeframe, T> Has<'t, Spanning<C, TF>, Here> for Cons<'t, C, T> {

@@ -3,7 +3,7 @@ use v_utils::*;
 
 /// `TF_5MIN` is Bybit's open-interest publish cadence: every leg reads the publish standing a whole
 /// number of those back, so the retained reach is one past the longest one.
-pub const OI_REACH: Horizon = Horizon::Span(Timeframe(4 * TF_5MIN.0));
+pub const OI_REACH: Horizon = Horizon::Over(Timeframe(4 * TF_5MIN.0));
 
 /// Percent change of the `i`th fresh publish against the one standing `steps` cadences before it. A
 /// gap that leaves none within a publish interval of that instant declines, rather than passing a

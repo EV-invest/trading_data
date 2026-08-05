@@ -100,7 +100,7 @@ impl Cell for Closes {
 }
 #[node]
 impl Emit for Closes {
-	type Deps = (Folding<Src, { Horizon::Span(MIN) }>,);
+	type Deps = (Folding<Src, { Horizon::Over(MIN) }>,);
 
 	const WHY: &'static str = "a clocking fixture";
 
@@ -156,7 +156,7 @@ const _: () = {
 		None => panic!("the clocked node under test declares one"),
 	};
 	assert!(Horizon::Elems(14).span(clock).0 == 14 * 60_000);
-	assert!(Horizon::Span(Timeframe(300_000)).span(clock).0 == 300_000);
+	assert!(Horizon::Over(Timeframe(300_000)).span(clock).0 == 300_000);
 	assert!(Horizon::Unit.span(clock).0 == 60_000);
 };
 

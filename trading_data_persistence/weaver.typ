@@ -313,7 +313,7 @@ is evidence of anything: `Live` and `Replay` differ only in how a `Lane` gets fi
   by whole orders of magnitude, on output that still looks like data.
 
   MAX_ANCHOR_AGE is not a constant in this crate. It is read off the graph:
-      <<Book as Node>::Deps as DepSet>::REACH[1]   must be a `Horizon::Span(tf)`, else compile error
+      <<Book as Node>::Deps as DepSet>::REACH[1]   must be a `Horizon::Over(tf)`, else compile error
   The reader looks back exactly as far as the folding node DECLARED it reaches. Bounding a read, not
   bounding drift — our own delta lane is gapless by construction, so a miss here means a gap in our
   own recording.
@@ -524,7 +524,7 @@ is evidence of anything: `Live` and `Replay` differ only in how a `Lane` gets fi
   effective            expect: a historic lane needs a latency sampler
   read.rs              assert: `schema_version` matches exactly (no silent cross-version reads) ·
                        file metadata consistent across the read range
-  read.rs              const:  `MAX_ANCHOR_AGE` is a `Horizon::Span` on `Book`'s declared reach, or
+  read.rs              const:  `MAX_ANCHOR_AGE` is a `Horizon::Over` on `Book`'s declared reach, or
                        it does not compile
   Catalog::write       error:  OverlappingInterval — a lane's files partition time, they do not
                        overlap it
