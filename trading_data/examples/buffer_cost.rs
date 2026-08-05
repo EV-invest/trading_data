@@ -6,7 +6,7 @@
 
 use std::hint::black_box;
 
-use trading_data::{Buffer, Buffering, Bump, Cell, DepOuts, Flat, Glance, Horizon, Node, Stamped, graph, node, slice_nudge};
+use trading_data::{Blind, Buffer, Buffering, Bump, Cell, DepOuts, Flat, Glance, Horizon, Stamped, graph, node, slice_nudge};
 
 const TICKS: usize = 200_000;
 /// Deep enough that the memmove dominates, and of the order an indicator's window actually is.
@@ -57,8 +57,10 @@ impl Cell for Ends {
 	type Out<'t> = &'t [f64];
 }
 #[node]
-impl Node for Ends {
+impl Blind for Ends {
 	type Deps = (Buffering<Src, REACH>,);
+
+	const WHY: &'static str = "the bench's consumer: what it measures is the window's retention, not the arithmetic it reads off the ends";
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		let all = hist.all();

@@ -1,7 +1,7 @@
 //! Diamond over two multi-rate roots: `None` propagation through the DAG, plus an
 //! inference-stress graph (chain depth 10 + one arity-8 node, zero call-site annotations).
 
-use trading_data_dag::{Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Sweep, Want, step, step_obs, value_nudge};
+use trading_data_dag::{Blind, Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Opaque, Sweep, Want, node, step, step_obs, value_nudge};
 
 struct Trades;
 impl Cell for Trades {
@@ -19,8 +19,11 @@ struct A;
 impl Cell for A {
 	type Out<'t> = Option<f64>;
 }
-impl Node for A {
+#[node]
+impl Blind for A {
 	type Deps = (Trades,);
+
+	const WHY: &'static str = "a diamond fixture";
 
 	fn advance<'t>(&'t mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		t.map(|x| x * 2.0)
@@ -33,8 +36,11 @@ struct B;
 impl Cell for B {
 	type Out<'t> = Option<f64>;
 }
-impl Node for B {
+#[node]
+impl Blind for B {
 	type Deps = (A,);
+
+	const WHY: &'static str = "a diamond fixture";
 
 	fn advance<'t>(&'t mut self, (a,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		a.map(|x| x + 1.0)
@@ -47,8 +53,11 @@ struct C;
 impl Cell for C {
 	type Out<'t> = Option<f64>;
 }
-impl Node for C {
+#[node]
+impl Blind for C {
 	type Deps = (A,);
+
+	const WHY: &'static str = "a diamond fixture";
 
 	fn advance<'t>(&'t mut self, (a,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		a.map(|x| x * 3.0)
@@ -61,8 +70,11 @@ struct D;
 impl Cell for D {
 	type Out<'t> = Option<f64>;
 }
-impl Node for D {
+#[node]
+impl Blind for D {
 	type Deps = (B, C);
+
+	const WHY: &'static str = "a diamond fixture";
 
 	fn advance<'t>(&'t mut self, (b, c): DepOuts<'t, Self>) -> Self::Out<'t> {
 		b.zip(c).map(|(b, c)| b + c)
@@ -74,8 +86,11 @@ struct Cross;
 impl Cell for Cross {
 	type Out<'t> = Option<f64>;
 }
-impl Node for Cross {
+#[node]
+impl Blind for Cross {
 	type Deps = (Trades, Quotes);
+
+	const WHY: &'static str = "a diamond fixture";
 
 	fn advance<'t>(&'t mut self, (t, q): DepOuts<'t, Self>) -> Self::Out<'t> {
 		t.zip(q).map(|(t, q)| t - q)
@@ -105,7 +120,7 @@ fn diamond_option_propagation() {
 #[derive(Default)]
 struct Rec(Vec<(&'static str, &'static [&'static str], String)>);
 impl Observer for Rec {
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		Want::Vals
 	}
 
@@ -163,16 +178,25 @@ impl Cell for R {
 }
 macro_rules! chain {
 	($name:ident, $dep:ty) => {
+		#[derive(Clone)]
 		struct $name;
 		impl Cell for $name {
 			type Out<'t> = f64;
 		}
-		impl Node for $name {
+		impl Blind for $name {
 			type Deps = ($dep,);
+
+			const WHY: &'static str = "a fan-out fixture";
 
 			fn advance<'t>(&'t mut self, (x,): DepOuts<'t, Self>) -> Self::Out<'t> {
 				x + 1.0
 			}
+		}
+		// hand-written, not `#[node]`: the dep arrives as a `:ty` fragment, which the shim cannot
+		// take apart into the cell it names.
+		impl Node for $name {
+			type Deps = <Self as Blind>::Deps;
+			type Kernel = Opaque;
 		}
 	};
 }
@@ -187,12 +211,16 @@ chain!(S8, S7);
 chain!(S9, S8);
 chain!(S10, S9);
 
+#[derive(Clone)]
 struct Wide;
 impl Cell for Wide {
 	type Out<'t> = f64;
 }
-impl Node for Wide {
+#[node]
+impl Blind for Wide {
 	type Deps = (S3, S4, S5, S6, S7, S8, S9, S10);
+
+	const WHY: &'static str = "an arity fixture";
 
 	fn advance<'t>(&'t mut self, (a, b, c, d, e, g, h, j): DepOuts<'t, Self>) -> Self::Out<'t> {
 		a + b + c + d + e + g + h + j
@@ -221,7 +249,7 @@ fn inference_stress_depth_10_arity_8() {
 #[derive(Default)]
 struct JacRec(Vec<Option<Vec<f64>>>);
 impl Observer for JacRec {
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		Want::Jac
 	}
 
@@ -248,8 +276,11 @@ impl Clone for Level {
 		Level
 	}
 }
-impl Node for Level {
+#[node]
+impl Blind for Level {
 	type Deps = (Trades, Quotes);
+
+	const WHY: &'static str = "a retention fixture";
 
 	fn advance<'t>(&'t mut self, (t, q): DepOuts<'t, Self>) -> Self::Out<'t> {
 		// multi-rate leaf: an unfired dep contributes nothing this tick
@@ -269,6 +300,58 @@ fn fd_unfired_dep_nan_column() {
 	assert!((jac[1] - 3.0).abs() < 1e-3, "{jac:?}");
 }
 
+/// A node that *remembers*, so "observing does not move the graph" is a claim with something to be
+/// wrong about: the finite-difference witness re-advances a clone `dep_len` times, and every one of
+/// those advances would show up in `sum` if it touched the real node.
+#[derive(Clone, Default)]
+struct Tally {
+	sum: f64,
+}
+impl Cell for Tally {
+	type Out<'t> = f64;
+}
+value_nudge!(Tally);
+#[node]
+impl Blind for Tally {
+	type Deps = (Trades, Quotes);
+
+	const WHY: &'static str = "a state fixture: what it accumulates is the point, not what it computes";
+
+	fn advance<'t>(&'t mut self, (t, q): DepOuts<'t, Self>) -> Self::Out<'t> {
+		self.sum += t.unwrap_or(0.0) + q.unwrap_or(0.0);
+		self.sum
+	}
+}
+
+/// Reads whatever it is told to, and keeps only the outs — the two runs differ in `Want` and in
+/// nothing else.
+struct AtWant(Want);
+impl Observer for AtWant {
+	fn want(&self, _: &'static str) -> Want {
+		self.0
+	}
+
+	fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], _: Fire<'_>) {}
+}
+
+// r[verify observe.noninvasive]
+#[test]
+fn a_tick_lands_where_it_would_have_unobserved() {
+	fn run(want: Want) -> Vec<f64> {
+		let (mut tally, mut obs, mut sweep) = (Tally::default(), AtWant(want), Sweep::default());
+		(1..=5)
+			.map(|i| {
+				let f = Cons::<Trades, Nil> { out: Some(i as f64), tail: Nil };
+				let f = Cons::<Quotes, _> { out: Some(i as f64 * 0.5), tail: f };
+				step_obs(f, &mut tally, &mut sweep, &mut obs).head()
+			})
+			.collect()
+	}
+	let unobserved = run(Want::Nothing);
+	assert_eq!(unobserved, run(Want::Vals));
+	assert_eq!(unobserved, run(Want::Jac), "a Jacobian is taken off a clone, so the run it is taken during is the same run");
+}
+
 struct Gate;
 impl Cell for Gate {
 	type Out<'t> = bool;
@@ -279,8 +362,11 @@ struct OnOff;
 impl Cell for OnOff {
 	type Out<'t> = f64;
 }
-impl Node for OnOff {
+#[node]
+impl Blind for OnOff {
 	type Deps = (Gate,);
+
+	const WHY: &'static str = "a gate fixture";
 
 	fn advance<'t>(&'t mut self, (g,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		if g { 5.0 } else { 0.0 }
@@ -301,8 +387,11 @@ struct Under;
 impl Cell for Under {
 	type Out<'t> = Option<f64>;
 }
-impl Node for Under {
+#[node]
+impl Blind for Under {
 	type Deps = (Trades,);
+
+	const WHY: &'static str = "a gated-reader fixture";
 
 	fn advance<'t>(&'t mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		t.filter(|x| *x <= 1.0)

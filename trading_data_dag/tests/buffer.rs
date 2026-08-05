@@ -4,7 +4,7 @@
 //! the point of engine-owned retention.
 
 use trading_data_dag::{
-	Buffer, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Node, Observer, Stamped, Want, graph, node, slice_nudge,
+	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Stamped, Want, graph, node, slice_nudge,
 };
 use v_utils::{Timeframe, TimeframeDesignator};
 
@@ -77,6 +77,8 @@ impl Cell for Sum3 {
 impl Emit for Sum3 {
 	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
 
+	const WHY: &'static str = "a buffer fixture";
+
 	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(hist.trailing().map(|w| w.map(|w| w.iter().map(|x| x.v).sum())));
 	}
@@ -93,6 +95,8 @@ impl Cell for Split {
 #[node]
 impl Emit for Split {
 	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
+
+	const WHY: &'static str = "a buffer fixture";
 
 	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Tick>) {
 		out.push(Tick {
@@ -114,8 +118,10 @@ impl Cell for Level {
 	type Out<'t> = &'t [Tick];
 }
 #[node]
-impl Node for Level {
+impl Blind for Level {
 	type Deps = (Buffering<Src, { Horizon::Elems(1) }>,);
+
+	const WHY: &'static str = "a retention fixture";
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.all.clear();
@@ -197,7 +203,7 @@ fn flat_reads_fresh_only() {
 		src: Option<(usize, Vec<f64>)>,
 	}
 	impl Observer for Rec {
-		fn want(&self) -> Want {
+		fn want(&self, _: &'static str) -> Want {
 			Want::Vals
 		}
 
@@ -221,6 +227,40 @@ fn flat_reads_fresh_only() {
 	g.tick_obs(0, Batches { src: &observed }, &mut rec);
 	assert_eq!(rec.hist, rec.src, "a buffer's Fire must match its source's");
 	assert_eq!(rec.hist, Some((2, vec![8.0])));
+}
+
+// r[verify kernels.jac.two-quantities]
+/// `Sum3` reads all three elements of its window and its partial wrt each of them is 1.0, but the
+/// reading a fire carries is the one-step one: `Buffering<Src, Elems(3)>` flattens to its last
+/// element, so the node gets *one* column, holding bar 2's partial and saying nothing whatever about
+/// bars 0 and 1. That is the whole of why the two quantities are stated apart — the number is right
+/// and the coverage is partial, and nothing in the array distinguishes this from a node that only
+/// ever read one element.
+#[test]
+fn a_window_reader_gets_one_column_for_its_whole_reach() {
+	#[derive(Default)]
+	struct Rec(Option<Vec<f64>>);
+	impl Observer for Rec {
+		fn want(&self, _: &'static str) -> Want {
+			Want::Jac
+		}
+
+		fn on(&mut self, node: &'static str, deps: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
+			if node.ends_with("Sum3") {
+				assert_eq!(deps.len(), 1, "one dep, whatever its reach");
+				self.0 = fire.jac.map(<[f64]>::to_vec);
+			}
+		}
+	}
+
+	let mut g = G::default();
+	g.tick(0, Batches { src: &[t(1.0), t(2.0)] });
+
+	let mut rec = Rec::default();
+	g.tick_obs(0, Batches { src: &[t(3.0)] }, &mut rec);
+	let jac = rec.0.expect("Sum3 fires on a warm window");
+	assert_eq!(jac.len(), 1, "one out slot × one dep slot — the reach buys no columns: {jac:?}");
+	assert!((jac[0] - 1.0).abs() < 1e-3, "the newest element's partial, and only it: {jac:?}");
 }
 
 /// Span retention over an irregular stream: what a window reaches back over is wall clock, so a gap
@@ -306,8 +346,10 @@ mod revive {
 		type Out<'t> = bool;
 	}
 	#[node(latch)]
-	impl Node for Live {
+	impl Blind for Live {
 		type Deps = (Trig,);
+
+		const WHY: &'static str = "a latch fixture";
 
 		fn advance<'t>(&'t mut self, (trig,): DepOuts<'t, Self>) -> Self::Out<'t> {
 			self.armed |= !trig.is_empty();
@@ -333,8 +375,10 @@ mod revive {
 		type Out<'t> = Option<Phase>;
 	}
 	#[node]
-	impl Node for Episodic {
+	impl Blind for Episodic {
 		type Deps = (Gating<Live>, Buffering<Src, { Horizon::Elems(3) }>);
+
+		const WHY: &'static str = "a buffer fixture";
 
 		fn advance<'t>(&'t mut self, (live, hist): DepOuts<'t, Self>) -> Self::Out<'t> {
 			assert!(live, "a gating dep reads true inside `advance`");

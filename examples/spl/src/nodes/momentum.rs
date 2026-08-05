@@ -63,6 +63,7 @@ impl Emit for Momentum {
 		labels: &[&["sharpe"]],
 		..Plot::DEFAULT
 	}];
+	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
 
 	fn emit(&mut self, (m5, h4): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(leg(m5, h4).trailing().map(|w| w.and_then(sharpe)));

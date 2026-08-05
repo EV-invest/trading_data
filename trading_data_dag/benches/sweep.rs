@@ -17,7 +17,7 @@
 use std::hint::black_box;
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
-use trading_data_dag::{Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Sweep, Want, step, step_obs, value_nudge};
+use trading_data_dag::{Blind, Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Opaque, Sweep, Want, step, step_obs, value_nudge};
 
 const TICKS: usize = 1_000;
 
@@ -38,12 +38,19 @@ macro_rules! chain {
 				type Out<'t> = Option<f64>;
 			}
 			value_nudge!($n);
-			impl Node for $n {
+			impl Blind for $n {
 				type Deps = ($d,);
+				const WHY: &'static str = "a bench link: the sweep it measures is the shape, not the arithmetic";
 
 				fn advance<'t>(&'t mut self, (x,): DepOuts<'t, Self>) -> Self::Out<'t> {
 					x.map(|v| v * 1.000_000_1 + 1.0)
 				}
+			}
+			// hand-written, not `#[node]`: the dep arrives as a `:ty` fragment, which the shim cannot
+			// take apart into the cell it names.
+			impl Node for $n {
+				type Deps = <Self as Blind>::Deps;
+				type Kernel = Opaque;
 			}
 		)+
 
@@ -81,7 +88,7 @@ struct Probe {
 	sink: f64,
 }
 impl Observer for Probe {
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		self.want
 	}
 

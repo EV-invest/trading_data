@@ -11,6 +11,9 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+# `sqrt`/`exp` are std-only on `f64`; this crate stays `no_std`, so the two transcendentals come
+# from the reference libm rather than from dropping the bound.
+libm = { workspace = true }
 
 [dev-dependencies]
 iai-callgrind.workspace = true

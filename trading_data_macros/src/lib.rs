@@ -51,10 +51,10 @@ pub fn graph(input: TokenStream) -> TokenStream {
 
 /// Publishes an impl's `type Deps` to [`macro@graph`], which cannot ask the type system for it.
 ///
-/// Goes on `impl Node`/`Emit`/`Symbolic` for the cell, and on `impl Episodic` (which publishes the
-/// arm instead — `Armed<Self>`'s dep is an associated-type projection). `#[node(latch)]` marks a cell
-/// with a hand-written `impl Latch`, and `#[node(diff)]` one with a hand-written `impl Diff`; both
-/// are separate impls, and a cell has one shim.
+/// Goes on `impl Blind`/`Emit`/`Symbolic` for the cell, and on `impl Episodic` (which publishes the
+/// arm instead — `Armed<Self>`'s dep is an associated-type projection). It also writes the `Node`
+/// impl, mapping the body trait to the kernel that computes it. `#[node(latch)]` marks a cell with a
+/// hand-written `impl Latch`, which is a separate impl, and a cell has one shim.
 #[proc_macro_attribute]
 pub fn node(attr: TokenStream, item: TokenStream) -> TokenStream {
 	out(node::node(attr.into(), item.into()))

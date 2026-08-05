@@ -205,6 +205,7 @@ impl<const TF: Timeframe> Emit for Ohlcs<TF> {
 
 	/// [`Bars`] joins this with [`Volumes`] and draws for all three.
 	const PLOTS: &'static [Plot] = &[];
+	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
 	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Ohlc>) {
 		ohlc(&mut self.0, trades, TF, out);
@@ -229,6 +230,7 @@ impl<const TF: Timeframe> Emit for Volumes<TF> {
 
 	/// [`Bars`] joins this with [`Ohlcs`] and draws for all three.
 	const PLOTS: &'static [Plot] = &[];
+	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
 	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Volume>) {
 		volume(&mut self.0, trades, TF, out);
@@ -261,6 +263,7 @@ impl<const TF: Timeframe> Emit for Bars<TF> {
 		candles: true,
 		..Plot::DEFAULT
 	}];
+	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
 	fn emit(&mut self, (ohlc, vol): EmitOuts<'_, Self>, out: &mut Vec<Bar>) {
 		assert_eq!(ohlc.len(), vol.len(), "one Ohlc and one Volume per period closed");

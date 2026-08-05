@@ -2,7 +2,7 @@
 //! `Latch::Cut: Node` bound stood in for this; `cut_gated` reads the derived node set instead, and
 //! says it in the graph's own words.
 
-use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Latch, Node, slice_nudge, value_nudge};
+use trading_data_dag::{Blind, Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Latch, slice_nudge, value_nudge};
 use trading_data_macros::{graph, node};
 
 #[derive(Clone, Copy, Debug)]
@@ -43,8 +43,10 @@ impl Cell for L {
 	type Out<'t> = bool;
 }
 #[node(latch)]
-impl Node for L {
+impl Blind for L {
 	type Deps = (Src,);
+
+	const WHY: &'static str = "a latch fixture";
 
 	fn advance<'t>(&'t mut self, (s,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.0 |= !s.is_empty();
@@ -66,8 +68,10 @@ impl Cell for Sink {
 	type Out<'t> = Option<f64>;
 }
 #[node]
-impl Node for Sink {
+impl Blind for Sink {
 	type Deps = (Gating<L>, Src);
+
+	const WHY: &'static str = "a demand fixture";
 
 	fn advance<'t>(&'t mut self, (_, s): DepOuts<'t, Self>) -> Self::Out<'t> {
 		Some(s.len() as f64)

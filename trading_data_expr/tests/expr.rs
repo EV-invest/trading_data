@@ -91,3 +91,87 @@ fn simplify_clears_derivative_litter() {
 	let d = kernel().lower().diff(1).simplify();
 	assert_eq!(d.to_string(), "(2 * (x0 + x1))");
 }
+
+/// Every operator, differentiated two ways that share no code: `grad`'s chain rule, and a central
+/// difference of `eval`. This is where the algebra is checked — a fire carries one array for the
+/// one-step reading whichever way the kernel reached it (`r[kernels.jac.two-quantities]`), so the
+/// engine has nothing to compare a `Pure` node's Jacobian against at runtime, deliberately, and the
+/// comparison runs once here instead of every tick.
+///
+/// `Cmp`/`Select` carry a step, so they are sampled away from it: a difference across a jump is not
+/// a slope, and neither reading claims one.
+#[test]
+fn every_operator_agrees_with_a_numeric_difference() {
+	use trading_data_expr::{exp, gt, lt, max, min, powi_of, select, sqrt, sum};
+
+	/// `(kernel, env)` pairs; the kernel is boxed through `lower` so one loop covers all of them.
+	macro_rules! check {
+		($($label:literal: |$v:ident| $body:expr, at $env:expr;)+) => {$({
+			let $v = Vars;
+			let e = $body;
+			let env: [f64; 2] = $env;
+			let mut g = [0.0; 2];
+			let val = e.grad(&env, 1.0, &mut g);
+			assert!((val - e.eval(&env)).abs() < 1e-12, "{}: grad's value disagrees with eval", $label);
+			for i in 0..2 {
+				let fd = central_fd(&e, &env, i);
+				assert!((g[i] - fd).abs() < 1e-4 * fd.abs().max(1.0), "{} ∂{i}: grad {} vs central difference {fd}", $label, g[i]);
+			}
+			// and the symbolic derivative is a third reading of the same number
+			let ast = e.lower();
+			for i in 0..2 {
+				let d = ast.diff(i).simplify();
+				assert!((d.eval(&env) - g[i]).abs() < 1e-9, "{} ∂{i}: `diff` {} vs `grad` {}", $label, d.eval(&env), g[i]);
+			}
+		})+};
+	}
+
+	check! {
+		"add":    |v| v.get::<0>() + v.get::<1>(),                        at [1.5, 2.5];
+		"sub":    |v| v.get::<0>() - v.get::<1>(),                        at [1.5, 2.5];
+		"mul":    |v| v.get::<0>() * v.get::<1>(),                        at [1.5, 2.5];
+		"div":    |v| v.get::<0>() / v.get::<1>(),                        at [1.5, 2.5];
+		"neg":    |v| -(v.get::<0>() * v.get::<1>()),                     at [1.5, 2.5];
+		"square": |v| square(v.get::<0>() + v.get::<1>()),                at [1.5, 2.5];
+		"abs":    |v| abs(v.get::<0>() - v.get::<1>()),                   at [1.5, 2.5];
+		"sum":    |v| sum([v.get::<0>(), v.get::<0>()]) + v.get::<1>(),   at [1.5, 2.5];
+		"sqrt":   |v| sqrt(v.get::<0>() * v.get::<1>()),                  at [1.5, 2.5];
+		"exp":    |v| exp(v.get::<0>() - v.get::<1>()),                   at [1.5, 2.5];
+		"powi":   |v| powi_of::<_, 3>(v.get::<0>() + v.get::<1>()),       at [1.5, 2.5];
+		"powi-":  |v| powi_of::<_, -2>(v.get::<0>() + v.get::<1>()),      at [1.5, 2.5];
+		"min":    |v| min(v.get::<0>(), v.get::<1>()) * constant(2.0),    at [1.5, 2.5];
+		"max":    |v| max(v.get::<0>(), v.get::<1>()) * constant(2.0),    at [1.5, 2.5];
+		"cmp":    |v| lt(v.get::<0>(), v.get::<1>()),                     at [1.5, 2.5];
+		"cmp-gt": |v| gt(v.get::<0>(), v.get::<1>()),                     at [1.5, 2.5];
+		"select": |v| select(lt(v.get::<0>(), v.get::<1>()), square(v.get::<0>()), v.get::<1>()), at [1.5, 2.5];
+	}
+}
+
+/// `min`/`max` are branches, and both readings must take the *same* branch — otherwise the exact
+/// Jacobian and the documented derivative would disagree exactly where a screener sits.
+#[test]
+fn min_and_max_break_ties_the_same_way_in_both_readings() {
+	use trading_data_expr::{max, min};
+
+	for build in [0, 1] {
+		let v = Vars;
+		let (mut g, env) = ([0.0; 2], [2.0, 2.0]);
+		let ast = match build {
+			0 => {
+				let e = min(v.get::<0>(), v.get::<1>());
+				e.grad(&env, 1.0, &mut g);
+				e.lower()
+			}
+			_ => {
+				let e = max(v.get::<0>(), v.get::<1>());
+				e.grad(&env, 1.0, &mut g);
+				e.lower()
+			}
+		};
+		// the tie goes right, so the whole seed lands on x1 and none on x0
+		assert_eq!(g, [0.0, 1.0], "build {build}");
+		for i in 0..2 {
+			assert_eq!(ast.diff(i).simplify().eval(&env), g[i], "build {build} ∂{i}");
+		}
+	}
+}

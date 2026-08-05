@@ -53,6 +53,8 @@ impl<B: Series<Item = Bar>> Cell for RsiDelta<B> {
 impl<B: Series<Item = Bar>> Emit for RsiDelta<B> {
 	type Deps = (Folding<B, { Horizon::Elems(1) }>,);
 
+	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
+
 	fn emit(&mut self, (bars,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		for b in bars {
 			if let Some(prev) = self.prev_close.replace(b.close) {
@@ -101,6 +103,7 @@ macro_rules! wilder_half {
 		impl<B: Series<Item = Bar>, S: RsiSpec> Emit for $ty<B, S> {
 			/// A Wilder recurrence reaches to the start of the run.
 			type Deps = (Folding<crate::RsiDelta<B>, { Horizon::Unbounded }>,);
+			const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
 
 			fn emit(&mut self, (deltas,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 				out.extend(deltas.iter().map(|d| self.avg.update(($sign * d).max(0.0))));
@@ -203,6 +206,7 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Emit for Rsi<B, S> {
 		labels: &[&["actual", "smooth"]],
 		..Plot::DEFAULT
 	}];
+	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
 
 	fn emit(&mut self, (gain, loss): EmitOuts<'_, Self>, out: &mut Vec<Option<RsiValues>>) {
 		assert_eq!(gain.len(), loss.len(), "AvgGain/AvgLoss rate mismatch");

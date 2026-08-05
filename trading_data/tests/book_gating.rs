@@ -10,8 +10,8 @@
 //! checkpoint instead of from a warmup it can never recover.
 
 use trading_data::{
-	Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaBuf, DeltaFrame, DepOuts, FrameKind, Gate, Gating, Node, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades, Ts,
-	node,
+	Blind, Book, BookAnchors, BookDeltas, BookShape, Cell, DeltaBuf, DeltaFrame, DepOuts, FrameKind, Gate, Gating, Nudge, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols, Trades,
+	Ts, node,
 };
 
 const PREC: PrecisionPriceQty = PrecisionPriceQty {
@@ -43,8 +43,10 @@ impl Nudge for GatedBook {
 	}
 }
 #[node]
-impl Node for GatedBook {
+impl Blind for GatedBook {
 	type Deps = (Gating<Hot>, BookAnchors, BookDeltas);
+
+	const WHY: &'static str = "a book-gating fixture";
 
 	fn advance<'t>(&'t mut self, (_, a, d): DepOuts<'t, Self>) -> Option<&'t Book> {
 		self.0.step(a, d).then_some(&self.0)
@@ -59,8 +61,10 @@ impl Cell for Hot {
 	type Out<'t> = bool;
 }
 #[node]
-impl Node for Hot {
+impl Blind for Hot {
 	type Deps = (Trades,);
+
+	const WHY: &'static str = "a hot-path fixture";
 
 	fn advance<'t>(&'t mut self, (t,): DepOuts<'t, Self>) -> bool {
 		!t.is_empty()
@@ -75,8 +79,10 @@ impl Cell for Mid {
 	type Out<'t> = Option<f64>;
 }
 #[node]
-impl Node for Mid {
+impl Blind for Mid {
 	type Deps = (Gating<Hot>, GatedBook);
+
+	const WHY: &'static str = "a borrowed-root fixture";
 
 	fn advance<'t>(&'t mut self, (_, book): DepOuts<'t, Self>) -> Option<f64> {
 		let b = book?;

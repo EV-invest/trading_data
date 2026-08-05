@@ -110,7 +110,8 @@ impl Parse for GraphDef {
 /// Where the invoking crate reaches the dag: either it depends on `trading_data_dag` outright, or on
 /// the facade, which re-exports it. Resolved here because `graph!` is the one entry point — from here
 /// it rides in the driver state, which a `macro_rules!` shim can pass back but not re-derive.
-fn dag_path() -> syn::Result<TokenStream> {
+/// `#[node]` asks separately, since the `impl Node` it writes names the dag at the declaration site.
+pub fn dag_path() -> syn::Result<TokenStream> {
 	let reach = |name: &str, item: TokenStream| match crate_name(name) {
 		Ok(FoundCrate::Itself) => Some(quote!(crate #item)),
 		Ok(FoundCrate::Name(n)) => {

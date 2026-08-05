@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Ink, McRoot, Node, OiRoot, Plot, ProbabilisticDistribution, Sampling, Usd, node, value_nudge};
+use trading_data::{Blind, Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Ink, McRoot, OiRoot, Plot, ProbabilisticDistribution, Sampling, Usd, node, value_nudge};
 use v_utils::*;
 
 use super::{Change1d, Change3m, Imbalance, Momentum, Screener, Spread, Volume1h, Volume1m, oi_delta::OI_REACH};
@@ -272,7 +272,7 @@ impl Cell for Classify {
 	type Out<'t> = Option<Classified>;
 }
 #[node]
-impl Node for Classify {
+impl Blind for Classify {
 	type Deps = (
 		Gating<Screener>,
 		trading_data::Bars<{ TF_1MIN }>,
@@ -296,6 +296,7 @@ impl Node for Classify {
 		bars: true,
 		..Plot::DEFAULT
 	}];
+	const WHY: &'static str = "an enum collapse: the out names a regime, and a regime has no slope";
 
 	fn advance<'t>(&'t mut self, (hit, m1, mom, c1d, c3m, v1m, v1h, imb, spr, mc, oi): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(hit, "a gating dep reads true inside `advance`");

@@ -1,7 +1,7 @@
 //! Gate semantics at the engine boundary: a closed gate skips the gated node's `advance`
 //! entirely, while its unbounded deps keep warming.
 
-use trading_data_dag::{Cell, Cons, DepOuts, Gate, Gating, Nil, Node, step};
+use trading_data_dag::{Blind, Cell, Cons, DepOuts, Gate, Gating, Nil, node, step};
 
 struct Feed;
 impl Cell for Feed {
@@ -15,8 +15,11 @@ struct Hist {
 impl Cell for Hist {
 	type Out<'t> = Option<f64>;
 }
-impl Node for Hist {
+#[node]
+impl Blind for Hist {
 	type Deps = (Feed,);
+
+	const WHY: &'static str = "a history fixture";
 
 	fn advance<'t>(&'t mut self, (feed,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.calls += 1;
@@ -29,8 +32,11 @@ struct Hot;
 impl Cell for Hot {
 	type Out<'t> = bool;
 }
-impl Node for Hot {
+#[node]
+impl Blind for Hot {
 	type Deps = (Feed,);
+
+	const WHY: &'static str = "a hot-path fixture";
 
 	fn advance<'t>(&'t mut self, (feed,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		feed > 0.0
@@ -45,8 +51,11 @@ struct Gated {
 impl Cell for Gated {
 	type Out<'t> = Option<f64>;
 }
-impl Node for Gated {
+#[node]
+impl Blind for Gated {
 	type Deps = (Gating<Hot>, Hist);
+
+	const WHY: &'static str = "a gate fixture";
 
 	fn advance<'t>(&'t mut self, (hot, hist): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(hot, "a gating dep reads true inside `advance`");

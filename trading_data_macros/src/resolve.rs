@@ -11,13 +11,7 @@ use crate::{
 };
 
 enum Answer {
-	Node {
-		emit: bool,
-		diff: bool,
-		latch: bool,
-		self_ty: TokenStream,
-		deps: Vec<Dep>,
-	},
+	Node { emit: bool, latch: bool, self_ty: TokenStream, deps: Vec<Dep> },
 	Trigger(Dep),
 }
 
@@ -25,8 +19,6 @@ fn read_answer(r: &mut Reader) -> Option<Answer> {
 	if r.peek_at("kind") {
 		r.at("kind");
 		let emit = r.ident() == "emit";
-		r.at("diff");
-		let diff = r.flag();
 		r.at("latch");
 		let latch = r.flag();
 		r.at("self");
@@ -37,7 +29,7 @@ fn read_answer(r: &mut Reader) -> Option<Answer> {
 		while !dr.eof() {
 			deps.push(Dep { shim: dr.brace(), ty: dr.brace() });
 		}
-		return Some(Answer::Node { emit, diff, latch, self_ty, deps });
+		return Some(Answer::Node { emit, latch, self_ty, deps });
 	}
 	if r.peek_at("trigger") {
 		r.at("trigger");
@@ -82,7 +74,7 @@ fn accept(st: &mut State, answer: Option<Answer>) -> syn::Result<()> {
 	let awaiting = core::mem::replace(&mut st.awaiting, Awaiting::Nothing);
 	match (awaiting, answer) {
 		(Awaiting::Nothing, None) => Ok(()),
-		(Awaiting::Node(asked, req), Some(Answer::Node { emit, diff, latch, self_ty, deps })) => {
+		(Awaiting::Node(asked, req), Some(Answer::Node { emit, latch, self_ty, deps })) => {
 			let (key, _) = key_of(&self_ty)?;
 			// an alias answers under the aliased cell's own key, and every consumer edge naming it by
 			// the alias has to find its way back here.
@@ -95,7 +87,7 @@ fn accept(st: &mut State, answer: Option<Answer>) -> syn::Result<()> {
 					key,
 					ty: req,
 					emit,
-					diff,
+					generated: false,
 					latch,
 					deps,
 				},
@@ -107,7 +99,7 @@ fn accept(st: &mut State, answer: Option<Answer>) -> syn::Result<()> {
 				key,
 				ty: req,
 				emit: false,
-				diff: false,
+				generated: false,
 				latch: true,
 				deps: vec![arm],
 			},
@@ -154,7 +146,7 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 				key: bkey,
 				ty: TokenStream::new(),
 				emit: false,
-				diff: false,
+				generated: true,
 				latch: false,
 				deps: vec![Dep {
 					shim: dep.shim,
@@ -175,7 +167,7 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 				key: format!("Latest<{key}>"),
 				ty: quote!(#dag::Latest<#cell>),
 				emit: false,
-				diff: false,
+				generated: true,
 				latch: false,
 				deps: vec![Dep {
 					shim: dep.shim,
@@ -279,6 +271,22 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 	let latch_tys: Vec<&TokenStream> = latched.iter().map(|i| &node_tys[*i]).collect();
 
 	let decls: Vec<TokenStream> = nodes.iter().map(|n| if n.emit { quote!(#dag::Emit) } else { quote!(#dag::Node) }).collect();
+
+	// the fidelity census. An emit node is opaque by construction and states its reason on `Emit`
+	// itself; a level node's coverage belongs to its kernel, so both are read at the type rather than
+	// tracked through the driver.
+	let (hatch_names, fidelities): (Vec<&String>, Vec<TokenStream>) = nodes
+		.iter()
+		.zip(&node_tys)
+		.filter(|(n, _)| !n.generated)
+		.map(|(n, t)| {
+			let fid = match n.emit {
+				true => quote!(#dag::Fidelity::Opaque(<#t as #dag::Emit>::WHY)),
+				false => quote!(<<#t as #dag::Node>::Kernel as #dag::Level<#t>>::FIDELITY),
+			};
+			(&n.key, fid)
+		})
+		.unzip();
 	let node_deps: Vec<TokenStream> = node_tys.iter().zip(&decls).map(|(t, d)| quote!(<#t as #d>::Deps)).collect();
 	// an `emit` node's out is a run the engine buffers; the frame is still keyed on the node itself.
 	let node_fields: Vec<TokenStream> = nodes
@@ -294,13 +302,11 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 		let gates: Vec<&TokenStream> = s.iter().map(|i| &node_tys[*i]).collect();
 		// a `Gate`'s out *is* the `bool`, and `Gating::opens` is the identity — nothing to unwrap.
 		let demand = quote!(let d = #(#dag::Has::<#gates, _>::get(&f))&&*;);
-		match (n.emit, n.diff, s.is_empty()) {
-			(true, _, true) => quote!(let f = #dag::step_emit_obs(f, #f, true, ts, __sweep, obs);),
-			(true, _, false) => quote!(#demand let f = #dag::step_emit_obs(f, #f, d, ts, __sweep, obs);),
-			(false, true, true) => quote!(let f = #dag::step_exact(f, #f, __sweep, obs);),
-			(false, true, false) => quote!(#demand let f = #dag::step_exact_when(f, #f, d, __sweep, obs);),
-			(false, false, true) => quote!(let f = #dag::step_obs(f, #f, __sweep, obs);),
-			(false, false, false) => quote!(#demand let f = #dag::step_when_obs(f, #f, d, __sweep, obs);),
+		match (n.emit, s.is_empty()) {
+			(true, true) => quote!(let f = #dag::step_emit_obs(f, #f, true, ts, __sweep, obs);),
+			(true, false) => quote!(#demand let f = #dag::step_emit_obs(f, #f, d, ts, __sweep, obs);),
+			(false, true) => quote!(let f = #dag::step_obs(f, #f, __sweep, obs);),
+			(false, false) => quote!(#demand let f = #dag::step_when_obs(f, #f, d, __sweep, obs);),
 		}
 	});
 
@@ -422,6 +428,14 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 		impl #graph {
 			/// The derived closure, in sweep order — what this graph's outputs actually cost.
 			#vis const NODES: &'static [&'static str] = &[#(#names),*];
+
+			/// Every node this graph *declares*, and how much of what it read its Jacobian covers
+			/// (`r[kernels.fidelity.stated]`). The engine's own `Buffer`/`Latest` fields are left out: nobody
+			/// wrote them, so nobody owes a reason for them.
+			///
+			/// Count `Partial` and `Opaque` separately and pin both — they are different admissions. Either
+			/// may fall silently; either may only rise in a diff that says why.
+			#vis const FIDELITY: &'static [(&'static str, #dag::Fidelity)] = &[#((#hatch_names, #fidelities)),*];
 
 			/// `ts` is the tick's event time in nanoseconds — what a node's declared `Emit::CLOCK` is
 			/// read against, and the only thing the sweep needs from a tick besides its batches.

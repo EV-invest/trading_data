@@ -125,7 +125,9 @@ pub struct NodeInfo {
 	pub key: String,
 	pub ty: TokenStream,
 	pub emit: bool,
-	pub diff: bool,
+	/// Written by the driver rather than declared: a `Buffer`/`Latest` the frame needs is the engine's
+	/// own node, so it is left out of the hatch census a graph pins.
+	pub generated: bool,
 	pub latch: bool,
 	pub deps: Vec<Dep>,
 }
@@ -211,13 +213,20 @@ impl State {
 		let mut kr = r.list();
 		let mut known = Vec::new();
 		while !kr.eof() {
-			let (key, ty, emit, diff, latch) = (kr.text(), kr.brace(), kr.flag(), kr.flag(), kr.flag());
+			let (key, ty, emit, generated, latch) = (kr.text(), kr.brace(), kr.flag(), kr.flag(), kr.flag());
 			let mut dr = kr.list();
 			let mut deps = Vec::new();
 			while !dr.eof() {
 				deps.push(Dep { shim: dr.brace(), ty: dr.brace() });
 			}
-			known.push(NodeInfo { key, ty, emit, diff, latch, deps });
+			known.push(NodeInfo {
+				key,
+				ty,
+				emit,
+				generated,
+				latch,
+				deps,
+			});
 		}
 
 		let mut sr = r.list();
@@ -306,7 +315,7 @@ impl ToTokens for State {
 		}));
 		ts.append(list(&self.known, |n| {
 			let (k, t) = (text(&n.key), brace(&n.ty));
-			let (e, d, l) = (flag(n.emit), flag(n.diff), flag(n.latch));
+			let (e, d, l) = (flag(n.emit), flag(n.generated), flag(n.latch));
 			let deps = list(&n.deps, |d| {
 				let (s, t) = (brace(&d.shim), brace(&d.ty));
 				quote!(#s #t)

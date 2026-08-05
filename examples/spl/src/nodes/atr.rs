@@ -24,6 +24,8 @@ impl Emit for Atr {
 	/// A Wilder recurrence reaches to the start of the run.
 	type Deps = (Folding<trading_data::Bars<{ TF_1MIN }>, { Horizon::Unbounded }>,);
 
+	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
+
 	fn emit(&mut self, (bars,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for b in bars {
 			out.push(self.atr.update(b.high, b.low, b.close));

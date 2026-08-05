@@ -1657,6 +1657,9 @@ dependencies = [
 [[package]]
 name = "trading_data_expr"
 version = "0.3.0"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "trading_data_macros"

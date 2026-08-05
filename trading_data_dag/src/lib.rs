@@ -55,23 +55,34 @@
 //! every impl is uniformly `fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>`,
 //! and [`EmitOuts`] so every [`Emit`] is `fn emit(&mut self, deps: EmitOuts<'_, Self>, out: ..)`.
 //!
+//! A node does not carry its own compute method: it names the [`Level`] kernel that computes it, and
+//! `#[node]` writes the [`Node`] impl from whichever body trait was implemented. [`Symbolic`] (an
+//! [`Expr`] body) earns [`Pure`]; [`Blind`] — the stated hatch — earns [`Opaque`].
+//!
 //! ```
-//! use trading_data_dag::{Cell, Cons, DepOuts, Nil, Node, step};
+//! use trading_data_dag::{Blind, Cell, Cons, DepOuts, Nil, Node, Opaque, step};
 //!
 //! struct Price;
 //! impl Cell for Price {
 //! 	type Out<'t> = f64;
 //! }
 //!
+//! #[derive(Clone)]
 //! struct Double;
 //! impl Cell for Double {
 //! 	type Out<'t> = f64;
 //! }
-//! impl Node for Double {
+//! impl Blind for Double {
 //! 	type Deps = (Price,);
+//! 	const WHY: &'static str = "the doc example predates the algebra it would be written in";
 //! 	fn advance<'t>(&'t mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
 //! 		p * 2.0
 //! 	}
+//! }
+//! // `#[node]` writes this; spelled out here because the doctest has no graph to reach it from.
+//! impl Node for Double {
+//! 	type Deps = <Self as Blind>::Deps;
+//! 	type Kernel = Opaque;
 //! }
 //!
 //! let mut double = Double;
@@ -876,12 +887,18 @@ impl<T: Latent> Dark<Yes> for T {
 	}
 }
 
+/// A cell the sweep advances. It carries no compute method of its own: it names the [`Level`] kernel
+/// that computes it, and every reading the engine offers — the value, the formula, the Jacobian, the
+/// value-annotated trace — comes off that one declaration (`r[kernels.closed]`).
+///
+/// Nobody writes this impl by hand; `#[node]` writes it from the body trait ([`Symbolic`] ⇒ [`Pure`],
+/// [`Blind`] ⇒ [`Opaque`]), which is also where `Deps` and `PLOTS` are stated.
 pub trait Node: Cell {
 	type Deps: DepSet;
+	type Kernel: Level<Self>;
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep, and
 	/// the viz can still be asked for it.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
-	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
 }
 
 /// A node whose out is the run of items it fills each tick. The engine owns the run, so the struct
@@ -898,6 +915,10 @@ pub trait Emit: Series
 where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
 	type Deps: DepSet;
+	/// Why this node has no formula — every run-shaped node is opaque today, and the string is what
+	/// keeps that a stated position rather than an omission (`r[kernels.opaque.stated]`). It is the
+	/// [`Fidelity::Opaque`] `graph!` counts an emit node into `FIDELITY` under.
+	const WHY: &'static str;
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep, and
 	/// the viz can still be asked for it.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
@@ -1002,8 +1023,8 @@ where
 
 /// A scalar-out node whose per-tick value is a pure [`Expr`] of its (scalar / last-element) deps —
 /// each dep read at its [`Flat`] scalar, a batch dep as its last element, matching the observer's
-/// end-of-batch view. [`Symbolic`] earns [`Node`] for free via the blanket below: its `advance` is
-/// `body().eval(env)`, so it *cannot* compute any other way — the algebra is load-bearing.
+/// end-of-batch view. Earns the [`Pure`] kernel, which is the whole of how it computes: there is no
+/// second way to state the value, so the algebra is load-bearing.
 ///
 /// `Out = f64` has no `None` channel: reading historic (warmup) deps emits `NaN` yet still reports
 /// `fired = true`, so don't route a warmup-sensitive consumer off a Symbolic node unguarded.
@@ -1011,61 +1032,216 @@ pub trait Symbolic: Cell
 where
 	for<'t> Self: Cell<Out<'t> = f64>, {
 	type Deps: DepSet;
+	/// `&[]` draws nothing at all — the node stays in the topology and resolvable as a dep.
+	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	fn body(&self, vars: Vars) -> impl Expr;
 }
+
+/// The stated hatch: a node that computes in Rust and therefore has no algebra reading. `WHY` is not
+/// documentation, it is the cost of using it (`r[kernels.opaque.stated]`) — `graph!` counts these,
+/// and a graph that pins the count only lets it fall.
+///
+/// [`Clone`] because the finite-difference witness is what stands in for the missing derivative: it
+/// re-advances a clone restored from the pre-advance state, once per dep slot, which is exactly the
+/// price a [`Symbolic`] body does not pay.
+pub trait Blind: Cell + Clone {
+	type Deps: DepSet;
+	/// Why this node has no formula. Written for whoever asks why it is not `Symbolic`.
+	const WHY: &'static str;
+	/// `&[]` draws nothing at all — the node stays in the topology and resolvable as a dep.
+	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
+	fn advance<'t>(&'t mut self, deps: BlindOuts<'t, Self>) -> Self::Out<'t>;
+}
+
+/// Uniform binder-correct dep-tuple type for [`Blind::advance`] impls — [`DepOuts`] spelled through
+/// the body trait, and the same type, so an impl may write either.
+pub type BlindOuts<'t, B> = <<B as Blind>::Deps as DepSet>::Outs<'t>;
 
 /// scalar deps ⇒ one env slot each; the `impl_arity` tuple ceiling caps arity, so a fixed stack
 /// array holds the whole env — zero heap on the compute path.
 const MAX_VARS: usize = 8;
 
-impl<S> Node for S
+mod sealed {
+	pub trait Kernel {}
+}
+
+/// How much of what a node's body read its Jacobian covers (`r[kernels.fidelity.stated]`). Three
+/// answers rather than two, because the middle one is the case nothing else can show: a derivative
+/// may be algebraic and still be narrower than the reading it was taken from, and a partial
+/// derivative of a body that reads a window looks exactly like an exact one of a body that reads a
+/// point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Fidelity {
+	/// The Jacobian covers everything the body read.
+	Exact,
+	/// Algebraic, but narrower than the body's reach — the string says what it omits.
+	Partial(&'static str),
+	/// No algebra at all — the string says why (`r[kernels.opaque.stated]`).
+	Opaque(&'static str),
+}
+
+/// How a node computes, and therefore what can be read off it. Sealed: the kernel set is the
+/// framework's, so a node's only choice is which one it names and there is no way to supply a body
+/// the engine cannot also read (`r[kernels.closed]`).
+///
+/// Each kernel demands its own body trait, so naming one without the body does not compile. The
+/// split into [`pre`](Level::pre) and [`jac`](Level::jac) is what lets the two readings cost their
+/// own price: [`Pure`] captures one `grad` pass and nothing else, where [`Opaque`] captures the
+/// pre-advance clone its finite differences re-advance.
+pub trait Level<N: Node + ?Sized>: sealed::Kernel {
+	/// How much of what the body read [`jac`](Level::jac) covers.
+	const FIDELITY: Fidelity;
+
+	fn advance<'t>(n: &'t mut N, deps: DepOuts<'t, N>) -> N::Out<'t>;
+
+	/// Whatever the derivative reading needs off the node *before* `advance` consumes it for the
+	/// tick. Below [`Want::Jac`] every kernel captures nothing, which is what makes an unobserved
+	/// sweep the bare chain.
+	type Pre;
+	fn pre<'d>(n: &N, want: Want, deps: DepOuts<'d, N>) -> Self::Pre;
+
+	/// The equation, where there is one — [`None`] under [`Want::Jac`] means this kernel has no
+	/// algebra, not that the node did not fire.
+	fn formula(pre: &Self::Pre) -> Option<&Ast>;
+
+	/// Fills the Jacobian and reports whether it is exact. Called once, for a node that fired at
+	/// [`Want::Jac`]. What it fills is the *one-step* reading — each dep's last element perturbed,
+	/// prior state held fixed — however the kernel arrived there; the derivative over a dep's whole
+	/// reach is a different quantity and is not this one (`r[kernels.jac.two-quantities]`).
+	///
+	/// The observation bounds sit here rather than on the trait, so a bare [`step`] — which never asks
+	/// for a derivative — carries none of them.
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, 'd, N>) -> bool
+	where
+		<N as Node>::Deps: DepFlat,
+		DepOuts<'d, N>: Copy,
+		for<'x> N::Out<'x>: Flat;
+}
+
+/// What a Jacobian is read against: this tick's pulled deps, their un-bumped flattenings, and the
+/// row-major `out_len × dep_len` buffer to fill.
+pub struct Jac<'a, 'd, N: Node + ?Sized> {
+	pub deps: DepOuts<'d, N>,
+	pub dep_buf: &'a [f64],
+	pub out_buf: &'a [f64],
+	pub out: &'a mut [f64],
+	/// The sweep's re-advance scratch, for a kernel that has to bump its way to a column. Empty of
+	/// meaning between calls — it is here so a finite difference costs no allocation per node.
+	pub bumped: &'a mut alloc::vec::Vec<f64>,
+}
+
+/// The kernel of a [`Symbolic`] node: the value is `body().eval`, the Jacobian is `body().grad` —
+/// exact, and one pass rather than a clone and a re-advance per dep slot.
+pub struct Pure;
+impl sealed::Kernel for Pure {}
+
+/// The kernel of a [`Blind`] node: the value is the node's own `advance`, and the Jacobian is the
+/// finite-difference witness taken off a clone.
+pub struct Opaque;
+impl sealed::Kernel for Opaque {}
+
+/// A [`Symbolic`] node's pre-advance capture: the equation, and its gradient at this tick's deps.
+/// Both are read *before* `advance`, for the same reason the [`Opaque`] clone is — the derivative
+/// belongs to the state the value was computed from.
+pub struct Algebra {
+	formula: Ast,
+	grad: [f64; MAX_VARS],
+}
+
+/// The env a [`Symbolic`] body is read over: one scalar slot per dep, in `Deps` order.
+fn env_of<S>(deps: &<<S as Symbolic>::Deps as DepSet>::Outs<'_>) -> [f64; MAX_VARS]
 where
 	S: Symbolic,
 	for<'t> S: Cell<Out<'t> = f64>,
-	<S as Symbolic>::Deps: DepFlat,
-{
-	type Deps = <S as Symbolic>::Deps;
-
-	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t> {
-		const {
-			let deps = <<S as Symbolic>::Deps as DepSet>::NAMES.len();
-			assert!(
-				<<S as Symbolic>::Deps as DepFlat>::LEN == deps,
-				"Symbolic deps must be scalar (one env slot each): a vector-valued dep desyncs Var<I> from dep I"
-			);
-			assert!(deps <= MAX_VARS, "Symbolic arity exceeds the env buffer (MAX_VARS)");
-		}
-		let n = <<S as Symbolic>::Deps as DepFlat>::LEN;
-		let mut env = [0.0f64; MAX_VARS];
-		<<S as Symbolic>::Deps as DepFlat>::flat(&deps, &mut env[..n]);
-		self.body(Vars).eval(&env[..n])
+	<S as Symbolic>::Deps: DepFlat, {
+	const {
+		let n = <<S as Symbolic>::Deps as DepSet>::NAMES.len();
+		assert!(
+			<<S as Symbolic>::Deps as DepFlat>::LEN == n,
+			"Symbolic deps must be scalar (one env slot each): a vector-valued dep desyncs Var<I> from dep I"
+		);
+		assert!(n <= MAX_VARS, "Symbolic arity exceeds the env buffer (MAX_VARS)");
 	}
+	let mut env = [0.0f64; MAX_VARS];
+	<<S as Symbolic>::Deps as DepFlat>::flat(deps, &mut env[..<<S as Symbolic>::Deps as DepFlat>::LEN]);
+	env
 }
 
-/// The exactness hook [`step_exact`] consumes: exact partials (replacing the FD guess) plus the
-/// equation as an [`Ast`] for documentation. Blanket-impl'd for every [`Symbolic`] node from its
-/// [`Expr`] body; hand-impl'able for a black-box stateful node with analytic partials + a formula.
-pub trait Diff: Node {
-	/// Exact partials wrt deps, same row-major `out_len × dep_len` layout as [`Fire::jac`].
-	fn exact_jac(&self, deps: DepOuts<'_, Self>, out: &mut [f64]);
-	fn formula(&self) -> Ast;
-}
-
-impl<S> Diff for S
+impl<N> Level<N> for Pure
 where
-	S: Symbolic + Node<Deps = <S as Symbolic>::Deps>,
-	for<'t> S: Cell<Out<'t> = f64>,
-	<S as Symbolic>::Deps: DepFlat,
+	N: Symbolic + Node<Deps = <N as Symbolic>::Deps>,
+	for<'t> N: Cell<Out<'t> = f64>,
+	<N as Symbolic>::Deps: DepFlat,
 {
-	fn exact_jac(&self, deps: DepOuts<'_, Self>, out: &mut [f64]) {
-		let n = <<S as Symbolic>::Deps as DepFlat>::LEN;
-		let mut env = [0.0f64; MAX_VARS];
-		<<S as Symbolic>::Deps as DepFlat>::flat(&deps, &mut env[..n]);
-		self.body(Vars).grad(&env[..n], 1.0, out);
+	type Pre = Option<Algebra>;
+
+	/// `env_of` const-asserts one scalar env slot per dep, so a `Symbolic` body's reach is a point
+	/// whatever the dep wrapper retains — and a gradient at a point covers all of it.
+	const FIDELITY: Fidelity = Fidelity::Exact;
+
+	fn advance<'t>(n: &'t mut N, deps: DepOuts<'t, N>) -> N::Out<'t> {
+		let env = env_of::<N>(&deps);
+		n.body(Vars).eval(&env[..<<N as Symbolic>::Deps as DepFlat>::LEN])
 	}
 
-	fn formula(&self) -> Ast {
-		self.body(Vars).lower()
+	fn pre<'d>(n: &N, want: Want, deps: DepOuts<'d, N>) -> Self::Pre {
+		if want < Want::Jac {
+			return None;
+		}
+		let env = env_of::<N>(&deps);
+		// zeroed, not NaN-filled: `grad` accumulates (`+=`), and a var the body never reads has a
+		// partial of 0 rather than no partial.
+		let mut grad = [0.0f64; MAX_VARS];
+		let body = n.body(Vars);
+		body.grad(&env[..<<N as Symbolic>::Deps as DepFlat>::LEN], 1.0, &mut grad);
+		Some(Algebra { formula: body.lower(), grad })
+	}
+
+	fn formula(pre: &Self::Pre) -> Option<&Ast> {
+		pre.as_ref().map(|a| &a.formula)
+	}
+
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, 'd, N>) -> bool
+	where
+		<N as Node>::Deps: DepFlat,
+		DepOuts<'d, N>: Copy,
+		for<'x> N::Out<'x>: Flat, {
+		let Some(alg) = pre else { return false };
+		// scalar out ⇒ the whole Jacobian is the one gradient row.
+		j.out.copy_from_slice(&alg.grad[..j.out.len()]);
+		true
+	}
+}
+
+impl<N> Level<N> for Opaque
+where
+	N: Blind + Node<Deps = <N as Blind>::Deps>,
+{
+	type Pre = Option<N>;
+
+	const FIDELITY: Fidelity = Fidelity::Opaque(<N as Blind>::WHY);
+
+	fn advance<'t>(n: &'t mut N, deps: DepOuts<'t, N>) -> N::Out<'t> {
+		<N as Blind>::advance(n, deps)
+	}
+
+	fn pre<'d>(n: &N, want: Want, _: DepOuts<'d, N>) -> Self::Pre {
+		(want >= Want::Jac).then(|| n.clone())
+	}
+
+	fn formula(_: &Self::Pre) -> Option<&Ast> {
+		None
+	}
+
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, 'd, N>) -> bool
+	where
+		<N as Node>::Deps: DepFlat,
+		DepOuts<'d, N>: Copy,
+		for<'x> N::Out<'x>: Flat, {
+		if let Some(pre) = pre {
+			fd_jac::<N>(pre, j);
+		}
+		false
 	}
 }
 
@@ -1178,16 +1354,26 @@ where
 	const NAME: &'static str = Self::TAG.as_str();
 }
 
-impl<N: Episodic> Node for Armed<N>
+impl<N: Episodic> Blind for Armed<N>
 where
 	for<'t> N::Out<'t>: Episode,
 {
 	type Deps = (Folding<N::Trigger, { Horizon::Unbounded }>,);
 
+	const WHY: &'static str = "a latch is a bit that stays set: `arms` is a predicate over an episode, not a value with a slope";
+
 	fn advance<'t>(&'t mut self, (trigger,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.0 |= N::arms(trigger);
 		self.0
 	}
+}
+
+impl<N: Episodic> Node for Armed<N>
+where
+	for<'t> N::Out<'t>: Episode,
+{
+	type Deps = <Self as Blind>::Deps;
+	type Kernel = Opaque;
 }
 
 impl<N: Episodic> Gate for Armed<N> where for<'t> N::Out<'t>: Episode {}
@@ -1473,7 +1659,17 @@ impl<C: Series, const H: Horizon> Node for Buffer<C, H>
 where
 	C::Item: Stamped,
 {
+	type Deps = <Self as Blind>::Deps;
+	type Kernel = Opaque;
+}
+
+impl<C: Series, const H: Horizon> Blind for Buffer<C, H>
+where
+	C::Item: Stamped,
+{
 	type Deps = (Folding<C, H>,);
+
+	const WHY: &'static str = "a retention window is the engine's bookkeeping over a run, not a function of its elements";
 
 	fn advance<'t>(&'t mut self, (fresh,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		const {
@@ -1639,7 +1835,17 @@ impl<C: Series> Node for Latest<C>
 where
 	C::Item: Present,
 {
+	type Deps = <Self as Blind>::Deps;
+	type Kernel = Opaque;
+}
+
+impl<C: Series> Blind for Latest<C>
+where
+	C::Item: Present,
+{
 	type Deps = (Folding<C, { Horizon::Unbounded }>,);
+
+	const WHY: &'static str = "holding the last value across a silence is a carry, and a carry has no slope of its own";
 
 	fn advance<'t>(&'t mut self, (fresh,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		if let Some(v) = fresh.iter().rev().find_map(|x| x.present()) {
@@ -1987,7 +2193,7 @@ where
 	N::Out<'t>: Dark<<N::Deps as DepSet>::Lead>,
 	F: 't, {
 	let out = match <N::Deps as Pull<'t, F, I>>::open(&frame) {
-		true => node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame)),
+		true => <N::Kernel as Level<N>>::advance(node, <N::Deps as Pull<'t, F, I>>::pull(&frame)),
 		false => Dark::dark(),
 	};
 	Cons { out, tail: frame }
@@ -2035,21 +2241,29 @@ pub struct Fire<'a> {
 	pub dep_dims: &'a [&'static [usize]],
 	/// Row-major `out_len × sum(dep lens)`, deps concatenated in `Deps` order (each batch dep as
 	/// its last element). NaN = no signal. `None` when the node didn't fire.
+	///
+	/// The *one-step* reading: each dep's last element perturbed, prior state held fixed.
+	/// Differentiating the body and finite-differencing it both land on that same number, which is
+	/// why one array carries both and [`exact`](Self::exact) only says how it was reached. What
+	/// neither says is anything about the rest of a dep's reach — a node reading `.trailing()` over
+	/// 181 bars has one column here describing bar 180 and silence about bars 0–179
+	/// (`r[kernels.jac.two-quantities]`).
 	pub jac: Option<&'a [f64]>,
-	/// Exact partials, same layout as [`jac`](Self::jac) — [`Diff`] nodes only; agrees with `jac`
-	/// within FD tolerance where both are present. `None` for FD-only nodes.
-	pub exact_jac: Option<&'a [f64]>,
-	/// The node's equation rendered as a formula (LaTeX/infix), [`Diff`] nodes only.
+	/// Whether [`jac`](Self::jac) was differentiated or guessed — the difference between labelling a
+	/// viz `∂ (exact)` and `∂ (±h)`. Not a claim that the column covers the dep's reach: that is
+	/// [`Fidelity`], and it belongs to the kernel rather than to one tick's reading.
+	pub exact: bool,
+	/// The node's equation rendered as a formula (LaTeX/infix), [`Pure`] nodes only.
 	pub formula: Option<&'a dyn core::fmt::Display>,
-	/// Simplified `∂out/∂dep` formulas, [`Diff`] nodes only.
+	/// Simplified `∂out/∂dep` formulas, [`Pure`] nodes only.
 	pub deriv: Option<&'a dyn core::fmt::Display>,
-	/// Value-annotated intermediate-value tree ([`Ast::trace`]) over this tick's deps, [`Diff`]
+	/// Value-annotated intermediate-value tree ([`Ast::trace`]) over this tick's deps, [`Pure`]
 	/// nodes only.
 	pub trace: Option<&'a dyn core::fmt::Display>,
 }
 
 impl<'a> Fire<'a> {
-	/// Everything a stepped node reads off its out and its [`Flats`]. The four [`Diff`] fields are
+	/// Everything a stepped node reads off its out and its [`Flats`]. The three algebra fields are
 	/// the exception rather than the shape, spliced in with `..` at the one site that states them.
 	/// `flat: None` is the unfired reading — no flattening happened, so there is none to report.
 	#[inline]
@@ -2063,7 +2277,7 @@ impl<'a> Fire<'a> {
 			vals: flat.and_then(|f| f.fired.then_some(f.vals)),
 			dep_dims,
 			jac: flat.and_then(|f| f.jac),
-			exact_jac: None,
+			exact: flat.is_some_and(|f| f.exact),
 			formula: None,
 			deriv: None,
 			trace: None,
@@ -2083,23 +2297,24 @@ pub struct Sweep {
 	bumped: alloc::vec::Vec<f64>,
 }
 
-/// The un-bumped flattenings of one node's out and deps, plus the finite difference taken off them
-/// — the observed leg every stepped node shares, whatever kind of node it is. A view into the
-/// [`Sweep`] rather than an owner: the next node overwrites all of it.
+/// The un-bumped flattenings of one node's out and deps, plus the Jacobian read off them — the
+/// observed leg every stepped node shares, whatever kind of node it is. A view into the [`Sweep`]
+/// rather than an owner: the next node overwrites all of it.
 #[derive(Clone, Copy)]
 struct Flats<'s> {
 	fired: bool,
 	vals: &'s [f64],
 	deps: &'s [f64],
 	jac: Option<&'s [f64]>,
+	exact: bool,
 }
 
 impl<'s> Flats<'s> {
-	/// `fd` is the node's Jacobian over `(dep_buf, out_buf)`, written into the last two buffers;
+	/// `fill` writes the node's Jacobian over `(dep_buf, out_buf)` and reports whether it is exact;
 	/// `None` is an observer that reads no further than [`Want::Vals`], and it is asked for only
 	/// where there is an out to differentiate.
 	#[inline]
-	fn of<'d, O: Flat, D: DepFlat>(sweep: &'s mut Sweep, out: &O, deps: &D::Outs<'d>, fd: Option<impl FnOnce(&[f64], &[f64], &mut alloc::vec::Vec<f64>, &mut alloc::vec::Vec<f64>)>) -> Self {
+	fn of<'d, O: Flat, D: DepFlat>(sweep: &'s mut Sweep, out: &O, deps: &D::Outs<'d>, fill: Option<impl FnOnce(&[f64], &[f64], &mut [f64], &mut alloc::vec::Vec<f64>) -> bool>) -> Self {
 		// r[impl outs.flat.nonempty]
 		const {
 			assert!(
@@ -2114,20 +2329,31 @@ impl<'s> Flats<'s> {
 		dep_buf.clear();
 		dep_buf.resize(D::LEN, f64::NAN);
 		D::flat(deps, dep_buf);
-		let jac = match fd.filter(|_| fired) {
-			Some(fd) => {
-				fd(dep_buf, vals, jac, bumped);
-				Some(&**jac)
+		let (jac, exact) = match fill.filter(|_| fired) {
+			// NaN, not zero: a column the kernel leaves alone is one it has no signal for, and the
+			// absorbing element is what says so (§1.6).
+			Some(fill) => {
+				jac.clear();
+				jac.resize(O::LEN * D::LEN, f64::NAN);
+				let exact = fill(dep_buf, vals, jac, bumped);
+				(Some(&**jac), exact)
 			}
-			None => None,
+			None => (None, false),
 		};
-		Flats { fired, vals, deps: dep_buf, jac }
+		Flats {
+			fired,
+			vals,
+			deps: dep_buf,
+			jac,
+			exact,
+		}
 	}
 }
 
-/// How much of a fire the observer reads. Everything above [`Want::Vals`] is second order — the
-/// Jacobian is one `clone_from` plus one re-`advance` per scalar dep slot, and a [`Diff`] node's
-/// exact partials need the pre-advance node too — so it is priced per tick, never per build.
+/// How much of a fire the observer reads. Everything above [`Want::Vals`] is second order — an
+/// [`Opaque`] node's Jacobian is one `clone_from` plus one re-`advance` per scalar dep slot, and a
+/// [`Pure`] one's is a `grad` pass over the pre-advance body — so it is priced per tick, never per
+/// build.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Want {
 	Nothing,
@@ -2139,16 +2365,21 @@ pub enum Want {
 /// Step order IS topo order, so the observed sequence doubles as the graph's static topology; dep
 /// names never seen as stepped nodes are roots — apps seed root activations via [`observe_root`].
 pub trait Observer {
-	/// Asked once per step. No default: an observer that has not said what it reads is one nobody
-	/// priced, and the answer costs the graph a re-advance per dep slot.
-	fn want(&self) -> Want;
+	/// Asked once per step, of the node about to run. No default: an observer that has not said what
+	/// it reads is one nobody priced, and the answer can cost that node a re-advance per dep slot.
+	///
+	/// Per-node, so only the node actually being inspected pays. Sound because a Jacobian is
+	/// node-local — nothing downstream can see whether an upstream node was observed
+	/// (`r[observe.noninvasive]`) — which is what lets a consumer schedule the expensive reading
+	/// instead of amortizing it.
+	fn want(&self, node: &'static str) -> Want;
 	/// `gates` is [`DepSet::GATES`]: positional with `deps`, marking the ones that are control edges
 	/// rather than data. All-`false` for ungated nodes, empty for roots.
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>);
 }
 
 impl Observer for () {
-	fn want(&self) -> Want {
+	fn want(&self, _: &'static str) -> Want {
 		Want::Nothing
 	}
 
@@ -2157,8 +2388,8 @@ impl Observer for () {
 
 /// So a long-lived observer can be composed into a per-tick pair without being moved into it.
 impl<O: Observer + ?Sized> Observer for &mut O {
-	fn want(&self) -> Want {
-		(**self).want()
+	fn want(&self, node: &'static str) -> Want {
+		(**self).want(node)
 	}
 
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
@@ -2168,8 +2399,8 @@ impl<O: Observer + ?Sized> Observer for &mut O {
 
 /// Two interpretations of the same sweep — e.g. an app's own assertions next to a viz recorder.
 impl<A: Observer, B: Observer> Observer for (A, B) {
-	fn want(&self) -> Want {
-		self.0.want().max(self.1.want())
+	fn want(&self, node: &'static str) -> Want {
+		self.0.want(node).max(self.1.want(node))
 	}
 
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>) {
@@ -2185,26 +2416,25 @@ impl<A: Observer, B: Observer> Observer for (A, B) {
 /// `advance` from pinning them to the caller's tick lifetime.
 /// `clone` and `scratch` are both the caller's, each overwritten wholly per column, so allocating
 /// either per column would be dead work.
-fn fd_col<'d, N>(pre: &N, clone: &mut N, deps: DepOuts<'d, N>, scratch: &mut <N::Deps as DepFlat>::Scratch, slot: usize, h: f64, bumped: &mut [f64]) -> (bool, f64)
+fn fd_col<'d, N>(pre: &N, clone: &mut N, deps: BlindOuts<'d, N>, scratch: &mut <<N as Blind>::Deps as DepFlat>::Scratch, slot: usize, h: f64, bumped: &mut [f64]) -> (bool, f64)
 where
-	N: Node + Clone,
-	N::Deps: DepFlat,
-	DepOuts<'d, N>: Copy,
+	N: Blind,
+	<N as Blind>::Deps: DepFlat,
+	BlindOuts<'d, N>: Copy,
 	for<'x> N::Out<'x>: Flat, {
-	let dh = <N::Deps as DepFlat>::stage(deps, scratch, slot, h);
+	let dh = <<N as Blind>::Deps as DepFlat>::stage(deps, scratch, slot, h);
 	clone.clone_from(pre);
-	(clone.advance(<N::Deps as DepFlat>::view(scratch)).flat(bumped), dh)
+	(clone.advance(<<N as Blind>::Deps as DepFlat>::view(scratch)).flat(bumped), dh)
 }
 
 /// The full finite-difference Jacobian, one column per dep element: `col` re-steps the node with
 /// that element bumped by about `h`, writing the bumped out into `bumped` and returning whether it
-/// fired and the perturbation the dep actually applied. NaN columns where a dep is unfired or the
-/// bump crossed a firing branch. `out_buf`/`dep_buf` are the un-bumped flattenings; `jac` and
-/// `bumped` are the caller's, overwritten wholly.
-fn fd_cols(dep_buf: &[f64], out_buf: &[f64], jac: &mut alloc::vec::Vec<f64>, bumped: &mut alloc::vec::Vec<f64>, mut col: impl FnMut(usize, f64, &mut [f64]) -> (bool, f64)) {
+/// fired and the perturbation the dep actually applied. Columns the caller's NaN fill is left
+/// standing in, where a dep is unfired or the bump crossed a firing branch. `out_buf`/`dep_buf` are
+/// the un-bumped flattenings; `bumped` is the caller's scratch, overwritten wholly.
+fn fd_cols(dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64], bumped: &mut alloc::vec::Vec<f64>, mut col: impl FnMut(usize, f64, &mut [f64]) -> (bool, f64)) {
 	let (out_len, dep_len) = (out_buf.len(), dep_buf.len());
-	jac.clear();
-	jac.resize(out_len * dep_len, f64::NAN);
+	debug_assert_eq!(jac.len(), out_len * dep_len, "the Jacobian buffer is row-major out_len × dep_len");
 	bumped.clear();
 	bumped.resize(out_len, f64::NAN);
 	for slot in 0..dep_len {
@@ -2227,27 +2457,32 @@ fn fd_cols(dep_buf: &[f64], out_buf: &[f64], jac: &mut alloc::vec::Vec<f64>, bum
 	}
 }
 
-/// [`fd_cols`] over a level node's re-[`advance`](Node::advance), via [`fd_col`].
-fn fd_jac<'d, N>(pre: &N, deps: DepOuts<'d, N>, dep_buf: &[f64], out_buf: &[f64], jac: &mut alloc::vec::Vec<f64>, bumped: &mut alloc::vec::Vec<f64>)
+/// [`fd_cols`] over a [`Blind`] node's re-[`advance`](Blind::advance), via [`fd_col`] — the whole of
+/// what [`Opaque`] has instead of a derivative.
+fn fd_jac<'d, N>(pre: &N, j: Jac<'_, 'd, N>)
 where
-	N: Node + Clone,
-	N::Deps: DepFlat,
-	DepOuts<'d, N>: Copy,
+	N: Blind + Node<Deps = <N as Blind>::Deps>,
+	<N as Blind>::Deps: DepFlat,
+	BlindOuts<'d, N>: Copy,
 	for<'x> N::Out<'x>: Flat, {
-	let mut scratch = <N::Deps as DepFlat>::Scratch::default();
+	let mut scratch = <<N as Blind>::Deps as DepFlat>::Scratch::default();
 	let mut clone = pre.clone();
-	fd_cols(dep_buf, out_buf, jac, bumped, |slot, h, bumped| fd_col::<N>(pre, &mut clone, deps, &mut scratch, slot, h, bumped));
+	let deps = j.deps;
+	fd_cols(j.dep_buf, j.out_buf, j.out, j.bumped, |slot, h, bumped| {
+		fd_col::<N>(pre, &mut clone, deps, &mut scratch, slot, h, bumped)
+	})
 }
 
 /// [`step`] + [`Observer::on`] before the push. The `()` observer erases to exactly `step`.
 ///
-/// Under an active observer, each fired node's Jacobian is finite-differenced: clone the
-/// pre-advance node, [`Nudge`] the *last* element of one dep (batch deps copied into scratch),
-/// re-advance the clone at a shorter lifetime, diff the last out elements.
+/// Under an active observer, each fired node's Jacobian comes from its [`Level`] kernel: a [`Pure`]
+/// node differentiates its body, a [`Blind`] one is finite-differenced — clone the pre-advance node,
+/// [`Nudge`] the *last* element of one dep (batch deps copied into scratch), re-advance the clone at
+/// a shorter lifetime, diff the last out elements.
 #[cfg_attr(feature = "profile", inline(never))]
 pub fn step_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, N, F>
 where
-	N: Node + Clone,
+	N: Node,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
@@ -2265,7 +2500,7 @@ where
 #[cfg_attr(feature = "profile", inline(never))]
 pub fn step_when_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, demanded: bool, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, N, F>
 where
-	N: Node + Clone,
+	N: Node,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
@@ -2281,7 +2516,7 @@ where
 #[cfg_attr(feature = "profile", inline(always))]
 fn step_seen<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, run: bool, unrun: impl FnOnce() -> N::Out<'t>, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, N, F>
 where
-	N: Node + Clone,
+	N: Node,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
@@ -2294,10 +2529,10 @@ where
 		)
 	}
 
-	let want = obs.want();
+	let want = obs.want(N::NAME);
 
-	// gate closed or nobody reading: no advance, no dep flatten, no FD — an unfired `Fire` is the
-	// honest view.
+	// gate closed or nobody reading: no advance, no dep flatten, no derivative — an unfired `Fire` is
+	// the honest view.
 	if !run {
 		let out: N::Out<'t> = unrun();
 		if want != Want::Nothing {
@@ -2308,22 +2543,49 @@ where
 	}
 
 	if want == Want::Nothing {
-		let out = node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame));
+		let out = <N::Kernel as Level<N>>::advance(node, <N::Deps as Pull<'t, F, I>>::pull(&frame));
 		return Cons { out, tail: frame };
 	}
 
-	let pre = (want == Want::Jac).then(|| node.clone());
 	let deps = <N::Deps as Pull<'t, F, I>>::pull(&frame);
-	let out = node.advance(deps);
+	// before the advance, which lends the node for the rest of the tick: the derivative reading is of
+	// the state the value was computed from, and `r[observe.noninvasive]` is what makes taking it
+	// invisible to the run.
+	let pre = <N::Kernel as Level<N>>::pre(node, want, deps);
+	let out = <N::Kernel as Level<N>>::advance(node, deps);
 	let flat = Flats::of::<_, N::Deps>(
 		sweep,
 		&out,
 		&deps,
-		pre.as_ref()
-			.map(|pre| move |dep_buf: &[f64], out_buf: &[f64], jac: &mut alloc::vec::Vec<f64>, bumped: &mut alloc::vec::Vec<f64>| fd_jac::<N>(pre, deps, dep_buf, out_buf, jac, bumped)),
+		(want == Want::Jac).then_some(|dep_buf: &[f64], out_buf: &[f64], out: &mut [f64], bumped: &mut alloc::vec::Vec<f64>| {
+			<N::Kernel as Level<N>>::jac(
+				&pre,
+				Jac {
+					deps,
+					dep_buf,
+					out_buf,
+					out,
+					bumped,
+				},
+			)
+		}),
 	);
 
-	let fire = Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Deps as DepFlat>::DIMS, Some(flat));
+	// the algebra reading, where the kernel has one: `formula` is `None` for every `Opaque` node and
+	// for every node below `Want::Jac`, so both fall out of the same `map`.
+	let formula = <N::Kernel as Level<N>>::formula(&pre);
+	let deriv = formula.map(|f| Derivs {
+		names: <N::Deps as DepSet>::NAMES,
+		parts: (0..<N::Deps as DepFlat>::LEN).map(|i| f.diff(i).simplify()).collect(),
+	});
+	let trace = formula.map(|f| f.trace(flat.deps));
+
+	let fire = Fire {
+		formula: formula.map(|f| f as &dyn core::fmt::Display),
+		deriv: deriv.as_ref().map(|d| d as &dyn core::fmt::Display),
+		trace: trace.as_ref().map(|t| t as &dyn core::fmt::Display),
+		..Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Deps as DepFlat>::DIMS, Some(flat))
+	};
 	obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
 }
@@ -2333,7 +2595,7 @@ where
 /// leg cannot pay. The re-`emit` needs no [`fd_col`]-style lifetime isolation (`&mut self` never
 /// lends the node), so its column body is inline; everything a column overwrites wholly — the deps'
 /// scratch, the clone, its output run — is hoisted across the loop.
-fn fd_jac_emit<'d, E>(pre: &E, deps: EmitOuts<'d, E>, dep_buf: &[f64], out_buf: &[f64], jac: &mut alloc::vec::Vec<f64>, bumped: &mut alloc::vec::Vec<f64>)
+fn fd_jac_emit<'d, E>(pre: &E, deps: EmitOuts<'d, E>, dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64], bumped: &mut alloc::vec::Vec<f64>)
 where
 	E: Emit + Clone,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
@@ -2371,7 +2633,7 @@ where
 		)
 	}
 	e.buf.clear();
-	let want = obs.want();
+	let want = obs.want(E::NAME);
 
 	// gate closed, nobody reading, or the period still running: no emit, no dep flatten, no FD — the
 	// empty run is the honest view.
@@ -2397,8 +2659,12 @@ where
 		sweep,
 		&out,
 		&deps,
-		pre.as_ref()
-			.map(|pre| move |dep_buf: &[f64], out_buf: &[f64], jac: &mut alloc::vec::Vec<f64>, bumped: &mut alloc::vec::Vec<f64>| fd_jac_emit::<E>(pre, deps, dep_buf, out_buf, jac, bumped)),
+		pre.as_ref().map(|pre| {
+			move |dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64], bumped: &mut alloc::vec::Vec<f64>| {
+				fd_jac_emit::<E>(pre, deps, dep_buf, out_buf, jac, bumped);
+				false
+			}
+		}),
 	);
 
 	let fire = Fire::of(&out, <E as Emit>::PLOTS, <E as Cell>::CLOCK, <E::Deps as DepFlat>::DIMS, Some(flat));
@@ -2406,94 +2672,7 @@ where
 	Cons { out, tail: frame }
 }
 
-/// [`step_obs`]'s sibling for a [`Diff`] node: the same advance + FD momentary Jacobian, plus the
-/// *exact* partials, the equation formula, and its simplified per-dep derivatives — the graph's
-/// "differentiate + document themselves" reading. The `graph!` `diff { }` group routes fields here.
-#[cfg_attr(feature = "profile", inline(never))]
-pub fn step_exact<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, N, F>
-where
-	N: Node + Diff + Clone,
-	N::Deps: Pull<'t, F, I> + DepFlat,
-	DepOuts<'t, N>: Copy,
-	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: Glance,
-	F: 't, {
-	const {
-		assert!(
-			!any(<N::Deps as DepSet>::GATES),
-			"a `diff` node is ungated: its exact partials are stated over deps it pulls every tick"
-		)
-	}
-	let want = obs.want();
-	if want == Want::Nothing {
-		let out = node.advance(<N::Deps as Pull<'t, F, I>>::pull(&frame));
-		return Cons { out, tail: frame };
-	}
-
-	let pre = (want == Want::Jac).then(|| node.clone());
-	let deps = <N::Deps as Pull<'t, F, I>>::pull(&frame);
-	let out = node.advance(deps);
-	let flat = Flats::of::<_, N::Deps>(
-		sweep,
-		&out,
-		&deps,
-		pre.as_ref()
-			.map(|pre| move |dep_buf: &[f64], out_buf: &[f64], jac: &mut alloc::vec::Vec<f64>, bumped: &mut alloc::vec::Vec<f64>| fd_jac::<N>(pre, deps, dep_buf, out_buf, jac, bumped)),
-	);
-
-	// the exact partials read off the *pre*-advance node, so they belong to the same want as the FD:
-	// asking for them under `Vals` would reintroduce the clone the level this exists to skip.
-	let exacts = pre.map(|pre| {
-		let dep_len = <N::Deps as DepFlat>::LEN;
-		// zeroed, not NaN-filled: `grad` accumulates (`+=`) into it, and an absent var's partial is 0.
-		let mut exact = alloc::vec![0.0f64; <N::Out<'t> as Flat>::LEN * dep_len];
-		pre.exact_jac(deps, &mut exact);
-		let formula = pre.formula();
-		let deriv = Derivs {
-			names: <N::Deps as DepSet>::NAMES,
-			parts: (0..dep_len).map(|i| formula.diff(i).simplify()).collect(),
-		};
-		let trace = formula.trace(flat.deps);
-		(exact, formula, deriv, trace)
-	});
-
-	let base = Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Deps as DepFlat>::DIMS, Some(flat));
-	let fire = match &exacts {
-		Some((exact, formula, deriv, trace)) => Fire {
-			exact_jac: Some(exact),
-			formula: Some(formula),
-			deriv: Some(deriv),
-			trace: Some(trace),
-			..base
-		},
-		None => base,
-	};
-	obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
-	Cons { out, tail: frame }
-}
-
-/// [`step_exact`] for a node the graph derived no standing demand for — [`step_when_obs`]'s
-/// [`Diff`] sibling. The exact partials have nothing to state about a tick the node did not take,
-/// so an undemanded one reads exactly as a suppressed level node does.
-///
-/// Alone among the emitted entry points this one carries no `profile` frame: it is a routing `match`
-/// whose demanded arm is [`step_exact`], which has one already.
-#[doc(hidden)]
-pub fn step_exact_when<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, demanded: bool, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, N, F>
-where
-	N: Node + Diff + Clone,
-	N::Deps: Pull<'t, F, I> + DepFlat,
-	DepOuts<'t, N>: Copy,
-	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: Glance + Latent,
-	F: 't, {
-	match demanded {
-		true => step_exact(frame, node, sweep, obs),
-		false => step_seen(frame, node, false, <N::Out<'t> as Latent>::latent, sweep, obs),
-	}
-}
-
-/// The per-dep simplified derivatives of a [`Diff`] node, `∂out/∂dep` one per line — the `deriv`
+/// The per-dep simplified derivatives of a [`Pure`] node, `∂out/∂dep` one per line — the `deriv`
 /// field's [`fmt::Display`](core::fmt::Display).
 struct Derivs {
 	names: &'static [&'static str],
@@ -2677,7 +2856,7 @@ where
 	C: Cell,
 	C::Out<'t>: Flat + Glance,
 	O: Observer, {
-	if obs.want() == Want::Nothing {
+	if obs.want(C::NAME) == Want::Nothing {
 		return;
 	}
 	sweep.vals.clear();
@@ -2690,6 +2869,7 @@ where
 		vals: &sweep.vals,
 		deps: &sweep.deps,
 		jac: None,
+		exact: false,
 	};
 	obs.on(C::NAME, &[], &[], Fire::of(&out, &[Plot::DEFAULT], C::CLOCK, &[], Some(flat)));
 }

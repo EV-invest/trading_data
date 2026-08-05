@@ -6,7 +6,7 @@
 //! The root is batch (`&[Pulse]`); the gate/latch/episode nodes stay scalar-out. `None` becomes
 //! an empty root slice, `Some(Pulse)` a one-element slice.
 
-use trading_data_dag::{Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Latch, Node, graph, node, slice_nudge};
+use trading_data_dag::{Blind, Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Latch, graph, node, slice_nudge};
 
 #[derive(Clone, Copy, Debug)]
 struct Pulse;
@@ -75,8 +75,10 @@ impl Cell for Live {
 	type Out<'t> = bool;
 }
 #[node(latch)]
-impl Node for Live {
+impl Blind for Live {
 	type Deps = (Trig,);
+
+	const WHY: &'static str = "a latch fixture";
 
 	fn advance<'t>(&'t mut self, (pulses,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.armed |= !pulses.is_empty();
@@ -101,8 +103,10 @@ impl Cell for Deprec {
 	type Out<'t> = Option<Phase>;
 }
 #[node]
-impl Node for Deprec {
+impl Blind for Deprec {
 	type Deps = (Gating<Live>, Trig);
+
+	const WHY: &'static str = "a latch fixture";
 
 	fn advance<'t>(&'t mut self, (live, _): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(live, "a gating dep reads true inside `advance`");
@@ -120,8 +124,10 @@ impl Cell for Ticks {
 	type Out<'t> = f64;
 }
 #[node]
-impl Node for Ticks {
+impl Blind for Ticks {
 	type Deps = (Trig,);
+
+	const WHY: &'static str = "a latch fixture";
 
 	fn advance<'t>(&'t mut self, _: DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.n += 1;

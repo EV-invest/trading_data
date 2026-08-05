@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Gate, Node, Sampling, node, value_nudge};
+use trading_data::{Blind, Cell, DepOuts, Gate, Sampling, node, value_nudge};
 use v_utils::*;
 
 use super::momentum::Momentum;
@@ -13,9 +13,11 @@ impl Cell for StdScreener {
 	type Out<'t> = bool;
 }
 #[node]
-impl Node for StdScreener {
+impl Blind for StdScreener {
 	/// The sampled momentum level stands until the next publish, however many minutes that takes.
 	type Deps = (trading_data::Bars<{ TF_1MIN }>, Sampling<Momentum>);
+
+	const WHY: &'static str = "a screen is a threshold predicate, awaiting the `Predicate` kernel";
 
 	fn advance<'t>(&'t mut self, (bars, momentum): DepOuts<'t, Self>) -> Self::Out<'t> {
 		let Screen::Std(c) = strategy().screen else {

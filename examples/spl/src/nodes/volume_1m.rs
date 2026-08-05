@@ -12,6 +12,8 @@ impl Cell for Volume1m {
 impl Emit for Volume1m {
 	type Deps = (trading_data::Bars<{ TF_1MIN }>,);
 
+	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
+
 	fn emit(&mut self, (m1,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		for b in m1 {
 			out.push(b.vol_base * b.close);

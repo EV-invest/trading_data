@@ -12,6 +12,8 @@ impl Cell for Change3m {
 impl Emit for Change3m {
 	type Deps = (Buffering<trading_data::Bars<{ TF_1MIN }>, { Horizon::Span(TF_3MIN) }>,);
 
+	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
+
 	fn emit(&mut self, (m1,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for (b, w3) in m1.fresh().iter().zip(m1.trailing()) {
 			out.push(w3.and_then(|w3| {

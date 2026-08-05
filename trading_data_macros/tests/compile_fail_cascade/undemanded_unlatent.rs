@@ -1,6 +1,6 @@
 //! A node whose every reader sits behind one gate is skipped while that gate is false, so its out
 //! has to have an unfired reading. A bare `f64` has none; the fix the message names is `Option<f64>`.
-use trading_data_dag::{Bump, Cell, DepOuts, Flat, Gate, Gating, Glance, Node, slice_nudge, value_nudge};
+use trading_data_dag::{Blind, Bump, Cell, DepOuts, Flat, Gate, Gating, Glance, slice_nudge, value_nudge};
 use trading_data_macros::{graph, node};
 
 #[derive(Clone, Copy, Debug)]
@@ -36,8 +36,10 @@ impl Cell for Hot {
 	type Out<'t> = bool;
 }
 #[node]
-impl Node for Hot {
+impl Blind for Hot {
 	type Deps = (Src,);
+
+	const WHY: &'static str = "a hot-path fixture";
 
 	fn advance<'t>(&'t mut self, (s,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		!s.is_empty()
@@ -52,8 +54,10 @@ impl Cell for Counted {
 	type Out<'t> = f64;
 }
 #[node]
-impl Node for Counted {
+impl Blind for Counted {
 	type Deps = (Src,);
+
+	const WHY: &'static str = "a demand fixture";
 
 	fn advance<'t>(&'t mut self, (s,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		s.len() as f64
@@ -67,8 +71,10 @@ impl Cell for Sink {
 	type Out<'t> = Option<f64>;
 }
 #[node]
-impl Node for Sink {
+impl Blind for Sink {
 	type Deps = (Gating<Hot>, Counted);
+
+	const WHY: &'static str = "a demand fixture";
 
 	fn advance<'t>(&'t mut self, (_, c): DepOuts<'t, Self>) -> Self::Out<'t> {
 		Some(c)

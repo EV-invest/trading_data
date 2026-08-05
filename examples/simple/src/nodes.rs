@@ -80,6 +80,8 @@ impl Cell for Cvd {
 impl Emit for Cvd {
 	type Deps = (Trades,);
 
+	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
+
 	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
 		for i in 0..trades.len() {
@@ -124,6 +126,8 @@ impl Emit for Flow1m {
 	/// The partial minute is the whole of the state, so the trades it holds reach back exactly one.
 	type Deps = (Folding<Trades, { Horizon::Span(TF_1MIN) }>,);
 
+	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
+
 	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Flow>) {
 		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
 		let step = Exact::from_nanos(TF_1MIN.duration().as_nanos() as i64);
@@ -159,6 +163,8 @@ impl Cell for Lambda1m {
 impl Emit for Lambda1m {
 	type Deps = (Buffering<Flow1m, REACH>,);
 
+	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
+
 	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(hist.narrowed(Horizon::Elems(LAMBDA_WINDOW + 1)).trailing().map(|w| w.map(kyle_lambda)));
 	}
@@ -178,6 +184,8 @@ impl Cell for VolUsd1h {
 #[node]
 impl Emit for VolUsd1h {
 	type Deps = (Buffering<trading_data::Bars<{ TF_1MIN }>, REACH>,);
+
+	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
 	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(hist.narrowed(Horizon::Elems(60)).trailing().map(|w| w.map(|w| w.iter().map(|b| b.vol_base * b.close).sum())));
