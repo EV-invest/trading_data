@@ -52,9 +52,20 @@
               simple) pkg=trading_data_simple; ordinal=1 ;;
               live) pkg=trading_data_live_example; ordinal=2 ;;
               spl) pkg=trading_data_spl; ordinal=3 ;;
-              *) echo "usage: viz <simple|live|spl> [-- <app args>]" >&2; exit 1 ;;
+              *) echo "usage: viz <simple|live|spl> [-r|--release] [-- <app args>]" >&2; exit 1 ;;
             esac
             shift || true
+            # Debug by default: a rebuild costs more than any of these runs. `-r` is for the one
+            # that doesn't hold — `spl` replays two days with a `Viz` on every fire, ~9 minutes
+            # debug against ~3.
+            profile=()
+            app_args=()
+            for a in "$@"; do
+              case "$a" in
+                -r|--release) profile=(--release) ;;
+                *) app_args+=("$a") ;;
+              esac
+            done
             # A previous run of ourselves, usually. Whoever it is, the port is ours.
             fuser -k "$((${toString port_range_base} + ordinal))/tcp" 2>/dev/null || true
             repo="$(git rev-parse --show-toplevel)"
@@ -62,10 +73,7 @@
             export EXEC_VIZ_WEB_DIR
             # The range base every app claims its ordinal in; an app's own flag overrides it.
             export PORT=${toString port_range_base}
-            # `--release`: `spl` replays two days through the graph with a `Viz` attached to every
-            # fire, and a debug build spends ~9 minutes on it against ~3. The bar is unwatchable
-            # otherwise, and `spl_bench` already reads the same profile.
-            exec cargo run --release --manifest-path "$repo/Cargo.toml" -p "$pkg" -- "$@"
+            exec cargo run "''${profile[@]}" --manifest-path "$repo/Cargo.toml" -p "$pkg" -- "''${app_args[@]}"
           '';
         };
         # `measure <bench|stat|flame|cost> …` — one CPU reservation, four readings of it. What it is
@@ -103,7 +111,8 @@
             `nix develop` adds `viz <simple|live|spl>`, the same runner against your working tree,
             and `measure` on PATH.
             `cargo r -p trading_data_live_equiv` is the headless live≡replay proof — 15s, no server.
-            Args after `--` reach the app: `nix run .#spl -- --config other.nix`.
+            Args after `--` reach the app: `nix run .#spl -- --config other.nix`. The examples build
+            debug; `-r` there builds release, which `spl`'s two-day replay wants.
             EOF
           '');
         };

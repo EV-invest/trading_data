@@ -1660,7 +1660,7 @@ version = "0.3.0"
 
 [[package]]
 name = "trading_data_macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

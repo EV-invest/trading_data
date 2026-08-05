@@ -9,7 +9,7 @@
 use std::{path::Path, process::Command, sync::OnceLock};
 
 use serde::Deserialize;
-use trading_data::{LatencyConfig, PrecisionPriceQty, Usd};
+use trading_data::{LatencyConfig, Usd};
 use v_utils::{TF_5MIN, Timeframe, macros::CompactFormatNamed, percent::PercentU};
 
 /// Panics if read before [`Config::load`] — a node running without its configuration is a wiring
@@ -62,9 +62,7 @@ impl Config {
 #[serde(deny_unknown_fields)]
 pub struct Situation {
 	pub pair: String,
-	pub bybit_symbol: String,
 	pub coingecko_id: String,
-	pub precision: PrecisionPriceQty,
 	#[serde(with = "utc_date")]
 	pub start: jiff::civil::Date,
 	/// Exclusive.

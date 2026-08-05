@@ -6,13 +6,10 @@
 # `examples/situations.nix` points at.
 {
   # The one backtest target. Days before `start` are warmup, consumed silently; `end` is exclusive.
-  # `precision` is the venue's tick/lot exponent — SPL reads it off the Nautilus instrument, we have
-  # no instrument tier, so it is stated. `coingecko_id` keys the market-cap lane.
+  # `coingecko_id` keys the market-cap lane.
   situation = {
     pair = "PROVE-USDT";
-    bybit_symbol = "PROVEUSDT";
     coingecko_id = "succinct";
-    precision = { price = 4; qty = 0; };
     start = "2026-05-20";
     end = "2026-05-22";
   };

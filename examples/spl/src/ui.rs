@@ -46,19 +46,3 @@ pub(crate) fn finish(pb: &ProgressBar, msg: impl Into<Cow<'static, str>>) {
 	pb.set_style(ProgressStyle::with_template(" ✓ {prefix:.bold.green} [{elapsed_precise}] {bar:30.green/238} {pos:>3}/{len} days {msg:.green}").expect("static template"));
 	pb.finish_with_message(msg);
 }
-
-/// A transient child of `after` over one file's bytes — download or ingest. `finish_and_clear` it
-/// when the read is done; the lane bar above is what persists. `len` is absent for a response whose
-/// length ureq's transparent decompression has made unknowable, which is every Bybit archive.
-pub(crate) fn bytes(mp: &MultiProgress, after: &ProgressBar, label: String, len: Option<u64>) -> ProgressBar {
-	let pb = mp.insert_after(after, len.map_or_else(ProgressBar::no_length, ProgressBar::new));
-	pb.set_style(match len {
-		Some(_) => ProgressStyle::with_template("   {msg:<34.dim} {bar:16.cyan/238} {bytes:>9}/{total_bytes:<9} {bytes_per_sec:>11} ({eta})").expect("static template"),
-		None => ProgressStyle::with_template("   {msg:<34.dim} {spinner:.cyan}                  {bytes:>9}          {bytes_per_sec:>11}")
-			.expect("static template")
-			.tick_strings(TICK),
-	});
-	pb.set_message(label);
-	pb.enable_steady_tick(Duration::from_millis(80));
-	pb
-}

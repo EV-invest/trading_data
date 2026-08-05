@@ -5352,7 +5352,7 @@ dependencies = [
 
 [[package]]
 name = "trading_data_macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -5403,7 +5403,6 @@ dependencies = [
  "anyhow",
  "clap",
  "exec_viz",
- "flate2",
  "indicatif",
  "jiff",
  "nautilus-backtest",
@@ -5419,8 +5418,8 @@ dependencies = [
  "trading_data",
  "trading_data_bench",
  "ureq",
+ "v_exchanges",
  "v_utils",
- "zip",
 ]
 
 [[package]]
@@ -5727,6 +5726,7 @@ dependencies = [
  "derive_more",
  "enum_dispatch",
  "eyre",
+ "flate2",
  "futures-util",
  "jiff",
  "miette",
@@ -5744,6 +5744,7 @@ dependencies = [
  "uuid",
  "v_exchanges_adapters",
  "v_utils",
+ "zip",
 ]
 
 [[package]]
