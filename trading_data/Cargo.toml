@@ -15,8 +15,14 @@ categories = ["finance"]
 # engine's. Off by default here too — an implementor who never asks cannot acquire it by accident.
 [features]
 profile = ["trading_data_dag/profile"]
+# The measurement tier: probe, counters, intent digest, `Census`, and the `Hist` bridge the benches
+# need. Anyone building on the facade can ask for it — debugging the generated graph is not a thing
+# only this repo does. Off by default, so a build that never asks never pays.
+bench = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 trading_data_core.workspace = true
 trading_data_dag.workspace = true
 trading_data_derivatives.workspace = true

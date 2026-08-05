@@ -121,14 +121,23 @@ impl Arrival {
 	}
 }
 
-/// The rate a feed is read at. Arrival time is cut into cells of this length, and one tick carries
-/// at most one cell: the reader never *waits* for a cell to fill, so a cell that already holds data
-/// is handed over as it stands rather than batched further.
+/// **How coarsely a backtest batches, so that it runs faster than the market it replays.** That is
+/// the whole of it. Arrival time is cut into cells of this length and everything landing in one cell
+/// is handed to the graph as a single step, so a replay does a day's work in as many steps as the
+/// cell size buys rather than one per message.
+///
+/// Batching is *lossy on purpose*: a coarser cell means the strategy sees a trade and the book move
+/// that followed it as one event instead of two, so it can decide differently than it would have
+/// live. That is the trade being made — speed for fidelity — and it is the caller's to make, which
+/// is why there is no default and why it belongs in config rather than in a const somewhere.
+///
+/// Live states no rate — it runs on [`ReadClock::ALL`], which batches whatever is already buffered
+/// and never waits for more. So do not go looking for a backtest that reproduces a live run event
+/// for event: a backtest is a lossy model of one, and the batching here is the loss.
 ///
 /// Cells are absolute — floored from the epoch, not from the last emission — so which cell an event
-/// falls in is a property of the event alone, identical across runs and independent of what the
-/// feed did before it. Always set: the rate a graph is stepped at is a thing the caller states, not
-/// one that falls out of which lane happened to tick.
+/// falls in is a property of the event alone and a replay of the same range groups identically
+/// every time.
 ///
 /// A newtype rather than a bare [`Exact`] so that quantizing an [`Arrival`] is the *only*
 /// arithmetic an arrival admits.
@@ -136,8 +145,16 @@ impl Arrival {
 pub struct ReadClock(Exact);
 
 impl ReadClock {
-	/// The feed's own rate: every distinct arrival is its own cell. The degenerate case, not a
-	/// special path.
+	/// One cell over all of time, so a run extends across everything already buffered — bounded only
+	/// by the next event in another lane, which is the weave itself.
+	///
+	/// What [`Live`](../../trading_data_persistence/sync/struct.Live.html) runs on, and the reason it
+	/// needs no configured rate: batching what has *already arrived* costs nothing and is worth as
+	/// much live as it is in a backtest. What live must never do is *wait* for more, and an absolute
+	/// cell of any finite size is a wait.
+	pub const ALL: Self = Self(Exact(i64::MAX));
+	/// No batching: every distinct arrival is its own step. The finest a replay can be read at, and
+	/// the degenerate case rather than a special path.
 	pub const EVENT: Self = Self(Exact(0));
 
 	pub const fn from(e: Exact) -> Self {
@@ -440,6 +457,10 @@ mod tests {
 		assert_eq!(second.cell_end(Arrival::from_nanos(1_999_999_999)), Arrival::from_nanos(1_999_999_999));
 		assert!(second.cell_end(Arrival::MIN) < Arrival::from_nanos(0));
 		assert_eq!(ReadClock::EVENT.cell_end(a), a, "an event-rate clock groups nothing");
+		// What `Live` weaves on: a real arrival's run is bounded by the next lane's head and by
+		// nothing else. `MIN` is the pre-range anchor, which stays its own step either way.
+		assert_eq!(ReadClock::ALL.cell_end(a), Arrival::from_nanos(i64::MAX - 1));
+		assert!(ReadClock::ALL.cell_end(Arrival::MIN) < Arrival::from_nanos(0));
 	}
 
 	#[test]

@@ -1,12 +1,11 @@
 use core::fmt;
 
-use trading_data::{Armed, Cell, Direction, Emit, EmitOuts, Episode, Episodic, Flat, Gating, Glance, Plot, Side, TriggerOut, node, slice_nudge};
+use trading_data::{Armed, Cell, Direction, Emit, EmitOuts, Episode, Episodic, Flat, Gating, Glance, Plot, Sampling, Side, TriggerOut, node, slice_nudge};
 
 use super::{
 	atr::Atr,
 	book_top::BookTop,
 	decision::{Decided, Decision},
-	latest,
 };
 use crate::config::strategy;
 
@@ -137,7 +136,6 @@ impl Glance for Intent {
 #[derive(Clone, Default)]
 pub struct Deprecator {
 	state: State,
-	last_atr: Option<f64>,
 	last_decision: Option<Decided>,
 }
 #[derive(Clone)]
@@ -162,17 +160,20 @@ impl Cell for Deprecator {
 }
 #[node]
 impl Emit for Deprecator {
-	type Deps = (Gating<Armed<Deprecator>>, Decision, Atr, BookTop);
+	/// The ATR is sampled rather than cached here: it measures the market, not the episode, so the
+	/// commutation reset below has no business dropping it — a new episode enters on the envelope
+	/// standing now, not on a re-warm.
+	type Deps = (Gating<Armed<Deprecator>>, Decision, Sampling<Atr>, BookTop);
 
 	const PLOTS: &'static [Plot] = &[
 		Plot {
 			slots: &[0, 1, 2, 3, 4],
-			labels: &["target_q", "base_q", "eval", "lambda_atr", "trail_fraction"],
+			labels: &[&["target_q", "base_q", "eval", "lambda_atr", "trail_fraction"]],
 			..Plot::DEFAULT
 		},
 		Plot {
 			slots: &[5, 6, 7],
-			labels: &["sl", "tp", "trail_stop"],
+			labels: &[&["sl", "tp", "trail_stop"]],
 			overlay: true,
 			..Plot::DEFAULT
 		},
@@ -182,11 +183,10 @@ impl Emit for Deprecator {
 	fn emit(&mut self, (armed, decision, atr, top): EmitOuts<'_, Self>, out: &mut Vec<Option<Intent>>) {
 		assert!(armed, "a gating dep reads true inside `emit`");
 		let liq = &strategy().classification.liquidations;
-		latest(&mut self.last_atr, atr, top.len());
 		// The arming tick and the ticks that act on it are different lanes: `Decision` is trade-clocked,
 		// and every book tick that could enter on it is a later one. The latch carries the *fact* of the
-		// hit across them, this carries its content — and the commutation reset drops both together, so
-		// no episode enters on the decision of the one before it.
+		// hit across them, this carries its content — and the commutation reset drops it, so no episode
+		// enters on the decision of the one before it.
 		if decision.is_some_and(|d| d.direction != Direction::Flat) {
 			self.last_decision = decision;
 		}
@@ -208,7 +208,7 @@ impl Emit for Deprecator {
 				});
 			}
 			// Management needs `target_q` off the ATR envelope; skip until the first ATR lands.
-			let (State::Active(a), Some(atr)) = (&mut self.state, self.last_atr) else {
+			let (State::Active(a), Some(atr)) = (&mut self.state, atr) else {
 				out.push(None);
 				continue;
 			};

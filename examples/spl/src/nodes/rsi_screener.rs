@@ -1,23 +1,21 @@
-use trading_data::{Blind, Cell, DepOuts, Folding, Gate, Horizon, node, value_nudge};
+use trading_data::{Blind, Cell, DepOuts, Gate, Sampling, node, value_nudge};
 use v_utils::*;
 
-use super::{Rsi, RsiValues, change_1d::Change1d, latest};
+use super::{Rsi, change_1d::Change1d};
 use crate::config::{Screen, strategy};
 
 /// Top gainer: overbought on 4h while up on the day. The 1m series is the screening clock, so a
 /// verdict is reached once a minute exactly as in SPL — the rate comes from this node's own inputs,
 /// and a tick that closed no bar has screened nothing.
 #[derive(Clone, Default)]
-pub struct RsiScreener {
-	rsi: Option<RsiValues>,
-}
+pub struct RsiScreener;
 impl Cell for RsiScreener {
 	type Out<'t> = bool;
 }
 #[node]
 impl Blind for RsiScreener {
-	/// The cached RSI level stands until the next publish, however many minutes that takes.
-	type Deps = (trading_data::Bars<{ TF_1MIN }>, Change1d, Folding<Rsi, { Horizon::Unbounded }>);
+	/// The sampled RSI level stands until the next publish, however many minutes that takes.
+	type Deps = (trading_data::Bars<{ TF_1MIN }>, Change1d, Sampling<Rsi>);
 
 	const WHY: &'static str = "a screen is a threshold predicate, awaiting the `Predicate` kernel";
 
@@ -26,8 +24,7 @@ impl Blind for RsiScreener {
 		let Screen::Rsi(c) = strategy().screen else {
 			panic!("the graph is wired for RsiScreener; config.nix names {:?}", strategy().screen)
 		};
-		latest(&mut self.rsi, rsi, bars.len());
-		let Some(rsi) = self.rsi else { return false };
+		let Some(rsi) = rsi else { return false };
 		rsi.actual > c.rsi_threshold && change_1d.iter().flatten().any(|change| *change > *c.price_percent)
 	}
 }

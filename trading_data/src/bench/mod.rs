@@ -8,8 +8,11 @@
 //! that is actually the thing under test, and td's per-day parquet decode stops flattering NT's
 //! (which happened at setup).
 //!
-//! `publish = false` and a dev-dependency everywhere: nothing measured here can reach a shipped
-//! build, which is why [`Census`] lives in this crate rather than next to the trait it implements.
+//! Behind the facade's `bench` feature, off by default. It is *in* the facade rather than beside it
+//! because measuring a graph is not a thing only this repo does while the framework is young: in
+//! production, being able to interrogate the generated computation graph at this level matters as
+//! much as it does here, and a downstream user reaching only through `trading_data` has to be able
+//! to ask for it. Off by default is what keeps it out of a build that never asks.
 
 pub mod ring;
 
@@ -27,7 +30,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use trading_data::{Fire, Observer, Want};
+
+use crate::{Fire, Observer, Want};
 
 /// `USER_HZ`, the unit `/proc/<pid>/stat` reports CPU time in. Fixed at 100 on Linux regardless of
 /// `CONFIG_HZ` — it is ABI, not a kernel tunable.

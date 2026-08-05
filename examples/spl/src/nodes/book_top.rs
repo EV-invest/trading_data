@@ -46,7 +46,7 @@ impl Emit for BookTop {
 	type Deps = (Folding<trading_data::Book, { Horizon::Unbounded }>, BookDeltas);
 
 	const PLOTS: &'static [Plot] = &[Plot {
-		labels: &["bid", "ask", "bid_depth$", "ask_depth$"],
+		labels: &[&["bid", "ask", "bid_depth$", "ask_depth$"]],
 		..Plot::DEFAULT
 	}];
 	const WHY: &'static str = "reading the top of a book is a lookup into a fold, not an expression over it";

@@ -303,10 +303,10 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 		// a `Gate`'s out *is* the `bool`, and `Gating::opens` is the identity — nothing to unwrap.
 		let demand = quote!(let d = #(#dag::Has::<#gates, _>::get(&f))&&*;);
 		match (n.emit, s.is_empty()) {
-			(true, true) => quote!(let f = #dag::step_emit_obs(f, #f, true, ts, obs);),
-			(true, false) => quote!(#demand let f = #dag::step_emit_obs(f, #f, d, ts, obs);),
-			(false, true) => quote!(let f = #dag::step_obs(f, #f, obs);),
-			(false, false) => quote!(#demand let f = #dag::step_when_obs(f, #f, d, obs);),
+			(true, true) => quote!(let f = #dag::step_emit_obs(f, #f, true, ts, __sweep, obs);),
+			(true, false) => quote!(#demand let f = #dag::step_emit_obs(f, #f, d, ts, __sweep, obs);),
+			(false, true) => quote!(let f = #dag::step_obs(f, #f, __sweep, obs);),
+			(false, false) => quote!(#demand let f = #dag::step_when_obs(f, #f, d, __sweep, obs);),
 		}
 	});
 
@@ -364,6 +364,7 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 		#vis struct #graph {
 			#(#node_fields,)*
 			__pending: #pending,
+			__sweep: #dag::Sweep,
 		}
 
 		const _: () = {
@@ -447,9 +448,9 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 				#(#apply_pending)*
 
 				let #batches { #(#rfields,)* } = b;
-				let Self { #(#fields,)* __pending } = self;
+				let Self { #(#fields,)* __pending, __sweep } = self;
 
-				#(#dag::observe_root::<#root_tys, _>(#rfields, obs);)*
+				#(#dag::observe_root::<#root_tys, _>(#rfields, __sweep, obs);)*
 				let f = #dag::Nil;
 				#(let f = #dag::Cons::<#root_tys, _> { out: #rfields, tail: f };)*
 				#(#steps)*

@@ -1,23 +1,21 @@
-use trading_data::{Blind, Cell, DepOuts, Folding, Gate, Horizon, node, value_nudge};
+use trading_data::{Blind, Cell, DepOuts, Gate, Sampling, node, value_nudge};
 use v_utils::*;
 
-use super::{latest, momentum::Momentum};
+use super::momentum::Momentum;
 use crate::config::{Screen, strategy};
 
 /// Pine's overvalued zone at momentum's leg. The verdict is per *closed 1m bar*, so a tick that
 /// closed none has screened nothing — which is the empty-batch guard below, and the reason this is
-/// not a bare read of the cached level.
+/// not a bare read of the sampled level.
 #[derive(Clone, Default)]
-pub struct StdScreener {
-	momentum: Option<f64>,
-}
+pub struct StdScreener;
 impl Cell for StdScreener {
 	type Out<'t> = bool;
 }
 #[node]
 impl Blind for StdScreener {
-	/// The cached momentum level stands until the next publish, however many minutes that takes.
-	type Deps = (trading_data::Bars<{ TF_1MIN }>, Folding<Momentum, { Horizon::Unbounded }>);
+	/// The sampled momentum level stands until the next publish, however many minutes that takes.
+	type Deps = (trading_data::Bars<{ TF_1MIN }>, Sampling<Momentum>);
 
 	const WHY: &'static str = "a screen is a threshold predicate, awaiting the `Predicate` kernel";
 
@@ -25,8 +23,7 @@ impl Blind for StdScreener {
 		let Screen::Std(c) = strategy().screen else {
 			panic!("the graph is wired for StdScreener; config.nix names {:?}", strategy().screen)
 		};
-		latest(&mut self.momentum, momentum, bars.len());
-		!bars.is_empty() && self.momentum.is_some_and(|m| m > c.fast_overvalued)
+		!bars.is_empty() && momentum.is_some_and(|m| m > c.fast_overvalued)
 	}
 }
 impl Gate for StdScreener {}

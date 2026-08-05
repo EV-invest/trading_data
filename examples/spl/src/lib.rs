@@ -15,8 +15,8 @@ pub mod ui;
 use std::{
 	collections::BTreeMap,
 	fs,
-	io::{self, BufRead as _, BufReader, Read as _, Write as _},
-	path::{Path, PathBuf},
+	io::Read as _,
+	path::Path,
 	str::FromStr as _,
 	sync::{
 		Arc,
@@ -26,30 +26,23 @@ use std::{
 
 use indicatif::{MultiProgress, ProgressBar};
 use trading_data::{
-	Aggregate, Asset, BookShape, BookUpdate, Catalog, Clock, Exact, ExchangeName, Feather, Feed as _, Instrument, Live, Local, Mc, Oi, Pair, PrecisionPriceQty, ReadClock, Row as _, Side,
-	Sink, Span, Symbol, Trade, TradeBuf, Ts, Venue, read_mc, read_oi, read_trades,
+	Aggregate, Asset, BookShape, BookUpdate, Catalog, Clock, ExchangeName, Feather, Feed as _, Instrument, Live, Local, Mc, Oi, Pair, PrecisionPriceQty, Row as _, Side, Sink, Span, Symbol,
+	Trade, TradeBuf, Ts, Venue, read_mc, read_oi, read_trades,
 };
+use v_exchanges::core::{Exchange, ExchangeInit as _, ExchangeStream, History, RequestRange};
 
 use crate::config::Situation;
 
 /// SPL's `OrderBookActor::DEPTH`. The archive carries 200 levels a side; the strategy reads 20.
 pub const DEPTH: usize = 20;
-/// CloudFront 403s reqwest/ureq's default agent string on the quote-saver host; any custom one passes.
-const UA: &str = "trading_data_spl";
 /// Five-minute buckets in a UTC day — what a complete OI day must have.
 const OI_PER_DAY: usize = 288;
-/// Bybit's page ceiling on the OI endpoint.
-const OI_PAGE: usize = 200;
-/// What one day's buckets fit in, plus the empty page an exhausted cursor answers with. Bounding
-/// the walk is the point: the venue decides when to stop handing back cursors, and an unbounded
-/// loop lets it decide never.
-const OI_PAGES: usize = OI_PER_DAY.div_ceil(OI_PAGE) + 1;
-const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
-const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 
 /// How far the pump may lead the consumer, in archive time. It is the stamping error the leash
-/// permits, so it belongs at or below the finest batch window anything replays this lane with.
-const PUMP_LEAD_NS: i64 = 100_000_000;
+/// permits, so it belongs well *below* the finest batch window anything replays this lane with —
+/// not at it. At the cell size, how much of a cell the slop eats is decided by how bursty the
+/// producer happens to be, and the recorded arrivals stop being a function of the data.
+const PUMP_LEAD_NS: i64 = 1_000_000;
 pub fn symbol(s: &Situation) -> Symbol {
 	Symbol::new(Pair::from_str(&s.pair).unwrap_or_else(|e| panic!("situation.pair `{}`: {e}", s.pair)), Instrument::Perp)
 }
@@ -79,7 +72,7 @@ pub fn trading_days(s: &Situation) -> Vec<jiff::civil::Date> {
 
 /// Acquires all four lanes over the situation's window, each idempotent, under one set of progress
 /// bars.
-pub fn ensure_lanes(cache: &Path, s: &Situation) -> Catalog {
+pub async fn ensure_lanes(cache: &Path, s: &Situation) -> Catalog {
 	let mp = MultiProgress::new();
 	let days = trading_days(s);
 	// Prefixes are padded, so the green done-style — which recolours them — still lines the bars up.
@@ -88,48 +81,75 @@ pub fn ensure_lanes(cache: &Path, s: &Situation) -> Catalog {
 	let pb_oi = ui::lane(&mp, "oi    ", days.len());
 	let pb_mc = ui::lane(&mp, "mc    ", days.len());
 
-	let catalog = ensure_trades(cache, s, &days, &mp, &pb_trades);
-	ensure_book(cache, &catalog, s, &mp, &pb_book);
-	ensure_oi(&catalog, s, &pb_oi);
+	let bybit = ExchangeName::Bybit.init_client();
+	// The tick every price and quantity in the catalog is stated in. It is the venue's to declare,
+	// so it is read off the venue — a number restated in config is one that can silently disagree.
+	let prec = precision(&*bybit, symbol(s)).await;
+
+	fs::create_dir_all(cache).expect("create spl cache dir");
+	let catalog = Catalog::new(cache.join("catalog"));
+	ensure_trades(&*bybit, &catalog, s, &days, prec, &pb_trades).await;
+	ensure_book(&*bybit, cache, &catalog, s, prec, &pb_book).await;
+	ensure_oi(&*bybit, &catalog, s, &pb_oi).await;
 	ensure_mc(&catalog, s, &pb_mc);
 	catalog
 }
 
-/// Idempotent per day: downloads each day's archive and ingests it into a parquet catalog under
-/// `cache`, skipping any day already present.
-fn ensure_trades(cache: &Path, s: &Situation, days: &[jiff::civil::Date], mp: &MultiProgress, pb: &ProgressBar) -> Catalog {
-	fs::create_dir_all(cache).expect("create spl cache dir");
-	let catalog = Catalog::new(cache.join("catalog"));
-	let sym = &s.bybit_symbol;
+async fn precision(bybit: &dyn Exchange, symbol: Symbol) -> PrecisionPriceQty {
+	let info = bybit.exchange_info(symbol.instrument).await.expect("bybit instruments-info");
+	let pi = info.pairs.get(&symbol.pair).unwrap_or_else(|| panic!("Bybit does not list {symbol}"));
+	PrecisionPriceQty {
+		price: pi.price_precision,
+		qty: pi.qty_precision,
+	}
+}
 
-	// Probe first, so a cached day never costs a download.
-	let mut todo = Vec::new();
+/// The venue's archives, which is the only way this app acquires history.
+fn history(bybit: &dyn Exchange) -> &dyn History {
+	bybit.history().expect("Bybit publishes archives")
+}
+
+/// Idempotent per day: ingests each day of the venue's trade archive into the catalog, skipping any
+/// day already present. One [`Feather`] flush per day, so a day is either wholly in the lane or
+/// wholly absent — which is what makes the probe above a decision.
+async fn ensure_trades(bybit: &dyn Exchange, catalog: &Catalog, s: &Situation, days: &[jiff::civil::Date], prec: PrecisionPriceQty, pb: &ProgressBar) {
+	let mut ingested = 0;
 	for &d in days {
 		let (start, end) = day_bounds(d);
-		if read_trades(&catalog, ExchangeName::Bybit, symbol(s), start, end).expect("open trades lane").next().is_some() {
+		if read_trades(catalog, ExchangeName::Bybit, symbol(s), start, end).expect("open trades lane").next().is_some() {
 			pb.inc(1);
 			continue;
 		}
-		todo.push((d, cache.join(format!("{sym}{d}.csv.gz"))));
-	}
-	if todo.is_empty() {
-		ui::finish(pb, "cached");
-		return catalog;
-	}
-	let missing: Vec<(PathBuf, String)> = todo
-		.iter()
-		.filter(|(_, gz)| !gz.exists())
-		.map(|(d, gz)| (gz.clone(), format!("https://public.bybit.com/trading/{sym}/{sym}{d}.csv.gz")))
-		.collect();
-	download_all(&missing, GZIP_MAGIC, mp, pb);
-
-	for (d, gz) in &todo {
 		pb.set_message(format!("ingest {d}"));
-		ingest_trades(gz, &catalog, s, mp, pb);
+
+		let mut stream = history(bybit)
+			.trades(symbol(s), start.to_jiff(), end.to_jiff())
+			.await
+			.unwrap_or_else(|e| panic!("open {d}'s trade archive: {e}"));
+		let mut feather = Feather::<Trade>::new(ExchangeName::Bybit, symbol(s), prec, Trade::POLICY);
+		let mut day = TradeBuf::new(prec);
+		//LOOP: an archive is finite and says so with an empty batch — `ExchangeStream` has no `Option` to `while let` on, because a live socket has no end for one to mean.
+		loop {
+			let batches = stream.next().await.unwrap_or_else(|e| panic!("read {d}'s trade archive: {e}"));
+			if batches.is_empty() {
+				break;
+			}
+			for batch in batches {
+				for t in batch.iter() {
+					// Historic ingest: no wire time, and we were not there to receive it.
+					day.push(t.time, None, None, day.len() as u64, t.side, t.price, t.qty);
+				}
+			}
+		}
+		feather.extend(day.cols(0..day.len()));
+		feather.flush(catalog).expect("flush day of trades").expect("non-empty day");
+		ingested += 1;
 		pb.inc(1);
 	}
-	ui::finish(pb, format!("{} ingested, {} cached", todo.len(), days.len() - todo.len()));
-	catalog
+	match ingested {
+		0 => ui::finish(pb, "cached"),
+		n => ui::finish(pb, format!("{n} ingested, {} cached", days.len() - n)),
+	}
 }
 /// Idempotent: folds the trading days' ob200 archives into the catalog's book lanes through
 /// [`Live`]'s recording tee — the same delta+checkpoint pair a live session writes, so `Replay`
@@ -147,23 +167,20 @@ fn ensure_trades(cache: &Path, s: &Situation, days: &[jiff::civil::Date], mp: &M
 /// ponytail: the delta lane has no public reader, so ingest is gated on a sentinel file rather than
 /// a lane probe. Its name carries everything that shapes the lane's content — range, depth, and the
 /// emission policy — so a lane recorded under a different one cannot be silently reused.
-fn ensure_book(cache: &Path, catalog: &Catalog, s: &Situation, mp: &MultiProgress, pb: &ProgressBar) {
+async fn ensure_book(bybit: &dyn Exchange, cache: &Path, catalog: &Catalog, s: &Situation, prec: PrecisionPriceQty, pb: &ProgressBar) {
 	let sentinel = cache.join(format!(".book_ingested_per_msg_top{DEPTH}_{}_{}", s.start, s.end));
 	if sentinel.exists() {
 		let what = fs::read_to_string(&sentinel).expect("read book sentinel");
 		ui::finish(pb, format!("cached — {}", what.trim()));
 		return;
 	}
-	let sym = &s.bybit_symbol;
 	let days = trading_days(s);
-	let zips: Vec<PathBuf> = days.iter().map(|d| cache.join(format!("{d}_{sym}_ob200.data.zip"))).collect();
-	let missing: Vec<(PathBuf, String)> = zips
-		.iter()
-		.zip(&days)
-		.filter(|(zip, _)| !zip.exists())
-		.map(|(zip, d)| (zip.clone(), format!("https://quote-saver.bycsi.com/orderbook/linear/{sym}/{d}_{sym}_ob200.data.zip")))
-		.collect();
-	download_all(&missing, ZIP_MAGIC, mp, pb);
+	let (window_start, _) = day_bounds(days[0]);
+	let (_, window_end) = day_bounds(*days.last().expect("trading_days is non-empty"));
+	let stream = history(bybit)
+		.book(symbol(s), window_start.to_jiff(), window_end.to_jiff())
+		.await
+		.unwrap_or_else(|e| panic!("open the book archive: {e}"));
 
 	// The archives' own timestamps are the only clock this session has; `Live` stamps arrivals off
 	// it, and the recorded reception it writes is what `Replay` weaves on.
@@ -171,16 +188,20 @@ fn ensure_book(cache: &Path, catalog: &Catalog, s: &Situation, mp: &MultiProgres
 		pump: AtomicI64::new(0),
 		consumed: AtomicI64::new(0),
 	});
-	let prec = s.precision;
-	// The tee writes per ingest, not per weave, so nothing recorded depends on how this session
-	// groups — the coarse clock just spares the drain loop an iteration per message.
-	let read = ReadClock::from(Exact::from_nanos(60_000_000_000));
-	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(s), prec, true, clock.clone(), read);
+	let mut live = Live::new(catalog.clone(), ExchangeName::Bybit, symbol(s), prec, true, clock.clone());
 	let sink = live.sink();
+	// Its own thread and its own runtime, because the fold has to run *while* this thread drains
+	// `Live` — the leash below is a two-way conversation, and both halves block.
 	let pump = {
 		let clock = clock.clone();
-		let (mp, lane) = (mp.clone(), pb.clone());
-		std::thread::spawn(move || pump_archives(&zips, &sink, &clock, prec, &mp, &lane))
+		let lane = pb.clone();
+		std::thread::spawn(move || {
+			tokio::runtime::Builder::new_current_thread()
+				.enable_all()
+				.build()
+				.expect("build the pump's runtime")
+				.block_on(pump_archives(stream, &sink, &clock, prec, &lane))
+		})
 	};
 	// Reporting what we consumed is what lets the pump be held to us — see `PUMP_LEAD_NS`.
 	while let Some(l) = live.next() {
@@ -190,52 +211,32 @@ fn ensure_book(cache: &Path, catalog: &Catalog, s: &Situation, mp: &MultiProgres
 	fs::write(&sentinel, format!("{emissions} emissions, {levels} levels\n")).expect("write book sentinel");
 	ui::finish(pb, format!("{emissions} top-{DEPTH} changes, {levels} level rows"));
 }
-/// Idempotent: fetches the trading days' Bybit open interest (5min ⇒ 288 rows/day ⇒ 2 pages) into
-/// the oi lane. Historic ingest, so there is no local reading.
-fn ensure_oi(catalog: &Catalog, s: &Situation, pb: &ProgressBar) {
+/// Idempotent: fetches the trading days' Bybit open interest, 5min, into the oi lane. Historic
+/// ingest, so there is no local reading.
+async fn ensure_oi(bybit: &dyn Exchange, catalog: &Catalog, s: &Situation, pb: &ProgressBar) {
 	if read_oi(catalog, ExchangeName::Bybit, symbol(s), Ts::MIN, Ts::MAX).expect("open oi lane").next().is_some() {
 		ui::finish(pb, "cached");
 		return;
 	}
-	let sym = &s.bybit_symbol;
 	let mut rows: Vec<Oi> = Vec::new();
 	for d in trading_days(s) {
 		pb.set_message(d.to_string());
 		let (day_start, day_end) = day_bounds(d);
-		let (start_ms, end_ms) = (day_start.as_nanos() / 1_000_000, day_end.as_nanos() / 1_000_000);
 		let before = rows.len();
-		let (mut cursor, mut pages) = (Some(String::new()), 0);
-		while let Some(c) = cursor.take() {
-			pages += 1;
-			assert!(
-				pages <= OI_PAGES,
-				"bybit paginated {d}'s open interest past {OI_PAGES} pages — the endpoint no longer answers the shape below"
-			);
-			let mut url = format!("https://api.bybit.com/v5/market/open-interest?category=linear&symbol={sym}&intervalTime=5min&startTime={start_ms}&endTime={end_ms}&limit={OI_PAGE}");
-			if !c.is_empty() {
-				url.push_str(&format!("&cursor={c}"));
-			}
-			let body = http_get(&url);
-			let v: serde_json::Value = serde_json::from_slice(&body).expect("bybit oi json");
-			assert_eq!(v["retCode"].as_i64(), Some(0), "bybit error: {v}");
-			let list = v["result"]["list"].as_array().expect("oi list");
-			for e in list {
-				let ts_ms: i64 = e["timestamp"].as_str().expect("oi timestamp string").parse().expect("oi timestamp i64");
-				if !(start_ms..end_ms).contains(&ts_ms) {
-					continue;
-				}
-				let oi: f64 = e["openInterest"].as_str().expect("openInterest string").parse().expect("openInterest f64");
-				rows.push(Oi {
-					ts_venue_exec: Ts::from_nanos(ts_ms * 1_000_000),
-					ts_venue_send: None,
-					ts_local_recv: None,
-					oi,
-				});
-			}
-			// An absent cursor would end pagination early and leave a silently short day.
-			let next = v["result"]["nextPageCursor"].as_str().expect("bybit paginated responses always carry nextPageCursor");
-			cursor = (!next.is_empty() && !list.is_empty()).then(|| next.to_string());
-		}
+		let range = RequestRange::Span {
+			since: day_start.to_jiff(),
+			until: Some(day_end.to_jiff()),
+		};
+		let readings = bybit
+			.open_interest(symbol(s), v_utils::TF_5MIN, range)
+			.await
+			.unwrap_or_else(|e| panic!("bybit open interest for {d}: {e}"));
+		rows.extend(readings.iter().map(|r| Oi {
+			ts_venue_exec: Ts::from_nanos(r.timestamp.as_nanosecond() as i64),
+			ts_venue_send: None,
+			ts_local_recv: None,
+			oi: r.val_asset,
+		}));
 		// A UTC day is exactly 288 five-minute buckets. Anything less is a hole in the input — most
 		// likely Bybit's 5min OI retention no longer reaching that far back. The decision is data,
 		// not code: move the situation window, or drop the Oi root from the graph.
@@ -316,54 +317,52 @@ impl Clock for ArchiveClock {
 	}
 }
 
-/// Folds the whole ob200 stream into a local book and emits, on every message that moves it, the
-/// diff of the top-`DEPTH`-per-side view against the last emitted one — levels dropping out of it as
-/// `qty = 0` deletes. A message touching only depth 21+ changes nothing the strategy can read and
-/// emits nothing, so the lane carries changes in *what is read* and no more. The book and the
-/// emitted view carry across archive files, so the day boundary is just another message. Returns
+/// Folds the venue's whole book stream into a local book and emits, on every message that moves it,
+/// the diff of the top-`DEPTH`-per-side view against the last emitted one — levels dropping out of
+/// it as `qty = 0` deletes. A message touching only depth 21+ changes nothing the strategy can read
+/// and emits nothing, so the lane carries changes in *what is read* and no more. Returns
 /// `(emissions, level rows)`.
-fn pump_archives(zips: &[PathBuf], sink: &Sink, clock: &ArchiveClock, prec: PrecisionPriceQty, mp: &MultiProgress, lane: &ProgressBar) -> (u64, u64) {
+///
+/// `DEPTH` is SPL's, not the venue's, which is why the fold stayed here when the transport and the
+/// parsing left: what the strategy reads is the app's to decide.
+async fn pump_archives(mut stream: Box<dyn ExchangeStream<Item = BookUpdate>>, sink: &Sink, clock: &ArchiveClock, prec: PrecisionPriceQty, lane: &ProgressBar) -> (u64, u64) {
+	const DAY_NS: i64 = 24 * 3600 * 1_000_000_000;
 	let (mut book, mut emitted) = (Levels::default(), Levels::default());
-	let mut last_ns = 0i64;
 	let (mut emissions, mut levels) = (0u64, 0u64);
+	let (mut i, mut day) = (0usize, 0i64);
 
-	for zip in zips {
-		let file = fs::File::open(zip).expect("open book archive");
-		let mut archive = zip::ZipArchive::new(file).expect("book archive is a zip");
-		assert_eq!(archive.len(), 1, "ob200 archive holds exactly one jsonl member");
-		let entry = archive.by_index(0).expect("open zip member");
-		// The zip header carries the member's uncompressed size, which is what reading it advances by.
-		let pb = ui::bytes(mp, lane, format!("⇢ {}", name_of(zip)), Some(entry.size()));
-
-		for (i, line) in BufReader::new(pb.wrap_read(entry)).lines().enumerate() {
-			let line = line.expect("read archive line");
-			let v: serde_json::Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("malformed line {i} of {}: {e}", zip.display()));
-			let ts_ns = v["ts"].as_i64().unwrap_or_else(|| panic!("no ts on line {i} of {}", zip.display())) * 1_000_000;
-			assert!(ts_ns >= last_ns, "archives out of order at line {i} of {}: {ts_ns} < {last_ns}", zip.display());
-			last_ns = ts_ns;
-
-			let kind = v["type"].as_str().unwrap_or_else(|| panic!("no type on line {i} of {}", zip.display()));
-			match kind {
-				"snapshot" => {
+	//LOOP: as in `ensure_trades` — the window is finite, and an empty batch is how it says so.
+	loop {
+		let batch = stream.next().await.expect("read the book archive");
+		if batch.is_empty() {
+			break;
+		}
+		for update in batch {
+			let shape = match update {
+				BookUpdate::Snapshot(shape) => {
 					book.bids.clear();
 					book.asks.clear();
+					shape
 				}
-				"delta" => {}
-				other => panic!("unknown archive record type `{other}` on line {i} of {}", zip.display()),
-			}
-			apply(&mut book.bids, Side::Buy, &v["data"]["b"], prec, i);
-			apply(&mut book.asks, Side::Sell, &v["data"]["a"], prec, i);
+				BookUpdate::BatchDelta { shape, .. } => shape,
+			};
+			apply(&mut book.bids, Side::Buy, &shape.bids);
+			apply(&mut book.asks, Side::Sell, &shape.asks);
 
+			let ts_ns = shape.ts.venue_exec.first.as_nanos();
 			let n = emit(sink, clock, prec, &book, &mut emitted, ts_ns);
 			emissions += u64::from(n > 0);
 			levels += n;
-			// Formatting per line would cost more than the fold does.
+			// Formatting per message would cost more than the fold does.
 			if i % 50_000 == 0 {
 				lane.set_message(format!("{emissions} emissions, {levels} levels"));
 			}
+			if ts_ns / DAY_NS != day {
+				lane.inc(1);
+				day = ts_ns / DAY_NS;
+			}
+			i += 1;
 		}
-		pb.finish_and_clear();
-		lane.inc(1);
 	}
 	(emissions, levels)
 }
@@ -384,10 +383,8 @@ fn seek(levels: &[(i32, u32)], side: Side, price: i32) -> Result<usize, usize> {
 	}
 }
 
-fn apply(levels: &mut Vec<(i32, u32)>, side: Side, raw: &serde_json::Value, prec: PrecisionPriceQty, line: usize) {
-	for l in raw.as_array().unwrap_or_else(|| panic!("book side is not an array on line {line}")) {
-		let price = prec.price.parse_i32(l[0].as_str().unwrap_or_else(|| panic!("price is not a string on line {line}")));
-		let qty = prec.qty.parse_u32(l[1].as_str().unwrap_or_else(|| panic!("qty is not a string on line {line}")));
+fn apply(levels: &mut Vec<(i32, u32)>, side: Side, raw: &BTreeMap<i32, u32>) {
+	for (&price, &qty) in raw {
 		match (seek(levels, side, price), qty) {
 			(Ok(j), 0) => {
 				levels.remove(j);
@@ -446,103 +443,12 @@ fn emit(sink: &Sink, clock: &ArchiveClock, prec: PrecisionPriceQty, book: &Level
 	n
 }
 
-fn http_get(url: &str) -> Vec<u8> {
-	let (status, body) = http_try(url);
-	assert_eq!(status, 200, "GET {url} returned {status}");
-	body
-}
-
-/// The status alongside the body, for the one caller whose failure message is the vendor's own
-/// error text rather than the status line — which needs the 4xx body, not a status-as-error.
+/// CoinGecko's status alongside its body: the failure message we want is the vendor's own error
+/// text rather than the status line, so this needs the 4xx body, not a status-as-error.
 fn http_try(url: &str) -> (u16, Vec<u8>) {
-	let mut resp = ureq::get(url)
-		.config()
-		.http_status_as_error(false)
-		.build()
-		.header("user-agent", UA)
-		.call()
-		.unwrap_or_else(|e| panic!("GET {url}: {e}"));
+	let mut resp = ureq::get(url).config().http_status_as_error(false).build().call().unwrap_or_else(|e| panic!("GET {url}: {e}"));
 	let status = resp.status().as_u16();
 	let mut body = Vec::new();
 	resp.body_mut().as_reader().read_to_end(&mut body).expect("read body");
 	(status, body)
-}
-
-/// ponytail: fixed 4-wide chunks, not a semaphore — the last file of a chunk gates the next.
-/// Swap for a channel-fed pool if window sizes ever make that stall matter.
-fn download_all(missing: &[(PathBuf, String)], magic: &'static [u8], mp: &MultiProgress, after: &ProgressBar) {
-	for chunk in missing.chunks(4) {
-		std::thread::scope(|scope| {
-			for (to, url) in chunk {
-				scope.spawn(move || download(to, url, magic, mp, after));
-			}
-		});
-	}
-}
-
-/// `magic` is the format's leading bytes. A size threshold would be a guess — a thin instrument's
-/// day is legitimately tiny — whereas the wrong magic is exactly the truncation or error page we
-/// must not cache, and the rename only happens once the body is what it claims to be. Checking it
-/// off the first bytes rather than the whole body is what lets an ob200 zip stream to disk instead
-/// of through memory.
-fn download(to: &Path, url: &str, magic: &[u8], mp: &MultiProgress, after: &ProgressBar) {
-	let mut resp = ureq::get(url).header("user-agent", UA).call().unwrap_or_else(|e| panic!("GET {url}: {e}"));
-	let status = resp.status().as_u16();
-	assert_eq!(status, 200, "GET {url} returned {status}");
-	// Absent whenever ureq decompressed the response, which is what the archive hosts serve.
-	let len = resp
-		.headers()
-		.get("content-length")
-		.map(|v| v.to_str().expect("content-length is ascii").parse().expect("content-length is a number"));
-	let pb = ui::bytes(mp, after, format!("↓ {}", name_of(to)), len);
-
-	let mut head = vec![0u8; magic.len()];
-	let mut body = pb.wrap_read(resp.body_mut().as_reader());
-	body.read_exact(&mut head).unwrap_or_else(|e| panic!("GET {url} returned no readable body: {e}"));
-	assert_eq!(head, magic, "GET {url} is not the expected archive format");
-
-	let tmp = to.with_extension("part");
-	let mut out = fs::File::create(&tmp).expect("create archive part");
-	out.write_all(&head).expect("write archive");
-	io::copy(&mut body, &mut out).expect("write archive");
-	pb.finish_and_clear();
-	fs::rename(&tmp, to).expect("move archive into place");
-}
-
-fn name_of(p: &Path) -> std::borrow::Cow<'_, str> {
-	p.file_name().expect("archive paths are files").to_string_lossy()
-}
-
-fn ingest_trades(gz: &Path, catalog: &Catalog, s: &Situation, mp: &MultiProgress, after: &ProgressBar) {
-	let prec = s.precision;
-	let mut feather = Feather::<Trade>::new(ExchangeName::Bybit, symbol(s), prec, Trade::POLICY);
-	let mut day = TradeBuf::new(prec);
-
-	let file = fs::File::open(gz).expect("open archive");
-	let pb = ui::bytes(mp, after, format!("⇢ {}", name_of(gz)), Some(file.metadata().expect("stat archive").len()));
-	let mut lines = BufReader::new(flate2::read::GzDecoder::new(pb.wrap_read(file))).lines();
-	let header = lines.next().expect("empty archive").expect("read header");
-	assert!(header.starts_with("timestamp,symbol,side,size,price"), "unexpected header: {header}");
-
-	let mut prev_ts = i64::MIN;
-	for (i, line) in lines.enumerate() {
-		let line = line.expect("read line");
-		let mut cols = line.split(',');
-		let mut col = || cols.next().unwrap_or_else(|| panic!("malformed line {i}: {line}"));
-		let ts_sec: f64 = col().parse().unwrap_or_else(|e| panic!("bad ts on line {i}: {e}"));
-		assert_eq!(col(), s.bybit_symbol, "foreign symbol on line {i}");
-		let side: Side = col().parse().unwrap_or_else(|e| panic!("bad side on line {i}: {e}"));
-		let qty = prec.qty.parse_u32(col());
-		let price = prec.price.parse_i32(col());
-
-		let ts = (ts_sec * 1e9).round() as i64;
-		assert!(ts >= prev_ts, "trades not time-ordered at line {i}: {prev_ts} > {ts}");
-		prev_ts = ts;
-
-		// Historic ingest: no wire time, and we were not there to receive it.
-		day.push(Ts::from_nanos(ts), None, None, i as u64, side, price, qty);
-	}
-	feather.extend(day.cols(0..day.len()));
-	feather.flush(catalog).expect("flush day of trades").expect("non-empty day");
-	pb.finish_and_clear();
 }

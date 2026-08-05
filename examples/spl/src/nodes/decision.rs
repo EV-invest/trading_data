@@ -66,12 +66,12 @@ impl Blind for Decision {
 		Plot {
 			slots: &[0],
 			range: Some((-1.0, 1.0)),
-			labels: &["direction"],
+			labels: &[&["direction"]],
 			..Plot::DEFAULT
 		},
 		Plot {
 			slots: &[1],
-			labels: &["size$"],
+			labels: &[&["size$"]],
 			..Plot::DEFAULT
 		},
 	];

@@ -1,7 +1,7 @@
 //! The one bridge the benches need into the DAG's private history type: a `Hist<'_, T>` an actor
 //! can hand a node, built outside a `Graph`.
 //!
-//! `Hist`'s fields are private and only [`trading_data::Buffering`] constructs one — but
+//! `Hist`'s fields are private and only [`crate::Buffering`] constructs one — but
 //! `Buffering<C, H>: Nudge` is public, and `Nudge::view` is exactly "read this scratch back as the
 //! dep's out". So the scratch tuple *is* the buffer, and this owns one.
 //!
@@ -17,7 +17,7 @@
 //! rows, and OI publishes 288 times. Trim to the join of the declared reaches if a window ever runs
 //! long enough for that to matter.
 
-use trading_data::{Nudge, Stamped};
+use crate::{Nudge, Stamped};
 
 pub struct Ring<T> {
 	/// `<Buffering<C, H> as Nudge>::Scratch` — (all, fresh, watermark), spelled structurally because

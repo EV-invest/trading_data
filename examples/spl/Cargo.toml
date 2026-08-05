@@ -20,7 +20,6 @@ profile = ["trading_data/profile"]
 [dependencies]
 clap.workspace = true
 exec_viz.workspace = true
-flate2.workspace = true
 indicatif.workspace = true
 jiff.workspace = true
 serde.workspace = true
@@ -29,8 +28,8 @@ tokio.workspace = true
 tracing.workspace = true
 trading_data.workspace = true
 ureq.workspace = true
+v_exchanges.workspace = true
 v_utils.workspace = true
-zip.workspace = true
 
 # The benches replay this same strategy on NautilusTrader to measure what the DAG buys over an
 # actor/msgbus. Pinned to the rev scam_pump_liqs' lock names, so the comparison is against the
@@ -44,7 +43,7 @@ nautilus-core = { workspace = true }
 nautilus-data = { workspace = true }
 nautilus-model = { workspace = true }
 nautilus-persistence-macros = { workspace = true }
-trading_data_bench = { workspace = true }
+trading_data = { workspace = true, features = ["bench"] }
 
 # the gate the other three rest on: our nodes called by hand must produce the graph's intent stream.
 [[bench]]

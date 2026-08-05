@@ -1,7 +1,5 @@
 # Rates
 
-Derived from [ARCHITECTURE.md](../ARCHITECTURE.md#dependency-tree).
-
 r[rates.node.declared]
 
 How often a node publishes is a property **of that node**, stated on the node itself. It MUST NOT
@@ -31,9 +29,14 @@ and a dep that has never published are the same state, deliberately and permanen
 
 This is the invariant the whole dep vocabulary exists to serve. Where a read exposes the tick, two
 groupings of one message sequence give two different results, and the node's output becomes a
-measurement of the feed's batching rather than of the market. It is also what makes the
-[live/replay round-trip](feeds.md) evidence of anything: the two feeds group differently by nature,
-so any node that can see the grouping breaks the equivalence they are supposed to demonstrate.
+measurement of the feed's batching rather than of the market.
+
+Note what this does *not* say. It bounds what a node may read, not what batching costs: a coarser
+read clock means fewer points at which nodes evaluate at all, and anything reading a running
+extremum or a threshold crossing over *evaluated* states sees that. A backtest batches on purpose,
+to finish faster than the range it replays, and is imprecise for it. This requirement keeps that
+imprecision out of the *values* a node reads; it does not make a backtest a reproduction of a live
+run, and nothing should be asserted as though it did.
 
 r[rates.folds.exactly-once]
 

@@ -29,8 +29,11 @@ use nautilus_model::{
 	types::{Currency, Money, Price, Quantity},
 };
 use nautilus_persistence_macros::custom_data;
-use trading_data::{Book, DeltaCols, Exact, ExchangeName, Feed as _, LatencyConfig, ReadClock, Replay, Side, required_lanes};
-use trading_data_bench::{COUNTERS, Digest, Probe, Row, publish};
+use trading_data::{
+	Book, DeltaCols, Exact, ExchangeName, Feed as _, LatencyConfig, ReadClock, Replay, Side,
+	bench::{COUNTERS, Digest, Probe, Row, publish},
+	required_lanes,
+};
 use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, symbol, trading_days};
 
 #[custom_data(no_arrow)]
@@ -122,13 +125,14 @@ fn stamp(ns: i64) -> UnixNanos {
 fn tape() -> (Vec<Data>, InstrumentAny) {
 	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
 	let situation = &cfg.situation;
-	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(&situation.bybit_symbol);
-	let catalog = ensure_lanes(&cache, situation);
+	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(situation.pair.replace("-", ""));
+	// Criterion's harness is sync; acquisition is not, and it happens once before any timing starts.
+	let catalog = tokio::runtime::Runtime::new().expect("build the acquisition runtime").block_on(ensure_lanes(&cache, situation));
 	let kinds = required_lanes::<Graph>();
 	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
 	let read_clock = ReadClock::from(Exact::from(cfg.backtest.read_clock.duration()));
 
-	let id = InstrumentId::new(Symbol::new(situation.bybit_symbol.replace('-', "")), Venue::new("BYBIT"));
+	let id = InstrumentId::new(Symbol::new(situation.pair.replace('-', "")), Venue::new("BYBIT"));
 	let mut out = Vec::new();
 	let mut book = Book::default();
 	let mut prec = None;
@@ -187,7 +191,7 @@ fn tape() -> (Vec<Data>, InstrumentAny) {
 	let prec = prec.expect("the window carried neither a trade nor a delta");
 	let (pd, qd) = (prec.price.0 as u8, prec.qty.0 as u8);
 	let quote = Currency::from("USDT");
-	let base = Symbol::new(situation.bybit_symbol.replace('-', "").trim_end_matches("USDT").to_string());
+	let base = Symbol::new(situation.pair.replace('-', "").trim_end_matches("USDT").to_string());
 	let base = *CURRENCY_MAP
 		.lock()
 		.expect("currency map is not poisoned")

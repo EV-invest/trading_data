@@ -1,8 +1,7 @@
 //! A live watchpoint: real Bybit BTC-USDT perp trades + book streamed through the graph until
 //! ctrl-c, recorded onto an [`exec_viz::Viz`] tape whose server runs alongside the feed. Nothing is
 //! asserted and nothing is persisted — the point is a browser sitting at the tape's growing end,
-//! watching the graph decide. The live≡replay invariant this used to prove lives in
-//! `trading_data_live_equiv`.
+//! watching the graph decide.
 //!
 //! The graph consumes on a blocking thread while the ws pumps feed it, so memory stays bounded to
 //! the un-emitted window no matter how long the session runs; the tape is the only record kept, and
@@ -14,7 +13,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use exec_viz::{Backpressure, Viz};
-use trading_data::{Catalog, Cell, Exact, Feed, Live, LiveClock, ReadClock};
+use trading_data::{Catalog, Cell, Feed, Live, LiveClock};
 use trading_data_live_example::{nodes::Graph, pair, pump_book, pump_trades, symbol};
 use v_exchanges::prelude::*;
 use v_utils::*;
@@ -22,9 +21,6 @@ use v_utils::*;
 /// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a
 /// slot in it, so several can be up at once.
 const ORDINAL: u16 = 2;
-/// Small: a fine read clock weaves the two lanes across each other more often, which is what makes
-/// the DAG panel worth watching.
-const CLOCK: ReadClock = ReadClock::from(Exact::from_nanos(10_000_000));
 /// Retained ticks. An indefinite run outlives any buffer, so the tape thins with age rather than
 /// forgetting its front — the last minutes stay tick-exact and the first stay walkable.
 const SCROLLBACK: usize = 100_000;
@@ -45,7 +41,7 @@ async fn main() {
 		qty: pi.qty_precision,
 	};
 
-	let mut live = Live::new(catalog, ExchangeName::Bybit, symbol(), prec, false, Arc::new(LiveClock), CLOCK);
+	let mut live = Live::new(catalog, ExchangeName::Bybit, symbol(), prec, false, Arc::new(LiveClock));
 	let trades_stream = bybit.ws_trades(&[pair()], Instrument::Perp).await.expect("open ws_trades");
 	let book_stream = bybit.ws_book(&[pair()], Instrument::Perp).await.expect("open ws_book");
 

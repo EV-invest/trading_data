@@ -1,13 +1,15 @@
 use core::fmt;
 
-use trading_data::{Blind, Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Horizon, Ink, McRoot, OiRoot, Plot, ProbabilisticDistribution, Sampling, Usd, node, value_nudge};
+use trading_data::{Blind, Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Ink, McRoot, OiRoot, Plot, ProbabilisticDistribution, Sampling, Usd, node, value_nudge};
 use v_utils::*;
 
-use super::{Change1d, Change3m, Imbalance, Screener, Spread, Volume1h, Volume1m, momentum, oi_delta::OI_REACH};
+use super::{Change1d, Change3m, Imbalance, Momentum, Screener, Spread, Volume1h, Volume1m, oi_delta::OI_REACH};
 
 /// The wire order of [`Classified`]'s slots, category-major.
 const CATEGORIES: [Category; 5] = [Category::Indeterminate, Category::Liquidations, Category::MmClosing, Category::Manipulation, Category::Momentum];
+const CATEGORY_NAMES: [&str; 5] = ["Indeterminate", "Liquidations", "MmClosing", "Manipulation", "Momentum"];
 const QUALITIES: [Quality; 5] = [Quality::A, Quality::B, Quality::C, Quality::D, Quality::E];
+const QUALITY_NAMES: [&str; 5] = ["A", "B", "C", "D", "E"];
 const SLOTS: usize = CATEGORIES.len() * QUALITIES.len();
 /// The traits answer *which* situation, never how good it would be, so grading is not something
 /// this classifier can currently do at all — the value is pinned and every share lands in one
@@ -86,13 +88,6 @@ const TRAITS: &[Trait] = &[
 		invalidates_others: false,
 		hits: |s| matches!((s.volume_1m, s.volume_1h), (Some(m), Some(h)) if h > 0.0 && m > h / 60.0 * VOLUME_SURGE),
 	},
-];
-const LABELS: [&str; SLOTS] = [
-	"Indeterminate A", "Indeterminate B", "Indeterminate C", "Indeterminate D", "Indeterminate E", //
-	"Liquidations A", "Liquidations B", "Liquidations C", "Liquidations D", "Liquidations E", //
-	"MmClosing A", "MmClosing B", "MmClosing C", "MmClosing D", "MmClosing E", //
-	"Manipulation A", "Manipulation B", "Manipulation C", "Manipulation D", "Manipulation E", //
-	"Momentum A", "Momentum B", "Momentum C", "Momentum D", "Momentum E",
 ];
 /// Quality darkens within its category's run, as it does in SPL's own chart. The hue is the
 /// renderer's — one per slot — so the category reads off that.
@@ -281,8 +276,7 @@ impl Blind for Classify {
 	type Deps = (
 		Gating<Screener>,
 		trading_data::Bars<{ TF_1MIN }>,
-		Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>,
-		Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>,
+		Sampling<Momentum>,
 		Change1d,
 		Change3m,
 		Volume1m,
@@ -296,7 +290,7 @@ impl Blind for Classify {
 	/// The out is a distribution, so the slots stack to a full bar and the scale is fixed to it.
 	const PLOTS: &'static [Plot] = &[Plot {
 		range: Some((0.0, 1.0)),
-		labels: &LABELS,
+		labels: &[&CATEGORY_NAMES, &QUALITY_NAMES],
 		inks: &INKS,
 		solo: true,
 		bars: true,
@@ -304,10 +298,10 @@ impl Blind for Classify {
 	}];
 	const WHY: &'static str = "an enum collapse: the out names a regime, and a regime has no slope";
 
-	fn advance<'t>(&'t mut self, (hit, m1, m5, h4, c1d, c3m, v1m, v1h, imb, spr, mc, oi): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (hit, m1, mom, c1d, c3m, v1m, v1h, imb, spr, mc, oi): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(hit, "a gating dep reads true inside `advance`");
 		Some(Classified::vote(&Situation {
-			momentum: momentum::standing(m5, h4),
+			momentum: mom,
 			market_cap: mc.map(|m| m.market_cap),
 			// the freshest close there is: the ratio against a USD market cap is the reading, and a
 			// stale leg of it would move the threshold rather than the measurement.

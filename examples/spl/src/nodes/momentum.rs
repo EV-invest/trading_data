@@ -11,8 +11,8 @@ pub const LEGS: [Timeframe; 2] = [TF_5MIN, TF_4H];
 /// which is why both are deps; the config picks which one.
 ///
 /// The window is 181 closes — 180 returns — and is not a knob: it *is* the reach,
-/// `Horizon::Elems(181)`, spelled at every reader that carries these deps. Drift is a type error
-/// there.
+/// `Horizon::Elems(181)`. A reader clocked by something else takes `Sampling<Momentum>` rather than
+/// re-declaring these deps.
 ///
 /// `None` means the one thing it should: the window is not full, or its returns were all identical.
 /// Pine's second, slower leg is not ported — see the commit that removed it.
@@ -49,13 +49,6 @@ fn leg<'t>(m5: Hist<'t, Bar>, h4: Hist<'t, Bar>) -> Hist<'t, Bar> {
 	}
 }
 
-/// The Sharpe standing at this instant rather than one per fresh close — for a reader clocked by
-/// something other than the leg, which has no fresh element of its own to hang a window off.
-pub(super) fn standing(m5: Hist<'_, Bar>, h4: Hist<'_, Bar>) -> Option<f64> {
-	let all = leg(m5, h4).all();
-	(all.len() == 181).then(|| sharpe(all)).flatten()
-}
-
 impl Cell for Momentum {
 	type Out<'t> = &'t [Option<f64>];
 }
@@ -67,7 +60,7 @@ impl Emit for Momentum {
 	);
 
 	const PLOTS: &'static [Plot] = &[Plot {
-		labels: &["sharpe"],
+		labels: &[&["sharpe"]],
 		..Plot::DEFAULT
 	}];
 	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";

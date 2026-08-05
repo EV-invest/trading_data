@@ -603,8 +603,9 @@ pub struct Plot {
 	/// Fixed y-scale, e.g. RSI (0, 100).
 	pub range: Option<(f64, f64)>,
 	pub guides: &'static [Guide],
-	/// Names for `slots`, positionally; `[]` = indices.
-	pub labels: &'static [&'static str],
+	/// Names for `slots`, one list per axis of the plot's shape; `[]` = indices. The axis lengths
+	/// multiply out to the plot's slot count, in the same row-major order the out flattens in.
+	pub labels: &'static [&'static [&'static str]],
 	/// Per-element; `[]` = [`Ink::MAIN`] for all.
 	pub inks: &'static [Ink],
 	/// Draw on the price pane instead of an own indicator pane; price-denominated.
@@ -635,8 +636,9 @@ impl Plot {
 	};
 
 	/// `[]` slots means "every slot", which two plots cannot both claim. A candle plot is four
-	/// price-denominated slots, so it names them and rides the price pane.
-	const fn coherent(plots: &'static [Plot]) -> bool {
+	/// price-denominated slots, so it names them and rides the price pane. `dims` is the out's own
+	/// shape, which a plot claiming all of it is named against.
+	const fn coherent(plots: &'static [Plot], dims: &'static [usize]) -> bool {
 		let mut i = 0;
 		while i < plots.len() {
 			if plots[i].slots.is_empty() && plots.len() > 1 {
@@ -644,6 +646,27 @@ impl Plot {
 			}
 			if plots[i].candles && (!plots[i].overlay || plots[i].slots.len() != 4) {
 				return false;
+			}
+			if !plots[i].labels.is_empty() {
+				let mut named = 1;
+				let mut a = 0;
+				while a < plots[i].labels.len() {
+					named *= plots[i].labels[a].len();
+					a += 1;
+				}
+				let mut drawn = 1;
+				if plots[i].slots.is_empty() {
+					let mut d = 0;
+					while d < dims.len() {
+						drawn *= dims[d];
+						d += 1;
+					}
+				} else {
+					drawn = plots[i].slots.len();
+				}
+				if named != drawn {
+					return false;
+				}
 			}
 			i += 1;
 		}
@@ -1083,6 +1106,9 @@ pub struct Jac<'a, 'd, N: Node + ?Sized> {
 	pub dep_buf: &'a [f64],
 	pub out_buf: &'a [f64],
 	pub out: &'a mut [f64],
+	/// The sweep's re-advance scratch, for a kernel that has to bump its way to a column. Empty of
+	/// meaning between calls — it is here so a finite difference costs no allocation per node.
+	pub bumped: &'a mut alloc::vec::Vec<f64>,
 }
 
 /// The kernel of a [`Symbolic`] node: the value is `body().eval`, the Jacobian is `body().grad` —
@@ -1552,6 +1578,10 @@ impl<T: Glance> Glance for Hist<'_, T> {
 /// failure as two instances of one node type.
 pub struct Buffer<C: Series, const H: Horizon> {
 	buf: alloc::vec::Vec<C::Item>,
+	/// Where the retained window starts. Trimming by `drain(..n)` memmoved the whole window every
+	/// tick — the window is the point, so it is never small — where a cursor moves nothing and the
+	/// window stays the one contiguous slice [`Hist`] hands out.
+	cur: usize,
 	/// The highest `ts_ns` this buffer cannot speak for: the last one dropped, or — before the first
 	/// drop — the first one ever seen, since nothing proves the run reached back past it. A
 	/// [`Horizon::Span`] window is complete iff it begins strictly after this, which is exact where
@@ -1564,6 +1594,7 @@ impl<C: Series, const H: Horizon> Default for Buffer<C, H> {
 	fn default() -> Self {
 		Self {
 			buf: alloc::vec::Vec::new(),
+			cur: 0,
 			watermark: i64::MIN,
 		}
 	}
@@ -1571,15 +1602,19 @@ impl<C: Series, const H: Horizon> Default for Buffer<C, H> {
 impl<C: Series, const H: Horizon> Clone for Buffer<C, H> {
 	fn clone(&self) -> Self {
 		Self {
-			buf: self.buf.clone(),
+			buf: self.buf[self.cur..].to_vec(),
+			cur: 0,
 			watermark: self.watermark,
 		}
 	}
 
 	/// The one thing `derive(Clone)` would not have given: its `clone_from` is `*self = clone()`, and
-	/// a buffer holding a whole reach is what [`fd_col`] re-clones once per dep element.
+	/// a buffer holding a whole reach is what [`fd_col`] re-clones once per dep element. Only the
+	/// retained window is carried — the dropped prefix is waiting to be reclaimed, not state.
 	fn clone_from(&mut self, src: &Self) {
-		self.buf.clone_from(&src.buf);
+		self.buf.clear();
+		self.buf.extend_from_slice(&src.buf[src.cur..]);
+		self.cur = 0;
 		self.watermark = src.watermark;
 	}
 }
@@ -1628,20 +1663,29 @@ where
 		}
 		// Trim *before* the append: `past` must be what stood behind this tick's batch, or an
 		// intra-batch cursor walking several elements reads a window already trimmed by its own tail.
-		let drop = match H {
-			Horizon::Elems(k) => self.buf.len().saturating_sub(k),
-			Horizon::Span(tf) => match self.buf.last() {
-				Some(newest) => {
-					let cut = newest.ts_ns() - Horizon::ns(tf);
-					self.buf.partition_point(|x| x.ts_ns() <= cut)
-				}
-				None => 0,
-			},
-			_ => unreachable!(),
+		let drop = {
+			let win = &self.buf[self.cur..];
+			match H {
+				Horizon::Elems(k) => win.len().saturating_sub(k),
+				Horizon::Span(tf) => match win.last() {
+					Some(newest) => {
+						let cut = newest.ts_ns() - Horizon::ns(tf);
+						win.partition_point(|x| x.ts_ns() <= cut)
+					}
+					None => 0,
+				},
+				_ => unreachable!(),
+			}
 		};
 		if drop > 0 {
-			self.watermark = self.watermark.max(self.buf[drop - 1].ts_ns());
-			self.buf.drain(..drop);
+			self.watermark = self.watermark.max(self.buf[self.cur + drop - 1].ts_ns());
+			self.cur += drop;
+			// Reclaim only once the dropped prefix dominates, as `sync::Lane::compact` does: amortized
+			// O(1) an element, against a memmove of the whole window on every tick.
+			if self.cur * 2 >= self.buf.len() {
+				self.buf.drain(..self.cur);
+				self.cur = 0;
+			}
 		}
 		if self.watermark == i64::MIN
 			&& let Some(first) = fresh.first()
@@ -1650,7 +1694,7 @@ where
 		}
 		self.buf.extend_from_slice(fresh);
 		Hist {
-			all: &self.buf,
+			all: &self.buf[self.cur..],
 			fresh: fresh.len(),
 			horizon: H,
 			watermark: self.watermark,
@@ -2198,16 +2242,16 @@ impl<'a> Fire<'a> {
 	/// the exception rather than the shape, spliced in with `..` at the one site that states them.
 	/// `flat: None` is the unfired reading — no flattening happened, so there is none to report.
 	#[inline]
-	fn of<T: Flat + Glance>(out: &'a T, plots: &'static [Plot], clock: Option<Timeframe>, dep_dims: &'a [&'static [usize]], flat: Option<&'a Flats>) -> Self {
+	fn of<T: Flat + Glance>(out: &'a T, plots: &'static [Plot], clock: Option<Timeframe>, dep_dims: &'a [&'static [usize]], flat: Option<Flats<'a>>) -> Self {
 		Fire {
 			glance: out,
 			dims: T::DIMS,
 			plots,
 			clock,
 			fires: out.fires(),
-			vals: flat.and_then(|f| f.fired.then_some(f.vals.as_slice())),
+			vals: flat.and_then(|f| f.fired.then_some(f.vals)),
 			dep_dims,
-			jac: flat.and_then(|f| f.jac.as_deref()),
+			jac: flat.and_then(|f| f.jac),
 			exact: flat.is_some_and(|f| f.exact),
 			formula: None,
 			deriv: None,
@@ -2216,22 +2260,36 @@ impl<'a> Fire<'a> {
 	}
 }
 
-/// The un-bumped flattenings of one node's out and deps, plus the finite difference taken off them
-/// — the observed leg every stepped node shares, whatever kind of node it is.
-struct Flats {
-	fired: bool,
+/// The buffers the observed sweep writes each node's flattenings into. Every one of them is
+/// `Flat::LEN` wide — a per-node constant — so they settle at the graph's widest node within the
+/// first tick and never allocate again; owning them per node instead put a malloc/free pair on
+/// each, which at graph scale is most of what reaching an observer costs.
+#[derive(Default)]
+pub struct Sweep {
 	vals: alloc::vec::Vec<f64>,
 	deps: alloc::vec::Vec<f64>,
-	jac: Option<alloc::vec::Vec<f64>>,
+	jac: alloc::vec::Vec<f64>,
+	bumped: alloc::vec::Vec<f64>,
+}
+
+/// The un-bumped flattenings of one node's out and deps, plus the Jacobian read off them — the
+/// observed leg every stepped node shares, whatever kind of node it is. A view into the [`Sweep`]
+/// rather than an owner: the next node overwrites all of it.
+#[derive(Clone, Copy)]
+struct Flats<'s> {
+	fired: bool,
+	vals: &'s [f64],
+	deps: &'s [f64],
+	jac: Option<&'s [f64]>,
 	exact: bool,
 }
 
-impl Flats {
+impl<'s> Flats<'s> {
 	/// `fill` writes the node's Jacobian over `(dep_buf, out_buf)` and reports whether it is exact;
 	/// `None` is an observer that reads no further than [`Want::Vals`], and it is asked for only
 	/// where there is an out to differentiate.
 	#[inline]
-	fn of<'d, O: Flat, D: DepFlat>(out: &O, deps: &D::Outs<'d>, fill: Option<impl FnOnce(&[f64], &[f64], &mut [f64]) -> bool>) -> Self {
+	fn of<'d, O: Flat, D: DepFlat>(sweep: &'s mut Sweep, out: &O, deps: &D::Outs<'d>, fill: Option<impl FnOnce(&[f64], &[f64], &mut [f64], &mut alloc::vec::Vec<f64>) -> bool>) -> Self {
 		// r[impl outs.flat.nonempty]
 		const {
 			assert!(
@@ -2239,17 +2297,21 @@ impl Flats {
 				"an out flattens to at least one slot: a fire is read downstream as the slots being there, so a zero-slot out would be indistinguishable from not firing"
 			);
 		}
-		let mut vals = alloc::vec![f64::NAN; O::LEN];
-		let fired = out.flat(&mut vals);
-		let mut dep_buf = alloc::vec![f64::NAN; D::LEN];
-		D::flat(deps, &mut dep_buf);
+		let Sweep { vals, deps: dep_buf, jac, bumped } = sweep;
+		vals.clear();
+		vals.resize(O::LEN, f64::NAN);
+		let fired = out.flat(vals);
+		dep_buf.clear();
+		dep_buf.resize(D::LEN, f64::NAN);
+		D::flat(deps, dep_buf);
 		let (jac, exact) = match fill.filter(|_| fired) {
 			// NaN, not zero: a column the kernel leaves alone is one it has no signal for, and the
 			// absorbing element is what says so (§1.6).
 			Some(fill) => {
-				let mut jac = alloc::vec![f64::NAN; O::LEN * D::LEN];
-				let exact = fill(&dep_buf, &vals, &mut jac);
-				(Some(jac), exact)
+				jac.clear();
+				jac.resize(O::LEN * D::LEN, f64::NAN);
+				let exact = fill(dep_buf, vals, jac, bumped);
+				(Some(&**jac), exact)
 			}
 			None => (None, false),
 		};
@@ -2344,11 +2406,12 @@ where
 /// that element bumped by about `h`, writing the bumped out into `bumped` and returning whether it
 /// fired and the perturbation the dep actually applied. Columns the caller's NaN fill is left
 /// standing in, where a dep is unfired or the bump crossed a firing branch. `out_buf`/`dep_buf` are
-/// the un-bumped flattenings.
-fn fd_cols(dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64], mut col: impl FnMut(usize, f64, &mut [f64]) -> (bool, f64)) {
+/// the un-bumped flattenings; `bumped` is the caller's scratch, overwritten wholly.
+fn fd_cols(dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64], bumped: &mut alloc::vec::Vec<f64>, mut col: impl FnMut(usize, f64, &mut [f64]) -> (bool, f64)) {
 	let (out_len, dep_len) = (out_buf.len(), dep_buf.len());
 	debug_assert_eq!(jac.len(), out_len * dep_len, "the Jacobian buffer is row-major out_len × dep_len");
-	let mut bumped = alloc::vec![f64::NAN; out_len];
+	bumped.clear();
+	bumped.resize(out_len, f64::NAN);
 	for slot in 0..dep_len {
 		let x = dep_buf[slot];
 		if x.is_nan() {
@@ -2356,12 +2419,15 @@ fn fd_cols(dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64], mut col: impl FnMu
 		}
 		// `dh`, not `h`: a quantized dep moves in whole ticks, and dividing by a step it never took
 		// is a fabricated slope. `0.0` ⇒ the slot has no derivative at all.
-		let (fired, dh) = col(slot, (x.abs() * 1e-6).max(1e-9), &mut bumped);
+		let (fired, dh) = col(slot, (x.abs() * 1e-6).max(1e-9), bumped);
 		if !fired || dh == 0.0 {
 			continue; // bump crossed a firing branch, or the slot is discrete — column stays NaN
 		}
-		for i in 0..out_len {
-			jac[i * dep_len + slot] = (bumped[i] - out_buf[i]) / dh;
+		// `chunks_exact_mut` rather than `jac[i * dep_len + slot]`: the row is the unit being written,
+		// and spelling it as one drops both the multiply and the bounds check the optimizer would have
+		// had to reassociate through it to elide.
+		for (row, (b, o)) in jac.chunks_exact_mut(dep_len).zip(bumped.iter().zip(out_buf)) {
+			row[slot] = (b - o) / dh;
 		}
 	}
 }
@@ -2377,7 +2443,9 @@ where
 	let mut scratch = <<N as Blind>::Deps as DepFlat>::Scratch::default();
 	let mut clone = pre.clone();
 	let deps = j.deps;
-	fd_cols(j.dep_buf, j.out_buf, j.out, |slot, h, bumped| fd_col::<N>(pre, &mut clone, deps, &mut scratch, slot, h, bumped))
+	fd_cols(j.dep_buf, j.out_buf, j.out, j.bumped, |slot, h, bumped| {
+		fd_col::<N>(pre, &mut clone, deps, &mut scratch, slot, h, bumped)
+	})
 }
 
 /// [`step`] + [`Observer::on`] before the push. The `()` observer erases to exactly `step`.
@@ -2387,7 +2455,7 @@ where
 /// [`Nudge`] the *last* element of one dep (batch deps copied into scratch), re-advance the clone at
 /// a shorter lifetime, diff the last out elements.
 #[cfg_attr(feature = "profile", inline(never))]
-pub fn step_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, obs: &mut O) -> Cons<'t, N, F>
+pub fn step_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node,
 	N::Deps: Pull<'t, F, I> + DepFlat,
@@ -2396,7 +2464,7 @@ where
 	N::Out<'t>: Glance + Dark<<N::Deps as DepSet>::Lead>,
 	F: 't, {
 	let run = <N::Deps as Pull<'t, F, I>>::open(&frame);
-	step_seen(frame, node, run, <N::Out<'t> as Dark<<N::Deps as DepSet>::Lead>>::dark, obs)
+	step_seen(frame, node, run, <N::Out<'t> as Dark<<N::Deps as DepSet>::Lead>>::dark, sweep, obs)
 }
 
 /// [`step_obs`] for a node the graph derived no standing demand for: it advances only while every
@@ -2405,7 +2473,7 @@ where
 /// obligation `graph!` puts on a node it suppresses.
 #[doc(hidden)]
 #[cfg_attr(feature = "profile", inline(never))]
-pub fn step_when_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, demanded: bool, obs: &mut O) -> Cons<'t, N, F>
+pub fn step_when_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, demanded: bool, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node,
 	N::Deps: Pull<'t, F, I> + DepFlat,
@@ -2414,14 +2482,14 @@ where
 	N::Out<'t>: Glance + Latent,
 	F: 't, {
 	let run = demanded && <N::Deps as Pull<'t, F, I>>::open(&frame);
-	step_seen(frame, node, run, <N::Out<'t> as Latent>::latent, obs)
+	step_seen(frame, node, run, <N::Out<'t> as Latent>::latent, sweep, obs)
 }
 
 /// The observed sweep of one level node, given whether it runs at all and what it reads if it does
 /// not. `unrun` is a thunk rather than a value because [`Dark<No>::dark`](Dark) is unreachable by
 /// construction — an ungated node has no dark branch to evaluate.
 #[cfg_attr(feature = "profile", inline(always))]
-fn step_seen<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, run: bool, unrun: impl FnOnce() -> N::Out<'t>, obs: &mut O) -> Cons<'t, N, F>
+fn step_seen<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, run: bool, unrun: impl FnOnce() -> N::Out<'t>, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, N, F>
 where
 	N: Node,
 	N::Deps: Pull<'t, F, I> + DepFlat,
@@ -2431,8 +2499,8 @@ where
 	F: 't, {
 	const {
 		assert!(
-			Plot::coherent(N::PLOTS),
-			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay"
+			Plot::coherent(N::PLOTS, <N::Out<'static> as Flat>::DIMS),
+			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay; a plot's `labels` axes must multiply out to its slot count"
 		)
 	}
 
@@ -2461,9 +2529,21 @@ where
 	let pre = <N::Kernel as Level<N>>::pre(node, want, deps);
 	let out = <N::Kernel as Level<N>>::advance(node, deps);
 	let flat = Flats::of::<_, N::Deps>(
+		sweep,
 		&out,
 		&deps,
-		(want == Want::Jac).then_some(|dep_buf: &[f64], out_buf: &[f64], out: &mut [f64]| <N::Kernel as Level<N>>::jac(&pre, Jac { deps, dep_buf, out_buf, out })),
+		(want == Want::Jac).then_some(|dep_buf: &[f64], out_buf: &[f64], out: &mut [f64], bumped: &mut alloc::vec::Vec<f64>| {
+			<N::Kernel as Level<N>>::jac(
+				&pre,
+				Jac {
+					deps,
+					dep_buf,
+					out_buf,
+					out,
+					bumped,
+				},
+			)
+		}),
 	);
 
 	// the algebra reading, where the kernel has one: `formula` is `None` for every `Opaque` node and
@@ -2473,13 +2553,13 @@ where
 		names: <N::Deps as DepSet>::NAMES,
 		parts: (0..<N::Deps as DepFlat>::LEN).map(|i| f.diff(i).simplify()).collect(),
 	});
-	let trace = formula.map(|f| f.trace(&flat.deps));
+	let trace = formula.map(|f| f.trace(flat.deps));
 
 	let fire = Fire {
 		formula: formula.map(|f| f as &dyn core::fmt::Display),
 		deriv: deriv.as_ref().map(|d| d as &dyn core::fmt::Display),
 		trace: trace.as_ref().map(|t| t as &dyn core::fmt::Display),
-		..Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Deps as DepFlat>::DIMS, Some(&flat))
+		..Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Deps as DepFlat>::DIMS, Some(flat))
 	};
 	obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
@@ -2490,7 +2570,7 @@ where
 /// leg cannot pay. The re-`emit` needs no [`fd_col`]-style lifetime isolation (`&mut self` never
 /// lends the node), so its column body is inline; everything a column overwrites wholly — the deps'
 /// scratch, the clone, its output run — is hoisted across the loop.
-fn fd_jac_emit<'d, E>(pre: &E, deps: EmitOuts<'d, E>, dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64])
+fn fd_jac_emit<'d, E>(pre: &E, deps: EmitOuts<'d, E>, dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64], bumped: &mut alloc::vec::Vec<f64>)
 where
 	E: Emit + Clone,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
@@ -2500,20 +2580,20 @@ where
 	let mut scratch = <E::Deps as DepFlat>::Scratch::default();
 	let mut emitted = alloc::vec::Vec::new();
 	let mut clone = pre.clone();
-	fd_cols(dep_buf, out_buf, jac, |slot, h, bumped| {
+	fd_cols(dep_buf, out_buf, jac, bumped, |slot, h, bumped| {
 		let dh = <E::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
 		emitted.clear();
 		clone.clone_from(pre);
 		clone.emit(<E::Deps as DepFlat>::view(&scratch), &mut emitted);
 		(emitted.as_slice().flat(bumped), dh)
-	})
+	});
 }
 
 /// [`step_emit`] + [`Observer::on`] before the push — [`step_obs`]'s sibling, with the engine's
 /// buffer standing in for the node's out. A gate-closed, undemanded or off-clock emit node is simply
 /// the empty run, which is why this one needs no [`Latent`] sibling the way [`step_when_obs`] is one.
 #[cfg_attr(feature = "profile", inline(never))]
-pub fn step_emit_obs<'t, E, F, I, O: Observer>(frame: F, e: &'t mut Emitter<E>, demanded: bool, ts: i64, obs: &mut O) -> Cons<'t, E, F>
+pub fn step_emit_obs<'t, E, F, I, O: Observer>(frame: F, e: &'t mut Emitter<E>, demanded: bool, ts: i64, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, E, F>
 where
 	E: Emit + Clone,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
@@ -2523,8 +2603,8 @@ where
 	F: 't, {
 	const {
 		assert!(
-			Plot::coherent(<E as Emit>::PLOTS),
-			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay"
+			Plot::coherent(<E as Emit>::PLOTS, <E::Item as Flat>::DIMS),
+			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay; a plot's `labels` axes must multiply out to its slot count"
 		)
 	}
 	e.buf.clear();
@@ -2551,17 +2631,18 @@ where
 	e.node.emit(deps, &mut e.buf);
 	let out: &'t [E::Item] = &e.buf;
 	let flat = Flats::of::<_, E::Deps>(
+		sweep,
 		&out,
 		&deps,
 		pre.as_ref().map(|pre| {
-			move |dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64]| {
-				fd_jac_emit::<E>(pre, deps, dep_buf, out_buf, jac);
+			move |dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64], bumped: &mut alloc::vec::Vec<f64>| {
+				fd_jac_emit::<E>(pre, deps, dep_buf, out_buf, jac, bumped);
 				false
 			}
 		}),
 	);
 
-	let fire = Fire::of(&out, <E as Emit>::PLOTS, <E as Cell>::CLOCK, <E::Deps as DepFlat>::DIMS, Some(&flat));
+	let fire = Fire::of(&out, <E as Emit>::PLOTS, <E as Cell>::CLOCK, <E::Deps as DepFlat>::DIMS, Some(flat));
 	obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
 }
@@ -2745,7 +2826,7 @@ pub use trading_data_macros::{__graph_resolve, graph, node, node_alias};
 
 /// The root half of the observation choke point: flatten a seeded root value and emit its
 /// [`Fire`] (no deps, no jac). No-op under an inactive observer.
-pub fn observe_root<'t, C, O>(out: C::Out<'t>, obs: &mut O)
+pub fn observe_root<'t, C, O>(out: C::Out<'t>, sweep: &mut Sweep, obs: &mut O)
 where
 	C: Cell,
 	C::Out<'t>: Flat + Glance,
@@ -2753,15 +2834,17 @@ where
 	if obs.want(C::NAME) == Want::Nothing {
 		return;
 	}
-	let mut vals = alloc::vec![f64::NAN; <C::Out<'t> as Flat>::LEN];
+	sweep.vals.clear();
+	sweep.vals.resize(<C::Out<'t> as Flat>::LEN, f64::NAN);
 	// a root is pulled from nothing, so there are no deps to flatten and nothing to differentiate.
-	let fired = out.flat(&mut vals);
+	let fired = out.flat(&mut sweep.vals);
+	sweep.deps.clear();
 	let flat = Flats {
 		fired,
-		vals,
-		deps: alloc::vec::Vec::new(),
+		vals: &sweep.vals,
+		deps: &sweep.deps,
 		jac: None,
 		exact: false,
 	};
-	obs.on(C::NAME, &[], &[], Fire::of(&out, &[Plot::DEFAULT], C::CLOCK, &[], Some(&flat)));
+	obs.on(C::NAME, &[], &[], Fire::of(&out, &[Plot::DEFAULT], C::CLOCK, &[], Some(flat)));
 }

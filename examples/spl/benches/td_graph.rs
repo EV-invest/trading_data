@@ -9,8 +9,11 @@ use std::{
 	sync::atomic::Ordering,
 };
 
-use trading_data::{Exact, ExchangeName, Feed as _, LatencyConfig, ReadClock, Replay, required_lanes};
-use trading_data_bench::{COUNTERS, Digest, Probe, Row, publish};
+use trading_data::{
+	Exact, ExchangeName, Feed as _, LatencyConfig, ReadClock, Replay,
+	bench::{COUNTERS, Digest, Probe, Row, publish},
+	required_lanes,
+};
 use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, symbol, trading_days};
 
 fn main() {
@@ -18,8 +21,9 @@ fn main() {
 	let situation = &cfg.situation;
 	let mut graph = Graph::default();
 
-	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(&situation.bybit_symbol);
-	let catalog = ensure_lanes(&cache, situation);
+	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(situation.pair.replace("-", ""));
+	// Criterion's harness is sync; acquisition is not, and it happens once before any timing starts.
+	let catalog = tokio::runtime::Runtime::new().expect("build the acquisition runtime").block_on(ensure_lanes(&cache, situation));
 	let kinds = required_lanes::<Graph>();
 	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
 	let read_clock = ReadClock::from(Exact::from(cfg.backtest.read_clock.duration()));
