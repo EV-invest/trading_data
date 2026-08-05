@@ -93,9 +93,10 @@ fn simplify_clears_derivative_litter() {
 }
 
 /// Every operator, differentiated two ways that share no code: `grad`'s chain rule, and a central
-/// difference of `eval`. This is where the algebra is checked — `r[kernels.jac.one-reading]` leaves
-/// the engine with nothing to compare a `Pure` node's Jacobian against at runtime, deliberately, so
-/// the comparison runs once here instead of every tick.
+/// difference of `eval`. This is where the algebra is checked — a fire carries one array for the
+/// one-step reading whichever way the kernel reached it (`r[kernels.jac.two-quantities]`), so the
+/// engine has nothing to compare a `Pure` node's Jacobian against at runtime, deliberately, and the
+/// comparison runs once here instead of every tick.
 ///
 /// `Cmp`/`Select` carry a step, so they are sampled away from it: a difference across a jump is not
 /// a slope, and neither reading claims one.

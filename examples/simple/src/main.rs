@@ -187,8 +187,8 @@ impl Observer for SignalDoc {
 		if node.rsplit("::").next() != Some("Signal") {
 			return;
 		}
-		// a `Pure` node's Jacobian is differentiated, never guessed — `r[kernels.jac.one-reading]`,
-		// asserted here rather than compared against a second reading that no longer exists.
+		// a `Pure` node's one-step Jacobian is differentiated, never guessed — asserted here rather
+		// than compared against a second reading of the same quantity (`r[kernels.jac.two-quantities]`).
 		if fire.jac.is_some_and(|j| j.iter().any(|x| x.is_finite())) {
 			assert!(fire.exact, "Signal is a `Symbolic` node: its Jacobian must be the exact one");
 			self.exact += 1;

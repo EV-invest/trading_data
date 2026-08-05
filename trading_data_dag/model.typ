@@ -271,9 +271,12 @@ _Who holds the history_ is the axis the wrappers actually partition:
    │    │                   never by hand: a node names the kernel that computes it, and the
    │    │                   set is SEALED, so there is no body the engine cannot also read.
    │    │                     Level::advance   the value
-   │    │                     Level::pre/jac   the derivative, priced per `Want`
+   │    │                     Level::pre/jac   the ONE-STEP derivative, priced per `Want`
    │    │                     Level::formula   the equation, where the kernel has one
-   │    │                     Level::WHY       None ⇔ it has one
+   │    │                     Level::FIDELITY  Exact | Partial(omits) | Opaque(why) — how much
+   │    │                                      of what the body READ the Jacobian covers, which
+   │    │                                      is not the same question as whether it was
+   │    │                                      differentiated or bumped
    │    │
    │    ├── Gate            Out<'t> = bool. Scalar-out always; the gated node may be batch,
    │    │    │              so a gated batch node's episode boundary is quantized to its
@@ -296,7 +299,7 @@ _Who holds the history_ is the axis the wrappers actually partition:
    │    └── Blind           const WHY · fn advance(&'t mut self, ..)          ⇒ kernel `Opaque`
    │                        SELF-BORROWS ⇒ a node lends its own buffer for the whole tick.
    │                        The stated hatch: `WHY` is the cost of using it, and `graph!`
-   │                        counts it into `OPAQUE`. `Clone` is a supertrait because the
+   │                        counts it into `FIDELITY`. `Clone` is a supertrait because the
    │                        finite-difference witness is what it has instead of a derivative.
    │
    ├── Emit: Series         const WHY · fn emit(&mut self, EmitOuts, out: &mut Vec<Item>)
@@ -338,7 +341,7 @@ _Who holds the history_ is the axis the wrappers actually partition:
   edge(<cell>, <ep>, "->"),
 
   node((-3.6, 1.3), align(center)[`Blind` \ #text(7pt)[`WHY` · `advance` self-borrows]], name: <bl>),
-  node((-3.0, 2.7), align(center)[`Level` (sealed) \ #text(7pt)[`Pure` · `Opaque`]], fill: rgb("#eef0e4"), name: <lv>),
+  node((-3.0, 2.7), align(center)[`Level` (sealed) \ #text(7pt)[`Pure` · `Opaque`] \ #text(7pt)[`FIDELITY`: how much it covers]], fill: rgb("#eef0e4"), name: <lv>),
   node((1.1, 2.7), align(center)[`Gate` \ #text(7pt)[`Out = bool`]], name: <ga>),
 
   edge(<cell>, <bl>, "->"),
@@ -381,9 +384,11 @@ _Who holds the history_ is the axis the wrappers actually partition:
               Declared by `slice_nudge!` / `value_nudge!`.
   DepFlat     the whole dep tuple concatenated, in `Deps` order ⇒ one FD column per element
   Jac         deps + their flattening + the row-major out_len × dep_len buffer a kernel
-              fills. ONE array, never two: an exact column and a finite-difference one are
-              the same quantity (a one-step impulse response), so `Fire` carries the array
-              and an `exact` flag beside it (`r[kernels.jac.one-reading]`).
+              fills. ONE array, holding ONE of the two quantities: the ONE-STEP reading —
+              each dep's LAST element bumped, prior state held fixed. Differentiating and
+              bumping land on that same number, so `exact` labels only how it was reached.
+              The derivative over a dep's whole REACH is a different number, and nothing
+              carries it yet (`r[kernels.jac.two-quantities]`).
   Glance      the one compact line a card shows; display-dual of `Flat`
   Episode     terminal() — `&[T]` is terminal if ANY element is (deliberately not `.last()`:
               that reads the value standing at end-of-batch, this asks whether the boundary
@@ -420,7 +425,9 @@ _Who holds the history_ is the axis the wrappers actually partition:
   Plot         `Plot::coherent` — a multi-plot node must name each plot's slots.
   Level        sealed by a private supertrait — the kernel set is the framework's, and each
                kernel demands its body trait, so naming one you have no body for does not
-               compile (`r[kernels.closed]`).
+               compile (`r[kernels.closed]`). `FIDELITY` is per kernel, and `graph!` counts
+               Partial and Opaque apart into `FIDELITY` for a graph to pin
+               (`r[kernels.fidelity.stated]`).
   Symbolic     every dep scalar, arity ≤ MAX_VARS.
   graph!       `distinct` node names · `cut_gated` · `deadlocked` · `clock_divides(CLOCK, CLOCKS)`
                — a node's declared rate must be a whole multiple of every rate feeding it, else it
