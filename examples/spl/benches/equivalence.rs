@@ -149,6 +149,11 @@ struct Direct {
 	b_spr: Vec<Option<f64>>,
 	b_dep: Vec<Option<Intent>>,
 
+	/// The frame's `Latest<Atr>` / `Latest<Momentum>`. Engine cells, so a replica of the graph owns
+	/// them too — ungated, and so untouched by the commutation reset below.
+	l_atr: Option<f64>,
+	l_mom: Option<f64>,
+
 	/// `graph!`'s `__pending`: a terminal out commutates at the *next* tick's start, because the
 	/// frame still borrows this one's batches at the end of it.
 	pending: bool,
@@ -210,8 +215,14 @@ impl Direct {
 			),
 			&mut self.b_mom,
 		);
+		if let Some(v) = self.b_atr.iter().rev().find_map(|x| *x) {
+			self.l_atr = Some(v);
+		}
+		if let Some(v) = self.b_mom.iter().rev().find_map(|x| *x) {
+			self.l_mom = Some(v);
+		}
 
-		let hit = self.screener.advance((&self.b_bars[0], &self.b_mom));
+		let hit = self.screener.advance((&self.b_bars[0], self.l_mom));
 
 		self.b_c1d.clear();
 		self.b_c3m.clear();
@@ -241,8 +252,7 @@ impl Direct {
 			let classified = self.classify.advance((
 				true,
 				&self.b_bars[0],
-				self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, { Horizon::Elems(181) }>>(),
-				self.h4.hist::<Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(181) }>>(),
+				self.l_mom,
 				&self.b_c1d,
 				&self.b_c3m,
 				&self.b_v1m,
@@ -261,7 +271,7 @@ impl Direct {
 
 		self.b_dep.clear();
 		if self.armed.advance((decision,)) {
-			self.deprecator.emit((true, decision, &self.b_atr, &self.b_top), &mut self.b_dep);
+			self.deprecator.emit((true, decision, self.l_atr, &self.b_top), &mut self.b_dep);
 		}
 		if Episode::terminal(&self.b_dep.as_slice()) {
 			self.pending = true;

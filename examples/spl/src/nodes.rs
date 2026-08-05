@@ -131,14 +131,6 @@ trading_data::graph! {
 	outputs { bar_1m: trading_data::Bars<{ TF_1MIN }>, deprecator: Deprecator, rsi: Rsi }
 }
 
-/// Caches a slower dep's latest publish as a level, for a node clocked by a faster one. A dep that
-/// declined this tick is not a publish, so the cached level stands.
-fn latest<T: Copy>(slot: &mut Option<T>, dep: &[Option<T>], ticks: usize) {
-	let Some(v) = dep.iter().flatten().last() else { return };
-	assert!(ticks <= 1, "a level published inside a {ticks}-tick batch cannot be placed against those ticks");
-	*slot = Some(*v);
-}
-
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it
 /// takes. No discriminant to re-dispatch, no `Default` fill.
 impl<'t> From<Lanes<'t>> for Batches<'t> {
