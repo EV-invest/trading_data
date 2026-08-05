@@ -43,7 +43,7 @@ nautilus-core = { workspace = true }
 nautilus-data = { workspace = true }
 nautilus-model = { workspace = true }
 nautilus-persistence-macros = { workspace = true }
-trading_data_bench = { workspace = true }
+trading_data = { workspace = true, features = ["bench"] }
 
 # the gate the other three rest on: our nodes called by hand must produce the graph's intent stream.
 [[bench]]

@@ -5259,21 +5259,14 @@ dependencies = [
 name = "trading_data"
 version = "0.4.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "trading_data_core",
  "trading_data_dag",
  "trading_data_derivatives",
  "trading_data_expr",
  "trading_data_persistence",
  "v_utils",
-]
-
-[[package]]
-name = "trading_data_bench"
-version = "0.3.0"
-dependencies = [
- "serde",
- "serde_json",
- "trading_data",
 ]
 
 [[package]]
@@ -5402,7 +5395,6 @@ dependencies = [
  "tokio",
  "tracing",
  "trading_data",
- "trading_data_bench",
  "ureq",
  "v_exchanges",
  "v_utils",

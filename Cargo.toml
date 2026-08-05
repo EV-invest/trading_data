@@ -6,7 +6,6 @@ members = [
     "examples/simple",
     "examples/spl",
     "trading_data",
-    "trading_data_bench",
     "trading_data_core",
     "trading_data_dag",
     "trading_data_derivatives",
@@ -84,7 +83,6 @@ tracing = "^0.1"
 trading_data = { path = "trading_data", version = "0.4.0" }
 # Unversioned on purpose: `publish = false`, so it can only ever be a dev-dependency of a workspace
 # member and never reaches a shipped build.
-trading_data_bench = { path = "trading_data_bench" }
 trading_data_core = { path = "trading_data_core", version = "0.3.0" }
 trading_data_dag = { path = "trading_data_dag", version = "0.3.0" }
 trading_data_derivatives = { path = "trading_data_derivatives", version = "0.3.0" }

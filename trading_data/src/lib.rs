@@ -3,6 +3,9 @@
 
 use std::any::TypeId;
 
+#[cfg(feature = "bench")]
+pub mod bench;
+
 // r[impl boundaries.examples.facade-only]
 pub use trading_data_core::{Asset, ExchangeName, Instrument, Pair, Symbol};
 #[doc(hidden)]

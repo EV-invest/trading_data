@@ -14,9 +14,8 @@ use std::path::{Path, PathBuf};
 
 use trading_data::{
 	Armed, Bar, Book, BookShape, Buffering, DeltaFrame, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot, Node as _, Ohlc, Ohlcs, Oi,
-	OiRoot, ReadClock, Replay, TradeCols, Volume, Volumes, required_lanes,
+	OiRoot, ReadClock, Replay, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
 };
-use trading_data_bench::ring::Ring;
 use trading_data_spl::{
 	config::Config,
 	day_bounds, ensure_lanes,
@@ -33,8 +32,9 @@ fn main() {
 	let mut graph = Graph::default();
 	let mut direct = Direct::default();
 
-	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(&situation.bybit_symbol);
-	let catalog = ensure_lanes(&cache, situation);
+	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(situation.pair.replace("-", ""));
+	// Criterion's harness is sync; acquisition is not, and it happens once before any timing starts.
+	let catalog = tokio::runtime::Runtime::new().expect("build the acquisition runtime").block_on(ensure_lanes(&cache, situation));
 	let kinds = required_lanes::<Graph>();
 	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
 	let read_clock = ReadClock::from(Exact::from(cfg.backtest.read_clock.duration()));
