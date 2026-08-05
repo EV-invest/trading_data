@@ -18,6 +18,7 @@ impl Emit for Imbalance {
 		range: Some((-1.0, 1.0)),
 		..Plot::DEFAULT
 	}];
+	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
 
 	fn emit(&mut self, (top,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for d in top {

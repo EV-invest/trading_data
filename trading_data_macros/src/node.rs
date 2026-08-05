@@ -12,22 +12,23 @@ use syn::{
 	punctuated::Punctuated,
 };
 
-use crate::ty::{self, Wrap};
+use crate::{
+	graph::dag_path,
+	ty::{self, Wrap},
+};
 
-/// `#[node]`, `#[node(latch)]`, `#[node(diff)]` — flags the impl cannot state on its own, because the
-/// trait that would state them (`Latch`, `Diff`) is a second impl and a node has only one shim.
+/// `#[node]`, `#[node(latch)]` — the one flag the impl cannot state on its own, because the trait
+/// that would state it (`Latch`) is a second impl and a node has only one shim.
 struct Flags {
 	latch: bool,
-	diff: bool,
 }
 impl Parse for Flags {
 	fn parse(input: ParseStream) -> syn::Result<Self> {
-		let mut f = Flags { latch: false, diff: false };
+		let mut f = Flags { latch: false };
 		for i in Punctuated::<Ident, Token![,]>::parse_terminated(input)? {
 			match i.to_string().as_str() {
 				"latch" => f.latch = true,
-				"diff" => f.diff = true,
-				_ => return Err(syn::Error::new(i.span(), "expected `latch` or `diff`")),
+				_ => return Err(syn::Error::new(i.span(), "expected `latch`")),
 			}
 		}
 		Ok(f)
@@ -111,6 +112,7 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 	};
 	let trait_name = path.segments.last().expect("a path has a segment").ident.to_string();
 
+	let dag = dag_path()?;
 	let sig = signature(&item, "__td_node_")?;
 	let sty = &item.self_ty;
 	// `Self` in a dep resolves against the impl's own self type, which the shim pastes elsewhere.
@@ -134,14 +136,40 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 		});
 	}
 
-	let kind = match trait_name.as_str() {
-		"Node" | "Symbolic" => quote!(node),
-		"Emit" => quote!(emit),
-		_ => return Err(syn::Error::new_spanned(path, "`#[node]` goes on `impl Node`, `Emit`, `Symbolic` or `Episodic`")),
+	// which kernel computes this node, and therefore what the engine can read off it. The body trait
+	// *is* the choice: there is no attribute spelling it, so a node cannot name a kernel it has no body
+	// for.
+	let kernel = match trait_name.as_str() {
+		"Symbolic" => Some(quote!(#dag::Pure)),
+		"Blind" => Some(quote!(#dag::Opaque)),
+		"Emit" => None,
+		"Node" => {
+			return Err(syn::Error::new_spanned(
+				path,
+				"`impl Node` is written by `#[node]`, not by hand: a node declares which kernel computes it. Write `impl Symbolic` for an `Expr` body, or `impl Blind` — the stated hatch, which needs a `const WHY`",
+			));
+		}
+		_ => return Err(syn::Error::new_spanned(path, "`#[node]` goes on `impl Blind`, `Emit`, `Symbolic` or `Episodic`")),
 	};
-	// `Symbolic` earns `Diff` through the same blanket that earns it `Node`.
-	let diff = flags.diff || trait_name == "Symbolic";
-	let (diff, latch) = (Ident::new(&diff.to_string(), Span::call_site()), Ident::new(&flags.latch.to_string(), Span::call_site()));
+	let kind = match kernel {
+		Some(_) => quote!(node),
+		None => quote!(emit),
+	};
+	let latch = Ident::new(&flags.latch.to_string(), Span::call_site());
+
+	// the `Node` impl nobody writes: `Deps` and `PLOTS` are forwarded off the body trait, so a node
+	// site states each exactly once.
+	let (imp, tys, wher) = item.generics.split_for_impl();
+	let node_impl = kernel.map(|kernel| {
+		let body: syn::Path = syn::parse2(quote!(#path)).expect("the impl'd trait is a path");
+		quote! {
+			impl #imp #dag::Node for #sty #tys #wher {
+				type Deps = <Self as #body>::Deps;
+				type Kernel = #kernel;
+				const PLOTS: &'static [#dag::Plot] = <Self as #body>::PLOTS;
+			}
+		}
+	});
 
 	let deps_ty = assoc(&item, "Deps").ok_or_else(|| syn::Error::new_spanned(&item, "`#[node]` needs `type Deps` in the impl"))?;
 	let deps: Vec<&Type> = match deps_ty {
@@ -169,13 +197,14 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 	let (name, m) = (&sig.name, matcher(&sig));
 	Ok(quote! {
 		#item
+		#node_impl
 
 		#[macro_export]
 		#[doc(hidden)]
 		macro_rules! #name {
 			#m => {
 				$__driver! {
-					@kind #kind @diff #diff @latch #latch @self { #self_ty }
+					@kind #kind @latch #latch @self { #self_ty }
 					@deps [ #(#deps),* ]
 					@state $($__state)*
 				}

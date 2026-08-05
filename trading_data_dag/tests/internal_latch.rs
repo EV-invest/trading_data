@@ -7,7 +7,7 @@
 //! batch whose terminal element is *not* last still commutates (`Episode for &[T]` is `any`, not
 //! `last`).
 
-use trading_data_dag::{Armed, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Episodic, Flat, Gate, Gating, Glance, Node, TriggerOut, graph, node, slice_nudge, value_nudge};
+use trading_data_dag::{Armed, Blind, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Episodic, Flat, Gate, Gating, Glance, TriggerOut, graph, node, slice_nudge, value_nudge};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Pulse;
@@ -57,8 +57,10 @@ impl Cell for Open {
 	type Out<'t> = bool;
 }
 #[node]
-impl Node for Open {
+impl Blind for Open {
 	type Deps = (Sw,);
+
+	const WHY: &'static str = "an internal-latch fixture";
 
 	fn advance<'t>(&'t mut self, (sw,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		if let Some(&b) = sw.last() {
@@ -77,8 +79,10 @@ impl Cell for Beat {
 	type Out<'t> = Option<f64>;
 }
 #[node]
-impl Node for Beat {
+impl Blind for Beat {
 	type Deps = (Gating<Open>,);
+
+	const WHY: &'static str = "an internal-latch fixture";
 
 	fn advance<'t>(&'t mut self, (open,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(open, "a gating dep reads true inside `advance`");
@@ -95,8 +99,10 @@ impl Cell for Classify {
 	type Out<'t> = Option<Pulse>;
 }
 #[node]
-impl Node for Classify {
+impl Blind for Classify {
 	type Deps = (Gating<Open>, Trig);
+
+	const WHY: &'static str = "an internal-latch fixture";
 
 	fn advance<'t>(&'t mut self, (open, trig): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(open, "a gating dep reads true inside `advance`");
@@ -152,6 +158,8 @@ impl Cell for Deprec {
 impl Emit for Deprec {
 	type Deps = (Gating<Armed<Deprec>>, Classify, Feed);
 
+	const WHY: &'static str = "a latch fixture";
+
 	fn emit(&mut self, (_, _, feed): EmitOuts<'_, Self>, out: &mut Vec<Option<Phase>>) {
 		for _ in feed {
 			if self.idle {
@@ -187,6 +195,8 @@ impl Cell for Leg {
 impl Emit for Leg {
 	type Deps = (Gating<Armed<Deprec>>, Feed);
 
+	const WHY: &'static str = "an internal-latch fixture";
+
 	fn emit(&mut self, (_, feed): EmitOuts<'_, Self>, out: &mut Vec<Option<Pulse>>) {
 		out.extend(feed.iter().copied().map(Some));
 	}
@@ -202,8 +212,10 @@ impl Cell for Ticks {
 	type Out<'t> = f64;
 }
 #[node]
-impl Node for Ticks {
+impl Blind for Ticks {
 	type Deps = (Feed,);
+
+	const WHY: &'static str = "a latch fixture";
 
 	fn advance<'t>(&'t mut self, _: DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.n += 1;

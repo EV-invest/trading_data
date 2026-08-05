@@ -177,6 +177,7 @@ impl Emit for Deprecator {
 			..Plot::DEFAULT
 		},
 	];
+	const WHY: &'static str = "an episode walk driven by control flow rather than arithmetic";
 
 	fn emit(&mut self, (armed, decision, atr, top): EmitOuts<'_, Self>, out: &mut Vec<Option<Intent>>) {
 		assert!(armed, "a gating dep reads true inside `emit`");

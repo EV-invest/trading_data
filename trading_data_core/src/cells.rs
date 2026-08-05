@@ -3,7 +3,7 @@
 //! `Cell`/`Node` are the dag's and these types are ours, so orphan rules make this the only crate
 //! that may write these impls. Nothing else here knows the dag exists.
 
-use trading_data_dag::{Cell, DepOuts, Folding, Horizon, Node, Nudge, node};
+use trading_data_dag::{Blind, Cell, DepOuts, Folding, Horizon, Nudge, node};
 use v_utils::TF_15MIN;
 
 use crate::{Book, BookShape, DeltaBuf, DeltaFrame, TradeBuf, TradeCols};
@@ -74,7 +74,7 @@ impl Cell for Book {
 }
 
 #[node]
-impl Node for Book {
+impl Blind for Book {
 	/// The fold reaches back over the deltas exactly one checkpoint interval — a book re-warms from a
 	/// checkpoint, so gating it off and back on costs one desync and one resync, not a warmup it can
 	/// never recover. `trading_data_persistence` reads its anchor-age bound off this.
@@ -83,6 +83,8 @@ impl Node for Book {
 	/// the engine can retain for it — which is also what still makes a gated book a compile error,
 	/// checkpoint or no. Retaining the deltas as stamped level rows is what would lift that.
 	type Deps = (BookAnchors, Folding<BookDeltas, { Horizon::Span(TF_15MIN) }>);
+
+	const WHY: &'static str = "an order book fold is not a scalar function of its deltas";
 
 	fn advance<'t>(&'t mut self, (anchor, deltas): DepOuts<'t, Self>) -> Option<&'t Book> {
 		self.step(anchor, deltas).then_some(&*self)

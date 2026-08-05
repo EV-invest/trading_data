@@ -5,7 +5,7 @@
 
 use core::any::TypeId;
 
-use trading_data_dag::{Buffering, Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Horizon, Latch, Node, Roots, Stamped, Symbolic, slice_nudge, value_nudge};
+use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Episode, Flat, Gate, Gating, Glance, Horizon, Latch, Roots, Stamped, Symbolic, slice_nudge, value_nudge};
 use trading_data_expr::{Expr, Vars, constant};
 use trading_data_macros::{graph, node};
 
@@ -76,8 +76,10 @@ impl Cell for Live {
 	type Out<'t> = bool;
 }
 #[node(latch)]
-impl Node for Live {
+impl Blind for Live {
 	type Deps = (Trig,);
+
+	const WHY: &'static str = "a latch fixture";
 
 	fn advance<'t>(&'t mut self, (pulses,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.armed |= !pulses.is_empty();
@@ -102,8 +104,10 @@ impl Cell for Deprec {
 	type Out<'t> = Option<Phase>;
 }
 #[node]
-impl Node for Deprec {
+impl Blind for Deprec {
 	type Deps = (Gating<Live>, Trig);
+
+	const WHY: &'static str = "a latch fixture";
 
 	fn advance<'t>(&'t mut self, (live, _): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(live, "a gating dep reads true inside `advance`");
@@ -121,8 +125,10 @@ impl Cell for Ticks {
 	type Out<'t> = f64;
 }
 #[node]
-impl Node for Ticks {
+impl Blind for Ticks {
 	type Deps = (Trig,);
+
+	const WHY: &'static str = "a latch fixture";
 
 	fn advance<'t>(&'t mut self, _: DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.n += 1;
@@ -230,8 +236,10 @@ impl Cell for Last {
 	type Out<'t> = f64;
 }
 #[node]
-impl Node for Last {
+impl Blind for Last {
 	type Deps = (Buffering<Src, { Horizon::Elems(1) }>,);
+
+	const WHY: &'static str = "a graph fixture";
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		hist.all().last().map_or(f64::NAN, |t| t.v)
@@ -246,8 +254,10 @@ impl Cell for Sum3 {
 	type Out<'t> = f64;
 }
 #[node]
-impl Node for Sum3 {
+impl Blind for Sum3 {
 	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
+
+	const WHY: &'static str = "a buffer fixture";
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		hist.all().iter().map(|t| t.v).sum()

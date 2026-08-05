@@ -31,6 +31,7 @@ macro_rules! oi_deltas {
 		#[node]
 		impl Emit for $ty {
 			type Deps = (Buffering<OiRoot, OI_REACH>,);
+			const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
 
 			fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 				for i in 0..hist.fresh().len() {

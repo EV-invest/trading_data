@@ -61,6 +61,8 @@ impl Cell for Minutely {
 impl Emit for Minutely {
 	type Deps = (Sampling<Src>,);
 
+	const WHY: &'static str = "a clocking fixture";
+
 	fn emit(&mut self, (level,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		out.extend(level.map(|x| x.v));
 	}
@@ -77,6 +79,8 @@ impl Cell for Continuous {
 #[node]
 impl Emit for Continuous {
 	type Deps = (Sampling<Src>,);
+
+	const WHY: &'static str = "a clocking fixture";
 
 	fn emit(&mut self, (level,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		out.extend(level.map(|x| x.v));
@@ -98,16 +102,17 @@ impl Cell for Closes {
 impl Emit for Closes {
 	type Deps = (Folding<Src, { Horizon::Span(MIN) }>,);
 
+	const WHY: &'static str = "a clocking fixture";
+
 	fn emit(&mut self, (items,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		for x in items {
 			let period = x.ts / (MIN.0 * 1_000_000) as i64;
 			match &mut self.0 {
 				Some((p, v)) if *p == period => *v = x.v,
-				slot => {
+				slot =>
 					if let Some((_, done)) = slot.replace((period, x.v)) {
 						out.push(done);
-					}
-				}
+					},
 			}
 		}
 	}
@@ -126,6 +131,8 @@ impl Cell for Joined {
 #[node]
 impl Emit for Joined {
 	type Deps = (Closes,);
+
+	const WHY: &'static str = "a clocking fixture";
 
 	fn emit(&mut self, (closes,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		out.extend(closes);

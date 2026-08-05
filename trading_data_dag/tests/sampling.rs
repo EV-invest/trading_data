@@ -2,7 +2,7 @@
 //! and the two ways the run it samples can say nothing — an empty batch, and a batch of items
 //! carrying their own absence. Neither may unseat what is held.
 
-use trading_data_dag::{Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Flat, Glance, Horizon, Latest, Node, Sampling, Stamped, always_present, graph, node, slice_nudge, value_nudge};
+use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Flat, Glance, Horizon, Latest, Sampling, Stamped, always_present, graph, node, slice_nudge, value_nudge};
 
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,6 +64,8 @@ impl Cell for Sparse {
 impl Emit for Sparse {
 	type Deps = (Src,);
 
+	const WHY: &'static str = "a sampling fixture";
+
 	fn emit(&mut self, (src,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(src.iter().map(|x| (x.v > 0.0).then_some(x.v)));
 	}
@@ -78,8 +80,10 @@ impl Cell for Naive {
 	type Out<'t> = Option<f64>;
 }
 #[node]
-impl Node for Naive {
+impl Blind for Naive {
 	type Deps = (Clk, Sparse);
+
+	const WHY: &'static str = "a sampling fixture";
 
 	fn advance<'t>(&'t mut self, (_, sparse): DepOuts<'t, Self>) -> Self::Out<'t> {
 		sparse.last().copied().flatten()
@@ -93,8 +97,10 @@ impl Cell for Sampled {
 	type Out<'t> = Option<f64>;
 }
 #[node]
-impl Node for Sampled {
+impl Blind for Sampled {
 	type Deps = (Clk, Sampling<Sparse>);
+
+	const WHY: &'static str = "a sampling fixture";
 
 	fn advance<'t>(&'t mut self, (_, level): DepOuts<'t, Self>) -> Self::Out<'t> {
 		level
@@ -110,8 +116,10 @@ impl Cell for Windowed {
 	type Out<'t> = Option<f64>;
 }
 #[node]
-impl Node for Windowed {
+impl Blind for Windowed {
 	type Deps = (Clk, Buffering<Src, { Horizon::Elems(1) }>);
+
+	const WHY: &'static str = "a sampling fixture";
 
 	fn advance<'t>(&'t mut self, (_, hist): DepOuts<'t, Self>) -> Self::Out<'t> {
 		hist.all().last().map(|x| x.v)
@@ -126,8 +134,10 @@ impl Cell for Whole {
 	type Out<'t> = Option<f64>;
 }
 #[node]
-impl Node for Whole {
+impl Blind for Whole {
 	type Deps = (Clk, Sampling<Src>);
+
+	const WHY: &'static str = "a sampling fixture";
 
 	fn advance<'t>(&'t mut self, (_, level): DepOuts<'t, Self>) -> Self::Out<'t> {
 		level.map(|x| x.v)

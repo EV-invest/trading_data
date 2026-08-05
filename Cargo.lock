@@ -5727,6 +5727,7 @@ dependencies = [
  "derive_more",
  "enum_dispatch",
  "eyre",
+ "flate2",
  "futures-util",
  "jiff",
  "miette",
@@ -5744,6 +5745,7 @@ dependencies = [
  "uuid",
  "v_exchanges_adapters",
  "v_utils",
+ "zip",
 ]
 
 [[package]]

@@ -19,6 +19,8 @@ impl Emit for Cvd {
 	/// A running sum reaches to the start of the run.
 	type Deps = (Folding<Trades, { Horizon::Unbounded }>,);
 
+	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
+
 	fn emit(&mut self, (t,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		let (ps, qs) = (t.prec.price.scale(), t.prec.qty.scale());
 		for i in 0..t.len() {
@@ -46,6 +48,8 @@ impl Cell for BookFlow {
 impl Emit for BookFlow {
 	/// A running sum reaches to the start of the run.
 	type Deps = (Folding<BookDeltas, { Horizon::Unbounded }>,);
+
+	const WHY: &'static str = "a book fold read for flow, which is not a scalar function of its deltas";
 
 	fn emit(&mut self, (frame,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
 		// A correction is a dropped websocket packet, not market activity: folding one into flow

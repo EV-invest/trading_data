@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use trading_data::{
-	Armed, Bar, Book, BookShape, Buffering, DeltaFrame, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot, Node as _, Ohlc, Ohlcs, Oi,
+	Armed, Bar, Blind as _, Book, BookShape, Buffering, DeltaFrame, Emit as _, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot, Ohlc, Ohlcs, Oi,
 	OiRoot, ReadClock, Replay, TradeCols, Volume, Volumes, required_lanes,
 };
 use trading_data_bench::ring::Ring;

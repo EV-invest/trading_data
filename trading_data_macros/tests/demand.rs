@@ -6,7 +6,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use trading_data_dag::{Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Flat, Gate, Gating, Glance, Hist, Horizon, Latch, Node, Stamped, slice_nudge};
+use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Flat, Gate, Gating, Glance, Hist, Horizon, Latch, Stamped, slice_nudge};
 use trading_data_macros::{graph, node};
 
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.
@@ -57,8 +57,10 @@ impl Cell for Hot {
 	type Out<'t> = bool;
 }
 #[node]
-impl Node for Hot {
+impl Blind for Hot {
 	type Deps = (Src,);
+
+	const WHY: &'static str = "a hot-path fixture";
 
 	fn advance<'t>(&'t mut self, (src,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		src.iter().any(|x| x.v > 0.0)
@@ -80,6 +82,8 @@ slice_nudge!(Counted, P);
 impl Emit for Counted {
 	type Deps = (Src,);
 
+	const WHY: &'static str = "a demand fixture";
+
 	fn emit(&mut self, (src,): EmitOuts<'_, Self>, out: &mut Vec<P>) {
 		COUNTED.fetch_add(1, Ordering::Relaxed);
 		out.extend_from_slice(src);
@@ -97,6 +101,8 @@ slice_nudge!(Kept, P);
 impl Emit for Kept {
 	type Deps = (Src,);
 
+	const WHY: &'static str = "a demand fixture";
+
 	fn emit(&mut self, (src,): EmitOuts<'_, Self>, out: &mut Vec<P>) {
 		KEPT.fetch_add(1, Ordering::Relaxed);
 		out.extend_from_slice(src);
@@ -109,8 +115,10 @@ impl Cell for Sink {
 	type Out<'t> = Option<f64>;
 }
 #[node]
-impl Node for Sink {
+impl Blind for Sink {
 	type Deps = (Gating<Hot>, Counted, Kept);
+
+	const WHY: &'static str = "a demand fixture";
 
 	fn advance<'t>(&'t mut self, (hot, c, k): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(hot, "a gating dep reads true inside `advance`");
@@ -124,8 +132,10 @@ impl Cell for Watch {
 	type Out<'t> = Option<f64>;
 }
 #[node]
-impl Node for Watch {
+impl Blind for Watch {
 	type Deps = (Buffering<Kept, { Horizon::Elems(2) }>,);
+
+	const WHY: &'static str = "a demand fixture";
 
 	fn advance<'t>(&'t mut self, (h,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		let h: Hist<'t, P> = h;
@@ -201,8 +211,10 @@ impl Cell for Live {
 	type Out<'t> = bool;
 }
 #[node(latch)]
-impl Node for Live {
+impl Blind for Live {
 	type Deps = (Src,);
+
+	const WHY: &'static str = "a latch fixture";
 
 	fn advance<'t>(&'t mut self, (src,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.armed |= src.iter().any(|x| x.v > 0.0);
@@ -231,6 +243,8 @@ slice_nudge!(Warm, P);
 impl Emit for Warm {
 	type Deps = (Src,);
 
+	const WHY: &'static str = "a demand fixture";
+
 	fn emit(&mut self, (src,): EmitOuts<'_, Self>, out: &mut Vec<P>) {
 		WARM.fetch_add(1, Ordering::Relaxed);
 		out.extend_from_slice(src);
@@ -245,8 +259,10 @@ impl Cell for Ep {
 	type Out<'t> = Option<Phase>;
 }
 #[node]
-impl Node for Ep {
+impl Blind for Ep {
 	type Deps = (Gating<Live>, Warm);
+
+	const WHY: &'static str = "an episode fixture";
 
 	fn advance<'t>(&'t mut self, (live, _): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(live, "a gating dep reads true inside `advance`");

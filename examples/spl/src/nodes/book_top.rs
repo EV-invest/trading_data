@@ -49,6 +49,7 @@ impl Emit for BookTop {
 		labels: &["bid", "ask", "bid_depth$", "ask_depth$"],
 		..Plot::DEFAULT
 	}];
+	const WHY: &'static str = "reading the top of a book is a lookup into a fold, not an expression over it";
 
 	fn emit(&mut self, (book, frame): EmitOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) {
 		let Some(&ts) = frame.cols().exec().last() else { return };

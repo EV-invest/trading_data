@@ -1,7 +1,7 @@
 //! Diamond over two multi-rate roots: `None` propagation through the DAG, plus an
 //! inference-stress graph (chain depth 10 + one arity-8 node, zero call-site annotations).
 
-use trading_data_dag::{Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Want, step, step_obs, value_nudge};
+use trading_data_dag::{Blind, Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Opaque, Want, node, step, step_obs, value_nudge};
 
 struct Trades;
 impl Cell for Trades {
@@ -19,8 +19,11 @@ struct A;
 impl Cell for A {
 	type Out<'t> = Option<f64>;
 }
-impl Node for A {
+#[node]
+impl Blind for A {
 	type Deps = (Trades,);
+
+	const WHY: &'static str = "a diamond fixture";
 
 	fn advance<'t>(&'t mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		t.map(|x| x * 2.0)
@@ -33,8 +36,11 @@ struct B;
 impl Cell for B {
 	type Out<'t> = Option<f64>;
 }
-impl Node for B {
+#[node]
+impl Blind for B {
 	type Deps = (A,);
+
+	const WHY: &'static str = "a diamond fixture";
 
 	fn advance<'t>(&'t mut self, (a,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		a.map(|x| x + 1.0)
@@ -47,8 +53,11 @@ struct C;
 impl Cell for C {
 	type Out<'t> = Option<f64>;
 }
-impl Node for C {
+#[node]
+impl Blind for C {
 	type Deps = (A,);
+
+	const WHY: &'static str = "a diamond fixture";
 
 	fn advance<'t>(&'t mut self, (a,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		a.map(|x| x * 3.0)
@@ -61,8 +70,11 @@ struct D;
 impl Cell for D {
 	type Out<'t> = Option<f64>;
 }
-impl Node for D {
+#[node]
+impl Blind for D {
 	type Deps = (B, C);
+
+	const WHY: &'static str = "a diamond fixture";
 
 	fn advance<'t>(&'t mut self, (b, c): DepOuts<'t, Self>) -> Self::Out<'t> {
 		b.zip(c).map(|(b, c)| b + c)
@@ -74,8 +86,11 @@ struct Cross;
 impl Cell for Cross {
 	type Out<'t> = Option<f64>;
 }
-impl Node for Cross {
+#[node]
+impl Blind for Cross {
 	type Deps = (Trades, Quotes);
+
+	const WHY: &'static str = "a diamond fixture";
 
 	fn advance<'t>(&'t mut self, (t, q): DepOuts<'t, Self>) -> Self::Out<'t> {
 		t.zip(q).map(|(t, q)| t - q)
@@ -161,16 +176,25 @@ impl Cell for R {
 }
 macro_rules! chain {
 	($name:ident, $dep:ty) => {
+		#[derive(Clone)]
 		struct $name;
 		impl Cell for $name {
 			type Out<'t> = f64;
 		}
-		impl Node for $name {
+		impl Blind for $name {
 			type Deps = ($dep,);
+
+			const WHY: &'static str = "a fan-out fixture";
 
 			fn advance<'t>(&'t mut self, (x,): DepOuts<'t, Self>) -> Self::Out<'t> {
 				x + 1.0
 			}
+		}
+		// hand-written, not `#[node]`: the dep arrives as a `:ty` fragment, which the shim cannot
+		// take apart into the cell it names.
+		impl Node for $name {
+			type Deps = <Self as Blind>::Deps;
+			type Kernel = Opaque;
 		}
 	};
 }
@@ -185,12 +209,16 @@ chain!(S8, S7);
 chain!(S9, S8);
 chain!(S10, S9);
 
+#[derive(Clone)]
 struct Wide;
 impl Cell for Wide {
 	type Out<'t> = f64;
 }
-impl Node for Wide {
+#[node]
+impl Blind for Wide {
 	type Deps = (S3, S4, S5, S6, S7, S8, S9, S10);
+
+	const WHY: &'static str = "an arity fixture";
 
 	fn advance<'t>(&'t mut self, (a, b, c, d, e, g, h, j): DepOuts<'t, Self>) -> Self::Out<'t> {
 		a + b + c + d + e + g + h + j
@@ -246,8 +274,11 @@ impl Clone for Level {
 		Level
 	}
 }
-impl Node for Level {
+#[node]
+impl Blind for Level {
 	type Deps = (Trades, Quotes);
+
+	const WHY: &'static str = "a retention fixture";
 
 	fn advance<'t>(&'t mut self, (t, q): DepOuts<'t, Self>) -> Self::Out<'t> {
 		// multi-rate leaf: an unfired dep contributes nothing this tick
@@ -277,8 +308,11 @@ struct OnOff;
 impl Cell for OnOff {
 	type Out<'t> = f64;
 }
-impl Node for OnOff {
+#[node]
+impl Blind for OnOff {
 	type Deps = (Gate,);
+
+	const WHY: &'static str = "a gate fixture";
 
 	fn advance<'t>(&'t mut self, (g,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		if g { 5.0 } else { 0.0 }
@@ -299,8 +333,11 @@ struct Under;
 impl Cell for Under {
 	type Out<'t> = Option<f64>;
 }
-impl Node for Under {
+#[node]
+impl Blind for Under {
 	type Deps = (Trades,);
+
+	const WHY: &'static str = "a gated-reader fixture";
 
 	fn advance<'t>(&'t mut self, (t,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		t.filter(|x| *x <= 1.0)

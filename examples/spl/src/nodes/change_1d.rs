@@ -17,6 +17,8 @@ impl Emit for Change1d {
 		Buffering<trading_data::Bars<{ TF_1H }>, { Horizon::Span(Timeframe(TF_1D.0 + TF_1H.0)) }>,
 	);
 
+	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
+
 	fn emit(&mut self, (m1, h1): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for b in m1 {
 			let closed_1h = closed_by(h1.all(), b.ts_close);

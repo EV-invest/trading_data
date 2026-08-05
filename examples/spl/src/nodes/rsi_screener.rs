@@ -1,4 +1,4 @@
-use trading_data::{Cell, DepOuts, Folding, Gate, Horizon, Node, node, value_nudge};
+use trading_data::{Blind, Cell, DepOuts, Folding, Gate, Horizon, node, value_nudge};
 use v_utils::*;
 
 use super::{Rsi, RsiValues, change_1d::Change1d, latest};
@@ -15,9 +15,11 @@ impl Cell for RsiScreener {
 	type Out<'t> = bool;
 }
 #[node]
-impl Node for RsiScreener {
+impl Blind for RsiScreener {
 	/// The cached RSI level stands until the next publish, however many minutes that takes.
 	type Deps = (trading_data::Bars<{ TF_1MIN }>, Change1d, Folding<Rsi, { Horizon::Unbounded }>);
+
+	const WHY: &'static str = "a screen is a threshold predicate, awaiting the `Predicate` kernel";
 
 	fn advance<'t>(&'t mut self, (bars, change_1d, rsi): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert_eq!(bars.len(), change_1d.len(), "Bar:1m/Change1d rate mismatch");

@@ -29,5 +29,9 @@ iai-callgrind.workspace = true
 name = "sweep"
 harness = false
 
+[[bench]]
+name = "kernel_cost"
+harness = false
+
 [lints]
 workspace = true

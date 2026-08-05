@@ -11,6 +11,8 @@ impl Cell for Volume4h {
 impl Emit for Volume4h {
 	type Deps = (trading_data::Bars<{ TF_1MIN }>, Buffering<trading_data::Bars<{ TF_4H }>, { Horizon::Elems(1) }>);
 
+	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
+
 	fn emit(&mut self, (m1, h4): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for b in m1 {
 			out.push(closed_by(h4.all(), b.ts_close).last().map(|h| h.vol_base * h.close));

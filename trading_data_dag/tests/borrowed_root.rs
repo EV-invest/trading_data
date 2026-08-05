@@ -1,7 +1,7 @@
 //! The GAT headline: a heavy root enters the frame as `&'t Book`, and a node hands
 //! root-borrowed data (`Option<&'t _>`) downstream.
 
-use trading_data_dag::{Cell, Cons, DepOuts, Nil, Node, step};
+use trading_data_dag::{Blind, Cell, Cons, DepOuts, Nil, node, step};
 
 struct Book {
 	bids: Vec<(i64, u64)>,
@@ -13,24 +13,32 @@ impl Cell for BookC {
 	type Out<'t> = &'t Book;
 }
 
+#[derive(Clone)]
 struct BestBid;
 impl Cell for BestBid {
 	type Out<'t> = Option<&'t (i64, u64)>;
 }
-impl Node for BestBid {
+#[node]
+impl Blind for BestBid {
 	type Deps = (BookC,);
+
+	const WHY: &'static str = "a borrowed-root fixture";
 
 	fn advance<'t>(&'t mut self, (book,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		book.bids.first()
 	}
 }
 
+#[derive(Clone)]
 struct Mid;
 impl Cell for Mid {
 	type Out<'t> = Option<f64>;
 }
-impl Node for Mid {
+#[node]
+impl Blind for Mid {
 	type Deps = (BookC, BestBid);
+
+	const WHY: &'static str = "a borrowed-root fixture";
 
 	fn advance<'t>(&'t mut self, (book, best_bid): DepOuts<'t, Self>) -> Self::Out<'t> {
 		let bid = best_bid?.0;

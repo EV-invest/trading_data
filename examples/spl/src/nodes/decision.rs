@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Cell, DepOuts, Direction, Flat, Glance, Node, Plot, Usd, node, value_nudge};
+use trading_data::{Blind, Cell, DepOuts, Direction, Flat, Glance, Plot, Usd, node, value_nudge};
 
 use super::classify::{Category, Classified, Classify};
 use crate::config::strategy;
@@ -57,7 +57,7 @@ impl Cell for Decision {
 	type Out<'t> = Option<Decided>;
 }
 #[node]
-impl Node for Decision {
+impl Blind for Decision {
 	type Deps = (Classify,);
 
 	/// Two panes: the direction is a ±1 step and the size is dollars, and one shared scale would
@@ -75,6 +75,7 @@ impl Node for Decision {
 			..Plot::DEFAULT
 		},
 	];
+	const WHY: &'static str = "a direction is a sign and a size is a bucket — neither varies smoothly in what produced it";
 
 	fn advance<'t>(&'t mut self, (c,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		c.map(Decided::from)

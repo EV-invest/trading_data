@@ -63,14 +63,13 @@ async fn main() {
 	}
 
 	let (viz, recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, Backpressure::Block);
-	// `Signal`'s exact/FD agreement check and the viz recording are two readings of one sweep.
+	// `Signal`'s own documentation and the viz recording are two readings of one sweep.
 	let mut watched = (SignalDoc::default(), recorder);
 	run(&mut feed, &mut graph, &mut watched).report();
 	let (doc, recorder) = watched;
 
-	println!("signal exact/FD agreement: checked={} max_rel={:.2e}", doc.checked, doc.max_rel);
-	assert!(doc.checked > 0, "Signal never produced a finite Jacobian");
-	assert!(doc.max_rel < 1e-3, "exact Jacobian disagrees with FD: max_rel={}", doc.max_rel);
+	assert!(doc.exact > 0, "Signal never reported an exact Jacobian");
+	println!("signal exact Jacobians: {}", doc.exact);
 
 	println!("simple: ok");
 	let base: u16 = std::env::var("PORT").expect("PORT: the devShell sets the base of the port range").parse().expect("PORT is a u16");
@@ -176,12 +175,10 @@ fn run(feed: &mut Replay, graph: &mut Graph, obs: &mut impl Observed) -> Tally {
 #[derive(Default)]
 struct SignalDoc {
 	shown: bool,
-	checked: u64,
-	max_rel: f64,
+	exact: u64,
 }
 impl Observer for SignalDoc {
-	/// It asserts the exact Jacobian against the retained finite-difference one, so the FD is what it
-	/// is here for.
+	/// The formula and its derivatives are the `Jac` reading, so that is what it asks for.
 	fn want(&self) -> Want {
 		Want::Jac
 	}
@@ -190,13 +187,11 @@ impl Observer for SignalDoc {
 		if node.rsplit("::").next() != Some("Signal") {
 			return;
 		}
-		if let (Some(jac), Some(exact)) = (fire.jac, fire.exact_jac) {
-			for (fd, ex) in jac.iter().zip(exact) {
-				if fd.is_finite() && ex.is_finite() {
-					self.max_rel = self.max_rel.max((fd - ex).abs() / ex.abs().max(1e-9));
-					self.checked += 1;
-				}
-			}
+		// a `Pure` node's Jacobian is differentiated, never guessed — `r[kernels.jac.one-reading]`,
+		// asserted here rather than compared against a second reading that no longer exists.
+		if fire.jac.is_some_and(|j| j.iter().any(|x| x.is_finite())) {
+			assert!(fire.exact, "Signal is a `Symbolic` node: its Jacobian must be the exact one");
+			self.exact += 1;
 		}
 		if !self.shown && fire.vals.is_some_and(|v| v[0].is_finite()) {
 			self.shown = true;

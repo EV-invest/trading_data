@@ -4,7 +4,7 @@
 //! the point of engine-owned retention.
 
 use trading_data_dag::{
-	Buffer, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Node, Observer, Stamped, Want, graph, node, slice_nudge,
+	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Stamped, Want, graph, node, slice_nudge,
 };
 use v_utils::{Timeframe, TimeframeDesignator};
 
@@ -77,6 +77,8 @@ impl Cell for Sum3 {
 impl Emit for Sum3 {
 	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
 
+	const WHY: &'static str = "a buffer fixture";
+
 	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(hist.trailing().map(|w| w.map(|w| w.iter().map(|x| x.v).sum())));
 	}
@@ -93,6 +95,8 @@ impl Cell for Split {
 #[node]
 impl Emit for Split {
 	type Deps = (Buffering<Src, { Horizon::Elems(3) }>,);
+
+	const WHY: &'static str = "a buffer fixture";
 
 	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Tick>) {
 		out.push(Tick {
@@ -114,8 +118,10 @@ impl Cell for Level {
 	type Out<'t> = &'t [Tick];
 }
 #[node]
-impl Node for Level {
+impl Blind for Level {
 	type Deps = (Buffering<Src, { Horizon::Elems(1) }>,);
+
+	const WHY: &'static str = "a retention fixture";
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
 		self.all.clear();
@@ -306,8 +312,10 @@ mod revive {
 		type Out<'t> = bool;
 	}
 	#[node(latch)]
-	impl Node for Live {
+	impl Blind for Live {
 		type Deps = (Trig,);
+
+		const WHY: &'static str = "a latch fixture";
 
 		fn advance<'t>(&'t mut self, (trig,): DepOuts<'t, Self>) -> Self::Out<'t> {
 			self.armed |= !trig.is_empty();
@@ -333,8 +341,10 @@ mod revive {
 		type Out<'t> = Option<Phase>;
 	}
 	#[node]
-	impl Node for Episodic {
+	impl Blind for Episodic {
 		type Deps = (Gating<Live>, Buffering<Src, { Horizon::Elems(3) }>);
+
+		const WHY: &'static str = "a buffer fixture";
 
 		fn advance<'t>(&'t mut self, (live, hist): DepOuts<'t, Self>) -> Self::Out<'t> {
 			assert!(live, "a gating dep reads true inside `advance`");
