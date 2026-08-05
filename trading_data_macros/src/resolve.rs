@@ -272,19 +272,19 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 
 	let decls: Vec<TokenStream> = nodes.iter().map(|n| if n.emit { quote!(#dag::Emit) } else { quote!(#dag::Node) }).collect();
 
-	// the hatch census. An emit node is opaque by construction and states its reason on `Emit` itself;
-	// a level node's reason belongs to its kernel, so both are read at the type rather than tracked
-	// through the driver.
-	let (hatch_names, hatch_whys): (Vec<&String>, Vec<TokenStream>) = nodes
+	// the fidelity census. An emit node is opaque by construction and states its reason on `Emit`
+	// itself; a level node's coverage belongs to its kernel, so both are read at the type rather than
+	// tracked through the driver.
+	let (hatch_names, fidelities): (Vec<&String>, Vec<TokenStream>) = nodes
 		.iter()
 		.zip(&node_tys)
 		.filter(|(n, _)| !n.generated)
 		.map(|(n, t)| {
-			let why = match n.emit {
-				true => quote!(::core::option::Option::Some(<#t as #dag::Emit>::WHY)),
-				false => quote!(<<#t as #dag::Node>::Kernel as #dag::Level<#t>>::WHY),
+			let fid = match n.emit {
+				true => quote!(#dag::Fidelity::Opaque(<#t as #dag::Emit>::WHY)),
+				false => quote!(<<#t as #dag::Node>::Kernel as #dag::Level<#t>>::FIDELITY),
 			};
-			(&n.key, why)
+			(&n.key, fid)
 		})
 		.unzip();
 	let node_deps: Vec<TokenStream> = node_tys.iter().zip(&decls).map(|(t, d)| quote!(<#t as #d>::Deps)).collect();
@@ -429,13 +429,13 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 			/// The derived closure, in sweep order — what this graph's outputs actually cost.
 			#vis const NODES: &'static [&'static str] = &[#(#names),*];
 
-			/// Every node this graph *declares*, and the reason it has no algebra reading — `None` where its
-			/// kernel has one (`r[kernels.opaque.stated]`). The engine's own `Buffer`/`Latest` fields are left
-			/// out: nobody wrote them, so nobody owes a reason for them.
+			/// Every node this graph *declares*, and how much of what it read its Jacobian covers
+			/// (`r[kernels.fidelity.stated]`). The engine's own `Buffer`/`Latest` fields are left out: nobody
+			/// wrote them, so nobody owes a reason for them.
 			///
-			/// Count the `Some`s and pin the number. It may fall silently; it may only rise in a diff that
-			/// says why.
-			#vis const OPAQUE: &'static [(&'static str, Option<&'static str>)] = &[#((#hatch_names, #hatch_whys)),*];
+			/// Count `Partial` and `Opaque` separately and pin both — they are different admissions. Either
+			/// may fall silently; either may only rise in a diff that says why.
+			#vis const FIDELITY: &'static [(&'static str, #dag::Fidelity)] = &[#((#hatch_names, #fidelities)),*];
 
 			/// `ts` is the tick's event time in nanoseconds — what a node's declared `Emit::CLOCK` is
 			/// read against, and the only thing the sweep needs from a tick besides its batches.

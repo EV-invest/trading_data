@@ -229,6 +229,40 @@ fn flat_reads_fresh_only() {
 	assert_eq!(rec.hist, Some((2, vec![8.0])));
 }
 
+// r[verify kernels.jac.two-quantities]
+/// `Sum3` reads all three elements of its window and its partial wrt each of them is 1.0, but the
+/// reading a fire carries is the one-step one: `Buffering<Src, Elems(3)>` flattens to its last
+/// element, so the node gets *one* column, holding bar 2's partial and saying nothing whatever about
+/// bars 0 and 1. That is the whole of why the two quantities are stated apart — the number is right
+/// and the coverage is partial, and nothing in the array distinguishes this from a node that only
+/// ever read one element.
+#[test]
+fn a_window_reader_gets_one_column_for_its_whole_reach() {
+	#[derive(Default)]
+	struct Rec(Option<Vec<f64>>);
+	impl Observer for Rec {
+		fn want(&self, _: &'static str) -> Want {
+			Want::Jac
+		}
+
+		fn on(&mut self, node: &'static str, deps: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
+			if node.ends_with("Sum3") {
+				assert_eq!(deps.len(), 1, "one dep, whatever its reach");
+				self.0 = fire.jac.map(<[f64]>::to_vec);
+			}
+		}
+	}
+
+	let mut g = G::default();
+	g.tick(0, Batches { src: &[t(1.0), t(2.0)] });
+
+	let mut rec = Rec::default();
+	g.tick_obs(0, Batches { src: &[t(3.0)] }, &mut rec);
+	let jac = rec.0.expect("Sum3 fires on a warm window");
+	assert_eq!(jac.len(), 1, "one out slot × one dep slot — the reach buys no columns: {jac:?}");
+	assert!((jac[0] - 1.0).abs() < 1e-3, "the newest element's partial, and only it: {jac:?}");
+}
+
 /// Span retention over an irregular stream: what a window reaches back over is wall clock, so a gap
 /// wider than the span leaves the current element alone in it rather than a stale one that would be
 /// read as a whole span's worth of change.

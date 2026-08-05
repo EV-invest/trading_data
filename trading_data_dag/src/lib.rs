@@ -915,8 +915,8 @@ where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
 	type Deps: DepSet;
 	/// Why this node has no formula — every run-shaped node is opaque today, and the string is what
-	/// keeps that a stated position rather than an omission (`r[kernels.opaque.stated]`). It is what
-	/// `graph!` counts an emit node into `OPAQUE` under.
+	/// keeps that a stated position rather than an omission (`r[kernels.opaque.stated]`). It is the
+	/// [`Fidelity::Opaque`] `graph!` counts an emit node into `FIDELITY` under.
 	const WHY: &'static str;
 	/// `&[]` draws nothing at all — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
@@ -1063,6 +1063,21 @@ mod sealed {
 	pub trait Kernel {}
 }
 
+/// How much of what a node's body read its Jacobian covers (`r[kernels.fidelity.stated]`). Three
+/// answers rather than two, because the middle one is the case nothing else can show: a derivative
+/// may be algebraic and still be narrower than the reading it was taken from, and a partial
+/// derivative of a body that reads a window looks exactly like an exact one of a body that reads a
+/// point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Fidelity {
+	/// The Jacobian covers everything the body read.
+	Exact,
+	/// Algebraic, but narrower than the body's reach — the string says what it omits.
+	Partial(&'static str),
+	/// No algebra at all — the string says why (`r[kernels.opaque.stated]`).
+	Opaque(&'static str),
+}
+
 /// How a node computes, and therefore what can be read off it. Sealed: the kernel set is the
 /// framework's, so a node's only choice is which one it names and there is no way to supply a body
 /// the engine cannot also read (`r[kernels.closed]`).
@@ -1072,8 +1087,8 @@ mod sealed {
 /// own price: [`Pure`] captures one `grad` pass and nothing else, where [`Opaque`] captures the
 /// pre-advance clone its finite differences re-advance.
 pub trait Level<N: Node + ?Sized>: sealed::Kernel {
-	/// `None` ⇔ this kernel has an algebra reading; `Some` is the hatch, and the string says why.
-	const WHY: Option<&'static str>;
+	/// How much of what the body read [`jac`](Level::jac) covers.
+	const FIDELITY: Fidelity;
 
 	fn advance<'t>(n: &'t mut N, deps: DepOuts<'t, N>) -> N::Out<'t>;
 
@@ -1088,7 +1103,9 @@ pub trait Level<N: Node + ?Sized>: sealed::Kernel {
 	fn formula(pre: &Self::Pre) -> Option<&Ast>;
 
 	/// Fills the Jacobian and reports whether it is exact. Called once, for a node that fired at
-	/// [`Want::Jac`] — never beside a second reading of the same quantity (`r[kernels.jac.one-reading]`).
+	/// [`Want::Jac`]. What it fills is the *one-step* reading — each dep's last element perturbed,
+	/// prior state held fixed — however the kernel arrived there; the derivative over a dep's whole
+	/// reach is a different quantity and is not this one (`r[kernels.jac.two-quantities]`).
 	///
 	/// The observation bounds sit here rather than on the trait, so a bare [`step`] — which never asks
 	/// for a derivative — carries none of them.
@@ -1156,7 +1173,9 @@ where
 {
 	type Pre = Option<Algebra>;
 
-	const WHY: Option<&'static str> = None;
+	/// `env_of` const-asserts one scalar env slot per dep, so a `Symbolic` body's reach is a point
+	/// whatever the dep wrapper retains — and a gradient at a point covers all of it.
+	const FIDELITY: Fidelity = Fidelity::Exact;
 
 	fn advance<'t>(n: &'t mut N, deps: DepOuts<'t, N>) -> N::Out<'t> {
 		let env = env_of::<N>(&deps);
@@ -1198,7 +1217,7 @@ where
 {
 	type Pre = Option<N>;
 
-	const WHY: Option<&'static str> = Some(<N as Blind>::WHY);
+	const FIDELITY: Fidelity = Fidelity::Opaque(<N as Blind>::WHY);
 
 	fn advance<'t>(n: &'t mut N, deps: DepOuts<'t, N>) -> N::Out<'t> {
 		<N as Blind>::advance(n, deps)
@@ -2221,12 +2240,16 @@ pub struct Fire<'a> {
 	/// Row-major `out_len × sum(dep lens)`, deps concatenated in `Deps` order (each batch dep as
 	/// its last element). NaN = no signal. `None` when the node didn't fire.
 	///
-	/// One array, never two: the exact and the finite-difference readings are the same quantity — a
-	/// one-step impulse response — so a kernel that has the former does not also take the latter
-	/// (`r[kernels.jac.one-reading]`).
+	/// The *one-step* reading: each dep's last element perturbed, prior state held fixed.
+	/// Differentiating the body and finite-differencing it both land on that same number, which is
+	/// why one array carries both and [`exact`](Self::exact) only says how it was reached. What
+	/// neither says is anything about the rest of a dep's reach — a node reading `.trailing()` over
+	/// 181 bars has one column here describing bar 180 and silence about bars 0–179
+	/// (`r[kernels.jac.two-quantities]`).
 	pub jac: Option<&'a [f64]>,
 	/// Whether [`jac`](Self::jac) was differentiated or guessed — the difference between labelling a
-	/// viz `∂ (exact)` and `∂ (±h)`.
+	/// viz `∂ (exact)` and `∂ (±h)`. Not a claim that the column covers the dep's reach: that is
+	/// [`Fidelity`], and it belongs to the kernel rather than to one tick's reading.
 	pub exact: bool,
 	/// The node's equation rendered as a formula (LaTeX/infix), [`Pure`] nodes only.
 	pub formula: Option<&'a dyn core::fmt::Display>,
