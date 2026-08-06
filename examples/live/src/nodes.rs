@@ -2,34 +2,54 @@
 //! notional per trade), BookFlow (running signed level qty, market activity only), the folded
 //! `Book`, and 1m bars off the same trades — the bars are what the chart draws price from.
 
-use trading_data::{BookAnchors, BookDelta, BookDeltas, BookShape, Cell, Folding, FrameKind, Lanes, Over, RunOuts, Runs, Side, TradeCols, Trades, Unbounded, node, slice_nudge};
+use trading_data::{
+	BookAnchors, BookDelta, BookDeltas, BookShape, Carried, Cell, Flat, FoldOuts, Folding, Folds, FrameKind, Lanes, Over, RunOuts, Runs, Side, Slots, TradeCols, Trades, Unbounded, Vars,
+	node, slice_nudge,
+};
 use v_utils::*;
 
 /// Cumulative volume delta: running Σ signed notional, one element per trade.
 #[derive(Clone, Default)]
-pub struct Cvd {
-	sum: f64,
-}
+pub struct Cvd(Carried);
 impl Cell for Cvd {
 	type Out<'t> = &'t [f64];
 }
 #[node]
-impl Runs for Cvd {
+impl Folds for Cvd {
 	/// A running sum reaches to the start of the run.
 	type Deps = (Folding<Trades, Unbounded>,);
 
-	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
+	/// The side, which `Flat` leaves out because a side has no slope — it picks which way the
+	/// notional points, and picking is not a variable
+	/// (`r[kernels.selection.index-is-not-a-variable]`).
+	const EXTRA: usize = 1;
+	const STATE: usize = 1;
 
-	fn emit(&mut self, (t,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
-		let (ps, qs) = (t.prec.price.scale(), t.prec.qty.scale());
-		for i in 0..t.len() {
-			let notional = (t.price[i] as f64 / ps) * (t.qty[i] as f64 / qs);
-			self.sum += match t.side[i] {
-				Side::Buy => notional,
-				Side::Sell => -notional,
-			};
-			out.push(self.sum);
-		}
+	fn read((t,): &FoldOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
+		env[0] = t.price[i] as f64 / t.prec.price.scale();
+		env[1] = t.qty[i] as f64 / t.prec.qty.scale();
+		env[2] = match t.side[i] {
+			Side::Buy => 1.0,
+			Side::Sell => -1.0,
+		};
+		Some(t.exec()[i].as_nanos())
+	}
+
+	fn step(&self, v: Vars) -> impl Slots {
+		let (price, qty, side, sum) = (v.get::<0>(), v.get::<1>(), v.get::<2>(), v.get::<3>());
+		sum + side * (price * qty)
+	}
+
+	fn value(&self, v: Vars) -> impl Slots {
+		v.get::<3>()
+	}
+
+	fn carried(&self) -> &Carried {
+		&self.0
+	}
+
+	fn carried_mut(&mut self) -> &mut Carried {
+		&mut self.0
 	}
 }
 slice_nudge!(Cvd, f64);

@@ -27,7 +27,7 @@ use nautilus_model::{
 };
 use serde::{Deserialize, Serialize};
 use trading_data::{
-	Armed, Bar, Blind as _, Buffering, Direction, Elems, Episode, Latch as _, Local, Mc, McRoot, Oi, OiRoot, Over, Run as _, Runs as _, Scan, Ts, Usd,
+	Armed, Bar, Blind as _, Buffering, Direction, Elems, Episode, Fold, Latch as _, Local, Mc, McRoot, Oi, OiRoot, Over, Run as _, Runs as _, Scan, Ts, Usd,
 	bench::{COUNTERS, Digest, ring::Ring},
 };
 use trading_data_spl::{
@@ -328,7 +328,7 @@ impl DataActor for Atrs {
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
 		let bar = [Bar::from(decode::<BarDto>(signal))];
 		self.out.clear();
-		self.node.emit((&bar,), &mut self.out);
+		Fold::emit(&mut self.node, (&bar,), &mut self.out);
 		self.publish_signal(ATR, encode(&self.out), signal.ts_event);
 		Ok(())
 	}

@@ -1,8 +1,11 @@
 use core::{fmt, marker::PhantomData};
 
-use trading_data_dag::{Buffering, Bump, Cell, Elems, Flat, Folding, Glance, Plot, Rows, RunOuts, Runs, ScanOuts, Scans, Series, Slots, Stamped, Tag, Unbounded, Vars, node, slice_nudge};
+use trading_data_dag::{
+	Buffering, Bump, Carried, Cell, Elems, Ex, Expr, Flat, FoldOuts, Folding, Folds, Glance, Plot, Rows, ScanOuts, Scans, Series, Slots, Stamped, Tag, Unbounded, Unflat, Vars, constant, gt,
+	lt, max, min, node, select, slice_nudge,
+};
 
-use crate::{Wilder, bar::Bar, rsi};
+use crate::{bar::Bar, wilder};
 
 /// The two Wilder lengths. Everything else about an RSI chain is wiring — the series it runs on is
 /// the `B` parameter — but these are numbers an app that reads them from a config file has no const
@@ -74,21 +77,21 @@ macro_rules! wilder_half {
 	($ty:ident, $sign:literal, $doc:literal) => {
 		#[doc = $doc]
 		pub struct $ty<B, S> {
-			avg: Wilder,
+			avg: Carried,
 			_wiring: PhantomData<(B, S)>,
 		}
 		impl<B, S> Clone for $ty<B, S> {
 			fn clone(&self) -> Self {
 				Self {
-					avg: self.avg.clone(),
+					avg: self.avg,
 					_wiring: PhantomData,
 				}
 			}
 		}
-		impl<B, S: RsiSpec> Default for $ty<B, S> {
+		impl<B, S> Default for $ty<B, S> {
 			fn default() -> Self {
 				Self {
-					avg: Wilder::new(S::base_len()),
+					avg: Carried::default(),
 					_wiring: PhantomData,
 				}
 			}
@@ -102,14 +105,35 @@ macro_rules! wilder_half {
 			const NAME: &'static str = Self::TAG.as_str();
 		}
 		#[node]
-		impl<B: Series<Item = Bar>, S: RsiSpec> Runs for $ty<B, S> {
+		impl<B: Series<Item = Bar>, S: RsiSpec> Folds for $ty<B, S> {
 			/// A Wilder recurrence reaches to the start of the run.
 			type Deps = (Folding<crate::RsiDelta<B>, Unbounded>,);
-			const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
 
-			fn emit(&mut self, (deltas,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
-				// the first bar has no delta, and an average is not advanced by an absence.
-				out.extend(deltas.iter().map(|d| d.and_then(|d| self.avg.update(($sign * d).max(0.0)))));
+			/// Wilder's running mean and how many samples have gone into it.
+			const STATE: usize = 2;
+
+			/// The first bar has no delta, and an average is not advanced by an absence — which is
+			/// exactly what declining leaves the state doing.
+			fn read((deltas,): &FoldOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
+				env[0] = deltas[i]?;
+				Some(0)
+			}
+
+			fn step(&self, v: Vars) -> impl Slots {
+				let half = max(constant($sign) * v.get::<0>(), constant(0.0));
+				wilder(v.get::<1>(), v.get::<2>(), half, S::base_len() as f64)
+			}
+
+			fn value(&self, v: Vars) -> impl Slots {
+				select(lt(v.get::<2>(), constant(S::base_len() as f64)), constant(f64::NAN), v.get::<1>())
+			}
+
+			fn carried(&self) -> &Carried {
+				&self.avg
+			}
+
+			fn carried_mut(&mut self) -> &mut Carried {
+				&mut self.avg
 			}
 		}
 		slice_nudge!([B: Series<Item = Bar>, S: RsiSpec] $ty<B, S>, Option<f64>);
@@ -139,6 +163,12 @@ impl Bump for RsiValues {
 	}
 }
 
+impl Unflat for RsiValues {
+	fn unflat(_: i64, slots: &[f64]) -> Self {
+		Self { actual: slots[0], smooth: slots[1] }
+	}
+}
+
 impl Glance for RsiValues {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "{:.1}", self.actual)
@@ -149,42 +179,24 @@ impl Glance for RsiValues {
 /// both stages are warm: the averages need `base_len` deltas, and only then does the EMA start
 /// seeing values.
 pub struct Rsi<B, S> {
-	smooth: Ema,
+	/// Nautilus's `ExponentialMovingAverage`, as two slots: the running value, and how many samples
+	/// have reached it — seeded on the first, warm after `smooth_len` of them.
+	smooth: Carried,
 	_wiring: PhantomData<(B, S)>,
-}
-/// Nautilus's `ExponentialMovingAverage`: seeded on the first sample, warm after `period` of them.
-#[derive(Clone)]
-struct Ema {
-	period: usize,
-	value: f64,
-	seen: usize,
-}
-impl Ema {
-	fn new(period: usize) -> Self {
-		assert!(period > 0);
-		Self { period, value: 0.0, seen: 0 }
-	}
-
-	fn update(&mut self, x: f64) -> Option<f64> {
-		let alpha = 2.0 / (self.period as f64 + 1.0);
-		self.value = if self.seen == 0 { x } else { alpha * x + (1.0 - alpha) * self.value };
-		self.seen += 1;
-		(self.seen >= self.period).then_some(self.value)
-	}
 }
 
 impl<B, S> Clone for Rsi<B, S> {
 	fn clone(&self) -> Self {
 		Self {
-			smooth: self.smooth.clone(),
+			smooth: self.smooth,
 			_wiring: PhantomData,
 		}
 	}
 }
-impl<B, S: RsiSpec> Default for Rsi<B, S> {
+impl<B, S> Default for Rsi<B, S> {
 	fn default() -> Self {
 		Self {
-			smooth: Ema::new(S::smooth_len()),
+			smooth: Carried::default(),
 			_wiring: PhantomData,
 		}
 	}
@@ -198,7 +210,7 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Cell for Rsi<B, S> {
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl<B: Series<Item = Bar>, S: RsiSpec> Runs for Rsi<B, S> {
+impl<B: Series<Item = Bar>, S: RsiSpec> Folds for Rsi<B, S> {
 	/// The smoothing EMA is a recurrence over both legs, so it reaches to the start of the run.
 	type Deps = (Folding<crate::AvgGain<B, S>, Unbounded>, Folding<crate::AvgLoss<B, S>, Unbounded>);
 
@@ -209,16 +221,42 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Runs for Rsi<B, S> {
 		labels: &[&["actual", "smooth"]],
 		..Plot::DEFAULT
 	}];
-	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
+	const STATE: usize = 2;
 
-	fn emit(&mut self, (gain, loss): RunOuts<'_, Self>, out: &mut Vec<Option<RsiValues>>) {
+	/// Both legs warm together, so an element either carries both averages or neither.
+	fn read((gain, loss): &FoldOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
 		assert_eq!(gain.len(), loss.len(), "AvgGain/AvgLoss rate mismatch");
-		for (g, l) in gain.iter().zip(loss) {
-			out.push(g.zip(*l).and_then(|(g, l)| {
-				let actual = rsi(g, l);
-				self.smooth.update(actual).map(|smooth| RsiValues { actual, smooth })
-			}));
-		}
+		env[0] = gain[i]?;
+		env[1] = loss[i]?;
+		Some(0)
 	}
+
+	fn step(&self, v: Vars) -> impl Slots {
+		let (ema, seen) = (v.get::<2>(), v.get::<3>());
+		let alpha = 2.0 / (S::smooth_len() as f64 + 1.0);
+		(
+			select(lt(seen, constant(1.0)), actual(v), constant(alpha) * actual(v) + constant(1.0 - alpha) * ema),
+			min(seen + constant(1.0), constant(S::smooth_len() as f64)),
+		)
+	}
+
+	fn value(&self, v: Vars) -> impl Slots {
+		(actual(v), select(lt(v.get::<3>(), constant(S::smooth_len() as f64)), constant(f64::NAN), v.get::<2>()))
+	}
+
+	fn carried(&self) -> &Carried {
+		&self.smooth
+	}
+
+	fn carried_mut(&mut self) -> &mut Carried {
+		&mut self.smooth
+	}
+}
+
+/// [`rsi`] as an expression over the two averages a [`Rsi`] body reads at slots 0 and 1. A loss of
+/// zero is every gain and no loss, which is the top of the scale rather than a division.
+fn actual(v: Vars) -> Ex<impl Expr> {
+	let (gain, loss) = (v.get::<0>(), v.get::<1>());
+	select(gt(loss, constant(0.0)), constant(100.0) - constant(100.0) / (constant(1.0) + gain / loss), constant(100.0))
 }
 slice_nudge!([B: Series<Item = Bar>, S: RsiSpec] Rsi<B, S>, Option<RsiValues>);

@@ -11,6 +11,23 @@ mod rsi_node;
 
 pub use bar::{Bar, Bars, Ohlc, Ohlcs, Volume, Volumes, closed_by};
 pub use rsi_node::{AvgGain, AvgLoss, Rsi, RsiDelta, RsiSpec, RsiValues};
+use trading_data_dag::{Ex, Expr, constant, lt, min, select};
+
+/// Wilder's running mean, as the two expressions a [`trading_data_dag::Folds`] body steps its state
+/// by: what the mean becomes, and how many samples have gone into it. Warmup is an SMA over the
+/// first `n`, which is the whole reason the count is carried — and `warmed < n` is equally how a
+/// reader of the state knows it is still cold.
+pub fn wilder<V: Expr, W: Expr, X: Expr>(value: Ex<V>, warmed: Ex<W>, x: Ex<X>, n: f64) -> (Ex<impl Expr>, Ex<impl Expr>) {
+	let cold = value + x;
+	(
+		select(
+			lt(warmed, constant(n)),
+			select(lt(warmed, constant(n - 1.0)), cold, cold / constant(n)),
+			(value * constant(n - 1.0) + x) / constant(n),
+		),
+		min(warmed + constant(1.0), constant(n)),
+	)
+}
 
 /// Wilder's running mean (Pine's `rma`).
 #[derive(Clone)]

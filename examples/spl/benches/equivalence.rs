@@ -19,8 +19,8 @@
 use std::path::{Path, PathBuf};
 
 use trading_data::{
-	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Close, Elems, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc,
-	McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, ReadClock, Replay, Run as _, Runs as _, Scan, Side, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
+	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Close, Elems, Episode, Exact, ExchangeName, Feed as _, Fold, Horizon, Latch as _, LatencyConfig,
+	Mc, McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, ReadClock, Replay, Run as _, Runs as _, Scan, Side, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
 };
 use trading_data_spl::{
 	config::Config,
@@ -244,7 +244,7 @@ impl Direct {
 		self.mc.push(mc);
 
 		self.b_atr.clear();
-		self.atr.emit((&self.b_bars[0],), &mut self.b_atr);
+		Fold::emit(&mut self.atr, (&self.b_bars[0],), &mut self.b_atr);
 		self.b_mom.clear();
 		self.momentum.emit(
 			(

@@ -100,7 +100,7 @@ use core::any::TypeId;
 
 use trading_data_expr::Ast;
 /// The algebra a body is written in, re-exported so a crate declaring nodes needs only this one.
-pub use trading_data_expr::{Expr, Slots, Vars, abs, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum};
+pub use trading_data_expr::{Ex, Expr, Slots, Vars, abs, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum};
 use v_utils::Timeframe;
 
 /// How far back a dep position reaches: nothing at all (a bare dep), the engine's retention
@@ -1740,6 +1740,170 @@ where
 		E::Item: Flat, {
 		let Some(alg) = pre else { return false };
 		let (_, _, env_w) = const { close_widths::<E>() };
+		let dep_w = j.dep_buf.len();
+		for (row, out) in j.out.chunks_exact_mut(dep_w).enumerate() {
+			out.copy_from_slice(&alg.grad[row * env_w..row * env_w + dep_w]);
+		}
+		true
+	}
+}
+
+/// What a [`Folds`] node carries between its elements. Zero at the start of a run and at every
+/// reset — a recurrence that needs a different zero says so with a counter slot and a `select`,
+/// which is also how it says it is not warm yet.
+#[derive(Clone, Copy, Default)]
+pub struct Carried {
+	slots: [f64; MAX_SLOTS],
+}
+
+/// A run-shaped node computing one out element per element of its driving dep, carrying state
+/// between them. Two expressions over one env: what the state becomes, and what the element then is.
+///
+/// The state is not a dep and has no column, so what the Jacobian omits is every earlier element's
+/// reach through it — permanently, by design (`r[kernels.fidelity.stated]`). A derivative carrying
+/// accumulated state sensitivity is a different quantity, and this kernel will never claim it.
+pub trait Folds: Series + Clone
+where
+	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
+	type Deps: DepSet;
+	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep.
+	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
+	/// Env slots past the deps' own flattenings — a lag, a window's edge, or a discrete attribute
+	/// [`Flat`] leaves out because it is no derivative's variable.
+	const EXTRA: usize = 0;
+	/// How many slots the recurrence carries.
+	const STATE: usize;
+
+	/// Fills the driving element's own slots and then [`EXTRA`](Folds::EXTRA) more, exactly as
+	/// [`Scans::read`] does; the state follows at `DepFlat::LEN + EXTRA`. `None` declines the element
+	/// *and leaves the state where it stood* — an average is not advanced by an absence.
+	fn read(deps: &FoldOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64>;
+
+	/// What the state becomes, over the env with the state as it stood.
+	fn step(&self, vars: Vars) -> impl Slots;
+
+	/// What the element is, over the same env with the *stepped* state in place.
+	fn value(&self, vars: Vars) -> impl Slots;
+
+	fn carried(&self) -> &Carried;
+	fn carried_mut(&mut self) -> &mut Carried;
+}
+
+/// Uniform binder-correct dep-tuple type for [`Folds`] impls.
+pub type FoldOuts<'t, F> = <<F as Folds>::Deps as DepSet>::Outs<'t>;
+
+/// The kernel of a [`Folds`] node.
+pub struct Fold;
+impl sealed::Kernel for Fold {}
+
+/// The element width, where the state starts, the env width, and the item's slot count.
+const fn fold_widths<E: Folds>() -> (usize, usize, usize, usize)
+where
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+	<E as Folds>::Deps: DepFlat,
+	E::Item: Flat, {
+	let dep = <<E as Folds>::Deps as DepFlat>::LEN;
+	let base = dep + <E as Folds>::EXTRA;
+	let (env, slots) = (base + <E as Folds>::STATE, <E::Item as Flat>::LEN);
+	assert!(env <= MAX_VARS, "a Folds env outgrew MAX_VARS: raise it in trading_data_dag");
+	assert!(
+		slots <= MAX_SLOTS && <E as Folds>::STATE <= MAX_SLOTS,
+		"a Folds item or state outgrew MAX_SLOTS: raise it in trading_data_dag"
+	);
+	(dep, base, env, slots)
+}
+
+impl<E> Run<E> for Fold
+where
+	E: Folds + Emit<Deps = <E as Folds>::Deps>,
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+	E::Item: Unflat,
+	<E as Emit>::Deps: DepFlat,
+{
+	type Pre = Option<PerElem>;
+
+	const FIDELITY: Fidelity = Fidelity::Partial("state history, by design");
+
+	fn emit<'t>(e: &mut E, deps: EmitOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
+		let (_, base, env_w, slots_w) = const { fold_widths::<E>() };
+		let carry = <E as Folds>::STATE;
+		let mut c = *e.carried();
+		let (mut env, mut slots) = ([f64::NAN; MAX_VARS], [f64::NAN; MAX_SLOTS]);
+		{
+			let (step, value) = (e.step(Vars), e.value(Vars));
+			debug_assert_eq!(step.len(), carry, "a Folds `step` states one expression per state slot");
+			debug_assert_eq!(value.len(), slots_w, "a Folds `value` states one expression per slot of its item");
+			for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
+				let Some(ts) = <E as Folds>::read(&deps, i, &mut env[..base]) else {
+					// rate-preserving, and the state untouched: nothing arrived to advance it.
+					out.push(<E::Item as Unflat>::unflat(0, &[f64::NAN; MAX_SLOTS][..slots_w]));
+					continue;
+				};
+				env[base..env_w].copy_from_slice(&c.slots[..carry]);
+				step.eval_slots(&env[..env_w], &mut slots[..carry]);
+				c.slots[..carry].copy_from_slice(&slots[..carry]);
+				env[base..env_w].copy_from_slice(&c.slots[..carry]);
+				value.eval_slots(&env[..env_w], &mut slots[..slots_w]);
+				out.push(<E::Item as Unflat>::unflat(ts, &slots[..slots_w]));
+			}
+		}
+		*e.carried_mut() = c;
+	}
+
+	fn pre<'d>(e: &E, want: Want, deps: EmitOuts<'d, E>) -> Self::Pre {
+		if want < Want::Jac {
+			return None;
+		}
+		let (dep_w, base, env_w, slots_w) = const { fold_widths::<E>() };
+		let carry = <E as Folds>::STATE;
+		let mut c = *e.carried();
+		let (mut env, mut slots) = ([0.0f64; MAX_VARS], [0.0f64; MAX_SLOTS]);
+		let (step, value) = (e.step(Vars), e.value(Vars));
+		// the walk again, for the last element's two envs: a recurrence's derivative is of the state
+		// the value was computed from, and that state is only reached by replaying the batch.
+		let mut last = None;
+		for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
+			if <E as Folds>::read(&deps, i, &mut env[..base]).is_none() {
+				continue;
+			}
+			env[base..env_w].copy_from_slice(&c.slots[..carry]);
+			let before = env;
+			step.eval_slots(&env[..env_w], &mut slots[..carry]);
+			c.slots[..carry].copy_from_slice(&slots[..carry]);
+			env[base..env_w].copy_from_slice(&c.slots[..carry]);
+			last = Some((before, env));
+		}
+		let (before, after) = last?;
+
+		// the chain rule across the two bodies: the element reaches the out directly and through the
+		// state it just moved, and holding the *prior* state fixed is what makes the sum the one-step
+		// reading rather than the recurrence's full derivative.
+		let (mut ds, mut dv) = ([0.0f64; MAX_SLOTS * MAX_VARS], [0.0f64; MAX_SLOTS * MAX_VARS]);
+		step.grad_slots(&before[..env_w], &mut ds[..carry * env_w]);
+		value.grad_slots(&after[..env_w], &mut dv[..slots_w * env_w]);
+		let mut grad = [0.0f64; MAX_SLOTS * MAX_VARS];
+		for row in 0..slots_w {
+			for col in 0..dep_w {
+				grad[row * env_w + col] = dv[row * env_w + col] + (0..carry).map(|s| dv[row * env_w + base + s] * ds[s * env_w + col]).sum::<f64>();
+			}
+		}
+		Some(PerElem {
+			formulas: value.lower_slots(),
+			grad,
+		})
+	}
+
+	fn formula(pre: &Self::Pre) -> Option<&Ast> {
+		pre.as_ref()?.formulas.first()
+	}
+
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, EmitOuts<'d, E>>) -> bool
+	where
+		<E as Emit>::Deps: DepFlat,
+		EmitOuts<'d, E>: Copy,
+		E::Item: Flat, {
+		let Some(alg) = pre else { return false };
+		let (_, _, env_w, _) = const { fold_widths::<E>() };
 		let dep_w = j.dep_buf.len();
 		for (row, out) in j.out.chunks_exact_mut(dep_w).enumerate() {
 			out.copy_from_slice(&alg.grad[row * env_w..row * env_w + dep_w]);
