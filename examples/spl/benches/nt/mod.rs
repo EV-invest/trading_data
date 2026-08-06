@@ -79,8 +79,8 @@ pub async fn run(name: &str, shallow_deep: bool, mut notes: Vec<String>) {
 	e.add_actor(actors::Atrs::new()).expect("actor ids are distinct");
 	e.add_actor(actors::C1d::new()).expect("actor ids are distinct");
 	e.add_actor(actors::C3m::new()).expect("actor ids are distinct");
-	e.add_actor(actors::V1m::new()).expect("actor ids are distinct");
-	e.add_actor(actors::V1h::new()).expect("actor ids are distinct");
+	e.add_actor(actors::VolUsd1m::new()).expect("actor ids are distinct");
+	e.add_actor(actors::VolUsd1h::new()).expect("actor ids are distinct");
 	e.add_actor(actors::Imb::new()).expect("actor ids are distinct");
 	e.add_actor(actors::Spr::new()).expect("actor ids are distinct");
 	e.add_actor(actors::Classifier::new()).expect("actor ids are distinct");

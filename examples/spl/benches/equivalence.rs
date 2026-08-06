@@ -25,7 +25,7 @@ use trading_data::{
 use trading_data_spl::{
 	config::Config,
 	day_bounds, ensure_lanes,
-	nodes::{Atr, Batches, BookTop, BookTopSnap, Change1d, Change3m, Classify, Decision, Deprecator, Graph, Imbalance, Intent, Momentum, OiReach, Spread, StdScreener, Volume1h, Volume1m},
+	nodes::{Atr, Batches, BookTop, BookTopSnap, Change1d, Change3m, Classify, Decision, Deprecator, Graph, Imbalance, Intent, Momentum, OiReach, Spread, StdScreener, VolUsd},
 	symbol, trading_days,
 };
 use v_utils::*;
@@ -163,8 +163,8 @@ struct Direct {
 	screener: StdScreener,
 	change_1d: Change1d,
 	change_3m: Change3m,
-	volume_1m: Volume1m,
-	volume_1h: Volume1h,
+	vol_usd_1m: VolUsd<{ TF_1MIN }>,
+	vol_usd_1h: VolUsd<{ TF_1H }>,
 	imbalance: Imbalance,
 	spread: Spread,
 	classify: Classify,
@@ -180,8 +180,8 @@ struct Direct {
 	b_mom: Vec<Option<f64>>,
 	b_c1d: Vec<Option<f64>>,
 	b_c3m: Vec<Option<f64>>,
-	b_v1m: Vec<f64>,
-	b_v1h: Vec<Option<f64>>,
+	b_vol_usd_1m: Vec<f64>,
+	b_vol_usd_1h: Vec<f64>,
 	b_imb: Vec<Option<f64>>,
 	b_spr: Vec<Option<f64>>,
 	b_dep: Vec<Option<Intent>>,
@@ -190,6 +190,7 @@ struct Direct {
 	/// them too — ungated, and so untouched by the commutation reset below.
 	l_atr: Option<f64>,
 	l_mom: Option<f64>,
+	l_vol_usd_1h: Option<f64>,
 
 	/// `graph!`'s `__pending`: a terminal out commutates at the *next* tick's start, because the
 	/// frame still borrows this one's batches at the end of it.
@@ -262,10 +263,15 @@ impl Direct {
 
 		let hit = Predicate::advance(&mut self.screener, (&self.b_bars[0], self.l_mom));
 
+		self.b_vol_usd_1h.clear();
+		Scan::emit(&mut self.vol_usd_1h, (&self.b_bars[2],), &mut self.b_vol_usd_1h);
+		if let Some(v) = self.b_vol_usd_1h.last() {
+			self.l_vol_usd_1h = Some(*v);
+		}
+
 		self.b_c1d.clear();
 		self.b_c3m.clear();
-		self.b_v1m.clear();
-		self.b_v1h.clear();
+		self.b_vol_usd_1m.clear();
 		self.b_imb.clear();
 		self.b_spr.clear();
 		// A closed gate is not "advance with nothing": the node is never called, and its out is the
@@ -284,12 +290,7 @@ impl Direct {
 				(self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, Over<TF_3MIN>>>(),),
 				&mut self.b_c3m,
 			);
-			Scan::emit(&mut self.volume_1m, (&self.b_bars[0],), &mut self.b_v1m);
-			Scan::emit(
-				&mut self.volume_1h,
-				(&self.b_bars[0], self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Elems<1>>>()),
-				&mut self.b_v1h,
-			);
+			Scan::emit(&mut self.vol_usd_1m, (&self.b_bars[0],), &mut self.b_vol_usd_1m);
 			Scan::emit(&mut self.imbalance, (&self.b_top,), &mut self.b_imb);
 			Scan::emit(&mut self.spread, (&self.b_top,), &mut self.b_spr);
 			let classified = self.classify.advance((
@@ -298,8 +299,8 @@ impl Direct {
 				self.l_mom,
 				&self.b_c1d,
 				&self.b_c3m,
-				&self.b_v1m,
-				&self.b_v1h,
+				&self.b_vol_usd_1m,
+				self.l_vol_usd_1h,
 				&self.b_imb,
 				&self.b_spr,
 				// `Ring` bridges into `Hist` alone, and an `Mc` is never an absence — so the newest row it

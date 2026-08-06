@@ -1,3 +1,4 @@
+#![feature(adt_const_params)]
 #![feature(default_field_values)]
 // the graph resolves its node set by trampolining between `#[node]` shims and the driver.
 #![recursion_limit = "1024"]

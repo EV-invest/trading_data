@@ -88,11 +88,7 @@ mod spread;
 #[macro_use]
 mod std_screener;
 #[macro_use]
-mod volume_1h;
-#[macro_use]
-mod volume_1m;
-#[macro_use]
-mod volume_4h;
+mod vol_usd;
 
 pub use atr::Atr;
 pub use book_top::{BookTop, BookTopSnap};
@@ -112,6 +108,7 @@ use trading_data::{Armed, BookAnchors, BookDelta, BookDeltas, BookShape, Elems, 
 pub use trading_data::{Bar, RsiValues};
 // a `type Deps` const expression is re-expanded here, so the `TF_*` a dep names has to resolve here too.
 use v_utils::*;
+pub use vol_usd::VolUsd;
 
 trading_data::node_alias! {
 	/// The compiled screener — the gate `Classify` and everything under it hangs dormant off. The
@@ -119,9 +116,6 @@ trading_data::node_alias! {
 	/// pulls the indies it reads on its behalf meanwhile.
 	pub Screener = StdScreener;
 }
-pub use volume_1h::Volume1h;
-pub use volume_1m::Volume1m;
-pub use volume_4h::Volume4h;
 
 trading_data::graph! {
 	pub struct Graph;
@@ -132,7 +126,7 @@ trading_data::graph! {
 }
 
 const _: () = assert!(
-	tally(true) == 16,
+	tally(true) == 15,
 	"the partial count moved: close the omission, or say in the commit what this graph's new node leaves out of its derivative"
 );
 const _: () = assert!(

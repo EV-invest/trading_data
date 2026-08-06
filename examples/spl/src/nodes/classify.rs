@@ -3,7 +3,7 @@ use core::fmt;
 use trading_data::{Blind, Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Ink, McRoot, OiRoot, Plot, ProbabilisticDistribution, Sampling, Usd, node, value_nudge};
 use v_utils::*;
 
-use super::{Change1d, Change3m, Imbalance, Momentum, Screener, Spread, Volume1h, Volume1m, oi_delta::OiReach};
+use super::{Change1d, Change3m, Imbalance, Momentum, Screener, Spread, VolUsd, oi_delta::OiReach};
 
 /// The wire order of [`Classified`]'s slots, category-major.
 const CATEGORIES: [Category; 5] = [Category::Indeterminate, Category::Liquidations, Category::MmClosing, Category::Manipulation, Category::Momentum];
@@ -86,7 +86,7 @@ const TRAITS: &[Trait] = &[
 		category: Category::Momentum,
 		relevance: 2,
 		invalidates_others: false,
-		hits: |s| matches!((s.volume_1m, s.volume_1h), (Some(m), Some(h)) if h > 0.0 && m > h / 60.0 * VOLUME_SURGE),
+		hits: |s| matches!((s.vol_usd_1m, s.vol_usd_1h), (Some(m), Some(h)) if h > 0.0 && m > h / 60.0 * VOLUME_SURGE),
 	},
 ];
 /// Quality darkens within its category's run, as it does in SPL's own chart. The hue is the
@@ -192,8 +192,8 @@ struct Situation {
 	oi_value: Option<f64>,
 	change_1d: Option<f64>,
 	change_3m: Option<f64>,
-	volume_1m: Option<f64>,
-	volume_1h: Option<f64>,
+	vol_usd_1m: Option<f64>,
+	vol_usd_1h: Option<f64>,
 	imbalance: Option<f64>,
 	spread: Option<f64>,
 }
@@ -279,8 +279,10 @@ impl Blind for Classify {
 		Sampling<Momentum>,
 		Change1d,
 		Change3m,
-		Volume1m,
-		Volume1h,
+		VolUsd<{ TF_1MIN }>,
+		// the hour standing at this minute: the notional is clocked at its own period, and the carry
+		// across the minutes it publishes nothing on is the engine's.
+		Sampling<VolUsd<{ TF_1H }>>,
 		Imbalance,
 		Spread,
 		Sampling<McRoot>,
@@ -298,7 +300,7 @@ impl Blind for Classify {
 	}];
 	const WHY: &'static str = "an enum collapse: the out names a regime, and a regime has no slope";
 
-	fn advance<'t>(&'t mut self, (hit, m1, mom, c1d, c3m, v1m, v1h, imb, spr, mc, oi): DepOuts<'t, Self>) -> Self::Out<'t> {
+	fn advance<'t>(&'t mut self, (hit, m1, mom, c1d, c3m, vol_usd_1m, vol_usd_1h, imb, spr, mc, oi): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert!(hit, "a gating dep reads true inside `advance`");
 		Some(Classified::vote(&Situation {
 			momentum: mom,
@@ -308,8 +310,8 @@ impl Blind for Classify {
 			oi_value: oi.all().last().zip(m1.last()).map(|(o, b)| o.oi * b.close),
 			change_1d: c1d.last().copied().flatten(),
 			change_3m: c3m.last().copied().flatten(),
-			volume_1m: v1m.last().copied(),
-			volume_1h: v1h.last().copied().flatten(),
+			vol_usd_1m: vol_usd_1m.last().copied(),
+			vol_usd_1h,
 			imbalance: imb.last().copied().flatten(),
 			spread: spr.last().copied().flatten(),
 		}))

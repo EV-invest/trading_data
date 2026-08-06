@@ -22,8 +22,9 @@
     "Change1d",
     "Buffer<Bars<{TF_1MIN}>>",
     "Change3m",
-    "Volume1m",
-    "Volume1h",
+    "VolUsd<{TF_1MIN}>",
+    "VolUsd<{TF_1H}>",
+    "Latest<VolUsd<{TF_1H}>>",
     "Buffer<BookDeltas>",
     "Book",
     "BookTop",
@@ -44,7 +45,7 @@
   ],
   "render": [
     {
-      "glance": 3661554,
+      "glance": 3662267,
       "node": "trading_data_core::book::Book"
     },
     {
@@ -52,7 +53,7 @@
       "node": "trading_data_core::cells::BookDeltas"
     },
     {
-      "glance": 3207292,
+      "glance": 3207921,
       "node": "Latest<trading_data_spl::nodes::atr::Atr>"
     },
     {
@@ -60,19 +61,23 @@
       "node": "Buffer<trading_data_core::cells::BookDeltas, Over(15m)>"
     },
     {
-      "glance": 955260,
+      "glance": 1420644,
+      "node": "Latest<VolUsd:1h>"
+    },
+    {
+      "glance": 955446,
       "node": "Latest<MarketCap>"
     },
     {
-      "glance": 940546,
+      "glance": 940722,
       "node": "Latest<trading_data_spl::nodes::momentum::Momentum>"
     },
     {
-      "glance": 796050,
+      "glance": 796205,
       "node": "trading_data_spl::nodes::std_screener::StdScreener"
     },
     {
-      "glance": 796050,
+      "glance": 796205,
       "node": "Armed<trading_data_spl::nodes::deprecator::Deprecator>"
     },
     {
@@ -84,7 +89,7 @@
       "node": "trading_data_spl::nodes::atr::Atr"
     },
     {
-      "glance": 25362,
+      "glance": 25920,
       "node": "trading_data_core::cells::BookAnchors"
     },
     {
@@ -133,11 +138,11 @@
     },
     {
       "glance": 1653,
-      "node": "trading_data_persistence::row::OiRoot"
+      "node": "Buffer<trading_data_persistence::row::OiRoot, Over(20m)>"
     },
     {
       "glance": 1653,
-      "node": "Buffer<trading_data_persistence::row::OiRoot, Over(20m)>"
+      "node": "trading_data_persistence::row::OiRoot"
     },
     {
       "glance": 1201,
@@ -158,6 +163,10 @@
     {
       "glance": 273,
       "node": "Buffer<Bar:1h, Over(25h)>"
+    },
+    {
+      "glance": 234,
+      "node": "VolUsd:1h"
     },
     {
       "glance": 128,
@@ -185,6 +194,14 @@
     },
     {
       "glance": 0,
+      "node": "trading_data_spl::nodes::change_3m::Change3m"
+    },
+    {
+      "glance": 0,
+      "node": "VolUsd:1m"
+    },
+    {
+      "glance": 0,
       "node": "trading_data_spl::nodes::book_top::BookTop"
     },
     {
@@ -205,78 +222,66 @@
     },
     {
       "glance": 0,
-      "node": "trading_data_spl::nodes::change_1d::Change1d"
-    },
-    {
-      "glance": 0,
-      "node": "trading_data_spl::nodes::change_3m::Change3m"
-    },
-    {
-      "glance": 0,
       "node": "trading_data_spl::nodes::deprecator::Deprecator"
     },
     {
       "glance": 0,
-      "node": "trading_data_spl::nodes::volume_1m::Volume1m"
-    },
-    {
-      "glance": 0,
-      "node": "trading_data_spl::nodes::volume_1h::Volume1h"
+      "node": "trading_data_spl::nodes::change_1d::Change1d"
     }
   ],
   "stages": [
     {
       "group": "the feed",
       "label": "parquet decode + latency sample",
-      "secs": 0.467311172
+      "secs": 6.380652482
     },
     {
       "group": "the feed",
       "label": "the weave (arrival merge)",
-      "secs": 0.010527936000000016
+      "secs": 0.13845708099999943
     },
     {
       "group": "the graph",
       "label": "every derived node",
-      "secs": -0.0007990660000000149
+      "secs": 1.647746262000001
     },
     {
       "group": "reaching the observer",
       "label": "flatten (Want::Vals)",
-      "secs": 0.215008778
+      "secs": 4.051492052999999
     },
     {
       "group": "reaching the observer",
       "label": "finite-diff Jacobian (Want::Jac)",
-      "secs": 0.26589715699999994
+      "secs": 5.570679390000002
     },
     {
       "group": "the tape's `on`",
       "label": "bookkeeping",
-      "secs": 0.05589407700000015
+      "secs": 0.04010570199999819
     },
     {
       "group": "the tape's `on`",
       "label": "glance (the node's own one-liner)",
-      "secs": 0.24213775199999987
+      "secs": 1.716448831000001
     },
     {
       "group": "the tape's `on`",
       "label": "vals+jac columns",
-      "secs": 0.03343007099999995
+      "secs": 0.5191186039999991
     },
     {
       "group": "the tape's `on`",
       "label": "handoff (channel + absorb)",
-      "secs": 0.7412215469999999
+      "secs": 3.647849032
     },
     {
       "group": "the tape's `on`",
       "label": "backpressure wait",
-      "secs": -0.05350401399999982
+      "secs": -0.02527213799999828
     }
   ],
-  "tape_s": 1.0191794330000001,
-  "ticks": 159210,
-  "total_s": 1.97712541
+  "tape_s": 5.898250031,
+  "ticks": 159241,
+  "total_s": 23.687277299
 }

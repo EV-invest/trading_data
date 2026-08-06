@@ -32,7 +32,7 @@ use trading_data::{
 };
 use trading_data_spl::{
 	DEPTH,
-	nodes::{Atr, BookTopSnap, Change1d, Change3m, Classified, Classify, Decided, Decision, Deprecator, Imbalance, Intent, Momentum, OiReach, Spread, StdScreener, Volume1h, Volume1m},
+	nodes::{Atr, BookTopSnap, Change1d, Change3m, Classified, Classify, Decided, Decision, Deprecator, Imbalance, Intent, Momentum, OiReach, Spread, StdScreener, VolUsd},
 };
 use v_utils::*;
 
@@ -48,8 +48,8 @@ const SCREENER: &str = "screener";
 const ATR: &str = "atr";
 const CHANGE1D: &str = "change1d";
 const CHANGE3M: &str = "change3m";
-const VOLUME1M: &str = "volume1m";
-const VOLUME1H: &str = "volume1h";
+const VOLUSD1M: &str = "volusd1m";
+const VOLUSD1H: &str = "volusd1h";
 const IMBALANCE: &str = "imbalance";
 const SPREAD: &str = "spread";
 const CLASSIFIED: &str = "classified";
@@ -443,9 +443,9 @@ impl DataActor for C3m {
 	}
 }
 
-actor!(V1m { node: Volume1m, out: Vec<f64> });
+actor!(VolUsd1m { node: VolUsd<{ TF_1MIN }>, out: Vec<f64> });
 
-impl DataActor for V1m {
+impl DataActor for VolUsd1m {
 	fn on_start(&mut self) -> anyhow::Result<()> {
 		self.subscribe_signal(BAR1M, None);
 		Ok(())
@@ -455,31 +455,24 @@ impl DataActor for V1m {
 		let bar = [Bar::from(decode::<BarDto>(signal))];
 		self.out.clear();
 		Scan::emit(&mut self.node, (&bar,), &mut self.out);
-		self.publish_signal(VOLUME1M, encode(&self.out), signal.ts_event);
+		self.publish_signal(VOLUSD1M, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
 }
 
-actor!(V1h { node: Volume1h, h1: Ring<Bar>, pending: Vec<Bar>, out: Vec<Option<f64>> });
+actor!(VolUsd1h { node: VolUsd<{ TF_1H }>, out: Vec<f64> });
 
-impl DataActor for V1h {
+impl DataActor for VolUsd1h {
 	fn on_start(&mut self) -> anyhow::Result<()> {
 		self.subscribe_signal(BAR1H, None);
-		self.subscribe_signal(BAR1M, None);
 		Ok(())
 	}
 
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
-		if signal.name == BAR1H {
-			self.pending.push(decode::<BarDto>(signal).into());
-			return Ok(());
-		}
 		let bar = [Bar::from(decode::<BarDto>(signal))];
-		self.h1.push(&self.pending);
-		self.pending.clear();
 		self.out.clear();
-		Scan::emit(&mut self.node, (&bar, self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Elems<1>>>()), &mut self.out);
-		self.publish_signal(VOLUME1H, encode(&self.out), signal.ts_event);
+		Scan::emit(&mut self.node, (&bar,), &mut self.out);
+		self.publish_signal(VOLUSD1H, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
 }
@@ -531,15 +524,15 @@ actor!(Classifier {
 	pending_mc: Vec<Mc>,
 	c1d: Vec<Option<f64>>,
 	c3m: Vec<Option<f64>>,
-	v1m: Vec<f64>,
-	v1h: Vec<Option<f64>>,
+	vol_usd_1m: Vec<f64>,
+	vol_usd_1h: Option<f64>,
 	imb: Vec<Option<f64>>,
 	spr: Vec<Option<f64>>,
 });
 
 impl DataActor for Classifier {
 	fn on_start(&mut self) -> anyhow::Result<()> {
-		for name in [MOMENTUM, CHANGE1D, CHANGE3M, VOLUME1M, VOLUME1H, IMBALANCE, SPREAD, SCREENER] {
+		for name in [MOMENTUM, CHANGE1D, CHANGE3M, VOLUSD1M, VOLUSD1H, IMBALANCE, SPREAD, SCREENER] {
 			self.subscribe_signal(name, None);
 		}
 		self.subscribe_data(crate::nt::oi_type(), None, None);
@@ -576,8 +569,14 @@ impl DataActor for Classifier {
 			}
 			CHANGE1D => return Ok(self.c1d = decode(signal)),
 			CHANGE3M => return Ok(self.c3m = decode(signal)),
-			VOLUME1M => return Ok(self.v1m = decode(signal)),
-			VOLUME1H => return Ok(self.v1h = decode(signal)),
+			VOLUSD1M => return Ok(self.vol_usd_1m = decode(signal)),
+			// the frame's `Latest<VolUsd<1h>>`: a level, so it is never cleared after a read.
+			VOLUSD1H => {
+				if let Some(v) = decode::<Vec<f64>>(signal).last() {
+					self.vol_usd_1h = Some(*v);
+				}
+				return Ok(());
+			}
 			IMBALANCE => return Ok(self.imb = decode(signal)),
 			SPREAD => return Ok(self.spr = decode(signal)),
 			_ => (),
@@ -598,8 +597,8 @@ impl DataActor for Classifier {
 			self.mom,
 			&self.c1d,
 			&self.c3m,
-			&self.v1m,
-			&self.v1h,
+			&self.vol_usd_1m,
+			self.vol_usd_1h,
 			&self.imb,
 			&self.spr,
 			// `Ring` bridges into `Hist` alone, and an `Mc` is never an absence — so the newest row it
