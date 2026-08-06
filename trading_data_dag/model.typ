@@ -345,15 +345,60 @@ gateable the moment the lane became a run of rows the engine could retain for it
    │    │
    │    ├── Symbolic       fn body(&self, Vars) -> impl Expr    (Out = f64)  ⇒ kernel `Pure`
    │    │                   the algebra is load-bearing: there is no other way to state the
-   │    │                   value. ≤ MAX_VARS = 8 deps, every dep scalar (const-asserted: a
+   │    │                   value. ≤ MAX_VARS = 16 deps, every dep scalar (const-asserted: a
    │    │                   vector dep desyncs Var<I>). Its Jacobian is `grad` — exact, one
    │    │                   pass, no clone and no re-advance.
+   │    │
+   │    ├── Decides         fn body(&self, Vars) -> impl Expr    (Out = bool) ⇒ kernel
+   │    │                   `Predicate`. `Scan`'s level-shaped half: the LEADING dep drives —
+   │    │                   its having fired at all is half the verdict — and the body compares
+   │    │                   whatever it reads at the deps' last elements. A screen over a series
+   │    │                   that closed nothing has screened nothing, and saying so through the
+   │    │                   driver's rate is what keeps a gate a pulse instead of a level.
+   │    │                   Jacobian all-zero and Exact: a predicate's slope is zero off the
+   │    │                   boundary, and at it the step is not a slope any reading may claim.
    │    │
    │    └── Blind           const WHY · fn advance(&'t mut self, ..)          ⇒ kernel `Opaque`
    │                        SELF-BORROWS ⇒ a node lends its own buffer for the whole tick.
    │                        The stated hatch: `WHY` is the cost of using it, and `graph!`
    │                        counts it into `FIDELITY`. `Clone` is a supertrait because the
    │                        finite-difference witness is what it has instead of a derivative.
+   │
+   ├── Scans: Series+Clone  EXTRA · BEYOND · fn read(deps, i, env) -> Option<i64>
+   │                        · fn body(&self, Vars) -> impl Slots               ⇒ kernel `Scan`
+   │                        ONE out element per element of the LEADING dep, whose rate it
+   │                        therefore keeps, carrying nothing between them. WHICH elements the
+   │                        env is read from is Rust — an index is constant wrt everything being
+   │                        differentiated (`r[kernels.selection.index-is-not-a-variable]`), so
+   │                        it has no slope to state; the numbers are all algebra. The env's
+   │                        first DepFlat::LEN slots are the deps' own flattenings, which is
+   │                        what lines the body's gradient up with the Jacobian's columns.
+   │                        `read -> None` is absence ARRIVING (answered without evaluating
+   │                        anything); NaN out of the body is the body DECLINING. BEYOND names
+   │                        what was read past the point, and is what makes it Partial.
+   │
+   ├── Closes: Series+Clone PERIOD · fn read(..) · fn open(Vars) · fn fold(Vars)
+   │                        · fn pending(_mut)                                 ⇒ kernel `Close`
+   │                        elements are PERIODS, closed by the first driving element past a
+   │                        boundary. The kernel owns the walk, the floor-to-period and the
+   │                        close time (a timestamp is not a slot, so it never could be the
+   │                        body's); the body owns the numbers, as what a first element opens
+   │                        with and what a further one folds in — the accumulator's slots
+   │                        following the element's, so both read the element at one set of
+   │                        indices. Rate-CHANGING by construction. Partial: the column stands
+   │                        for the element that closed the reported one, and the rest of its
+   │                        period reached it only through the accumulator, which is no dep.
+   │
+   ├── Folds: Series+Clone  STATE · EXTRA · fn read(..) · fn step(Vars) · fn value(Vars)
+   │                        · fn carried(_mut)                                  ⇒ kernel `Fold`
+   │                        a RECURRENCE: `step` says what the state becomes, `value` what the
+   │                        element then is, both over one env with the state after the element.
+   │                        Declining leaves the state where it stood — an average is not
+   │                        advanced by an absence. Its Jacobian is the chain rule across the
+   │                        two bodies with the PRIOR state held fixed, which is what makes it
+   │                        the one-step reading. Permanently Partial("state history, by
+   │                        design"): the state is no dep and has no column, and a derivative
+   │                        carrying accumulated state sensitivity is a different quantity.
    │
    ├── Runs: Series+Clone   const WHY · fn emit(&mut self, RunOuts, out: &mut Vec<Item>)
    │                        ⇒ kernel `Raw`, through the `Emit` impl `#[node]` writes.
@@ -385,22 +430,22 @@ gateable the moment the lane became a run of rows the engine could retain for it
 
   node((0, 0), align(center)[`Cell` \ #text(7pt)[`Out<'t>: Copy` · `NAME` · `REACH` · `FOLDED` · `RETAINED` · `REWARMS` · `CLOCK` · `Gates`]], fill: luma(235), name: <cell>),
 
-  node((-2.4, 1.3), align(center)[`Symbolic` \ #text(7pt)[`body -> impl Expr`]], name: <sy>),
+  node((-2.4, 1.3), align(center)[`Symbolic` · `Decides` \ #text(7pt)[`body -> impl Expr`]], name: <sy>),
   node((-1.1, 1.3), align(center)[`Node` \ #text(7pt)[`type Kernel`, no method]], name: <nd>),
-  node((0.2, 1.3), align(center)[`Runs: Series` \ #text(7pt)[engine owns the run]], name: <em>),
-  node((2.4, 1.3), align(center)[`Episodic` \ #text(7pt)[`Trigger` · `arms`]], name: <ep>),
+  node((0.4, 1.3), align(center)[`Scans` · `Closes` · `Folds` · `Runs` \ #text(7pt)[`: Series` — engine owns the run]], name: <em>),
+  node((2.8, 1.3), align(center)[`Episodic` \ #text(7pt)[`Trigger` · `arms`]], name: <ep>),
 
   edge(<cell>, <sy>, "->"),
   edge(<cell>, <nd>, "->"),
   edge(<cell>, <em>, "->"),
   edge(<cell>, <ep>, "->"),
 
-  node((-3.6, 1.3), align(center)[`Blind` \ #text(7pt)[`WHY` · `advance` self-borrows]], name: <bl>),
-  node((-3.0, 2.7), align(center)[`Level` (sealed) \ #text(7pt)[`Pure` · `Opaque`] \ #text(7pt)[`FIDELITY`: how much it covers]], fill: rgb("#eef0e4"), name: <lv>),
+  node((-3.8, 1.3), align(center)[`Blind` \ #text(7pt)[`WHY` · `advance` self-borrows]], name: <bl>),
+  node((-3.0, 2.7), align(center)[`Level` (sealed) \ #text(7pt)[`Pure` · `Predicate` · `Opaque`] \ #text(7pt)[`FIDELITY`: how much it covers]], fill: rgb("#eef0e4"), name: <lv>),
   node((1.1, 2.7), align(center)[`Gate` \ #text(7pt)[`Out = bool`]], name: <ga>),
 
   edge(<cell>, <bl>, "->"),
-  edge(<sy>, <lv>, "->", label: [`Pure`], label-size: 7pt),
+  edge(<sy>, <lv>, "->", label: [`Pure` · `Predicate`], label-size: 7pt),
   edge(<bl>, <lv>, "->", label: [`Opaque`], label-size: 7pt),
   edge(<lv>, <nd>, "->", label: [`type Kernel`], label-size: 7pt),
   edge(<nd>, <ga>, "->"),
@@ -482,6 +527,12 @@ gateable the moment the lane became a run of rows the engine could retain for it
                and leave the buffer indistinguishable from an unfired one, which is the one way
                absence could come to mean two things (§1.6).
   Plot         `Plot::coherent` — a multi-plot node must name each plot's slots.
+  Run          `Level`'s run-shaped sibling, sealed by the same supertrait: `Scan` · `Close` ·
+               `Fold` · `Raw`. An `Emit` names one exactly as a `Node` names a `Level` one.
+  Slots        one `Expr` per slot of an item — heterogeneous, so a tuple rather than `Sum`'s
+               array, since the slots of an item are different functions of one env.
+  Unflat       `Flat`'s inverse: an item rebuilt from computed slots plus the event time, which
+               the kernel carries because a timestamp is no derivative's variable.
   Level        sealed by a private supertrait — the kernel set is the framework's, and each
                kernel demands its body trait, so naming one you have no body for does not
                compile (`r[kernels.closed]`). `FIDELITY` is per kernel, and `graph!` counts
@@ -553,7 +604,11 @@ gateable the moment the lane became a run of rows the engine could retain for it
 #census((
   ("impl Cell", "\bimpl\b[^\n{;]*\bCell\b[^\n{;]*\bfor\b"),
   ("impl Runs", "\bimpl\b[^\n{;]*\bRuns\b[^\n{;]*\bfor\b"),
+  ("impl Scans", "\bimpl\b[^\n{;]*\bScans\b[^\n{;]*\bfor\b"),
+  ("impl Closes", "\bimpl\b[^\n{;]*\bCloses\b[^\n{;]*\bfor\b"),
+  ("impl Folds", "\bimpl\b[^\n{;]*\bFolds\b[^\n{;]*\bfor\b"),
   ("impl Symbolic", "\bimpl\b[^\n{;]*\bSymbolic\b[^\n{;]*\bfor\b"),
+  ("impl Decides", "\bimpl\b[^\n{;]*\bDecides\b[^\n{;]*\bfor\b"),
   ("impl Blind", "\bimpl\b[^\n{;]*\bBlind\b[^\n{;]*\bfor\b"),
   ("impl Gate", "\bimpl\b[^\n{;]*\bGate\b[^\n{;]*\bfor\b"),
   ("impl Episodic", "\bimpl\b[^\n{;]*\bEpisodic\b[^\n{;]*\bfor\b"),

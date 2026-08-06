@@ -10,6 +10,12 @@ there MUST be no way for a node to supply a compute body the framework cannot al
 the run side as it binds the level side: an `Emit` names a `Run` kernel exactly as a `Node` names a
 `Level` one.
 
+The set is `Pure` (a scalar `Expr`), `Predicate` (a `bool` one), `Opaque` (the level hatch), `Scan`
+(one out element per driving element, no state), `Close` (elements are whole periods), `Fold` (a
+recurrence) and `Raw` (the run hatch). Each demands its own body trait — `Symbolic`, `Decides`,
+`Blind`, `Scans`, `Closes`, `Folds`, `Runs` — so the body *is* the choice of kernel and there is no
+attribute spelling one a node has no body for.
+
 The point of the seal is that every reading the engine offers — the value, the formula, the exact
 Jacobian, the value-annotated trace — comes from one declaration. Where a node can write its own
 `advance`, the engine holds a number it cannot explain, and every reading beyond the number has to be
@@ -30,13 +36,15 @@ rise in a diff that says so.
 
 r[kernels.pure.zero-cost]
 
-A node whose kernel is `Pure` MUST cost, on the compute path, what the same arithmetic written by
-hand costs. Equality is in retired instructions, not in wall clock, and it MUST hold as an equality
-rather than as a bound.
+A node whose kernel reads an `Expr` body MUST cost, on the compute path, what the same arithmetic
+written by hand costs. Equality is in retired instructions, not in wall clock, and it MUST hold as an
+equality rather than as a bound.
 
 Verified by [`trading_data_dag/benches/kernel_cost.rs`](../../trading_data_dag/benches/kernel_cost.rs),
-which runs one node's arithmetic through a `Symbolic` body and through a hand-written `advance` and
-reports both `Ir` counts. A divergence is not a tuning problem, it is the signal that the flat env
+which runs one node's arithmetic through a body trait and through a hand-written one and reports both
+`Ir` counts — `pure`/`hand` on the level side, `scan`/`raw` on the run side. The run pair is the
+harder question, since a per-element kernel refills its stack env once per *element* where a level
+one does it once per tick, and it has to come out the same equality. A divergence is not a tuning problem, it is the signal that the flat env
 buffer has to go — replaced by a typed env addressing the pulled dep tuple directly — because a
 framework that makes the algebra mandatory has to make it free first.
 

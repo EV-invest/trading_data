@@ -14,14 +14,22 @@
 //!
 //! Both legs sweep one node over three roots so the arithmetic is non-trivial (two multiplies, an
 //! add, a subtract) and the dep flattening has more than one slot to do.
+//!
+//! `scan`/`raw` is the same pair on the run side: one out element per element of a driving series,
+//! the arithmetic identical, through a `Scans` body and through a hand-written `emit`. It asks the
+//! harder question — a per-element kernel refills a stack env once per element, where the level pair
+//! does it once per tick — and the answer has to be the same equality.
 
 use std::hint::black_box;
 
 use iai_callgrind::{Callgrind, EventKind, LibraryBenchmarkConfig, library_benchmark, library_benchmark_group, main};
-use trading_data_dag::{Blind, Cell, Cons, DepOuts, Nil, Node, Opaque, Pure, Symbolic, step, value_nudge};
+use trading_data_dag::{Blind, Cell, Cons, DepOuts, Emit, Emitter, Flat, Nil, Node, Opaque, Pure, Raw, RunOuts, Runs, Scan, ScanOuts, Scans, Slots, Symbolic, step, step_emit, value_nudge};
 use trading_data_expr::{Expr, Vars, constant};
 
 const TICKS: usize = 1_000;
+/// Elements per tick on the run legs — enough that the per-element work dominates the per-call
+/// setup, which is the thing being asked about.
+const RUN: usize = 8;
 
 macro_rules! root {
 	($($n:ident),+) => { $(
@@ -108,7 +116,93 @@ fn hand() {
 	}
 }
 
-library_benchmark_group!(name = kernel_cost; benchmarks = pure, hand);
+/// The driving series both run legs walk: three slots per element, the same three the level pair
+/// reads off three roots.
+struct Src;
+impl Cell for Src {
+	type Out<'t> = &'t [[f64; 3]];
+}
+trading_data_dag::slice_nudge!(Src, [f64; 3]);
+
+#[derive(Clone, Default)]
+struct Scanned;
+impl Cell for Scanned {
+	type Out<'t> = &'t [f64];
+}
+trading_data_dag::slice_nudge!(Scanned, f64);
+impl Scans for Scanned {
+	type Deps = (Src,);
+
+	fn read((src,): &ScanOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
+		src[i].flat(env);
+		Some(0)
+	}
+
+	fn body(&self, v: Vars) -> impl Slots {
+		let (lambda, vol, cvd) = (v.get::<0>(), v.get::<1>(), v.get::<2>());
+		constant(1e6) * lambda + constant(1e-6) * (cvd - vol)
+	}
+}
+impl Emit for Scanned {
+	type Deps = <Self as Scans>::Deps;
+	type Kernel = Scan;
+}
+
+#[derive(Clone, Default)]
+struct Handrun;
+impl Cell for Handrun {
+	type Out<'t> = &'t [f64];
+}
+trading_data_dag::slice_nudge!(Handrun, f64);
+impl Runs for Handrun {
+	type Deps = (Src,);
+
+	const WHY: &'static str = "the hand-written leg of the zero-cost pair — being outside the algebra is its whole job";
+
+	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
+		for e in src {
+			out.push(1e6 * e[0] + 1e-6 * (e[2] - e[1]));
+		}
+	}
+}
+impl Emit for Handrun {
+	type Deps = <Self as Runs>::Deps;
+	type Kernel = Raw;
+}
+
+/// One tick of a one-node run graph, generic for the reason [`tick`] is.
+fn tick_run<E>(e: &mut Emitter<E>, src: &[[f64; 3]]) -> usize
+where
+	E: Emit<Deps = (Src,)>,
+	for<'t> E: Cell<Out<'t> = &'t [<E as trading_data_dag::Series>::Item]>, {
+	let f = Cons::<Src, Nil> { out: src, tail: Nil };
+	step_emit(f, e, true, 0).head().len()
+}
+
+fn run_roots(i: usize) -> [[f64; 3]; RUN] {
+	core::array::from_fn(|k| {
+		let x = ((i + k) % 97) as f64;
+		[x * 1e-7, x + 1.0, x * 2.0]
+	})
+}
+
+#[library_benchmark]
+fn scan() {
+	let mut node = Emitter::<Scanned>::default();
+	for i in 0..TICKS {
+		black_box(tick_run(&mut node, &black_box(run_roots(i))));
+	}
+}
+
+#[library_benchmark]
+fn raw() {
+	let mut node = Emitter::<Handrun>::default();
+	for i in 0..TICKS {
+		black_box(tick_run(&mut node, &black_box(run_roots(i))));
+	}
+}
+
+library_benchmark_group!(name = kernel_cost; benchmarks = pure, hand, scan, raw);
 main!(
 	config = LibraryBenchmarkConfig::default().tool(Callgrind::default().soft_limits([(EventKind::Ir, 5f64)]));
 	library_benchmark_groups = kernel_cost
