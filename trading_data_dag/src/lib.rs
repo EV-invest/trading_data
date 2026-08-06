@@ -2480,8 +2480,12 @@ pub struct Fire<'a> {
 	pub jac: Option<&'a [f64]>,
 	/// Whether [`jac`](Self::jac) was differentiated or guessed — the difference between labelling a
 	/// viz `∂ (exact)` and `∂ (±h)`. Not a claim that the column covers the dep's reach: that is
-	/// [`Fidelity`], and it belongs to the kernel rather than to one tick's reading.
+	/// [`fidelity`](Self::fidelity), which the kernel states once rather than per tick.
 	pub exact: bool,
+	/// How much of what the body read the Jacobian covers — the kernel's own claim, constant across
+	/// ticks. Carried here so a reader holding one fire needs no second lookup against
+	/// `Graph::FIDELITY` to say what the column is worth.
+	pub fidelity: Fidelity,
 	/// The node's equation rendered as a formula (LaTeX/infix), [`Pure`] nodes only.
 	pub formula: Option<&'a dyn core::fmt::Display>,
 	/// Simplified `∂out/∂dep` formulas, [`Pure`] nodes only.
@@ -2496,12 +2500,13 @@ impl<'a> Fire<'a> {
 	/// the exception rather than the shape, spliced in with `..` at the one site that states them.
 	/// `flat: None` is the unfired reading — no flattening happened, so there is none to report.
 	#[inline]
-	fn of<T: Flat + Glance>(out: &'a T, plots: &'static [Plot], clock: Option<Timeframe>, dep_dims: &'a [&'static [usize]], flat: Option<Flats<'a>>) -> Self {
+	fn of<T: Flat + Glance>(out: &'a T, plots: &'static [Plot], clock: Option<Timeframe>, fidelity: Fidelity, dep_dims: &'a [&'static [usize]], flat: Option<Flats<'a>>) -> Self {
 		Fire {
 			glance: out,
 			dims: T::DIMS,
 			plots,
 			clock,
+			fidelity,
 			fires: out.fires(),
 			vals: flat.and_then(|f| f.fired.then_some(f.vals)),
 			dep_dims,
@@ -2765,7 +2770,7 @@ where
 	if !run {
 		let out: N::Out<'t> = unrun();
 		if want != Want::Nothing {
-			let fire = Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Deps as DepFlat>::DIMS, None);
+			let fire = Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Kernel as Level<N>>::FIDELITY, <N::Deps as DepFlat>::DIMS, None);
 			obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
@@ -2813,7 +2818,7 @@ where
 		formula: formula.map(|f| f as &dyn core::fmt::Display),
 		deriv: deriv.as_ref().map(|d| d as &dyn core::fmt::Display),
 		trace: trace.as_ref().map(|t| t as &dyn core::fmt::Display),
-		..Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Deps as DepFlat>::DIMS, Some(flat))
+		..Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Kernel as Level<N>>::FIDELITY, <N::Deps as DepFlat>::DIMS, Some(flat))
 	};
 	obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
@@ -2870,7 +2875,7 @@ where
 	if !demanded || !<E::Deps as Pull<'t, F, I>>::open(&frame) || !e.opens(ts) {
 		let out: &'t [E::Item] = &e.buf;
 		if want != Want::Nothing {
-			let fire = Fire::of(&out, <E as Emit>::PLOTS, <E as Cell>::CLOCK, <E::Deps as DepFlat>::DIMS, None);
+			let fire = Fire::of(&out, <E as Emit>::PLOTS, <E as Cell>::CLOCK, <E::Kernel as Run<E>>::FIDELITY, <E::Deps as DepFlat>::DIMS, None);
 			obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
@@ -2905,7 +2910,14 @@ where
 		}),
 	);
 
-	let fire = Fire::of(&out, <E as Emit>::PLOTS, <E as Cell>::CLOCK, <E::Deps as DepFlat>::DIMS, Some(flat));
+	let fire = Fire::of(
+		&out,
+		<E as Emit>::PLOTS,
+		<E as Cell>::CLOCK,
+		<E::Kernel as Run<E>>::FIDELITY,
+		<E::Deps as DepFlat>::DIMS,
+		Some(flat),
+	);
 	obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
 }
@@ -3109,5 +3121,6 @@ where
 		jac: None,
 		exact: false,
 	};
-	obs.on(C::NAME, &[], &[], Fire::of(&out, &[Plot::DEFAULT], C::CLOCK, &[], Some(flat)));
+	// a root is not computed here at all: nothing read it, so nothing was omitted from a reading.
+	obs.on(C::NAME, &[], &[], Fire::of(&out, &[Plot::DEFAULT], C::CLOCK, Fidelity::Exact, &[], Some(flat)));
 }
