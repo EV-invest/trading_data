@@ -226,10 +226,10 @@ impl Direct {
 		let [o1, o5, oh, o4] = &self.b_ohlc;
 		let [v1, v5, vh, v4] = &self.b_vol;
 		let [b1, b5, bh, b4] = &mut self.b_bars;
-		self.bars_1m.emit((o1, v1), b1);
-		self.bars_5m.emit((o5, v5), b5);
-		self.bars_1h.emit((oh, vh), bh);
-		self.bars_4h.emit((o4, v4), b4);
+		Scan::emit(&mut self.bars_1m, (o1, v1), b1);
+		Scan::emit(&mut self.bars_5m, (o5, v5), b5);
+		Scan::emit(&mut self.bars_1h, (oh, vh), bh);
+		Scan::emit(&mut self.bars_4h, (o4, v4), b4);
 
 		self.b_top.clear();
 		self.chunk.advance(deltas, Horizon::Over(v_utils::TF_15MIN));

@@ -136,7 +136,7 @@ const _: () = assert!(
 	"the partial count moved: close the omission, or say in the commit what this graph's new node leaves out of its derivative"
 );
 const _: () = assert!(
-	tally(false) == 28,
+	tally(false) == 24,
 	"the opaque count moved: write algebra, or say in the commit why this graph needs another hand-written node"
 );
 /// The hatch, pinned (`r[kernels.fidelity.stated]`). Two numbers, because a node with no algebra and

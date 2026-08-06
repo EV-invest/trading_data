@@ -1,7 +1,7 @@
 use core::fmt;
 
 use trading_data_core::{Exact, Timestamped, Timestamps, TradeCols, Trades, Ts, Venue};
-use trading_data_dag::{Bump, Cell, Flat, Folding, Glance, Over, Plot, RunOuts, Runs, Stamped, Tag, always_present, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, Flat, Folding, Glance, Over, Plot, RunOuts, Runs, ScanOuts, Scans, Slots, Stamped, Tag, Unflat, Vars, always_present, node, slice_nudge};
 use v_utils::Timeframe;
 
 #[derive(Clone, Copy, Debug)]
@@ -105,6 +105,19 @@ impl Bump for Bar {
 	fn bump(mut self, slot: usize, h: f64) -> (Self, f64) {
 		*[&mut self.open, &mut self.high, &mut self.low, &mut self.close, &mut self.vol_base][slot] += h;
 		(self, h)
+	}
+}
+
+impl Unflat for Bar {
+	fn unflat(ts_ns: i64, slots: &[f64]) -> Self {
+		Self {
+			ts_close: Ts::from_nanos(ts_ns),
+			open: slots[0],
+			high: slots[1],
+			low: slots[2],
+			close: slots[3],
+			vol_base: slots[4],
+		}
 	}
 }
 
@@ -252,7 +265,9 @@ impl<const TF: Timeframe> Cell for Bars<TF> {
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl<const TF: Timeframe> Runs for Bars<TF> {
+impl<const TF: Timeframe> Scans for Bars<TF> {
+	/// Both deps drive, at one rate — the `assert_eq` below is that claim, and it is what makes
+	/// element `i` of the second dep its newest exactly when element `i` of the first is.
 	type Deps = (crate::Ohlcs<TF>, crate::Volumes<TF>);
 
 	/// Slot 4 (`vol_base`) goes undrawn: a histogram of it would claim an indicator pane, and the
@@ -263,21 +278,17 @@ impl<const TF: Timeframe> Runs for Bars<TF> {
 		candles: true,
 		..Plot::DEFAULT
 	}];
-	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
-	fn emit(&mut self, (ohlc, vol): RunOuts<'_, Self>, out: &mut Vec<Bar>) {
+	fn read((ohlc, vol): &ScanOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
 		assert_eq!(ohlc.len(), vol.len(), "one Ohlc and one Volume per period closed");
-		out.extend(ohlc.iter().zip(vol).map(|(o, v)| {
-			assert_eq!(o.ts_close, v.ts_close, "the two accumulators walk one boundary");
-			Bar {
-				ts_close: o.ts_close,
-				open: o.open,
-				high: o.high,
-				low: o.low,
-				close: o.close,
-				vol_base: v.base,
-			}
-		}));
+		assert_eq!(ohlc[i].ts_close, vol[i].ts_close, "the two accumulators walk one boundary");
+		ohlc[i].flat(&mut env[..4]);
+		vol[i].flat(&mut env[4..]);
+		Some(ohlc[i].ts_ns())
+	}
+
+	fn body(&self, v: Vars) -> impl Slots {
+		(v.get::<0>(), v.get::<1>(), v.get::<2>(), v.get::<3>(), v.get::<4>())
 	}
 }
 slice_nudge!([const TF: Timeframe] Bars<TF>, Bar);

@@ -98,7 +98,9 @@ extern crate alloc;
 
 use core::any::TypeId;
 
-use trading_data_expr::{Ast, Expr, Slots, Vars};
+use trading_data_expr::Ast;
+/// The algebra a body is written in, re-exported so a crate declaring nodes needs only this one.
+pub use trading_data_expr::{Expr, Slots, Vars};
 use v_utils::Timeframe;
 
 /// How far back a dep position reaches: nothing at all (a bare dep), the engine's retention
