@@ -1365,6 +1365,80 @@ where
 	}
 }
 
+/// A scalar `bool` node: a *driving* dep that clocks it — the leading one, whose having fired at all
+/// is half the verdict — and whatever it reads at their last elements, compared by an [`Expr`].
+///
+/// That split is [`Scans`]', one out element instead of a run: a screen over a series that closed
+/// nothing this tick has screened nothing, and saying so through the driver's rate rather than
+/// through an emptiness test inside the body is what keeps the gate a pulse instead of a level.
+pub trait Decides: Cell
+where
+	for<'t> Self: Cell<Out<'t> = bool>, {
+	type Deps: DepSet;
+	/// `&[]` draws nothing at all — the node stays in the topology and resolvable as a dep.
+	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
+	/// True is any non-zero. The deps are read at their [`Flat`] last elements, in `Deps` order.
+	fn body(&self, vars: Vars) -> impl Expr;
+}
+
+/// The kernel of a [`Decides`] node.
+pub struct Predicate;
+impl sealed::Kernel for Predicate {}
+
+/// The deps' last elements, as the env a [`Decides`] body is read over.
+fn verdict_env<N>(deps: &DepOuts<'_, N>) -> [f64; MAX_VARS]
+where
+	N: Node,
+	<N as Node>::Deps: DepFlat, {
+	const {
+		assert!(<<N as Node>::Deps as DepFlat>::LEN <= MAX_VARS, "a Decides env outgrew MAX_VARS: raise it in trading_data_dag");
+	}
+	let mut env = [f64::NAN; MAX_VARS];
+	<<N as Node>::Deps as DepFlat>::flat(deps, &mut env[..<<N as Node>::Deps as DepFlat>::LEN]);
+	env
+}
+
+impl<N> Level<N> for Predicate
+where
+	N: Decides + Node<Deps = <N as Decides>::Deps>,
+	for<'t> N: Cell<Out<'t> = bool>,
+	<N as Decides>::Deps: DepFlat,
+{
+	type Pre = Option<Ast>;
+
+	/// A predicate's slope is zero off the boundary, and at the boundary it is a step no reading may
+	/// call a slope — so an all-zero Jacobian is the whole truth about it, not an omission.
+	const FIDELITY: Fidelity = Fidelity::Exact;
+
+	fn advance<'t>(n: &'t mut N, deps: DepOuts<'t, N>) -> N::Out<'t> {
+		let len = <<N as Node>::Deps as DepFlat>::lead_fires(&deps);
+		let env = verdict_env::<N>(&deps);
+		len > 0 && n.body(Vars).eval(&env[..<<N as Node>::Deps as DepFlat>::LEN]) != 0.0
+	}
+
+	fn pre<'d>(n: &N, want: Want, _: DepOuts<'d, N>) -> Self::Pre {
+		(want >= Want::Jac).then(|| n.body(Vars).lower())
+	}
+
+	fn formula(pre: &Self::Pre) -> Option<&Ast> {
+		pre.as_ref()
+	}
+
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, N>>) -> bool
+	where
+		<N as Node>::Deps: DepFlat,
+		DepOuts<'d, N>: Copy,
+		for<'x> N::Out<'x>: Flat, {
+		if pre.is_none() {
+			return false;
+		}
+		// zero, not the NaN the caller filled: a predicate *has* a derivative here and it is zero,
+		// which is a different statement from having no signal (§1.6).
+		j.out.fill(0.0);
+		true
+	}
+}
+
 /// [`Level`]'s run-shaped sibling: how an [`Emit`] fills its run, and therefore what can be read off
 /// it. Sealed by the same [`sealed::Kernel`], and split into [`pre`](Run::pre) and [`jac`](Run::jac)
 /// for the same reason — so a sweep nobody is observing captures nothing.

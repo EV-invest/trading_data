@@ -142,6 +142,7 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 	let (kernel, emit) = match trait_name.as_str() {
 		"Symbolic" => (quote!(#dag::Pure), false),
 		"Blind" => (quote!(#dag::Opaque), false),
+		"Decides" => (quote!(#dag::Predicate), false),
 		"Runs" => (quote!(#dag::Raw), true),
 		"Scans" => (quote!(#dag::Scan), true),
 		"Closes" => (quote!(#dag::Close), true),
@@ -149,7 +150,7 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 		"Node" => {
 			return Err(syn::Error::new_spanned(
 				path,
-				"`impl Node` is written by `#[node]`, not by hand: a node declares which kernel computes it. Write `impl Symbolic` for an `Expr` body, or `impl Blind` — the stated hatch, which needs a `const WHY`",
+				"`impl Node` is written by `#[node]`, not by hand: a node declares which kernel computes it. Write `impl Symbolic` for an `Expr` body, `impl Decides` for a `bool` one, or `impl Blind` — the stated hatch, which needs a `const WHY`",
 			));
 		}
 		"Emit" => {
@@ -161,7 +162,7 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 		_ =>
 			return Err(syn::Error::new_spanned(
 				path,
-				"`#[node]` goes on `impl Blind`, `Closes`, `Folds`, `Runs`, `Scans`, `Symbolic` or `Episodic`",
+				"`#[node]` goes on `impl Blind`, `Closes`, `Decides`, `Folds`, `Runs`, `Scans`, `Symbolic` or `Episodic`",
 			)),
 	};
 	let kind = match emit {

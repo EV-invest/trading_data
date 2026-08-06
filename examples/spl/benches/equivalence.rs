@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use trading_data::{
 	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Close, Elems, Episode, Exact, ExchangeName, Feed as _, Fold, Horizon, Latch as _, LatencyConfig,
-	Mc, McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, ReadClock, Replay, Run as _, Runs as _, Scan, Side, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
+	Level as _, Mc, McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, Predicate, ReadClock, Replay, Run as _, Runs as _, Scan, Side, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
 };
 use trading_data_spl::{
 	config::Config,
@@ -260,7 +260,7 @@ impl Direct {
 			self.l_mom = Some(v);
 		}
 
-		let hit = self.screener.advance((&self.b_bars[0], self.l_mom));
+		let hit = Predicate::advance(&mut self.screener, (&self.b_bars[0], self.l_mom));
 
 		self.b_c1d.clear();
 		self.b_c3m.clear();
