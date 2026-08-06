@@ -1,7 +1,9 @@
 use core::fmt;
 
-use trading_data_core::{Exact, Timestamped, Timestamps, TradeCols, Trades, Ts, Venue};
-use trading_data_dag::{Bump, Cell, Flat, Folding, Glance, Over, Plot, RunOuts, Runs, ScanOuts, Scans, Slots, Stamped, Tag, Unflat, Vars, always_present, node, slice_nudge};
+use trading_data_core::{Timestamped, Timestamps, TradeCols, Trades, Ts, Venue};
+use trading_data_dag::{
+	Bump, Cell, CloseOuts, Closes, Flat, Folding, Glance, Over, Pending, Plot, ScanOuts, Scans, Slots, Stamped, Tag, Unflat, Vars, always_present, max, min, node, slice_nudge,
+};
 use v_utils::Timeframe;
 
 #[derive(Clone, Copy, Debug)]
@@ -46,6 +48,17 @@ impl Bump for Ohlc {
 		(self, h)
 	}
 }
+impl Unflat for Ohlc {
+	fn unflat(ts_ns: i64, slots: &[f64]) -> Self {
+		Self {
+			ts_close: Ts::from_nanos(ts_ns),
+			open: slots[0],
+			high: slots[1],
+			low: slots[2],
+			close: slots[3],
+		}
+	}
+}
 impl Glance for Ohlc {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "close {}", self.close)
@@ -75,6 +88,14 @@ impl Bump for Volume {
 		debug_assert_eq!(slot, 0);
 		self.base += h;
 		(self, h)
+	}
+}
+impl Unflat for Volume {
+	fn unflat(ts_ns: i64, slots: &[f64]) -> Self {
+		Self {
+			ts_close: Ts::from_nanos(ts_ns),
+			base: slots[0],
+		}
 	}
 }
 impl Glance for Volume {
@@ -141,51 +162,13 @@ impl Timestamped for Bar {
 // a period that closed had trades in it, so these three are absent only by not being emitted.
 always_present!(Ohlc, Volume, Bar);
 
-/// Trades → one item per period *closed*. Rate-changing: a batch spanning two periods emits two, a
-/// partial period emits none (it stays in `state`). The whole of an accumulator is this boundary
-/// walk — `open` and `fold` are all that tells one apart from another.
-fn accumulate<T: Timestamped>(state: &mut Option<T>, trades: TradeCols<'_>, tf: Timeframe, out: &mut Vec<T>, open: impl Fn(Ts<Venue>, f64, f64) -> T, fold: impl Fn(&mut T, f64, f64)) {
-	// precision is the run's, so the two scales are hoisted once instead of read per trade.
-	let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
-	let step = Exact::from_nanos(tf.duration().as_nanos() as i64);
-	for (i, exec) in trades.exec().iter().enumerate() {
-		let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
-		let ts_close = exec.floor(step) + step;
-		match &mut *state {
-			Some(acc) if acc.ts() == Timestamps::Simple(ts_close) => fold(acc, price, qty),
-			slot => {
-				if let Some(done) = slot.take() {
-					out.push(done);
-				}
-				*slot = Some(open(ts_close, price, qty));
-			}
-		}
-	}
-}
-
-fn ohlc(state: &mut Option<Ohlc>, trades: TradeCols<'_>, tf: Timeframe, out: &mut Vec<Ohlc>) {
-	accumulate(
-		state,
-		trades,
-		tf,
-		out,
-		|ts_close, price, _| Ohlc {
-			ts_close,
-			open: price,
-			high: price,
-			low: price,
-			close: price,
-		},
-		|o, price, _| {
-			o.high = o.high.max(price);
-			o.low = o.low.min(price);
-			o.close = price;
-		},
-	);
-}
-
-fn volume(state: &mut Option<Volume>, trades: TradeCols<'_>, tf: Timeframe, out: &mut Vec<Volume>) {
-	accumulate(state, trades, tf, out, |ts_close, _, qty| Volume { ts_close, base: qty }, |v, _, qty| v.base += qty);
+/// One trade's price and quantity, at the run's own precision — the element a period accumulates.
+/// The whole of what tells one accumulator from another is its two bodies; this is what they are
+/// bodies *of*, and it is the same reading for both.
+fn trade(trades: TradeCols<'_>, i: usize, env: &mut [f64]) -> Option<i64> {
+	env[0] = trades.price[i] as f64 / trades.prec.price.scale();
+	env[1] = trades.qty[i] as f64 / trades.prec.qty.scale();
+	Some(trades.exec()[i].as_nanos())
 }
 
 /// The prefix of a slower series that has *closed* by `deadline` — the cross-rate read a node
@@ -200,7 +183,7 @@ pub fn closed_by(bars: &[Bar], deadline: Ts<Venue>) -> &[Bar] {
 /// were. Only
 /// [`Tag`] is new: the period has to reach [`Cell::NAME`] for the DAG card to keep saying `Bar:1m`.
 #[derive(Clone, Default)]
-pub struct Ohlcs<const TF: Timeframe>(Option<Ohlc>);
+pub struct Ohlcs<const TF: Timeframe>(Pending);
 impl<const TF: Timeframe> Ohlcs<TF> {
 	const TAG: Tag = Tag::new("Ohlc:", TF);
 }
@@ -211,23 +194,45 @@ impl<const TF: Timeframe> Cell for Ohlcs<TF> {
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl<const TF: Timeframe> Runs for Ohlcs<TF> {
+impl<const TF: Timeframe> Closes for Ohlcs<TF> {
 	/// The partial bar is the whole of the state, so the trades it holds reach back exactly one
 	/// period.
 	type Deps = (Folding<Trades, Over<TF>>,);
 
+	const PERIOD: Timeframe = TF;
 	/// [`Bars`] joins this with [`Volumes`] and draws for all three.
 	const PLOTS: &'static [Plot] = &[];
-	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
-	fn emit(&mut self, (trades,): RunOuts<'_, Self>, out: &mut Vec<Ohlc>) {
-		ohlc(&mut self.0, trades, TF, out);
+	fn read((trades,): &CloseOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
+		trade(*trades, i, env)
+	}
+
+	fn open(&self, v: Vars) -> impl Slots {
+		let price = v.get::<0>();
+		(price, price, price, price)
+	}
+
+	/// `high`/`low` are the one value-dependent pick in the workspace, and they live inside the
+	/// algebra as `Max`/`Min` with a pinned tie-break — each branch differentiable, and the tie
+	/// resolving the same way in the value and in the derivative
+	/// (`r[kernels.selection.index-is-not-a-variable]`).
+	fn fold(&self, v: Vars) -> impl Slots {
+		let (price, open, high, low) = (v.get::<0>(), v.get::<2>(), v.get::<3>(), v.get::<4>());
+		(open, max(high, price), min(low, price), price)
+	}
+
+	fn pending(&self) -> &Pending {
+		&self.0
+	}
+
+	fn pending_mut(&mut self) -> &mut Pending {
+		&mut self.0
 	}
 }
 slice_nudge!([const TF: Timeframe] Ohlcs<TF>, Ohlc);
 
 #[derive(Clone, Default)]
-pub struct Volumes<const TF: Timeframe>(Option<Volume>);
+pub struct Volumes<const TF: Timeframe>(Pending);
 impl<const TF: Timeframe> Volumes<TF> {
 	const TAG: Tag = Tag::new("Vol:", TF);
 }
@@ -238,15 +243,31 @@ impl<const TF: Timeframe> Cell for Volumes<TF> {
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl<const TF: Timeframe> Runs for Volumes<TF> {
+impl<const TF: Timeframe> Closes for Volumes<TF> {
 	type Deps = (Folding<Trades, Over<TF>>,);
 
+	const PERIOD: Timeframe = TF;
 	/// [`Bars`] joins this with [`Ohlcs`] and draws for all three.
 	const PLOTS: &'static [Plot] = &[];
-	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
-	fn emit(&mut self, (trades,): RunOuts<'_, Self>, out: &mut Vec<Volume>) {
-		volume(&mut self.0, trades, TF, out);
+	fn read((trades,): &CloseOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
+		trade(*trades, i, env)
+	}
+
+	fn open(&self, v: Vars) -> impl Slots {
+		v.get::<1>()
+	}
+
+	fn fold(&self, v: Vars) -> impl Slots {
+		v.get::<2>() + v.get::<1>()
+	}
+
+	fn pending(&self) -> &Pending {
+		&self.0
+	}
+
+	fn pending_mut(&mut self) -> &mut Pending {
+		&mut self.0
 	}
 }
 slice_nudge!([const TF: Timeframe] Volumes<TF>, Volume);

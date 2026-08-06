@@ -19,8 +19,8 @@
 use std::path::{Path, PathBuf};
 
 use trading_data::{
-	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Elems, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot,
-	Ohlc, Ohlcs, Oi, OiRoot, Over, ReadClock, Replay, Run as _, Runs as _, Scan, Side, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
+	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Close, Elems, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc,
+	McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, ReadClock, Replay, Run as _, Runs as _, Scan, Side, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
 };
 use trading_data_spl::{
 	config::Config,
@@ -215,14 +215,14 @@ impl Direct {
 		for b in &mut self.b_bars {
 			b.clear();
 		}
-		self.ohlc_1m.emit((trades,), &mut self.b_ohlc[0]);
-		self.ohlc_5m.emit((trades,), &mut self.b_ohlc[1]);
-		self.ohlc_1h.emit((trades,), &mut self.b_ohlc[2]);
-		self.ohlc_4h.emit((trades,), &mut self.b_ohlc[3]);
-		self.vol_1m.emit((trades,), &mut self.b_vol[0]);
-		self.vol_5m.emit((trades,), &mut self.b_vol[1]);
-		self.vol_1h.emit((trades,), &mut self.b_vol[2]);
-		self.vol_4h.emit((trades,), &mut self.b_vol[3]);
+		Close::emit(&mut self.ohlc_1m, (trades,), &mut self.b_ohlc[0]);
+		Close::emit(&mut self.ohlc_5m, (trades,), &mut self.b_ohlc[1]);
+		Close::emit(&mut self.ohlc_1h, (trades,), &mut self.b_ohlc[2]);
+		Close::emit(&mut self.ohlc_4h, (trades,), &mut self.b_ohlc[3]);
+		Close::emit(&mut self.vol_1m, (trades,), &mut self.b_vol[0]);
+		Close::emit(&mut self.vol_5m, (trades,), &mut self.b_vol[1]);
+		Close::emit(&mut self.vol_1h, (trades,), &mut self.b_vol[2]);
+		Close::emit(&mut self.vol_4h, (trades,), &mut self.b_vol[3]);
 		let [o1, o5, oh, o4] = &self.b_ohlc;
 		let [v1, v5, vh, v4] = &self.b_vol;
 		let [b1, b5, bh, b4] = &mut self.b_bars;

@@ -100,7 +100,7 @@ use core::any::TypeId;
 
 use trading_data_expr::Ast;
 /// The algebra a body is written in, re-exported so a crate declaring nodes needs only this one.
-pub use trading_data_expr::{Expr, Slots, Vars};
+pub use trading_data_expr::{Expr, Slots, Vars, abs, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum};
 use v_utils::Timeframe;
 
 /// How far back a dep position reaches: nothing at all (a bare dep), the engine's retention
@@ -1564,6 +1564,183 @@ where
 		let dep_w = j.dep_buf.len();
 		// the body's rows are `env_w` wide and the Jacobian's are `dep_w`; the prefix `read` filled
 		// from the deps' own flattenings is what makes the copy a truncation rather than a remap.
+		for (row, out) in j.out.chunks_exact_mut(dep_w).enumerate() {
+			out.copy_from_slice(&alg.grad[row * env_w..row * env_w + dep_w]);
+		}
+		true
+	}
+}
+
+/// The period a [`Closes`] node is part way through: the accumulator's slots and the time they close
+/// at. Held by the node because the engine owns no storage for one, and read by nothing but the
+/// kernel — the body sees the slots as an env and never this struct.
+#[derive(Clone, Copy, Default)]
+pub struct Pending {
+	slots: [f64; MAX_SLOTS],
+	ts_close: i64,
+	/// A period nothing has opened yet, which is not the same as one whose slots happen to be zero.
+	live: bool,
+}
+
+/// A run-shaped node whose elements are *periods*, closed by the first driving element past a
+/// boundary. The kernel owns the walk and the close time; the body owns the numbers, as two
+/// expressions over one env — what a period's first element opens with, and what a further element
+/// folds into it.
+///
+/// Rate-changing by construction: a batch spanning two boundaries emits two elements, one spanning
+/// none emits nothing, and the period still open stays in [`Pending`].
+pub trait Closes: Series + Clone
+where
+	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
+	type Deps: DepSet;
+	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep.
+	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
+	/// The period the walk closes on, floored from the epoch.
+	const PERIOD: Timeframe;
+
+	/// Fills the driving element's own slots — `0..DepFlat::LEN`, the same prefix [`Scans::read`]
+	/// fills — and returns its event time, which is what the walk is keyed on and is deliberately not
+	/// a slot (`r[kernels.selection.index-is-not-a-variable]`).
+	fn read(deps: &CloseOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64>;
+
+	/// What a period's first element opens the accumulator with, over the element's slots alone.
+	fn open(&self, vars: Vars) -> impl Slots;
+
+	/// What a further element folds into it. The accumulator's own slots follow the element's, at
+	/// `DepFlat::LEN..`, so both bodies read the element at one set of indices.
+	fn fold(&self, vars: Vars) -> impl Slots;
+
+	fn pending(&self) -> &Pending;
+	fn pending_mut(&mut self) -> &mut Pending;
+}
+
+/// Uniform binder-correct dep-tuple type for [`Closes`] impls.
+pub type CloseOuts<'t, C> = <<C as Closes>::Deps as DepSet>::Outs<'t>;
+
+/// The kernel of a [`Closes`] node.
+pub struct Close;
+impl sealed::Kernel for Close {}
+
+/// The element width, the slot width, and the env width the two bodies share.
+const fn close_widths<E: Closes>() -> (usize, usize, usize)
+where
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+	<E as Closes>::Deps: DepFlat,
+	E::Item: Flat, {
+	let (elem, slots) = (<<E as Closes>::Deps as DepFlat>::LEN, <E::Item as Flat>::LEN);
+	assert!(elem + slots <= MAX_VARS, "a Closes env outgrew MAX_VARS: raise it in trading_data_dag");
+	assert!(slots <= MAX_SLOTS, "a Closes accumulator outgrew MAX_SLOTS: raise it in trading_data_dag");
+	(elem, slots, elem + slots)
+}
+
+impl<E> Run<E> for Close
+where
+	E: Closes + Emit<Deps = <E as Closes>::Deps>,
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+	E::Item: Unflat,
+	<E as Emit>::Deps: DepFlat,
+{
+	type Pre = Option<PerElem>;
+
+	/// The one-step column stands for the trade that *closed* the reported element, and the elements
+	/// earlier in its period reached it only through the accumulator, which is no dep and has no
+	/// column. Narrower than [`Fold`]'s omission — a period is discharged at its boundary, where a
+	/// recurrence is not — but the same kind of omission, and `r[kernels.fidelity.stated]` is exactly
+	/// the rule against calling it exact.
+	const FIDELITY: Fidelity = Fidelity::Partial("the elements earlier in the period, which the accumulator carries and no column stands for");
+
+	fn emit<'t>(e: &mut E, deps: EmitOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
+		let (elem_w, slots_w, env_w) = const { close_widths::<E>() };
+		let step = Horizon::ns(<E as Closes>::PERIOD);
+		let mut p = *e.pending();
+		let (mut env, mut slots) = ([f64::NAN; MAX_VARS], [f64::NAN; MAX_SLOTS]);
+		{
+			let (open, fold) = (e.open(Vars), e.fold(Vars));
+			debug_assert_eq!(open.len(), slots_w, "a Closes body states one expression per slot of its item");
+			debug_assert_eq!(fold.len(), slots_w, "a Closes body states one expression per slot of its item");
+			for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
+				let Some(ts) = <E as Closes>::read(&deps, i, &mut env[..elem_w]) else { continue };
+				let ts_close = ts - ts.rem_euclid(step) + step;
+				match p.live && p.ts_close == ts_close {
+					true => {
+						env[elem_w..env_w].copy_from_slice(&p.slots[..slots_w]);
+						fold.eval_slots(&env[..env_w], &mut slots[..slots_w]);
+					}
+					false => {
+						if p.live {
+							out.push(<E::Item as Unflat>::unflat(p.ts_close, &p.slots[..slots_w]));
+						}
+						open.eval_slots(&env[..env_w], &mut slots[..slots_w]);
+					}
+				}
+				p.slots[..slots_w].copy_from_slice(&slots[..slots_w]);
+				p.ts_close = ts_close;
+				p.live = true;
+			}
+		}
+		*e.pending_mut() = p;
+	}
+
+	/// The walk again, for its indices alone: the out flattens to the last element this batch
+	/// *closed*, and the derivative belongs to the element that closed it — not to the batch's
+	/// newest, whose period nothing has emitted yet.
+	fn pre<'d>(e: &E, want: Want, deps: EmitOuts<'d, E>) -> Self::Pre {
+		if want < Want::Jac {
+			return None;
+		}
+		let (elem_w, slots_w, env_w) = const { close_widths::<E>() };
+		let step = Horizon::ns(<E as Closes>::PERIOD);
+		let mut p = *e.pending();
+		let (mut env, mut slots) = ([0.0f64; MAX_VARS], [0.0f64; MAX_SLOTS]);
+		let (open, fold) = (e.open(Vars), e.fold(Vars));
+		// the newest element to have touched the open period, and whether it folded or opened it —
+		// which is what the element closed by the *next* boundary was last computed from.
+		let (mut newest, mut closed) = (None, None);
+		for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
+			let Some(ts) = <E as Closes>::read(&deps, i, &mut env[..elem_w]) else { continue };
+			let ts_close = ts - ts.rem_euclid(step) + step;
+			let folding = p.live && p.ts_close == ts_close;
+			match folding {
+				true => {
+					env[elem_w..env_w].copy_from_slice(&p.slots[..slots_w]);
+					fold.eval_slots(&env[..env_w], &mut slots[..slots_w]);
+				}
+				false => {
+					if p.live {
+						closed = newest;
+					}
+					open.eval_slots(&env[..env_w], &mut slots[..slots_w]);
+				}
+			}
+			newest = Some((env, folding));
+			p.slots[..slots_w].copy_from_slice(&slots[..slots_w]);
+			p.ts_close = ts_close;
+			p.live = true;
+		}
+		// nothing closed this batch, or what closed was carried in from before it — either way no
+		// element of this tick's deps is the one to differentiate against.
+		let (env, folding) = closed?;
+		let mut grad = [0.0f64; MAX_SLOTS * MAX_VARS];
+		match folding {
+			true => fold.grad_slots(&env[..env_w], &mut grad[..slots_w * env_w]),
+			false => open.grad_slots(&env[..env_w], &mut grad[..slots_w * env_w]),
+		}
+		Some(PerElem { formulas: fold.lower_slots(), grad })
+	}
+
+	/// The fold's slot 0, which is the equation a period accumulates by.
+	fn formula(pre: &Self::Pre) -> Option<&Ast> {
+		pre.as_ref()?.formulas.first()
+	}
+
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, EmitOuts<'d, E>>) -> bool
+	where
+		<E as Emit>::Deps: DepFlat,
+		EmitOuts<'d, E>: Copy,
+		E::Item: Flat, {
+		let Some(alg) = pre else { return false };
+		let (_, _, env_w) = const { close_widths::<E>() };
+		let dep_w = j.dep_buf.len();
 		for (row, out) in j.out.chunks_exact_mut(dep_w).enumerate() {
 			out.copy_from_slice(&alg.grad[row * env_w..row * env_w + dep_w]);
 		}

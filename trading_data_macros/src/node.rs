@@ -144,6 +144,7 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 		"Blind" => (quote!(#dag::Opaque), false),
 		"Runs" => (quote!(#dag::Raw), true),
 		"Scans" => (quote!(#dag::Scan), true),
+		"Closes" => (quote!(#dag::Close), true),
 		"Node" => {
 			return Err(syn::Error::new_spanned(
 				path,
@@ -153,10 +154,14 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 		"Emit" => {
 			return Err(syn::Error::new_spanned(
 				path,
-				"`impl Emit` is written by `#[node]`, not by hand: a run-shaped node declares which kernel fills it. Write `impl Scans` for a per-element `Expr` body, or `impl Runs` — the stated hatch, which needs a `const WHY`",
+				"`impl Emit` is written by `#[node]`, not by hand: a run-shaped node declares which kernel fills it. Write `impl Scans` for a per-element `Expr` body, `impl Closes` for one that accumulates whole periods, or `impl Runs` — the stated hatch, which needs a `const WHY`",
 			));
 		}
-		_ => return Err(syn::Error::new_spanned(path, "`#[node]` goes on `impl Blind`, `Runs`, `Scans`, `Symbolic` or `Episodic`")),
+		_ =>
+			return Err(syn::Error::new_spanned(
+				path,
+				"`#[node]` goes on `impl Blind`, `Closes`, `Runs`, `Scans`, `Symbolic` or `Episodic`",
+			)),
 	};
 	let kind = match emit {
 		false => quote!(node),
