@@ -281,8 +281,11 @@ impl Direct {
 			self.change_3m
 				.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, Over<TF_3MIN>>>(),), &mut self.b_c3m);
 			Scan::emit(&mut self.volume_1m, (&self.b_bars[0],), &mut self.b_v1m);
-			self.volume_1h
-				.emit((&self.b_bars[0], self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Elems<1>>>()), &mut self.b_v1h);
+			Scan::emit(
+				&mut self.volume_1h,
+				(&self.b_bars[0], self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Elems<1>>>()),
+				&mut self.b_v1h,
+			);
 			Scan::emit(&mut self.imbalance, (&self.b_top,), &mut self.b_imb);
 			Scan::emit(&mut self.spread, (&self.b_top,), &mut self.b_spr);
 			let classified = self.classify.advance((

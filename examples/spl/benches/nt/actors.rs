@@ -477,7 +477,7 @@ impl DataActor for V1h {
 		self.h1.push(&self.pending);
 		self.pending.clear();
 		self.out.clear();
-		self.node.emit((&bar, self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Elems<1>>>()), &mut self.out);
+		Scan::emit(&mut self.node, (&bar, self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Elems<1>>>()), &mut self.out);
 		self.publish_signal(VOLUME1H, encode(&self.out), signal.ts_event);
 		Ok(())
 	}

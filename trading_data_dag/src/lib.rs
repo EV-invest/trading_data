@@ -2048,6 +2048,18 @@ impl<'t, T: Stamped> Hist<'t, T> {
 		}
 	}
 
+	/// The element `n` back from `fresh()[i]`, over [`all`](Hist::all); `None` where the retained run
+	/// does not reach that far. `n == 0` is the fresh element itself, so a per-element kernel walking
+	/// a retained series indexes every reading it takes through this one.
+	///
+	/// A lag indexes by count, so it is constant wrt everything being differentiated
+	/// (`r[kernels.selection.index-is-not-a-variable]`).
+	pub fn lagged_at(self, i: usize, n: usize) -> Option<&'t T> {
+		let all = self.all();
+		assert!(i < self.fresh, "lagged_at: {i} past this tick's {} fresh elements", self.fresh);
+		all.get((all.len() - self.fresh + i).checked_sub(n)?)
+	}
+
 	/// One window per fresh element — rate preservation for free.
 	pub fn trailing(self) -> impl Iterator<Item = Option<&'t [T]>> {
 		(0..self.fresh).map(move |i| self.trailing_at(i))
