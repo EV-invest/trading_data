@@ -449,6 +449,10 @@ gateable the moment the lane became a run of rows the engine could retain for it
               that reads the value standing at end-of-batch, this asks whether the boundary
               was crossed anywhere in the run). Empty ⇒ false, so a dark node never
               self-commutates.
+  ProbDist    a `Flat` whose slots are shares over a named `OUTCOMES` space. Evidence arrives as
+              POINTS, not shares, and is normalised against `POINTS.sqrt()` rather than against
+              itself — so one read out of a hundred declared stays a whisper. What nothing argued
+              for lands in `Outcome::default()`'s slot, which is why the space has to own one.
   Present     "did this element carry anything" — what `Latest` must ask before it keeps a
               level. The dominant item is `Option<f64>`, a rate-preserving decline, and
               retaining one of those would hold an absence forever.
@@ -495,7 +499,7 @@ gateable the moment the lane became a run of rows the engine could retain for it
 // `.examples` is a symlink to `../examples`: `read` cannot escape the project root, which is this file's own directory
 
 // only the crate roots are named; the rest of each tree is reached the way rustc reaches it
-#let roots = (simple: ("lib", "main"), live: ("lib", "main"), live_equiv: ("main",), spl: ("lib", "main"))
+#let roots = (simple: ("lib", "main"), live: ("lib", "main"), spl: ("lib", "main"))
 
 #let walk(file, kids) = {
   let src = read(file)
