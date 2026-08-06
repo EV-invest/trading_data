@@ -25,12 +25,16 @@ fn key_of(ts: &TokenStream) -> syn::Result<String> {
 }
 
 /// The key a dep or output spelling was recorded under — `visit`'s reading of it, wrapper and all.
-fn spelling(ts: &TokenStream) -> syn::Result<(String, Wrap)> {
+/// The cell is canonicalized first, for the reason `visit` canonicalizes it: a retention is keyed on
+/// the series it holds, and an alias is a second spelling of one series rather than a second series.
+fn spelling(st: &State, ts: &TokenStream) -> syn::Result<(String, Wrap)> {
 	let (cell, wrap) = ty::unwrap_dep(&ty::parse_type(&ty::flatten(ts.clone()))?);
+	let named = ty::norm(&cell);
+	let cell = st.aliases.iter().find(|(a, _)| *a == named).map_or(named, |(_, answered)| answered.clone());
 	let key = match wrap {
-		Wrap::Buf { .. } => format!("Buffer<{}>", ty::norm(&cell)),
-		Wrap::Sample => format!("Latest<{}>", ty::norm(&cell)),
-		_ => ty::norm(&cell),
+		Wrap::Buf { .. } => format!("Buffer<{cell}>"),
+		Wrap::Sample => format!("Latest<{cell}>"),
+		_ => cell,
 	};
 	Ok((key, wrap))
 }
@@ -62,7 +66,7 @@ fn edges(st: &State, order: &[String], n: &NodeInfo) -> syn::Result<Vec<Edge>> {
 	n.deps
 		.iter()
 		.map(|d| {
-			let (key, wrap) = spelling(&d.ty)?;
+			let (key, wrap) = spelling(st, &d.ty)?;
 			Ok(Edge {
 				to: target(st, order, &key)?,
 				gate: matches!(wrap, Wrap::Gate),
@@ -127,7 +131,7 @@ pub fn suppressors(st: &State) -> syn::Result<Vec<Dnf>> {
 
 	let mut outputs = BTreeSet::new();
 	for named in &st.cfg.named {
-		if let Some(i) = target(st, order, &spelling(&named.ty)?.0)? {
+		if let Some(i) = target(st, order, &spelling(st, &named.ty)?.0)? {
 			outputs.insert(i);
 		}
 	}

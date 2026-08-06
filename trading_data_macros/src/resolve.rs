@@ -121,6 +121,19 @@ fn ask(st: &State, shim: &TokenStream, cell: &Type) -> TokenStream {
 	quote! { #shim ! { #dag::__graph_resolve, [ #(#args),* ], @state #st } }
 }
 
+fn is_root(st: &State, key: &str) -> bool {
+	st.cfg.roots.iter().any(|r| key_of(&r.ty).map(|(k, _)| k == key).unwrap_or(false))
+}
+
+/// Step `dep` back onto the walk: the driver has to see it a second time, once the question it asked
+/// first has been answered. The stack is the walk while there is one, and the queue is what seeds it.
+fn re_walk(st: &mut State, dep: &Dep) {
+	match st.stack.last_mut() {
+		Some((_, walked)) => *walked -= 1,
+		None => st.queue.insert(0, dep.clone()),
+	}
+}
+
 /// Walks one edge. `Ok(Some(..))` is a question only the compiler can answer: emit it and pause.
 fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 	let (_, full) = key_of(&dep.ty)?;
@@ -128,6 +141,19 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 	let key = ty::norm(&cell);
 
 	if let Wrap::Buf { reach, typed } = wrap {
+		// A cell reached through a `node_alias!` answers under its own key. Keying the retention on the
+		// spelling instead would put a second `Buffer` over one series in the frame, which makes every
+		// `Buffering` of it ambiguous — so the cell is resolved first and the key taken from its answer.
+		let settled = is_root(st, &key) || st.known.iter().any(|n| n.key == key);
+		let key = match st.aliases.iter().find(|(a, _)| *a == key) {
+			Some((_, answered)) => answered.clone(),
+			None if !settled => {
+				re_walk(st, &dep);
+				st.awaiting = Awaiting::Node(key, cell.to_token_stream());
+				return Ok(Some(ask(st, &dep.shim, &cell)));
+			}
+			None => key,
+		};
 		let dag = &st.cfg.dag;
 		// `Buffer<C, K>` states a `Horizon` and `Buffering<C, R>` a [`Reach`] type; the join is over
 		// values, so the type is projected here and the two meet as one list.
@@ -184,7 +210,7 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 		.map(|()| None);
 	}
 
-	if st.cfg.roots.iter().any(|r| key_of(&r.ty).map(|(k, _)| k == key).unwrap_or(false)) {
+	if is_root(st, &key) {
 		return Ok(None);
 	}
 	if st.known.iter().any(|n| n.key == key) {

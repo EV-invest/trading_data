@@ -1,6 +1,6 @@
 use core::{fmt, marker::PhantomData};
 
-use trading_data_dag::{Bump, Cell, Elems, Flat, Folding, Glance, Plot, RunOuts, Runs, Series, Tag, Unbounded, node, slice_nudge};
+use trading_data_dag::{Buffering, Bump, Cell, Elems, Flat, Folding, Glance, Plot, Rows, RunOuts, Runs, ScanOuts, Scans, Series, Slots, Stamped, Tag, Unbounded, Vars, node, slice_nudge};
 
 use crate::{Wilder, bar::Bar, rsi};
 
@@ -20,50 +20,52 @@ pub trait RsiSpec: 'static {
 
 /// Close-to-close change on `B` — the one series both Wilder averages are taken of.
 ///
-/// Rate-changing on the very first bar: a change needs two closes.
-pub struct RsiDelta<B> {
-	prev_close: Option<f64>,
-	_series: PhantomData<B>,
-}
+/// Rate-*preserving*, and the first bar declines: a change needs two closes, and the bar that has
+/// only one is an element that carried nothing rather than an element that is not there. The lag is
+/// a reading off the retention (`Buffering<B, Elems<2>>`) rather than a close the node remembers,
+/// which is what leaves nothing for a state to be carried in.
+pub struct RsiDelta<B>(PhantomData<B>);
 impl<B> Clone for RsiDelta<B> {
 	fn clone(&self) -> Self {
-		Self {
-			prev_close: self.prev_close,
-			_series: PhantomData,
-		}
+		Self(PhantomData)
 	}
 }
 impl<B> Default for RsiDelta<B> {
 	fn default() -> Self {
-		Self {
-			prev_close: None,
-			_series: PhantomData,
-		}
+		Self(PhantomData)
 	}
 }
 impl<B: Series<Item = Bar>> RsiDelta<B> {
 	const TAG: Tag = Tag::of("RsiDelta", &[B::NAME]);
 }
 impl<B: Series<Item = Bar>> Cell for RsiDelta<B> {
-	type Out<'t> = &'t [f64];
+	type Out<'t> = &'t [Option<f64>];
 
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl<B: Series<Item = Bar>> Runs for RsiDelta<B> {
-	type Deps = (Folding<B, Elems<1>>,);
+/// `Rows` because the lag is read off the retention's own history, which is what a row-keeping
+/// batch is; a bar series that folded its rows would have none to look one back through.
+impl<B: Series<Item = Bar, Batch = Rows<Bar>>> Scans for RsiDelta<B> {
+	/// Two elements, because the lag reaches one behind the element being computed — and it is the
+	/// engine's retention rather than the node's, so nothing here survives a tick.
+	type Deps = (Buffering<B, Elems<2>>,);
 
-	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
+	const BEYOND: Option<&'static str> = Some("the previous close, which no one-step column stands for");
+	const EXTRA: usize = 1;
 
-	fn emit(&mut self, (bars,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
-		for b in bars {
-			if let Some(prev) = self.prev_close.replace(b.close) {
-				out.push(b.close - prev);
-			}
-		}
+	fn read((bars,): &ScanOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
+		let b = bars.lagged_at(i, 0).expect("element i of this tick's own fresh run");
+		b.flat(&mut env[..5]);
+		env[5] = bars.lagged_at(i, 1).map_or(f64::NAN, |p| p.close);
+		Some(b.ts_ns())
+	}
+
+	fn body(&self, v: Vars) -> impl Slots {
+		v.get::<3>() - v.get::<5>()
 	}
 }
-slice_nudge!([B: Series<Item = Bar>] RsiDelta<B>, f64);
+slice_nudge!([B: Series<Item = Bar>] RsiDelta<B>, Option<f64>);
 
 /// The two halves of RSI's ratio: the Wilder average of the up moves, and of the down moves as a
 /// positive magnitude. Both are warm after `S::base_len()` deltas, and both are the same fold over
@@ -106,7 +108,8 @@ macro_rules! wilder_half {
 			const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
 
 			fn emit(&mut self, (deltas,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
-				out.extend(deltas.iter().map(|d| self.avg.update(($sign * d).max(0.0))));
+				// the first bar has no delta, and an average is not advanced by an absence.
+				out.extend(deltas.iter().map(|d| d.and_then(|d| self.avg.update(($sign * d).max(0.0)))));
 			}
 		}
 		slice_nudge!([B: Series<Item = Bar>, S: RsiSpec] $ty<B, S>, Option<f64>);
