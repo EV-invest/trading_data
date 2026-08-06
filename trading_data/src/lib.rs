@@ -13,7 +13,8 @@ pub use trading_data_dag as __dag;
 pub use trading_data_dag::{
 	__graph_resolve, Armed, At, Batch, Blind, Buffer, Buffering, Bump, Cell, Cons, DepOuts, Elems, Emit, EmitOuts, Episode, Episodic, Fidelity, Fire, Flat, Folding, Gate, Gating, Glance,
 	Guide, Hist, Horizon, Ink, Jac, Latch, Latest, Level, Nil, Node, Nudge, Observer, Opaque, Over, Plot, Present, ProbabilisticDistribution, Pure, Raw, Reach, Roots, Rows, Run, RunOuts,
-	Runs, Sampling, Series, Stamped, Sweep, Symbolic, Tag, TriggerOut, Unbounded, Want, always_present, graph, node, node_alias, observe_root, slice_nudge, step, step_obs, value_nudge,
+	Runs, Sampling, Scan, ScanOuts, Scans, Series, Stamped, Sweep, Symbolic, Tag, TriggerOut, Unbounded, Unflat, Want, always_present, graph, node, node_alias, observe_root, slice_nudge,
+	step, step_obs, value_nudge,
 };
 pub use trading_data_derivatives::{
 	// the dep shims: a `#[node]` writes one at its own crate's root, and a graph naming the cell
@@ -43,7 +44,9 @@ pub use trading_data_derivatives::{
 	closed_by,
 	rsi,
 };
-pub use trading_data_expr::{Abs, Add, Ast, Const, Div, Ex, Expr, Mul, Neg, Square, Sub, Sum, Trace, Var, Vars, abs, constant, square, sum};
+pub use trading_data_expr::{
+	Abs, Add, Ast, Const, Div, Ex, Expr, Mul, Neg, Slots, Square, Sub, Sum, Trace, Var, Vars, abs, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum,
+};
 pub use trading_data_persistence::{
 	__td_node_Book, Aggregate, Arrival, BatchTrades, Book, BookAnchors, BookChunk, BookDelta, BookDeltas, BookShape, BookUpdate, Catalog, CatalogError, Clock, Direction, Exact, Feather,
 	Feed, FrameKind, InnerTrade, LaneKind, LaneReader, Lanes, LatencyConfig, Live, LiveClock, Local, Mc, McRoot, Oi, OiRoot, Precision, PrecisionPriceQty, ReadClock, Replay, RotationPolicy,

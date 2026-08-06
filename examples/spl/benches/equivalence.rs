@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use trading_data::{
 	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Elems, Episode, Exact, ExchangeName, Feed as _, Horizon, Latch as _, LatencyConfig, Mc, McRoot,
-	Ohlc, Ohlcs, Oi, OiRoot, Over, ReadClock, Replay, Runs as _, Side, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
+	Ohlc, Ohlcs, Oi, OiRoot, Over, ReadClock, Replay, Run as _, Runs as _, Scan, Side, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
 };
 use trading_data_spl::{
 	config::Config,
@@ -280,11 +280,11 @@ impl Direct {
 			);
 			self.change_3m
 				.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, Over<TF_3MIN>>>(),), &mut self.b_c3m);
-			self.volume_1m.emit((&self.b_bars[0],), &mut self.b_v1m);
+			Scan::emit(&mut self.volume_1m, (&self.b_bars[0],), &mut self.b_v1m);
 			self.volume_1h
 				.emit((&self.b_bars[0], self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Elems<1>>>()), &mut self.b_v1h);
-			self.imbalance.emit((&self.b_top,), &mut self.b_imb);
-			self.spread.emit((&self.b_top,), &mut self.b_spr);
+			Scan::emit(&mut self.imbalance, (&self.b_top,), &mut self.b_imb);
+			Scan::emit(&mut self.spread, (&self.b_top,), &mut self.b_spr);
 			let classified = self.classify.advance((
 				true,
 				&self.b_bars[0],

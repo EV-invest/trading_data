@@ -98,7 +98,7 @@ extern crate alloc;
 
 use core::any::TypeId;
 
-use trading_data_expr::{Ast, Expr, Vars};
+use trading_data_expr::{Ast, Expr, Slots, Vars};
 use v_utils::Timeframe;
 
 /// How far back a dep position reaches: nothing at all (a bare dep), the engine's retention
@@ -447,6 +447,33 @@ pub trait Flat: Copy {
 /// rather than a fabricated zero.
 pub trait Bump: Copy {
 	fn bump(self, slot: usize, h: f64) -> (Self, f64);
+}
+
+/// [`Flat`]'s inverse: an item rebuilt from the slots a per-element kernel computed, plus the event
+/// time. The time is the kernel's to carry rather than a slot, because a slot is a differentiation
+/// variable and an index may not be one (`r[kernels.selection.index-is-not-a-variable]`).
+pub trait Unflat: Flat {
+	fn unflat(ts_ns: i64, slots: &[f64]) -> Self;
+}
+
+impl Unflat for f64 {
+	fn unflat(_: i64, slots: &[f64]) -> Self {
+		slots[0]
+	}
+}
+
+impl<const N: usize> Unflat for [f64; N] {
+	fn unflat(_: i64, slots: &[f64]) -> Self {
+		core::array::from_fn(|i| slots[i])
+	}
+}
+
+/// NaN is how a per-element body declines, which the out plane already reads as absence
+/// (`r[impl outs.absence.one-reading]`) — so the two spellings of "nothing here" are one.
+impl<T: Unflat> Unflat for Option<T> {
+	fn unflat(ts_ns: i64, slots: &[f64]) -> Self {
+		slots.iter().all(|v| !v.is_nan()).then(|| T::unflat(ts_ns, slots))
+	}
 }
 
 /// A [`Flat`] out whose slots are probabilities over a named outcome space. Evidence reaches one as
@@ -806,6 +833,9 @@ pub trait DepFlat: DepSet {
 	fn stage<'t>(outs: Self::Outs<'t>, scratch: &mut Self::Scratch, slot: usize, h: f64) -> f64;
 	/// Views staged `scratch` as dep outs at the borrow's own lifetime `'l`.
 	fn view<'l>(scratch: &'l Self::Scratch) -> Self::Outs<'l>;
+	/// How many elements the *leading* dep fired. That dep is the one a per-element kernel walks —
+	/// its rate is the node's — so which dep drives is structural rather than a per-node declaration.
+	fn lead_fires(outs: &Self::Outs<'_>) -> usize;
 }
 
 /// A cell's finite-difference witness: materialize a pulled out into owned scratch ([`Nudge::stage`],
@@ -1140,8 +1170,13 @@ pub trait Blind: Cell + Clone {
 pub type BlindOuts<'t, B> = <<B as Blind>::Deps as DepSet>::Outs<'t>;
 
 /// scalar deps ⇒ one env slot each; the `impl_arity` tuple ceiling caps arity, so a fixed stack
-/// array holds the whole env — zero heap on the compute path.
-const MAX_VARS: usize = 8;
+/// array holds the whole env — zero heap on the compute path. A per-element kernel reads whole
+/// items rather than scalars, which is what put this past a dep count.
+const MAX_VARS: usize = 16;
+
+/// The widest item a per-element kernel fills, for the same reason [`MAX_VARS`] exists: the slot
+/// buffer is a stack array, so the compute path allocates nothing.
+const MAX_SLOTS: usize = 8;
 
 mod sealed {
 	pub trait Kernel {}
@@ -1390,6 +1425,147 @@ where
 			fd_jac_emit::<E>(pre, j);
 		}
 		false
+	}
+}
+
+/// A run-shaped node computing one out element per element of its **driving** dep — the leading one
+/// in `Deps`, whose rate it therefore preserves — carrying nothing between elements. Every number is
+/// an [`Expr`], one per slot of the item; *which* elements of which deps the expression reads is
+/// Rust, licensed by `r[kernels.selection.index-is-not-a-variable]`: an index is constant wrt every
+/// differentiation variable, so it has no slope to state and the body differentiates only values.
+///
+/// Earns the [`Scan`] kernel, which is the whole of how it computes. Declining is `NaN`, which
+/// [`Unflat`] reads back as absence.
+pub trait Scans: Series + Clone
+where
+	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
+	type Deps: DepSet;
+	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep.
+	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
+
+	/// Env slots past the deps' own flattenings: a lag, a window's first element, a slower series'
+	/// level as of this one. Zero is a body that read the point and nothing else.
+	const EXTRA: usize = 0;
+
+	/// What the body read beyond the point its one-step Jacobian describes (`r[kernels.jac.two-quantities]`).
+	/// `None` — the point is all it read, so a gradient at the point covers everything.
+	const BEYOND: Option<&'static str> = None;
+
+	/// Fills the env for out element `i` and returns that element's own event time — `None` where the
+	/// driving element carried nothing, which is absence arriving rather than the body declining, and
+	/// is answered without evaluating anything.
+	///
+	/// The first [`DepFlat::LEN`] slots are the deps' flattenings, with the driving dep's taken at
+	/// element `i` instead of at its last; then [`EXTRA`](Scans::EXTRA) more, in whatever order the
+	/// body reads them. That prefix is what lines the body's gradient up with the Jacobian's columns.
+	fn read(deps: &ScanOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64>;
+
+	/// One expression per slot of [`Series::Item`], over the env [`read`](Scans::read) filled.
+	fn body(&self, vars: Vars) -> impl Slots;
+}
+
+/// Uniform binder-correct dep-tuple type for [`Scans`] impls — [`EmitOuts`] spelled through the body
+/// trait, and the same type.
+pub type ScanOuts<'t, S> = <<S as Scans>::Deps as DepSet>::Outs<'t>;
+
+/// The kernel of a [`Scans`] node: one out element per driving element, each slot `body().eval`, and
+/// the Jacobian `body().grad` at the last element — exact, and one pass rather than a clone and a
+/// re-emit per dep slot.
+pub struct Scan;
+impl sealed::Kernel for Scan {}
+
+/// A [`Scan`]'s pre-emit capture: the slot equations, and their gradients at the env of the element
+/// the out will flatten to. Read *before* `emit` for the reason [`Algebra`] is — the derivative
+/// belongs to the state the value was computed from.
+pub struct PerElem {
+	formulas: alloc::vec::Vec<Ast>,
+	/// Row-major `MAX_SLOTS × MAX_VARS`; only the leading `Item::LEN × DepFlat::LEN` corner is a
+	/// Jacobian, the rest being the env slots no column stands for.
+	grad: [f64; MAX_SLOTS * MAX_VARS],
+}
+
+/// The env width and the slot count a [`Scans`] body works in, checked once against the buffers that
+/// hold them.
+const fn scan_widths<E: Scans>() -> (usize, usize)
+where
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+	<E as Scans>::Deps: DepFlat,
+	E::Item: Flat, {
+	let env = <<E as Scans>::Deps as DepFlat>::LEN + <E as Scans>::EXTRA;
+	assert!(env <= MAX_VARS, "a Scans env outgrew MAX_VARS: raise it in trading_data_dag, or read fewer slots");
+	assert!(<E::Item as Flat>::LEN <= MAX_SLOTS, "a Scans item outgrew MAX_SLOTS: raise it in trading_data_dag");
+	(env, <E::Item as Flat>::LEN)
+}
+
+impl<E> Run<E> for Scan
+where
+	E: Scans + Emit<Deps = <E as Scans>::Deps>,
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+	E::Item: Unflat,
+	<E as Emit>::Deps: DepFlat,
+{
+	type Pre = Option<PerElem>;
+
+	const FIDELITY: Fidelity = match <E as Scans>::BEYOND {
+		None => Fidelity::Exact,
+		Some(what) => Fidelity::Partial(what),
+	};
+
+	fn emit<'t>(e: &mut E, deps: EmitOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
+		let (env_w, slots_w) = const { scan_widths::<E>() };
+		let body = e.body(Vars);
+		debug_assert_eq!(body.len(), slots_w, "a Scans body states one expression per slot of its item");
+		let (mut env, mut slots) = ([f64::NAN; MAX_VARS], [f64::NAN; MAX_SLOTS]);
+		for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
+			match <E as Scans>::read(&deps, i, &mut env[..env_w]) {
+				Some(ts) => {
+					body.eval_slots(&env[..env_w], &mut slots[..slots_w]);
+					out.push(<E::Item as Unflat>::unflat(ts, &slots[..slots_w]));
+				}
+				// rate-preserving: an element that carried nothing still occupies its place in the run.
+				None => out.push(<E::Item as Unflat>::unflat(0, &[f64::NAN; MAX_SLOTS][..slots_w])),
+			}
+		}
+	}
+
+	fn pre<'d>(e: &E, want: Want, deps: EmitOuts<'d, E>) -> Self::Pre {
+		if want < Want::Jac {
+			return None;
+		}
+		let (env_w, _) = const { scan_widths::<E>() };
+		// the out flattens to its *last* element, so that is the one the derivative belongs to; an
+		// empty run has none, and there is nothing to differentiate.
+		let last = <<E as Emit>::Deps as DepFlat>::lead_fires(&deps).checked_sub(1)?;
+		// zeroed, not NaN-filled: `grad` accumulates, and a slot the body never reads has a partial of
+		// 0 rather than no partial.
+		let mut env = [0.0f64; MAX_VARS];
+		<E as Scans>::read(&deps, last, &mut env[..env_w])?;
+		let body = e.body(Vars);
+		let mut grad = [0.0f64; MAX_SLOTS * MAX_VARS];
+		body.grad_slots(&env[..env_w], &mut grad[..body.len() * env_w]);
+		Some(PerElem { formulas: body.lower_slots(), grad })
+	}
+
+	/// Slot 0's equation. A multi-slot item has one per slot, and the reading that carries all of
+	/// them is the Jacobian.
+	fn formula(pre: &Self::Pre) -> Option<&Ast> {
+		pre.as_ref()?.formulas.first()
+	}
+
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, EmitOuts<'d, E>>) -> bool
+	where
+		<E as Emit>::Deps: DepFlat,
+		EmitOuts<'d, E>: Copy,
+		E::Item: Flat, {
+		let Some(alg) = pre else { return false };
+		let (env_w, _) = const { scan_widths::<E>() };
+		let dep_w = j.dep_buf.len();
+		// the body's rows are `env_w` wide and the Jacobian's are `dep_w`; the prefix `read` filled
+		// from the deps' own flattenings is what makes the copy a truncation rather than a remap.
+		for (row, out) in j.out.chunks_exact_mut(dep_w).enumerate() {
+			out.copy_from_slice(&alg.grad[row * env_w..row * env_w + dep_w]);
+		}
+		true
 	}
 }
 
@@ -2300,13 +2476,10 @@ impl DepFlat for () {
 	}
 
 	fn view<'l>(_: &'l Self::Scratch) -> Self::Outs<'l> {}
-}
 
-/// The head of a type list, for [`DepSet::Lead`] — only the leading dep can gate.
-macro_rules! head {
-	($A:ty $(, $T:ty)*) => {
-		$A
-	};
+	fn lead_fires(_: &Self::Outs<'_>) -> usize {
+		panic!("a per-element kernel walks its leading dep, and a node depending on nothing has none")
+	}
 }
 
 macro_rules! impl_arity {
@@ -2317,22 +2490,24 @@ macro_rules! impl_arity {
 		impl_arity!($Th $Ih $vh $sh $(, $T $I $v $s)*);
 		impl_arity!(@all $($T $I $v $s),*);
 	};
-	($($T:ident $I:ident $v:ident $s:ident),+) => {
-		impl<$($T: Cell),+> DepSet for ($($T,)+) {
-			type Outs<'t> = ($($T::Out<'t>,)+);
-			type Lead = <head!($($T),+) as Cell>::Gates;
+	// the head is split out because two things read it and nothing else: [`DepSet::Lead`] (only the
+	// leading dep can gate) and [`DepFlat::lead_fires`] (only the leading dep drives).
+	($Th:ident $Ih:ident $vh:ident $sh:ident $(, $T:ident $I:ident $v:ident $s:ident)*) => {
+		impl<$Th: Cell $(, $T: Cell)*> DepSet for ($Th, $($T,)*) {
+			type Outs<'t> = ($Th::Out<'t>, $($T::Out<'t>,)*);
+			type Lead = <$Th as Cell>::Gates;
 
-			const CLOCKS: &'static [Option<Timeframe>] = &[$($T::CLOCK),+];
-			const FOLDS: &'static [bool] = &[$($T::FOLDED),+];
-			const GATES: &'static [bool] = &[$(<$T::Gates as Bit>::VALUE),+];
-			const NAMES: &'static [&'static str] = &[$($T::NAME),+];
-			const REACH: &'static [Horizon] = &[$($T::REACH),+];
-			const RETAINS: &'static [bool] = &[$($T::RETAINED),+];
+			const CLOCKS: &'static [Option<Timeframe>] = &[$Th::CLOCK $(, $T::CLOCK)*];
+			const FOLDS: &'static [bool] = &[$Th::FOLDED $(, $T::FOLDED)*];
+			const GATES: &'static [bool] = &[<$Th::Gates as Bit>::VALUE $(, <$T::Gates as Bit>::VALUE)*];
+			const NAMES: &'static [&'static str] = &[$Th::NAME $(, $T::NAME)*];
+			const REACH: &'static [Horizon] = &[$Th::REACH $(, $T::REACH)*];
+			const RETAINS: &'static [bool] = &[$Th::RETAINED $(, $T::RETAINED)*];
 		}
-		impl<'t, F, $($T: Cell, $I),+> Pull<'t, F, ($($I,)+)> for ($($T,)+)
-		where F: $(Has<'t, $T, $I> +)+ {
+		impl<'t, F, $Th: Cell, $Ih $(, $T: Cell, $I)*> Pull<'t, F, ($Ih, $($I,)*)> for ($Th, $($T,)*)
+		where F: Has<'t, $Th, $Ih> $(+ Has<'t, $T, $I>)* {
 			fn pull(f: &F) -> Self::Outs<'t> where F: 't {
-				($(Has::<'t, $T, $I>::get(f),)+)
+				(Has::<'t, $Th, $Ih>::get(f), $(Has::<'t, $T, $I>::get(f),)*)
 			}
 
 			fn open(f: &F) -> bool where F: 't {
@@ -2346,31 +2521,43 @@ macro_rules! impl_arity {
 						"a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms — retain it in the frame instead (write the dep as `Buffering<C, R>`), or drop the `Gating` dep"
 					);
 				}
-				true $(&& (!<$T::Gates as Bit>::VALUE || $T::opens(Has::<'t, $T, $I>::get(f))))+
+				(!<$Th::Gates as Bit>::VALUE || $Th::opens(Has::<'t, $Th, $Ih>::get(f)))
+					$(&& (!<$T::Gates as Bit>::VALUE || $T::opens(Has::<'t, $T, $I>::get(f))))*
 			}
 		}
-		impl<$($T: Nudge),+> DepFlat for ($($T,)+)
-		where $(for<'x> <$T as Cell>::Out<'x>: Flat),+ {
-			const DIMS: &'static [&'static [usize]] = &[$(<<$T as Cell>::Out<'static> as Flat>::DIMS),+];
-			const LEN: usize = 0 $(+ <<$T as Cell>::Out<'static> as Flat>::LEN)+;
+		impl<$Th: Nudge $(, $T: Nudge)*> DepFlat for ($Th, $($T,)*)
+		where for<'x> <$Th as Cell>::Out<'x>: Flat $(, for<'x> <$T as Cell>::Out<'x>: Flat)* {
+			const DIMS: &'static [&'static [usize]] = &[<<$Th as Cell>::Out<'static> as Flat>::DIMS $(, <<$T as Cell>::Out<'static> as Flat>::DIMS)*];
+			const LEN: usize = <<$Th as Cell>::Out<'static> as Flat>::LEN $(+ <<$T as Cell>::Out<'static> as Flat>::LEN)*;
 
-			type Scratch = ($($T::Scratch,)+);
+			type Scratch = ($Th::Scratch, $($T::Scratch,)*);
 
 			fn flat(outs: &Self::Outs<'_>, dst: &mut [f64]) {
 				assert_eq!(dst.len(), Self::LEN);
-				let ($($v,)+) = outs;
+				let ($vh, $($v,)*) = outs;
 				let mut off = 0;
+				$vh.flat(&mut dst[off..off + <<$Th as Cell>::Out<'static> as Flat>::LEN]);
+				off += <<$Th as Cell>::Out<'static> as Flat>::LEN;
 				$(
 					$v.flat(&mut dst[off..off + <<$T as Cell>::Out<'static> as Flat>::LEN]);
 					off += <<$T as Cell>::Out<'static> as Flat>::LEN;
-				)+
+				)*
 				debug_assert_eq!(off, Self::LEN);
 			}
 
 			fn stage<'t>(outs: Self::Outs<'t>, scratch: &mut Self::Scratch, slot: usize, h: f64) -> f64 {
-				let ($($v,)+) = outs;
-				let ($($s,)+) = scratch;
+				let ($vh, $($v,)*) = outs;
+				let ($sh, $($s,)*) = scratch;
 				let (mut off, mut realized) = (0, 0.0);
+				{
+					let len = <<$Th as Cell>::Out<'static> as Flat>::LEN;
+					let bump = if (off..off + len).contains(&slot) { Some(slot - off) } else { None };
+					let dh = <$Th as Nudge>::stage($vh, $sh, bump, h);
+					if bump.is_some() {
+						realized = dh;
+					}
+					off += len;
+				}
 				$(
 					{
 						let len = <<$T as Cell>::Out<'static> as Flat>::LEN;
@@ -2381,14 +2568,19 @@ macro_rules! impl_arity {
 						}
 						off += len;
 					}
-				)+
+				)*
 				debug_assert_eq!(off, Self::LEN);
 				realized
 			}
 
 			fn view<'l>(scratch: &'l Self::Scratch) -> Self::Outs<'l> {
-				let ($($s,)+) = scratch;
-				($(<$T as Nudge>::view($s),)+)
+				let ($sh, $($s,)*) = scratch;
+				(<$Th as Nudge>::view($sh), $(<$T as Nudge>::view($s),)*)
+			}
+
+			fn lead_fires(outs: &Self::Outs<'_>) -> usize {
+				let ($vh, ..) = outs;
+				$vh.fires()
 			}
 		}
 	};

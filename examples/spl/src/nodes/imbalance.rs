@@ -1,4 +1,4 @@
-use trading_data::{Cell, Plot, RunOuts, Runs, node, slice_nudge};
+use trading_data::{Cell, Flat, Plot, ScanOuts, Scans, Slots, Vars, constant, gt, node, select, slice_nudge};
 
 use super::book_top::BookTop;
 
@@ -11,22 +11,23 @@ impl Cell for Imbalance {
 	type Out<'t> = &'t [Option<f64>];
 }
 #[node]
-impl Runs for Imbalance {
+impl Scans for Imbalance {
 	type Deps = (BookTop,);
 
 	const PLOTS: &'static [Plot] = &[Plot {
 		range: Some((-1.0, 1.0)),
 		..Plot::DEFAULT
 	}];
-	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
 
-	fn emit(&mut self, (top,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
-		for d in top {
-			out.push(d.map(|d| {
-				let total = d.top20_bid_depth_usd + d.top20_ask_depth_usd;
-				if total > 0.0 { (d.top20_bid_depth_usd - d.top20_ask_depth_usd) / total } else { 0.0 }
-			}));
-		}
+	fn read((top,): &ScanOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
+		top[i].flat(env);
+		top[i].map(|d| d.ts_ns)
+	}
+
+	fn body(&self, v: Vars) -> impl Slots {
+		let (bids, asks) = (v.get::<2>(), v.get::<3>());
+		let total = bids + asks;
+		select(gt(total, constant(0.0)), (bids - asks) / total, constant(0.0))
 	}
 }
 slice_nudge!(Imbalance, Option<f64>);

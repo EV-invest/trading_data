@@ -375,6 +375,64 @@ impl<E: Expr, const N: usize> Expr for Sum<E, N> {
 	}
 }
 
+/// One expression per slot of a multi-slot out — what a per-element kernel evaluates to fill an
+/// item. Heterogeneous, so a tuple rather than [`Sum`]'s homogeneous array: the slots of an item are
+/// different functions of one env, and a single-slot out is the one-tuple spelled without brackets.
+pub trait Slots: Copy {
+	const LEN: usize;
+	/// So a kernel holding an opaque `impl Slots` can check its width against the item it fills.
+	fn len(&self) -> usize {
+		Self::LEN
+	}
+	fn eval_slots(&self, env: &[f64], out: &mut [f64]);
+	/// Row-major `LEN × env.len()`, accumulated — the caller zeroes.
+	fn grad_slots(&self, env: &[f64], jac: &mut [f64]);
+	fn lower_slots(&self) -> Vec<Ast>;
+}
+
+/// [`Ex`] rather than a blanket over [`Expr`]: a downstream crate may implement this crate's `Expr`
+/// for a tuple, which would make the blanket overlap the tuple impls below.
+impl<T: Expr> Slots for Ex<T> {
+	const LEN: usize = 1;
+
+	fn eval_slots(&self, env: &[f64], out: &mut [f64]) {
+		out[0] = self.eval(env);
+	}
+
+	fn grad_slots(&self, env: &[f64], jac: &mut [f64]) {
+		self.grad(env, 1.0, jac);
+	}
+
+	fn lower_slots(&self) -> Vec<Ast> {
+		alloc::vec![self.lower()]
+	}
+}
+
+macro_rules! slots_tuple {
+	($n:expr; $($T:ident $i:tt),+) => {
+		impl<$($T: Expr),+> Slots for ($(Ex<$T>,)+) {
+			const LEN: usize = $n;
+
+			fn eval_slots(&self, env: &[f64], out: &mut [f64]) {
+				$(out[$i] = self.$i.eval(env);)+
+			}
+
+			fn grad_slots(&self, env: &[f64], jac: &mut [f64]) {
+				let w = env.len();
+				$(self.$i.grad(env, 1.0, &mut jac[$i * w..($i + 1) * w]);)+
+			}
+
+			fn lower_slots(&self) -> Vec<Ast> {
+				alloc::vec![$(self.$i.lower()),+]
+			}
+		}
+	};
+}
+slots_tuple!(2; A 0, B 1);
+slots_tuple!(3; A 0, B 1, C 2);
+slots_tuple!(4; A 0, B 1, C 2, D 3);
+slots_tuple!(5; A 0, B 1, C 2, D 3, E 4);
+
 /// Operator-ergonomics handle: `x*y + constant(2.0)` builds the nested type. Delegates every
 /// [`Expr`] method to its inner primitive.
 #[derive(Clone, Copy)]

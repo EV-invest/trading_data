@@ -1,4 +1,4 @@
-use trading_data::{Cell, RunOuts, Runs, node, slice_nudge};
+use trading_data::{Cell, Flat, ScanOuts, Scans, Slots, Vars, constant, node, slice_nudge};
 
 use super::book_top::BookTop;
 
@@ -9,15 +9,17 @@ impl Cell for Spread {
 	type Out<'t> = &'t [Option<f64>];
 }
 #[node]
-impl Runs for Spread {
+impl Scans for Spread {
 	type Deps = (BookTop,);
 
-	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
+	fn read((top,): &ScanOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
+		top[i].flat(env);
+		top[i].map(|d| d.ts_ns)
+	}
 
-	fn emit(&mut self, (top,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
-		for d in top {
-			out.push(d.map(|d| (d.best_ask - d.best_bid) / d.best_bid * 100.0));
-		}
+	fn body(&self, v: Vars) -> impl Slots {
+		let (bid, ask) = (v.get::<0>(), v.get::<1>());
+		(ask - bid) / bid * constant(100.0)
 	}
 }
 slice_nudge!(Spread, Option<f64>);
