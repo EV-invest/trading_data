@@ -271,15 +271,19 @@ impl Direct {
 		// A closed gate is not "advance with nothing": the node is never called, and its out is the
 		// `Latent` reading — an empty run, or `None`.
 		let decision = if hit {
-			self.change_1d.emit(
+			Scan::emit(
+				&mut self.change_1d,
 				(
 					&self.b_bars[0],
 					self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Over<{ Timeframe(TF_1D.0 + TF_1H.0) }>>>(),
 				),
 				&mut self.b_c1d,
 			);
-			self.change_3m
-				.emit((self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, Over<TF_3MIN>>>(),), &mut self.b_c3m);
+			Scan::emit(
+				&mut self.change_3m,
+				(self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, Over<TF_3MIN>>>(),),
+				&mut self.b_c3m,
+			);
 			Scan::emit(&mut self.volume_1m, (&self.b_bars[0],), &mut self.b_v1m);
 			Scan::emit(
 				&mut self.volume_1h,
