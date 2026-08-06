@@ -355,13 +355,15 @@ gateable the moment the lane became a run of rows the engine could retain for it
    │                        counts it into `FIDELITY`. `Clone` is a supertrait because the
    │                        finite-difference witness is what it has instead of a derivative.
    │
-   ├── Emit: Series         const WHY · fn emit(&mut self, EmitOuts, out: &mut Vec<Item>)
+   ├── Runs: Series+Clone   const WHY · fn emit(&mut self, RunOuts, out: &mut Vec<Item>)
+   │                        ⇒ kernel `Raw`, through the `Emit` impl `#[node]` writes.
    │                        Out<'t> = &'t [Item]. The ENGINE owns the run (`Emitter<E>`), so
    │                        the struct holds only what it remembers between ticks — and
    │                        `emit` cannot read what it wrote last tick. `&mut self`, not
    │                        `&'t mut self`: only the buffer is lent, not the node.
    │                        `Emitter` also carries `last_period` — the declared rate is not the
    │                        declarer's to fiddle with, for the same reason the buffer is not.
+   │                        `Blind`'s sibling all the way down, `Clone` supertrait included.
    │
    └── Episodic             type Trigger: Cell  ·  fn arms(TriggerOut) -> bool
                             ⇒ `Armed<Self>` is the only gate it can be. Where a hand-written
@@ -385,7 +387,7 @@ gateable the moment the lane became a run of rows the engine could retain for it
 
   node((-2.4, 1.3), align(center)[`Symbolic` \ #text(7pt)[`body -> impl Expr`]], name: <sy>),
   node((-1.1, 1.3), align(center)[`Node` \ #text(7pt)[`type Kernel`, no method]], name: <nd>),
-  node((0.2, 1.3), align(center)[`Emit: Series` \ #text(7pt)[engine owns the run]], name: <em>),
+  node((0.2, 1.3), align(center)[`Runs: Series` \ #text(7pt)[engine owns the run]], name: <em>),
   node((2.4, 1.3), align(center)[`Episodic` \ #text(7pt)[`Trigger` · `arms`]], name: <ep>),
 
   edge(<cell>, <sy>, "->"),
@@ -546,7 +548,7 @@ gateable the moment the lane became a run of rows the engine could retain for it
 
 #census((
   ("impl Cell", "\bimpl\b[^\n{;]*\bCell\b[^\n{;]*\bfor\b"),
-  ("impl Emit", "\bimpl\b[^\n{;]*\bEmit\b[^\n{;]*\bfor\b"),
+  ("impl Runs", "\bimpl\b[^\n{;]*\bRuns\b[^\n{;]*\bfor\b"),
   ("impl Symbolic", "\bimpl\b[^\n{;]*\bSymbolic\b[^\n{;]*\bfor\b"),
   ("impl Blind", "\bimpl\b[^\n{;]*\bBlind\b[^\n{;]*\bfor\b"),
   ("impl Gate", "\bimpl\b[^\n{;]*\bGate\b[^\n{;]*\bfor\b"),

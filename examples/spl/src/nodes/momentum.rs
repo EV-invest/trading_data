@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Elems, Emit, EmitOuts, Hist, Plot, node, slice_nudge};
+use trading_data::{Buffering, Cell, Elems, Hist, Plot, RunOuts, Runs, node, slice_nudge};
 use v_utils::*;
 
 use super::Bar;
@@ -53,7 +53,7 @@ impl Cell for Momentum {
 	type Out<'t> = &'t [Option<f64>];
 }
 #[node]
-impl Emit for Momentum {
+impl Runs for Momentum {
 	type Deps = (Buffering<trading_data::Bars<{ TF_5MIN }>, Elems<181>>, Buffering<trading_data::Bars<{ TF_4H }>, Elems<181>>);
 
 	const PLOTS: &'static [Plot] = &[Plot {
@@ -62,7 +62,7 @@ impl Emit for Momentum {
 	}];
 	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
 
-	fn emit(&mut self, (m5, h4): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+	fn emit(&mut self, (m5, h4): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(leg(m5, h4).trailing().map(|w| w.and_then(sharpe)));
 	}
 }

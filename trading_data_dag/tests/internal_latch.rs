@@ -1,13 +1,13 @@
 //! The *internal* latch: same dynamics as `latch.rs`, but the arm is a graph node rather than a
 //! root. `Episodic` + `Armed<N>` seal the loop — the gate a node arms is the gate its own terminal
-//! out cuts — and the episode is an `Emit`: the engine owns its run, so dark is the empty one and
+//! out cuts — and the episode is an `Runs`: the engine owns its run, so dark is the empty one and
 //! commutation hands back a buffer rather than a fresh allocation.
 //!
 //! The load-bearing pins: an arm leg going dark mid-episode does not cut the latch, and a terminal
 //! batch whose terminal element is *not* last still commutates (`Episode for &[T]` is `any`, not
 //! `last`).
 
-use trading_data_dag::{Armed, Blind, Bump, Cell, DepOuts, Emit, EmitOuts, Episode, Episodic, Flat, Gate, Gating, Glance, TriggerOut, graph, node, slice_nudge, value_nudge};
+use trading_data_dag::{Armed, Blind, Bump, Cell, DepOuts, Episode, Episodic, Flat, Gate, Gating, Glance, RunOuts, Runs, TriggerOut, graph, node, slice_nudge, value_nudge};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Pulse;
@@ -155,12 +155,12 @@ impl Cell for Deprec {
 	type Out<'t> = &'t [Option<Phase>];
 }
 #[node]
-impl Emit for Deprec {
+impl Runs for Deprec {
 	type Deps = (Gating<Armed<Deprec>>, Classify, Feed);
 
 	const WHY: &'static str = "a latch fixture";
 
-	fn emit(&mut self, (_, _, feed): EmitOuts<'_, Self>, out: &mut Vec<Option<Phase>>) {
+	fn emit(&mut self, (_, _, feed): RunOuts<'_, Self>, out: &mut Vec<Option<Phase>>) {
 		for _ in feed {
 			if self.idle {
 				out.push(None);
@@ -192,12 +192,12 @@ impl Cell for Leg {
 	type Out<'t> = &'t [Option<Pulse>];
 }
 #[node]
-impl Emit for Leg {
+impl Runs for Leg {
 	type Deps = (Gating<Armed<Deprec>>, Feed);
 
 	const WHY: &'static str = "an internal-latch fixture";
 
-	fn emit(&mut self, (_, feed): EmitOuts<'_, Self>, out: &mut Vec<Option<Pulse>>) {
+	fn emit(&mut self, (_, feed): RunOuts<'_, Self>, out: &mut Vec<Option<Pulse>>) {
 		out.extend(feed.iter().copied().map(Some));
 	}
 }

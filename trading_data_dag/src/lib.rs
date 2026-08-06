@@ -965,13 +965,12 @@ pub trait Node: Cell {
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 }
 
-/// A node whose out is the run of items it fills each tick. The engine owns the run, so the struct
-/// holds only what it remembers between ticks — and `emit` cannot read what it wrote last tick,
-/// which [`Node::advance`]'s `self.buf.clear()` convention could only ask for. `&mut self`, not
-/// `&'t mut self`: the node is not lent for the tick, only the engine's buffer is.
+/// [`Node`]'s run-shaped sibling: the out is the run of items filled each tick, and like `Node` it
+/// carries no compute method — it names the [`Run`] kernel that computes it, and every reading comes
+/// off that one declaration (`r[kernels.closed]`).
 ///
-/// A gated one goes dark by emitting nothing, so it needs no [`Latent`] reading — not emitting *is*
-/// the latent reading.
+/// Nobody writes this impl by hand either; `#[node]` writes it from the body trait ([`Runs`] ⇒
+/// [`Raw`]), which is also where `Deps` and `PLOTS` are stated.
 ///
 /// [`Series`]' where-clause is an obligation at each use of the bound, not an implied one (see
 /// [`Episodic`]), so it is repeated wherever this bound is used.
@@ -979,18 +978,37 @@ pub trait Emit: Series
 where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
 	type Deps: DepSet;
-	/// Why this node has no formula — every run-shaped node is opaque today, and the string is what
-	/// keeps that a stated position rather than an omission (`r[kernels.opaque.stated]`). It is the
-	/// [`Fidelity::Opaque`] `graph!` counts an emit node into `FIDELITY` under.
+	type Kernel: Run<Self>;
+	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep, and
+	/// the viz can still be asked for it.
+	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
+}
+
+/// The run side's stated hatch — [`Blind`]'s sibling: a node that fills its run in Rust and
+/// therefore has no algebra reading. The engine owns the run, so the struct holds only what it
+/// remembers between ticks, and `emit` cannot read what it wrote last tick. `&mut self`, not
+/// `&'t mut self`: the node is not lent for the tick, only the engine's buffer is.
+///
+/// A gated one goes dark by emitting nothing, so it needs no [`Latent`] reading — not emitting *is*
+/// the latent reading.
+pub trait Runs: Series + Clone
+where
+	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
+	type Deps: DepSet;
+	/// Why this node has no formula. Written for whoever asks why it is not a per-element kernel.
 	const WHY: &'static str;
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep, and
 	/// the viz can still be asked for it.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
-	fn emit<'t>(&mut self, deps: EmitOuts<'t, Self>, out: &mut alloc::vec::Vec<Self::Item>);
+	fn emit<'t>(&mut self, deps: RunOuts<'t, Self>, out: &mut alloc::vec::Vec<Self::Item>);
 }
 
-/// Uniform binder-correct dep-tuple type for [`Emit::emit`] impls, as [`DepOuts`] is for `advance`.
+/// Uniform binder-correct dep-tuple type for an [`Emit`]'s kernel, as [`DepOuts`] is for a `Node`'s.
 pub type EmitOuts<'t, E> = <<E as Emit>::Deps as DepSet>::Outs<'t>;
+
+/// The same, spelled through the body trait — [`BlindOuts`]' sibling, and the same type, so a
+/// [`Runs`] impl may write either.
+pub type RunOuts<'t, R> = <<R as Runs>::Deps as DepSet>::Outs<'t>;
 
 /// The engine-owned buffer an [`Emit`] fills, and the node itself. Never typed by a human —
 /// [`graph!`]'s `emit` keyword wraps the declared node type in one, and [`Deref`](core::ops::Deref)
@@ -1175,7 +1193,7 @@ pub trait Level<N: Node + ?Sized>: sealed::Kernel {
 	///
 	/// The observation bounds sit here rather than on the trait, so a bare [`step`] — which never asks
 	/// for a derivative — carries none of them.
-	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, 'd, N>) -> bool
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, N>>) -> bool
 	where
 		<N as Node>::Deps: DepFlat,
 		DepOuts<'d, N>: Copy,
@@ -1183,9 +1201,10 @@ pub trait Level<N: Node + ?Sized>: sealed::Kernel {
 }
 
 /// What a Jacobian is read against: this tick's pulled deps, their un-bumped flattenings, and the
-/// row-major `out_len × dep_len` buffer to fill.
-pub struct Jac<'a, 'd, N: Node + ?Sized> {
-	pub deps: DepOuts<'d, N>,
+/// row-major `out_len × dep_len` buffer to fill. Generic over the dep tuple rather than the node, so
+/// the level side and the run side read against one type.
+pub struct Jac<'a, D> {
+	pub deps: D,
 	pub dep_buf: &'a [f64],
 	pub out_buf: &'a [f64],
 	pub out: &'a mut [f64],
@@ -1265,7 +1284,7 @@ where
 		pre.as_ref().map(|a| &a.formula)
 	}
 
-	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, 'd, N>) -> bool
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, N>>) -> bool
 	where
 		<N as Node>::Deps: DepFlat,
 		DepOuts<'d, N>: Copy,
@@ -1297,13 +1316,78 @@ where
 		None
 	}
 
-	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, 'd, N>) -> bool
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, N>>) -> bool
 	where
 		<N as Node>::Deps: DepFlat,
 		DepOuts<'d, N>: Copy,
 		for<'x> N::Out<'x>: Flat, {
 		if let Some(pre) = pre {
 			fd_jac::<N>(pre, j);
+		}
+		false
+	}
+}
+
+/// [`Level`]'s run-shaped sibling: how an [`Emit`] fills its run, and therefore what can be read off
+/// it. Sealed by the same [`sealed::Kernel`], and split into [`pre`](Run::pre) and [`jac`](Run::jac)
+/// for the same reason — so a sweep nobody is observing captures nothing.
+pub trait Run<E: Emit + ?Sized>: sealed::Kernel
+where
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>, {
+	/// How much of what the body read [`jac`](Run::jac) covers.
+	const FIDELITY: Fidelity;
+
+	fn emit<'t>(e: &mut E, deps: EmitOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>);
+
+	/// Whatever the derivative reading needs off the node *before* `emit` consumes it for the tick.
+	type Pre;
+	fn pre<'d>(e: &E, want: Want, deps: EmitOuts<'d, E>) -> Self::Pre;
+
+	/// The equation, where there is one — see [`Level::formula`].
+	fn formula(pre: &Self::Pre) -> Option<&Ast>;
+
+	/// Fills the Jacobian and reports whether it is exact — the *one-step* reading, exactly as
+	/// [`Level::jac`] is (`r[kernels.jac.two-quantities]`).
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, EmitOuts<'d, E>>) -> bool
+	where
+		<E as Emit>::Deps: DepFlat,
+		EmitOuts<'d, E>: Copy,
+		E::Item: Flat;
+}
+
+/// The kernel of a [`Runs`] node: the run is the node's own `emit`, and the Jacobian is the
+/// finite-difference witness taken off a clone. [`Opaque`]'s run-shaped sibling.
+pub struct Raw;
+impl sealed::Kernel for Raw {}
+
+impl<E> Run<E> for Raw
+where
+	E: Runs + Emit<Deps = <E as Runs>::Deps>,
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+{
+	type Pre = Option<E>;
+
+	const FIDELITY: Fidelity = Fidelity::Opaque(<E as Runs>::WHY);
+
+	fn emit<'t>(e: &mut E, deps: EmitOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
+		<E as Runs>::emit(e, deps, out)
+	}
+
+	fn pre<'d>(e: &E, want: Want, _: EmitOuts<'d, E>) -> Self::Pre {
+		(want >= Want::Jac).then(|| e.clone())
+	}
+
+	fn formula(_: &Self::Pre) -> Option<&Ast> {
+		None
+	}
+
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, EmitOuts<'d, E>>) -> bool
+	where
+		<E as Emit>::Deps: DepFlat,
+		EmitOuts<'d, E>: Copy,
+		E::Item: Flat, {
+		if let Some(pre) = pre {
+			fd_jac_emit::<E>(pre, j);
 		}
 		false
 	}
@@ -2361,7 +2445,7 @@ where
 	F: 't, {
 	e.buf.clear();
 	if demanded && <E::Deps as Pull<'t, F, I>>::open(&frame) && e.opens(ts) {
-		e.node.emit(<E::Deps as Pull<'t, F, I>>::pull(&frame), &mut e.buf);
+		<E::Kernel as Run<E>>::emit(&mut e.node, <E::Deps as Pull<'t, F, I>>::pull(&frame), &mut e.buf);
 	}
 	Cons { out: &e.buf, tail: frame }
 }
@@ -2604,7 +2688,7 @@ fn fd_cols(dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64], bumped: &mut alloc
 
 /// [`fd_cols`] over a [`Blind`] node's re-[`advance`](Blind::advance), via [`fd_col`] — the whole of
 /// what [`Opaque`] has instead of a derivative.
-fn fd_jac<'d, N>(pre: &N, j: Jac<'_, 'd, N>)
+fn fd_jac<'d, N>(pre: &N, j: Jac<'_, DepOuts<'d, N>>)
 where
 	N: Blind + Node<Deps = <N as Blind>::Deps>,
 	<N as Blind>::Deps: DepFlat,
@@ -2740,21 +2824,22 @@ where
 /// leg cannot pay. The re-`emit` needs no [`fd_col`]-style lifetime isolation (`&mut self` never
 /// lends the node), so its column body is inline; everything a column overwrites wholly — the deps'
 /// scratch, the clone, its output run — is hoisted across the loop.
-fn fd_jac_emit<'d, E>(pre: &E, deps: EmitOuts<'d, E>, dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64], bumped: &mut alloc::vec::Vec<f64>)
+fn fd_jac_emit<'d, E>(pre: &E, j: Jac<'_, EmitOuts<'d, E>>)
 where
-	E: Emit + Clone,
+	E: Runs + Emit<Deps = <E as Runs>::Deps>,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Item: Flat,
-	E::Deps: DepFlat,
+	<E as Emit>::Deps: DepFlat,
 	EmitOuts<'d, E>: Copy, {
-	let mut scratch = <E::Deps as DepFlat>::Scratch::default();
+	let mut scratch = <<E as Emit>::Deps as DepFlat>::Scratch::default();
 	let mut emitted = alloc::vec::Vec::new();
 	let mut clone = pre.clone();
-	fd_cols(dep_buf, out_buf, jac, bumped, |slot, h, bumped| {
-		let dh = <E::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
+	let deps = j.deps;
+	fd_cols(j.dep_buf, j.out_buf, j.out, j.bumped, |slot, h, bumped| {
+		let dh = <<E as Emit>::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
 		emitted.clear();
 		clone.clone_from(pre);
-		clone.emit(<E::Deps as DepFlat>::view(&scratch), &mut emitted);
+		<E as Runs>::emit(&mut clone, <<E as Emit>::Deps as DepFlat>::view(&scratch), &mut emitted);
 		(emitted.as_slice().flat(bumped), dh)
 	});
 }
@@ -2765,7 +2850,7 @@ where
 #[cfg_attr(feature = "profile", inline(never))]
 pub fn step_emit_obs<'t, E, F, I, O: Observer>(frame: F, e: &'t mut Emitter<E>, demanded: bool, ts: i64, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, E, F>
 where
-	E: Emit + Clone,
+	E: Emit,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Item: Flat + Glance,
 	E::Deps: Pull<'t, F, I> + DepFlat,
@@ -2792,23 +2877,31 @@ where
 	}
 
 	if want == Want::Nothing {
-		e.node.emit(<E::Deps as Pull<'t, F, I>>::pull(&frame), &mut e.buf);
+		<E::Kernel as Run<E>>::emit(&mut e.node, <E::Deps as Pull<'t, F, I>>::pull(&frame), &mut e.buf);
 		return Cons { out: &e.buf, tail: frame };
 	}
 
-	let pre = (want == Want::Jac).then(|| e.node.clone());
 	let deps = <E::Deps as Pull<'t, F, I>>::pull(&frame);
-	e.node.emit(deps, &mut e.buf);
+	// before the emit, for the same reason [`step_seen`]'s is: the derivative belongs to the state
+	// the run was filled from.
+	let pre = <E::Kernel as Run<E>>::pre(&e.node, want, deps);
+	<E::Kernel as Run<E>>::emit(&mut e.node, deps, &mut e.buf);
 	let out: &'t [E::Item] = &e.buf;
 	let flat = Flats::of::<_, E::Deps>(
 		sweep,
 		&out,
 		&deps,
-		pre.as_ref().map(|pre| {
-			move |dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64], bumped: &mut alloc::vec::Vec<f64>| {
-				fd_jac_emit::<E>(pre, deps, dep_buf, out_buf, jac, bumped);
-				false
-			}
+		(want == Want::Jac).then_some(|dep_buf: &[f64], out_buf: &[f64], out: &mut [f64], bumped: &mut alloc::vec::Vec<f64>| {
+			<E::Kernel as Run<E>>::jac(
+				&pre,
+				Jac {
+					deps,
+					dep_buf,
+					out_buf,
+					out,
+					bumped,
+				},
+			)
 		}),
 	);
 

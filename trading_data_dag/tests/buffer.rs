@@ -4,7 +4,7 @@
 //! the point of engine-owned retention.
 
 use trading_data_dag::{
-	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Emit, EmitOuts, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Stamped, Want, graph, node, slice_nudge,
+	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, RunOuts, Runs, Stamped, Want, graph, node, slice_nudge,
 };
 use v_utils::{Timeframe, TimeframeDesignator};
 
@@ -74,12 +74,12 @@ impl Cell for Sum3 {
 	type Out<'t> = &'t [Option<f64>];
 }
 #[node]
-impl Emit for Sum3 {
+impl Runs for Sum3 {
 	type Deps = (Buffering<Src, Elems<3>>,);
 
 	const WHY: &'static str = "a buffer fixture";
 
-	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+	fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(hist.trailing().map(|w| w.map(|w| w.iter().map(|x| x.v).sum())));
 	}
 }
@@ -93,12 +93,12 @@ impl Cell for Split {
 	type Out<'t> = &'t [Tick];
 }
 #[node]
-impl Emit for Split {
+impl Runs for Split {
 	type Deps = (Buffering<Src, Elems<3>>,);
 
 	const WHY: &'static str = "a buffer fixture";
 
-	fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Tick>) {
+	fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Tick>) {
 		out.push(Tick {
 			ts: hist.past().len() as i64,
 			v: hist.fresh().len() as f64,

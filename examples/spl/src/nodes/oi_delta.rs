@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Emit, EmitOuts, Hist, Oi, OiRoot, Over, Stamped as _, node, slice_nudge};
+use trading_data::{Buffering, Cell, Hist, Oi, OiRoot, Over, RunOuts, Runs, Stamped as _, node, slice_nudge};
 use v_utils::*;
 
 /// `TF_5MIN` is Bybit's open-interest publish cadence: every leg reads the publish standing a whole
@@ -29,11 +29,11 @@ macro_rules! oi_deltas {
 			const NAME: &'static str = concat!("OiDelta:", $name);
 		}
 		#[node]
-		impl Emit for $ty {
+		impl Runs for $ty {
 			type Deps = (Buffering<OiRoot, OiReach>,);
 			const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
 
-			fn emit(&mut self, (hist,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+			fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 				for i in 0..hist.fresh().len() {
 					out.push(delta_back(&hist, i, $steps));
 				}

@@ -290,16 +290,15 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 
 	let decls: Vec<TokenStream> = nodes.iter().map(|n| if n.emit { quote!(#dag::Emit) } else { quote!(#dag::Node) }).collect();
 
-	// the fidelity census. An emit node is opaque by construction and states its reason on `Emit`
-	// itself; a level node's coverage belongs to its kernel, so both are read at the type rather than
-	// tracked through the driver.
+	// the fidelity census. Both sides read it off the kernel the node named, so neither is tracked
+	// through the driver and neither can drift from what actually computes.
 	let (hatch_names, fidelities): (Vec<&String>, Vec<TokenStream>) = nodes
 		.iter()
 		.zip(&node_tys)
 		.filter(|(n, _)| !n.generated)
 		.map(|(n, t)| {
 			let fid = match n.emit {
-				true => quote!(#dag::Fidelity::Opaque(<#t as #dag::Emit>::WHY)),
+				true => quote!(<<#t as #dag::Emit>::Kernel as #dag::Run<#t>>::FIDELITY),
 				false => quote!(<<#t as #dag::Node>::Kernel as #dag::Level<#t>>::FIDELITY),
 			};
 			(&n.key, fid)

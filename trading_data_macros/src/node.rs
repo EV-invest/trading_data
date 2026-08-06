@@ -139,37 +139,48 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 	// which kernel computes this node, and therefore what the engine can read off it. The body trait
 	// *is* the choice: there is no attribute spelling it, so a node cannot name a kernel it has no body
 	// for.
-	let kernel = match trait_name.as_str() {
-		"Symbolic" => Some(quote!(#dag::Pure)),
-		"Blind" => Some(quote!(#dag::Opaque)),
-		"Emit" => None,
+	let (kernel, emit) = match trait_name.as_str() {
+		"Symbolic" => (quote!(#dag::Pure), false),
+		"Blind" => (quote!(#dag::Opaque), false),
+		"Runs" => (quote!(#dag::Raw), true),
 		"Node" => {
 			return Err(syn::Error::new_spanned(
 				path,
 				"`impl Node` is written by `#[node]`, not by hand: a node declares which kernel computes it. Write `impl Symbolic` for an `Expr` body, or `impl Blind` — the stated hatch, which needs a `const WHY`",
 			));
 		}
-		_ => return Err(syn::Error::new_spanned(path, "`#[node]` goes on `impl Blind`, `Emit`, `Symbolic` or `Episodic`")),
+		"Emit" => {
+			return Err(syn::Error::new_spanned(
+				path,
+				"`impl Emit` is written by `#[node]`, not by hand: a run-shaped node declares which kernel fills it. Write `impl Runs` — the stated hatch, which needs a `const WHY`",
+			));
+		}
+		_ => return Err(syn::Error::new_spanned(path, "`#[node]` goes on `impl Blind`, `Runs`, `Symbolic` or `Episodic`")),
 	};
-	let kind = match kernel {
-		Some(_) => quote!(node),
-		None => quote!(emit),
+	let kind = match emit {
+		false => quote!(node),
+		true => quote!(emit),
 	};
 	let latch = Ident::new(&flags.latch.to_string(), Span::call_site());
 
-	// the `Node` impl nobody writes: `Deps` and `PLOTS` are forwarded off the body trait, so a node
-	// site states each exactly once.
-	let (imp, tys, wher) = item.generics.split_for_impl();
-	let node_impl = kernel.map(|kernel| {
+	// the `Node`/`Emit` impl nobody writes: `Deps` and `PLOTS` are forwarded off the body trait, so a
+	// node site states each exactly once.
+	// `#sty` is the impl's self type as written, arguments and all, so `ty_generics` would repeat them.
+	let (imp, _, wher) = item.generics.split_for_impl();
+	let node_impl = {
 		let body: syn::Path = syn::parse2(quote!(#path)).expect("the impl'd trait is a path");
+		let head = match emit {
+			false => quote!(#dag::Node),
+			true => quote!(#dag::Emit),
+		};
 		quote! {
-			impl #imp #dag::Node for #sty #tys #wher {
+			impl #imp #head for #sty #wher {
 				type Deps = <Self as #body>::Deps;
 				type Kernel = #kernel;
 				const PLOTS: &'static [#dag::Plot] = <Self as #body>::PLOTS;
 			}
 		}
-	});
+	};
 
 	let deps_ty = assoc(&item, "Deps").ok_or_else(|| syn::Error::new_spanned(&item, "`#[node]` needs `type Deps` in the impl"))?;
 	let deps: Vec<&Type> = match deps_ty {

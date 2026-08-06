@@ -27,7 +27,7 @@ use nautilus_model::{
 };
 use serde::{Deserialize, Serialize};
 use trading_data::{
-	Armed, Bar, Blind as _, Buffering, Direction, Elems, Emit as _, Episode, Latch as _, Local, Mc, McRoot, Oi, OiRoot, Over, Ts, Usd,
+	Armed, Bar, Blind as _, Buffering, Direction, Elems, Episode, Latch as _, Local, Mc, McRoot, Oi, OiRoot, Over, Runs as _, Ts, Usd,
 	bench::{COUNTERS, Digest, ring::Ring},
 };
 use trading_data_spl::{

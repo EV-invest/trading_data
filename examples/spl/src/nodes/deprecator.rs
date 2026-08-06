@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Armed, Cell, Direction, Emit, EmitOuts, Episode, Episodic, Flat, Gating, Glance, Plot, Sampling, Side, TriggerOut, node, slice_nudge};
+use trading_data::{Armed, Cell, Direction, Episode, Episodic, Flat, Gating, Glance, Plot, RunOuts, Runs, Sampling, Side, TriggerOut, node, slice_nudge};
 
 use super::{
 	atr::Atr,
@@ -159,7 +159,7 @@ impl Cell for Deprecator {
 	type Out<'t> = &'t [Option<Intent>];
 }
 #[node]
-impl Emit for Deprecator {
+impl Runs for Deprecator {
 	/// The ATR is sampled rather than cached here: it measures the market, not the episode, so the
 	/// commutation reset below has no business dropping it — a new episode enters on the envelope
 	/// standing now, not on a re-warm.
@@ -180,7 +180,7 @@ impl Emit for Deprecator {
 	];
 	const WHY: &'static str = "an episode walk driven by control flow rather than arithmetic";
 
-	fn emit(&mut self, (armed, decision, atr, top): EmitOuts<'_, Self>, out: &mut Vec<Option<Intent>>) {
+	fn emit(&mut self, (armed, decision, atr, top): RunOuts<'_, Self>, out: &mut Vec<Option<Intent>>) {
 		assert!(armed, "a gating dep reads true inside `emit`");
 		let liq = &strategy().classification.liquidations;
 		// The arming tick and the ticks that act on it are different lanes: `Decision` is trade-clocked,

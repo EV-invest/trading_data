@@ -6,7 +6,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Emit, EmitOuts, Episode, Flat, Gate, Gating, Glance, Hist, Latch, Stamped, slice_nudge, value_nudge};
+use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Episode, Flat, Gate, Gating, Glance, Hist, Latch, RunOuts, Runs, Stamped, slice_nudge, value_nudge};
 use trading_data_macros::{graph, node};
 
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.
@@ -79,12 +79,12 @@ impl Cell for Counted {
 }
 slice_nudge!(Counted, P);
 #[node]
-impl Emit for Counted {
+impl Runs for Counted {
 	type Deps = (Src,);
 
 	const WHY: &'static str = "a demand fixture";
 
-	fn emit(&mut self, (src,): EmitOuts<'_, Self>, out: &mut Vec<P>) {
+	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<P>) {
 		COUNTED.fetch_add(1, Ordering::Relaxed);
 		out.extend_from_slice(src);
 	}
@@ -98,12 +98,12 @@ impl Cell for Kept {
 }
 slice_nudge!(Kept, P);
 #[node]
-impl Emit for Kept {
+impl Runs for Kept {
 	type Deps = (Src,);
 
 	const WHY: &'static str = "a demand fixture";
 
-	fn emit(&mut self, (src,): EmitOuts<'_, Self>, out: &mut Vec<P>) {
+	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<P>) {
 		KEPT.fetch_add(1, Ordering::Relaxed);
 		out.extend_from_slice(src);
 	}
@@ -244,12 +244,12 @@ impl Cell for Warm {
 }
 slice_nudge!(Warm, P);
 #[node]
-impl Emit for Warm {
+impl Runs for Warm {
 	type Deps = (Src,);
 
 	const WHY: &'static str = "a demand fixture";
 
-	fn emit(&mut self, (src,): EmitOuts<'_, Self>, out: &mut Vec<P>) {
+	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<P>) {
 		WARM.fetch_add(1, Ordering::Relaxed);
 		out.extend_from_slice(src);
 	}
@@ -352,12 +352,12 @@ impl Cell for Shared {
 }
 slice_nudge!(Shared, P);
 #[node]
-impl Emit for Shared {
+impl Runs for Shared {
 	type Deps = (Src,);
 
 	const WHY: &'static str = "a pass-through of its dep's run";
 
-	fn emit(&mut self, (src,): EmitOuts<'_, Self>, out: &mut Vec<P>) {
+	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<P>) {
 		SHARED.fetch_add(1, Ordering::Relaxed);
 		out.extend_from_slice(src);
 	}
@@ -472,12 +472,12 @@ impl Cell for Rebuilt {
 }
 slice_nudge!(Rebuilt, P);
 #[node]
-impl Emit for Rebuilt {
+impl Runs for Rebuilt {
 	type Deps = (Src,);
 
 	const WHY: &'static str = "a pass-through of its dep's run";
 
-	fn emit(&mut self, (src,): EmitOuts<'_, Self>, out: &mut Vec<P>) {
+	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<P>) {
 		REBUILT.fetch_add(1, Ordering::Relaxed);
 		out.extend_from_slice(src);
 	}

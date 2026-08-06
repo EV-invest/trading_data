@@ -1,6 +1,6 @@
 use core::{fmt, marker::PhantomData};
 
-use trading_data_dag::{Bump, Cell, Elems, Emit, EmitOuts, Flat, Folding, Glance, Plot, Series, Tag, Unbounded, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, Elems, Flat, Folding, Glance, Plot, RunOuts, Runs, Series, Tag, Unbounded, node, slice_nudge};
 
 use crate::{Wilder, bar::Bar, rsi};
 
@@ -50,12 +50,12 @@ impl<B: Series<Item = Bar>> Cell for RsiDelta<B> {
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl<B: Series<Item = Bar>> Emit for RsiDelta<B> {
+impl<B: Series<Item = Bar>> Runs for RsiDelta<B> {
 	type Deps = (Folding<B, Elems<1>>,);
 
 	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
 
-	fn emit(&mut self, (bars,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (bars,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
 		for b in bars {
 			if let Some(prev) = self.prev_close.replace(b.close) {
 				out.push(b.close - prev);
@@ -100,12 +100,12 @@ macro_rules! wilder_half {
 			const NAME: &'static str = Self::TAG.as_str();
 		}
 		#[node]
-		impl<B: Series<Item = Bar>, S: RsiSpec> Emit for $ty<B, S> {
+		impl<B: Series<Item = Bar>, S: RsiSpec> Runs for $ty<B, S> {
 			/// A Wilder recurrence reaches to the start of the run.
 			type Deps = (Folding<crate::RsiDelta<B>, Unbounded>,);
 			const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
 
-			fn emit(&mut self, (deltas,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+			fn emit(&mut self, (deltas,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 				out.extend(deltas.iter().map(|d| self.avg.update(($sign * d).max(0.0))));
 			}
 		}
@@ -195,7 +195,7 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Cell for Rsi<B, S> {
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl<B: Series<Item = Bar>, S: RsiSpec> Emit for Rsi<B, S> {
+impl<B: Series<Item = Bar>, S: RsiSpec> Runs for Rsi<B, S> {
 	/// The smoothing EMA is a recurrence over both legs, so it reaches to the start of the run.
 	type Deps = (Folding<crate::AvgGain<B, S>, Unbounded>, Folding<crate::AvgLoss<B, S>, Unbounded>);
 
@@ -208,7 +208,7 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Emit for Rsi<B, S> {
 	}];
 	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
 
-	fn emit(&mut self, (gain, loss): EmitOuts<'_, Self>, out: &mut Vec<Option<RsiValues>>) {
+	fn emit(&mut self, (gain, loss): RunOuts<'_, Self>, out: &mut Vec<Option<RsiValues>>) {
 		assert_eq!(gain.len(), loss.len(), "AvgGain/AvgLoss rate mismatch");
 		for (g, l) in gain.iter().zip(loss) {
 			out.push(g.zip(*l).and_then(|(g, l)| {

@@ -1,4 +1,4 @@
-use trading_data::{Cell, Emit, EmitOuts, Plot, node, slice_nudge};
+use trading_data::{Cell, Plot, RunOuts, Runs, node, slice_nudge};
 
 use super::book_top::BookTop;
 
@@ -11,7 +11,7 @@ impl Cell for Imbalance {
 	type Out<'t> = &'t [Option<f64>];
 }
 #[node]
-impl Emit for Imbalance {
+impl Runs for Imbalance {
 	type Deps = (BookTop,);
 
 	const PLOTS: &'static [Plot] = &[Plot {
@@ -20,7 +20,7 @@ impl Emit for Imbalance {
 	}];
 	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
 
-	fn emit(&mut self, (top,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+	fn emit(&mut self, (top,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for d in top {
 			out.push(d.map(|d| {
 				let total = d.top20_bid_depth_usd + d.top20_ask_depth_usd;

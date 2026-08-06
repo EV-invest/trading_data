@@ -2,7 +2,7 @@
 //! the boundary. The question the whole thing answers is which of two readings a consumer holds —
 //! the one taken when the period closed, or the one the last tick happened to revise.
 
-use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Horizon, Over, Sampling, Stamped, always_present, graph, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, Flat, Folding, Glance, Horizon, Over, RunOuts, Runs, Sampling, Stamped, always_present, graph, node, slice_nudge};
 use v_utils::Timeframe;
 
 const MIN: Timeframe = Timeframe(60_000);
@@ -58,12 +58,12 @@ impl Cell for Minutely {
 	const CLOCK: Option<Timeframe> = Some(MIN);
 }
 #[node]
-impl Emit for Minutely {
+impl Runs for Minutely {
 	type Deps = (Sampling<Src>,);
 
 	const WHY: &'static str = "a clocking fixture";
 
-	fn emit(&mut self, (level,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (level,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
 		out.extend(level.map(|x| x.v));
 	}
 }
@@ -77,12 +77,12 @@ impl Cell for Continuous {
 	type Out<'t> = &'t [f64];
 }
 #[node]
-impl Emit for Continuous {
+impl Runs for Continuous {
 	type Deps = (Sampling<Src>,);
 
 	const WHY: &'static str = "a clocking fixture";
 
-	fn emit(&mut self, (level,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (level,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
 		out.extend(level.map(|x| x.v));
 	}
 }
@@ -99,12 +99,12 @@ impl Cell for Closes {
 	const CLOCK: Option<Timeframe> = Some(MIN);
 }
 #[node]
-impl Emit for Closes {
+impl Runs for Closes {
 	type Deps = (Folding<Src, Over<MIN>>,);
 
 	const WHY: &'static str = "a clocking fixture";
 
-	fn emit(&mut self, (items,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (items,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
 		for x in items {
 			let period = x.ts / (MIN.0 * 1_000_000) as i64;
 			match &mut self.0 {
@@ -129,12 +129,12 @@ impl Cell for Joined {
 	const CLOCK: Option<Timeframe> = Some(MIN);
 }
 #[node]
-impl Emit for Joined {
+impl Runs for Joined {
 	type Deps = (Closes,);
 
 	const WHY: &'static str = "a clocking fixture";
 
-	fn emit(&mut self, (closes,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (closes,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
 		out.extend(closes);
 	}
 }

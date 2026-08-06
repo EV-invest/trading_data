@@ -4,9 +4,11 @@ Derived from the compute plane in [`model.typ`](../../trading_data_dag/model.typ
 
 r[kernels.closed]
 
-A node MUST compute through a kernel the framework provides. `Level` is sealed, so the set of
-kernels is closed and a node's only choice is which one it names; there MUST be no way for a node to
-supply a compute body the framework cannot also read.
+A node MUST compute through a kernel the framework provides. `Level` and `Run` are sealed by one
+`sealed::Kernel`, so the set of kernels is closed and a node's only choice is which one it names;
+there MUST be no way for a node to supply a compute body the framework cannot also read. This binds
+the run side as it binds the level side: an `Emit` names a `Run` kernel exactly as a `Node` names a
+`Level` one.
 
 The point of the seal is that every reading the engine offers — the value, the formula, the exact
 Jacobian, the value-annotated trace — comes from one declaration. Where a node can write its own

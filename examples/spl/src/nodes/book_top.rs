@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{BookDeltas, Cell, Emit, EmitOuts, Glance, Plot, node, slice_nudge};
+use trading_data::{BookDeltas, Cell, Glance, Plot, RunOuts, Runs, node, slice_nudge};
 
 use crate::DEPTH;
 
@@ -43,7 +43,7 @@ impl Cell for BookTop {
 	const REWARMS: bool = true;
 }
 #[node]
-impl Emit for BookTop {
+impl Runs for BookTop {
 	// the reach is the book's own — a `Buffering` it holds, not a `Folding` declared here — so this
 	// edge carries no claim about its producer, and demand is free to darken both ends of it.
 	type Deps = (trading_data::Book, BookDeltas);
@@ -54,7 +54,7 @@ impl Emit for BookTop {
 	}];
 	const WHY: &'static str = "reading the top of a book is a lookup into a fold, not an expression over it";
 
-	fn emit(&mut self, (book, levels): EmitOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) {
+	fn emit(&mut self, (book, levels): RunOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) {
 		let Some(last) = levels.last() else { return };
 		out.push(book.and_then(|b| {
 			let (ps, qs) = (b.prec().price.scale(), b.prec().qty.scale());

@@ -2,7 +2,7 @@
 //! and the two ways the run it samples can say nothing — an empty batch, and a batch of items
 //! carrying their own absence. Neither may unseat what is held.
 
-use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Emit, EmitOuts, Flat, Glance, Latest, Sampling, Stamped, always_present, graph, node, slice_nudge, value_nudge};
+use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Flat, Glance, Latest, RunOuts, Runs, Sampling, Stamped, always_present, graph, node, slice_nudge, value_nudge};
 
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,12 +61,12 @@ impl Cell for Sparse {
 	type Out<'t> = &'t [Option<f64>];
 }
 #[node]
-impl Emit for Sparse {
+impl Runs for Sparse {
 	type Deps = (Src,);
 
 	const WHY: &'static str = "a sampling fixture";
 
-	fn emit(&mut self, (src,): EmitOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(src.iter().map(|x| (x.v > 0.0).then_some(x.v)));
 	}
 }

@@ -1,7 +1,7 @@
 use core::fmt;
 
 use trading_data_core::{Exact, Timestamped, Timestamps, TradeCols, Trades, Ts, Venue};
-use trading_data_dag::{Bump, Cell, Emit, EmitOuts, Flat, Folding, Glance, Over, Plot, Stamped, Tag, always_present, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, Flat, Folding, Glance, Over, Plot, RunOuts, Runs, Stamped, Tag, always_present, node, slice_nudge};
 use v_utils::Timeframe;
 
 #[derive(Clone, Copy, Debug)]
@@ -198,7 +198,7 @@ impl<const TF: Timeframe> Cell for Ohlcs<TF> {
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl<const TF: Timeframe> Emit for Ohlcs<TF> {
+impl<const TF: Timeframe> Runs for Ohlcs<TF> {
 	/// The partial bar is the whole of the state, so the trades it holds reach back exactly one
 	/// period.
 	type Deps = (Folding<Trades, Over<TF>>,);
@@ -207,7 +207,7 @@ impl<const TF: Timeframe> Emit for Ohlcs<TF> {
 	const PLOTS: &'static [Plot] = &[];
 	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
-	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Ohlc>) {
+	fn emit(&mut self, (trades,): RunOuts<'_, Self>, out: &mut Vec<Ohlc>) {
 		ohlc(&mut self.0, trades, TF, out);
 	}
 }
@@ -225,14 +225,14 @@ impl<const TF: Timeframe> Cell for Volumes<TF> {
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl<const TF: Timeframe> Emit for Volumes<TF> {
+impl<const TF: Timeframe> Runs for Volumes<TF> {
 	type Deps = (Folding<Trades, Over<TF>>,);
 
 	/// [`Bars`] joins this with [`Ohlcs`] and draws for all three.
 	const PLOTS: &'static [Plot] = &[];
 	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
-	fn emit(&mut self, (trades,): EmitOuts<'_, Self>, out: &mut Vec<Volume>) {
+	fn emit(&mut self, (trades,): RunOuts<'_, Self>, out: &mut Vec<Volume>) {
 		volume(&mut self.0, trades, TF, out);
 	}
 }
@@ -252,7 +252,7 @@ impl<const TF: Timeframe> Cell for Bars<TF> {
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl<const TF: Timeframe> Emit for Bars<TF> {
+impl<const TF: Timeframe> Runs for Bars<TF> {
 	type Deps = (crate::Ohlcs<TF>, crate::Volumes<TF>);
 
 	/// Slot 4 (`vol_base`) goes undrawn: a histogram of it would claim an indicator pane, and the
@@ -265,7 +265,7 @@ impl<const TF: Timeframe> Emit for Bars<TF> {
 	}];
 	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
-	fn emit(&mut self, (ohlc, vol): EmitOuts<'_, Self>, out: &mut Vec<Bar>) {
+	fn emit(&mut self, (ohlc, vol): RunOuts<'_, Self>, out: &mut Vec<Bar>) {
 		assert_eq!(ohlc.len(), vol.len(), "one Ohlc and one Volume per period closed");
 		out.extend(ohlc.iter().zip(vol).map(|(o, v)| {
 			assert_eq!(o.ts_close, v.ts_close, "the two accumulators walk one boundary");

@@ -1,4 +1,4 @@
-use trading_data::{Cell, Emit, EmitOuts, node, slice_nudge};
+use trading_data::{Cell, RunOuts, Runs, node, slice_nudge};
 use v_utils::*;
 
 /// The closed 1m bar's notional, `volume * close` — the close standing in for vwap, as SPL's own
@@ -9,12 +9,12 @@ impl Cell for Volume1m {
 	type Out<'t> = &'t [f64];
 }
 #[node]
-impl Emit for Volume1m {
+impl Runs for Volume1m {
 	type Deps = (trading_data::Bars<{ TF_1MIN }>,);
 
 	const WHY: &'static str = "element-wise arithmetic over a run, which the run side has no kernel for yet";
 
-	fn emit(&mut self, (m1,): EmitOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (m1,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
 		for b in m1 {
 			out.push(b.vol_base * b.close);
 		}
