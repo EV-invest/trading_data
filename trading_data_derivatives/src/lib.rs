@@ -29,91 +29,26 @@ pub fn wilder<V: Expr, W: Expr, X: Expr>(value: Ex<V>, warmed: Ex<W>, x: Ex<X>, 
 	)
 }
 
-/// Wilder's running mean (Pine's `rma`).
-#[derive(Clone)]
-pub struct Wilder {
-	period: usize,
-	value: f64,
-	warmed: usize,
-}
-
-impl Wilder {
-	pub fn new(period: usize) -> Self {
-		assert!(period > 0);
-		Self { period, value: 0.0, warmed: 0 }
-	}
-
-	pub fn update(&mut self, x: f64) -> Option<f64> {
-		let n = self.period as f64;
-		if self.warmed < self.period {
-			self.value += x;
-			self.warmed += 1;
-			if self.warmed < self.period {
-				return None;
-			}
-			self.value /= n;
-		} else {
-			self.value = (self.value * (n - 1.0) + x) / n;
-		}
-		Some(self.value)
-	}
-}
-
-/// The two averages RSI is a ratio of; [`rsi`] is that ratio.
-#[derive(Clone)]
-pub struct WilderAvgGainLoss {
-	prev_close: Option<f64>,
-	gain: Wilder,
-	loss: Wilder,
-}
-
-impl WilderAvgGainLoss {
-	pub fn new(period: usize) -> Self {
-		Self {
-			prev_close: None,
-			gain: Wilder::new(period),
-			loss: Wilder::new(period),
-		}
-	}
-
-	pub fn update(&mut self, close: f64) -> Option<(f64, f64)> {
-		let prev = self.prev_close.replace(close)?;
-		let delta = close - prev;
-		let (gain, loss) = if delta >= 0.0 { (delta, 0.0) } else { (0.0, -delta) };
-		self.gain.update(gain).zip(self.loss.update(loss))
-	}
-}
-
 pub fn rsi(avg_gain: f64, avg_loss: f64) -> f64 {
 	if avg_loss == 0.0 { 100.0 } else { 100.0 - 100.0 / (1.0 + avg_gain / avg_loss) }
 }
 
-#[derive(Clone)]
-pub struct WilderAtr {
-	prev_close: Option<f64>,
-	atr: Wilder,
-}
-
-impl WilderAtr {
-	pub fn new(period: usize) -> Self {
-		Self {
-			prev_close: None,
-			atr: Wilder::new(period),
-		}
-	}
-
-	pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<f64> {
-		let tr = match self.prev_close.replace(close) {
-			Some(pc) => (high - low).max((high - pc).abs()).max((low - pc).abs()),
-			None => high - low,
-		};
-		self.atr.update(tr)
-	}
-}
-
 #[cfg(test)]
 mod tests {
+	use trading_data_dag::{Vars, max};
+
 	use super::*;
+
+	/// One `AvgGain`/`AvgLoss` state step, driven the way the node drives it: the same two expressions
+	/// [`wilder`] returns, evaluated over `[delta, value, warmed]` — which is the env `Rsi`'s halves
+	/// read into, `sign` and all.
+	fn step(sign: f64, state: (f64, f64), delta: f64, n: f64) -> (f64, f64) {
+		let v = Vars;
+		let half = max(constant(sign) * v.get::<0>(), constant(0.0));
+		let (value, warmed) = wilder(v.get::<1>(), v.get::<2>(), half, n);
+		let env = [delta, state.0, state.1];
+		(value.lower().eval(&env), warmed.lower().eval(&env))
+	}
 
 	// StockCharts' classic Wilder RSI-14 worked example; goldens recomputed independently and
 	// they match the published 70.53 / 66.32 / … sequence.
@@ -126,24 +61,23 @@ mod tests {
 		let golden = [
 			70.5328, 66.3186, 66.5498, 69.4063, 66.3552, 57.9749, 62.9296, 63.2571, 56.0593, 62.3771, 54.7076, 50.4228, 39.9898, 41.4605, 41.8689, 45.4632, 37.3040, 33.0795, 37.7730,
 		];
-		let mut avgs = WilderAvgGainLoss::new(14);
-		let outs: Vec<_> = closes.iter().map(|&c| avgs.update(c).map(|(g, l)| rsi(g, l))).collect();
-		assert!(outs[..14].iter().all(Option::is_none), "warm only after period deltas");
-		for (got, want) in outs[14..].iter().zip(golden) {
-			let got = got.expect("warm from the 15th close on");
+		let (mut gain, mut loss) = ((0.0, 0.0), (0.0, 0.0));
+		let outs: Vec<Option<f64>> = closes
+			.windows(2)
+			.map(|w| {
+				let delta = w[1] - w[0];
+				gain = step(1.0, gain, delta, 14.0);
+				loss = step(-1.0, loss, delta, 14.0);
+				// `warmed < base_len` is how the node's own `value` reads cold, so it is the same cut here.
+				(gain.1 >= 14.0).then(|| rsi(gain.0, loss.0))
+			})
+			.collect();
+
+		assert!(outs[..13].iter().all(Option::is_none), "warm only after period deltas");
+		for (got, want) in outs[13..].iter().zip(golden) {
+			let got = got.expect("warm from the 14th delta on");
 			assert!((got - want).abs() < 5e-4, "{got} vs {want}");
 			assert!((0.0..=100.0).contains(&got));
 		}
-	}
-
-	#[test]
-	fn atr_warmup_and_smoothing() {
-		let mut atr = WilderAtr::new(3);
-		// bars: (high, low, close); TRs: 2, then max(3, |4-2|, |1-2|)=3, then 4 → SMA warm = 3
-		assert_eq!(atr.update(3.0, 1.0, 2.0), None);
-		assert_eq!(atr.update(4.0, 1.0, 3.0), None);
-		assert_eq!(atr.update(6.0, 2.0, 5.0), Some(3.0));
-		// next TR = max(1, |6-5|, |5-5|) = 1 → (3*2 + 1)/3
-		assert_eq!(atr.update(6.0, 5.0, 5.5), Some(7.0 / 3.0));
 	}
 }
