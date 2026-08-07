@@ -1,19 +1,26 @@
-use trading_data::{Carried, Cell, Env, FoldOuts, Folding, Folds, Lagged, Slots, Stamped, Unbounded, Vars, Witness, abs, constant, lt, max, node, select, slice_nudge, wilder};
-use v_utils::*;
+use trading_data::{
+	Carried, Cell, Env, FoldOuts, Folding, Folds, Lagged, Slots, Stamped, Tag, Timeframe, Unbounded, Vars, Witness, abs, constant, lt, max, node, select, slice_nudge, wilder,
+};
 
 use crate::config::strategy;
 
-/// Wilder ATR(14) on 1m bars. An indie in its own right rather than an execution-owned indicator:
-/// that is what removed SPL's per-situation bar subscribe/unsubscribe flicker.
+/// Wilder ATR on `TF` bars, over the period `indies.atr.period` names. An indie in its own right
+/// rather than an execution-owned indicator: that is what removed SPL's per-situation bar
+/// subscribe/unsubscribe flicker.
 #[derive(Clone, Default)]
-pub struct Atr(Carried);
-impl Cell for Atr {
+pub struct Atr<const TF: Timeframe>(Carried);
+impl<const TF: Timeframe> Atr<TF> {
+	const TAG: Tag = Tag::new("Atr:", TF);
+}
+impl<const TF: Timeframe> Cell for Atr<TF> {
 	type Out<'t> = &'t [Option<f64>];
+
+	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl Folds for Atr {
+impl<const TF: Timeframe> Folds for Atr<TF> {
 	/// A Wilder recurrence reaches to the start of the run.
-	type Deps = (Folding<trading_data::Bars<{ TF_1MIN }>, Unbounded>,);
+	type Deps = (Folding<trading_data::Bars<TF>, Unbounded>,);
 
 	/// The previous close, then Wilder's own two: the running mean and how many samples have gone
 	/// into it. `warmed == 0` is what stands in for "no previous close", so nothing here needs a
@@ -51,4 +58,4 @@ impl Folds for Atr {
 		&mut self.0
 	}
 }
-slice_nudge!(Atr, Option<f64>);
+slice_nudge!([const TF: Timeframe] Atr<TF>, Option<f64>);

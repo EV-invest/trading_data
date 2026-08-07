@@ -155,7 +155,7 @@ fn run(feed: &mut Replay, graph: &mut Graph, obs: &mut impl Observed) -> Tally {
 		if let Some(&c) = out.cvd.last() {
 			t.cvd = c;
 		}
-		if let Some(&Some(v)) = out.vol_usd_1h.last() {
+		if let Some(&Some(v)) = out.vol_usd.last() {
 			t.vol1h = v;
 		}
 		if let Some(&Some(r)) = out.rsi.last() {

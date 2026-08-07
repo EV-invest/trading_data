@@ -58,6 +58,16 @@ pub fn unwrap_dep(ty: &Type) -> syn::Result<(Type, Wrap)> {
 	})
 }
 
+/// The braces a const argument needs when it is written as an expression, and does not need when it
+/// is written as a path: `Bars<{ TF_1MIN }>` and `Bars<TF_1MIN>` are one cell either way.
+fn unbrace(ts: TokenStream) -> TokenStream {
+	let mut it = ts.clone().into_iter();
+	match (it.next(), it.next()) {
+		(Some(TokenTree::Group(g)), None) if g.delimiter() == Delimiter::Brace => unbrace(g.stream()),
+		_ => ts,
+	}
+}
+
 /// What a node is deduped on: the last path segment and its arguments, recursively. Path-insensitive
 /// because one cell is reached under whatever spelling each consumer happened to import — and two
 /// spellings of one type must land on one field, or the frame carries it twice.
@@ -73,7 +83,7 @@ pub fn norm(ty: &Type) -> String {
 						.iter()
 						.map(|g| match g {
 							GenericArgument::Type(t) => norm(t),
-							other => other.to_token_stream().to_string().replace(' ', ""),
+							other => unbrace(other.to_token_stream()).to_string().replace(' ', ""),
 						})
 						.collect();
 					s.push_str(&args.join(","));

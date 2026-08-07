@@ -25,7 +25,7 @@ use trading_data::{
 use trading_data_spl::{
 	config::Config,
 	day_bounds, ensure_lanes,
-	nodes::{Atr, Batches, BookTop, BookTopSnap, Change1d, Change3m, Classify, Decision, Deprecator, Graph, Imbalance, Intent, Momentum, OiReach, Spread, StdScreener, VolUsd},
+	nodes::{Atr, Batches, BookTop, BookTopSnap, Change, ChangeBack, Classify, Decision, Deprecator, Graph, Imbalance, Intent, Momentum, Spread, StdScreener, VolUsd},
 	symbol, trading_days,
 };
 use v_utils::*;
@@ -137,15 +137,12 @@ struct Direct {
 	ohlc_1m: Ohlcs<{ TF_1MIN }>,
 	ohlc_5m: Ohlcs<{ TF_5MIN }>,
 	ohlc_1h: Ohlcs<{ TF_1H }>,
-	ohlc_4h: Ohlcs<{ TF_4H }>,
 	vol_1m: Volumes<{ TF_1MIN }>,
 	vol_5m: Volumes<{ TF_5MIN }>,
 	vol_1h: Volumes<{ TF_1H }>,
-	vol_4h: Volumes<{ TF_4H }>,
 	bars_1m: trading_data::Bars<{ TF_1MIN }>,
 	bars_5m: trading_data::Bars<{ TF_5MIN }>,
 	bars_1h: trading_data::Bars<{ TF_1H }>,
-	bars_4h: trading_data::Bars<{ TF_4H }>,
 	book: Book,
 	/// The frame's `Buffer<BookDeltas, 15m>`, by hand — the direct path owns every node the graph has.
 	chunk: BookChunk,
@@ -154,15 +151,14 @@ struct Direct {
 	m1: Ring<Bar>,
 	m5: Ring<Bar>,
 	h1: Ring<Bar>,
-	h4: Ring<Bar>,
 	oi: Ring<Oi>,
 	mc: Ring<Mc>,
 
-	atr: Atr,
-	momentum: Momentum,
+	atr: Atr<{ TF_1MIN }>,
+	momentum: Momentum<{ TF_5MIN }, 181>,
 	screener: StdScreener,
-	change_1d: Change1d,
-	change_3m: Change3m,
+	change_1d: ChangeBack<{ TF_1MIN }, { TF_1H }, { TF_1D }, { Timeframe(TF_1D.0 + TF_1H.0) }>,
+	change_3m: Change<{ TF_1MIN }, { TF_3MIN }>,
 	vol_usd_1m: VolUsd<{ TF_1MIN }>,
 	vol_usd_1h: VolUsd<{ TF_1H }>,
 	imbalance: Imbalance,
@@ -172,9 +168,9 @@ struct Direct {
 	deprecator: Deprecator,
 	armed: Armed<Deprecator>,
 
-	b_ohlc: [Vec<Ohlc>; 4],
-	b_vol: [Vec<Volume>; 4],
-	b_bars: [Vec<Bar>; 4],
+	b_ohlc: [Vec<Ohlc>; 3],
+	b_vol: [Vec<Volume>; 3],
+	b_bars: [Vec<Bar>; 3],
 	b_top: Vec<Option<BookTopSnap>>,
 	b_atr: Vec<Option<f64>>,
 	b_mom: Vec<Option<f64>>,
@@ -219,18 +215,15 @@ impl Direct {
 		Close::emit(&mut self.ohlc_1m, (trades,), &mut self.b_ohlc[0]);
 		Close::emit(&mut self.ohlc_5m, (trades,), &mut self.b_ohlc[1]);
 		Close::emit(&mut self.ohlc_1h, (trades,), &mut self.b_ohlc[2]);
-		Close::emit(&mut self.ohlc_4h, (trades,), &mut self.b_ohlc[3]);
 		Close::emit(&mut self.vol_1m, (trades,), &mut self.b_vol[0]);
 		Close::emit(&mut self.vol_5m, (trades,), &mut self.b_vol[1]);
 		Close::emit(&mut self.vol_1h, (trades,), &mut self.b_vol[2]);
-		Close::emit(&mut self.vol_4h, (trades,), &mut self.b_vol[3]);
-		let [o1, o5, oh, o4] = &self.b_ohlc;
-		let [v1, v5, vh, v4] = &self.b_vol;
-		let [b1, b5, bh, b4] = &mut self.b_bars;
+		let [o1, o5, oh] = &self.b_ohlc;
+		let [v1, v5, vh] = &self.b_vol;
+		let [b1, b5, bh] = &mut self.b_bars;
 		Scan::emit(&mut self.bars_1m, (o1, v1), b1);
 		Scan::emit(&mut self.bars_5m, (o5, v5), b5);
 		Scan::emit(&mut self.bars_1h, (oh, vh), bh);
-		Scan::emit(&mut self.bars_4h, (o4, v4), b4);
 
 		self.b_top.clear();
 		self.chunk.advance(deltas, Horizon::Over(v_utils::TF_15MIN));
@@ -240,20 +233,13 @@ impl Direct {
 		self.m1.push(&self.b_bars[0]);
 		self.m5.push(&self.b_bars[1]);
 		self.h1.push(&self.b_bars[2]);
-		self.h4.push(&self.b_bars[3]);
 		self.oi.push(oi);
 		self.mc.push(mc);
 
 		self.b_atr.clear();
 		Fold::emit(&mut self.atr, (&self.b_bars[0],), &mut self.b_atr);
 		self.b_mom.clear();
-		self.momentum.emit(
-			(
-				self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, Elems<181>>>(),
-				self.h4.hist::<Buffering<trading_data::Bars<{ TF_4H }>, Elems<181>>>(),
-			),
-			&mut self.b_mom,
-		);
+		self.momentum.emit((self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, Elems<181>>>(),), &mut self.b_mom);
 		if let Some(v) = self.b_atr.iter().rev().find_map(|x| *x) {
 			self.l_atr = Some(v);
 		}
@@ -306,7 +292,7 @@ impl Direct {
 				// `Ring` bridges into `Hist` alone, and an `Mc` is never an absence — so the newest row it
 				// ever held is what the frame's `Latest<McRoot>` holds.
 				self.mc.hist::<Buffering<McRoot, Elems<1>>>().all().last().copied(),
-				self.oi.hist::<Buffering<OiRoot, OiReach>>(),
+				self.oi.hist::<Buffering<OiRoot, Over<{ Timeframe(4 * TF_5MIN.0) }>>>(),
 			));
 			self.decision.advance((classified,))
 		} else {

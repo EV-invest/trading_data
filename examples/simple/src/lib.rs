@@ -1,3 +1,4 @@
+#![feature(adt_const_params)]
 #![feature(default_field_values)]
 //! Idempotent data layer over one day of real Bybit TAO-USDT trades: download → parquet catalog →
 //! typed trades. Each step is skipped if its artifact exists; any failure is a loud panic — no

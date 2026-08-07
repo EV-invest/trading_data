@@ -13,7 +13,6 @@ const PREC: PrecisionPriceQty = PrecisionPriceQty {
 	price: Precision(2),
 	qty: Precision(4),
 };
-const REACH: Horizon = Horizon::Over(TF_15MIN);
 const DEPTH: i32 = 40;
 
 fn anchor() -> BookShape {
@@ -64,13 +63,13 @@ fn a_period_s_net_is_that_period_s_rows() {
 		// row by row, as an awake book folds: every step continuous, nothing ever rebuilt.
 		let (mut folded, mut chunk) = (Book::default(), BookChunk::default());
 		for batch in rows.chunks(tick) {
-			chunk.advance(batch, REACH);
+			chunk.advance(batch, Horizon::Over(TF_15MIN));
 			assert!(folded.step(Some(&anchor), &chunk), "the reference fold must stay synced");
 		}
 
 		// the whole run as one net, taken by a book that has no place in the chain at all
 		let (mut woken, mut whole) = (Book::default(), BookChunk::default());
-		whole.advance(&rows, REACH);
+		whole.advance(&rows, Horizon::Over(TF_15MIN));
 		assert!(woken.step(Some(&anchor), &whole), "a seeded book must take the net");
 
 		assert_eq!(levels(&folded), levels(&woken), "seed {seed}, {n} rows in batches of {tick}");
@@ -84,7 +83,7 @@ fn a_period_s_net_is_that_period_s_rows() {
 fn the_net_costs_depth_and_not_row_count() {
 	const ROWS: usize = 100_000;
 	let mut chunk = BookChunk::default();
-	chunk.advance(&run(4, ROWS), REACH);
+	chunk.advance(&run(4, ROWS), Horizon::Over(TF_15MIN));
 	// one entry per price *touched*, and the run only ever touches the seeded window
 	assert_eq!(chunk.levels(), 2 * DEPTH as usize, "{ROWS} rows collapse onto the levels they touch");
 }

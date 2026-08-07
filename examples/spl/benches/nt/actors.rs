@@ -32,7 +32,7 @@ use trading_data::{
 };
 use trading_data_spl::{
 	DEPTH,
-	nodes::{Atr, BookTopSnap, Change1d, Change3m, Classified, Classify, Decided, Decision, Deprecator, Imbalance, Intent, Momentum, OiReach, Spread, StdScreener, VolUsd},
+	nodes::{Atr, BookTopSnap, Change, ChangeBack, Classified, Classify, Decided, Decision, Deprecator, Imbalance, Intent, Momentum, Spread, StdScreener, VolUsd},
 };
 use v_utils::*;
 
@@ -41,7 +41,6 @@ use crate::nt::{McPoint, OiPoint};
 const BAR1M: &str = "bar1m";
 const BAR5M: &str = "bar5m";
 const BAR1H: &str = "bar1h";
-const BAR4H: &str = "bar4h";
 const BOOKTOP: &str = "booktop";
 const MOMENTUM: &str = "momentum";
 const SCREENER: &str = "screener";
@@ -57,14 +56,9 @@ const DECISION: &str = "decision";
 /// Whether a position is open — the only thing the Shallow/Deep tier switches on.
 const SITUATION: &str = "situation";
 
-/// The four aggregations the strategy reads, in minutes. NT builds each internally off the trade
+/// The three aggregations the strategy reads, in minutes. NT builds each internally off the trade
 /// stream, so the bench pays for the aggregation the graph's `Ohlcs`/`Volumes` also pay for.
-const STEPS: [(usize, BarAggregation, &str); 4] = [
-	(4, BarAggregation::Hour, BAR4H),
-	(1, BarAggregation::Hour, BAR1H),
-	(5, BarAggregation::Minute, BAR5M),
-	(1, BarAggregation::Minute, BAR1M),
-];
+const STEPS: [(usize, BarAggregation, &str); 3] = [(1, BarAggregation::Hour, BAR1H), (5, BarAggregation::Minute, BAR5M), (1, BarAggregation::Minute, BAR1M)];
 
 // --- wire shapes -------------------------------------------------------------------------------
 // None of `Bar`, `BookTopSnap`, `Classified` or `Decided` is serialisable, and making them so would
@@ -317,7 +311,7 @@ impl DataActor for Book {
 
 // --- ungated derivations -----------------------------------------------------------------------
 
-actor!(Atrs { node: Atr, out: Vec<Option<f64>> });
+actor!(Atrs { node: Atr<{ TF_1MIN }>, out: Vec<Option<f64>> });
 
 impl DataActor for Atrs {
 	fn on_start(&mut self) -> anyhow::Result<()> {
@@ -334,32 +328,18 @@ impl DataActor for Atrs {
 	}
 }
 
-actor!(Momenta { node: Momentum, m5: Ring<Bar>, h4: Ring<Bar>, pending: Vec<Bar>, out: Vec<Option<f64>> });
+actor!(Momenta { node: Momentum<{ TF_5MIN }, 181>, m5: Ring<Bar>, out: Vec<Option<f64>> });
 
 impl DataActor for Momenta {
 	fn on_start(&mut self) -> anyhow::Result<()> {
-		self.subscribe_signal(BAR4H, None);
 		self.subscribe_signal(BAR5M, None);
 		Ok(())
 	}
 
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
-		let bar = Bar::from(decode::<BarDto>(signal));
-		if signal.name == BAR4H {
-			self.pending.push(bar);
-			return Ok(());
-		}
-		self.h4.push(&self.pending);
-		self.pending.clear();
-		self.m5.push(&[bar]);
+		self.m5.push(&[Bar::from(decode::<BarDto>(signal))]);
 		self.out.clear();
-		self.node.emit(
-			(
-				self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, Elems<181>>>(),
-				self.h4.hist::<Buffering<trading_data::Bars<{ TF_4H }>, Elems<181>>>(),
-			),
-			&mut self.out,
-		);
+		self.node.emit((self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, Elems<181>>>(),), &mut self.out);
 		self.publish_signal(MOMENTUM, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -398,7 +378,7 @@ impl DataActor for Screen {
 // actor graph has no gate to propagate, so the work is done and then thrown away on a miss. That is
 // the cost the tiering in `optimized_nt` claws back, and the only reason it exists.
 
-actor!(C1d { node: Change1d, h1: Ring<Bar>, pending: Vec<Bar>, out: Vec<Option<f64>> });
+actor!(C1d { node: ChangeBack<{ TF_1MIN }, { TF_1H }, { TF_1D }, { Timeframe(TF_1D.0 + TF_1H.0) }>, h1: Ring<Bar>, pending: Vec<Bar>, out: Vec<Option<f64>> });
 
 impl DataActor for C1d {
 	fn on_start(&mut self) -> anyhow::Result<()> {
@@ -426,7 +406,7 @@ impl DataActor for C1d {
 	}
 }
 
-actor!(C3m { node: Change3m, m1: Ring<Bar>, out: Vec<Option<f64>> });
+actor!(C3m { node: Change<{ TF_1MIN }, { TF_3MIN }>, m1: Ring<Bar>, out: Vec<Option<f64>> });
 
 impl DataActor for C3m {
 	fn on_start(&mut self) -> anyhow::Result<()> {
@@ -437,7 +417,7 @@ impl DataActor for C3m {
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
 		self.m1.push(&[Bar::from(decode::<BarDto>(signal))]);
 		self.out.clear();
-		Scan::emit(&mut self.node, (self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, Over<TF_3MIN>>>(),), &mut self.out);
+		Scan::emit(&mut self.node, (self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, Over<{ TF_3MIN }>>>(),), &mut self.out);
 		self.publish_signal(CHANGE3M, encode(&self.out), signal.ts_event);
 		Ok(())
 	}
@@ -604,7 +584,7 @@ impl DataActor for Classifier {
 			// `Ring` bridges into `Hist` alone, and an `Mc` is never an absence — so the newest row it
 			// ever held is what the frame's `Latest<McRoot>` holds.
 			self.mc.hist::<Buffering<McRoot, Elems<1>>>().all().last().copied(),
-			self.oi.hist::<Buffering<OiRoot, OiReach>>(),
+			self.oi.hist::<Buffering<OiRoot, Over<{ Timeframe(4 * TF_5MIN.0) }>>>(),
 		));
 		self.publish_signal(CLASSIFIED, encode(&out.map(|c| c.0.to_vec())), signal.ts_event);
 		Ok(())

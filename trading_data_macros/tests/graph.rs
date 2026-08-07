@@ -308,6 +308,78 @@ fn one_buffer_joins_both_reaches() {
 	assert!(BG::NODES.iter().any(|n| n.starts_with("Buffer<")), "the buffered series is a node of the frame: {:?}", BG::NODES);
 }
 
+const K2: usize = 2;
+
+/// A cell whose parameter each consumer below spells differently.
+#[derive(Clone, Default)]
+struct Scaled<const K: usize>;
+impl<const K: usize> Cell for Scaled<K> {
+	type Out<'t> = f64;
+}
+#[node]
+impl<const K: usize> Blind for Scaled<K> {
+	type Deps = (Buffering<Src, Elems<1>>,);
+
+	const WHY: &'static str = "a keying fixture";
+
+	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		hist.all().last().map_or(f64::NAN, |t| t.v) * K as f64
+	}
+}
+value_nudge!([const K: usize] Scaled<K>);
+
+#[derive(Clone, Default)]
+struct Braced;
+impl Cell for Braced {
+	type Out<'t> = f64;
+}
+#[node]
+impl Blind for Braced {
+	type Deps = (Scaled<{ K2 }>,);
+
+	const WHY: &'static str = "a keying fixture";
+
+	fn advance<'t>(&'t mut self, (s,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		s
+	}
+}
+
+#[derive(Clone, Default)]
+struct Bare;
+impl Cell for Bare {
+	type Out<'t> = f64;
+}
+#[node]
+impl Blind for Bare {
+	type Deps = (Scaled<K2>,);
+
+	const WHY: &'static str = "a keying fixture";
+
+	fn advance<'t>(&'t mut self, (s,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		s
+	}
+}
+
+graph! {
+	struct KG;
+	batches KBatches;
+	roots { src: Src[Tick] };
+	out KOut;
+	outputs { braced: Braced, bare: Bare }
+}
+
+#[test]
+fn a_const_argument_keys_the_same_braced_or_bare() {
+	// `{ K2 }` is the spelling a const *expression* needs and `K2` the one a path may skip; two fields
+	// would compute the cell twice and share its `Cell::NAME` besides.
+	assert_eq!(KG::NODES.iter().filter(|n| n.starts_with("Scaled")).count(), 1, "{:?}", KG::NODES);
+
+	let mut g = KG::default();
+	let one = [t(3.0)];
+	let o = g.tick(0, KBatches { src: &one });
+	assert_eq!((o.braced, o.bare), (6.0, 6.0));
+}
+
 /// The same node library asked for one output, and a root nothing reaches.
 graph! {
 	struct SmallG;

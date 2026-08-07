@@ -278,6 +278,25 @@ impl Tag {
 		}
 	}
 
+	/// A second period, for a cell whose identity is the pair: `Change:1m/3m` reads off 1m bars over
+	/// three minutes, and is not the same series as `Change:3m/1m`.
+	pub const fn then(mut self, tf: Timeframe) -> Self {
+		let len = write(&mut self.buf, self.len, b"/");
+		Self {
+			len: timeframe(&mut self.buf, len, tf),
+			buf: self.buf,
+		}
+	}
+
+	/// A count of elements, where a period alone would leave the window unsaid: `Momentum:5mx181`.
+	pub const fn count(mut self, n: usize) -> Self {
+		let len = write(&mut self.buf, self.len, b"x");
+		Self {
+			len: digits(&mut self.buf, len, n as u64),
+			buf: self.buf,
+		}
+	}
+
 	pub const fn as_str(&self) -> &str {
 		match core::str::from_utf8(self.buf.split_at(self.len).0) {
 			Ok(s) => s,
@@ -906,8 +925,8 @@ macro_rules! slice_nudge {
 /// A value-out cell's finite-difference witness: the scratch is just the value itself.
 #[macro_export]
 macro_rules! value_nudge {
-	($C:ty) => {
-		impl $crate::Nudge for $C {
+	([$($g:tt)*] $C:ty) => {
+		impl<$($g)*> $crate::Nudge for $C {
 			type Scratch = <$C as $crate::Cell>::Out<'static>;
 
 			fn stage<'t>(out: <$C as $crate::Cell>::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
@@ -928,6 +947,9 @@ macro_rules! value_nudge {
 				*s
 			}
 		}
+	};
+	($C:ty) => {
+		$crate::value_nudge!([] $C);
 	};
 }
 

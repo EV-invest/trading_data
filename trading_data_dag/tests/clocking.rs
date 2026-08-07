@@ -5,8 +5,6 @@
 use trading_data_dag::{Bump, Cell, Flat, Folding, Glance, Horizon, Over, RunOuts, Runs, Sampling, Stamped, always_present, graph, node, slice_nudge};
 use v_utils::Timeframe;
 
-const MIN: Timeframe = Timeframe(60_000);
-
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Tick {
@@ -55,7 +53,7 @@ struct Minutely;
 impl Cell for Minutely {
 	type Out<'t> = &'t [f64];
 
-	const CLOCK: Option<Timeframe> = Some(MIN);
+	const CLOCK: Option<Timeframe> = Some(Timeframe(60_000));
 }
 #[node]
 impl Runs for Minutely {
@@ -96,17 +94,17 @@ struct Closes(Option<(i64, f64)>);
 impl Cell for Closes {
 	type Out<'t> = &'t [f64];
 
-	const CLOCK: Option<Timeframe> = Some(MIN);
+	const CLOCK: Option<Timeframe> = Some(Timeframe(60_000));
 }
 #[node]
 impl Runs for Closes {
-	type Deps = (Folding<Src, Over<MIN>>,);
+	type Deps = (Folding<Src, Over<{ Timeframe(60_000) }>>,);
 
 	const WHY: &'static str = "a clocking fixture";
 
 	fn emit(&mut self, (items,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
 		for x in items {
-			let period = x.ts / (MIN.0 * 1_000_000) as i64;
+			let period = x.ts / (Timeframe(60_000).0 * 1_000_000) as i64;
 			match &mut self.0 {
 				Some((p, v)) if *p == period => *v = x.v,
 				slot =>
@@ -126,7 +124,7 @@ struct Joined;
 impl Cell for Joined {
 	type Out<'t> = &'t [f64];
 
-	const CLOCK: Option<Timeframe> = Some(MIN);
+	const CLOCK: Option<Timeframe> = Some(Timeframe(60_000));
 }
 #[node]
 impl Runs for Joined {

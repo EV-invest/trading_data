@@ -1,23 +1,19 @@
-use trading_data::{Buffering, Cell, Elems, Hist, Plot, RunOuts, Runs, node, slice_nudge};
-use v_utils::*;
+use trading_data::{Buffering, Cell, Elems, Plot, RunOuts, Runs, Tag, Timeframe, node, slice_nudge};
 
 use super::Bar;
 use crate::config::strategy;
 
-/// The two series a window is retained over, and so the whole of what `indies.momentum.fast` may
-/// name — checked there, in [`crate::config::Config::load`].
-pub const LEGS: [Timeframe; 2] = [TF_5MIN, TF_4H];
-/// Sharpe on the timeframe `indies.momentum.fast` names. Both wired series are candidate inputs,
-/// which is why both are deps; the config picks which one.
-///
-/// The window is 181 closes — 180 returns — and is not a knob: it *is* the reach,
-/// `Horizon::Elems(181)`. A reader clocked by something else takes `Sampling<Momentum>` rather than
-/// re-declaring these deps.
+/// Sharpe over the trailing `WIN` closes of the `TF` series — `WIN - 1` returns. The window is not a
+/// knob, it *is* the reach, `Horizon::Elems(WIN)`; a reader clocked by something else takes
+/// `Sampling<Momentum<..>>` rather than re-declaring this dep.
 ///
 /// `None` means the one thing it should: the window is not full, or its returns were all identical.
 /// Pine's second, slower leg is not ported — see the commit that removed it.
 #[derive(Clone, Default)]
-pub struct Momentum;
+pub struct Momentum<const TF: Timeframe, const WIN: usize>;
+impl<const TF: Timeframe, const WIN: usize> Momentum<TF, WIN> {
+	const TAG: Tag = Tag::new("Momentum:", TF).count(WIN);
+}
 /// Sharpe over the whole retained window, per `bullmart_sri.pine`. `None` when stdev is zero — all
 /// returns identical is degenerate, not corrupt.
 fn sharpe(window: &[Bar]) -> Option<f64> {
@@ -37,24 +33,14 @@ fn sharpe(window: &[Bar]) -> Option<f64> {
 	Some((mean * 365.0 - strategy().indies.momentum.risk_free_rate) / stdev_ann)
 }
 
-/// The leg the config names, of the two every reader has to carry as deps.
-fn leg<'t>(m5: Hist<'t, Bar>, h4: Hist<'t, Bar>) -> Hist<'t, Bar> {
-	let tf = strategy().indies.momentum.fast;
-	if tf == LEGS[0] {
-		m5
-	} else if tf == LEGS[1] {
-		h4
-	} else {
-		unreachable!("`Config::load` checked the leg against the series this node buffers")
-	}
-}
-
-impl Cell for Momentum {
+impl<const TF: Timeframe, const WIN: usize> Cell for Momentum<TF, WIN> {
 	type Out<'t> = &'t [Option<f64>];
+
+	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl Runs for Momentum {
-	type Deps = (Buffering<trading_data::Bars<{ TF_5MIN }>, Elems<181>>, Buffering<trading_data::Bars<{ TF_4H }>, Elems<181>>);
+impl<const TF: Timeframe, const WIN: usize> Runs for Momentum<TF, WIN> {
+	type Deps = (Buffering<trading_data::Bars<TF>, Elems<WIN>>,);
 
 	const PLOTS: &'static [Plot] = &[Plot {
 		labels: &[&["sharpe"]],
@@ -62,8 +48,8 @@ impl Runs for Momentum {
 	}];
 	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
 
-	fn emit(&mut self, (m5, h4): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
-		out.extend(leg(m5, h4).trailing().map(|w| w.and_then(sharpe)));
+	fn emit(&mut self, (bars,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+		out.extend(bars.trailing().map(|w| w.and_then(sharpe)));
 	}
 }
-slice_nudge!(Momentum, Option<f64>);
+slice_nudge!([const TF: Timeframe, const WIN: usize] Momentum<TF, WIN>, Option<f64>);

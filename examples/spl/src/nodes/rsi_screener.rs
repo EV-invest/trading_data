@@ -1,7 +1,7 @@
 use trading_data::{Blind, Cell, DepOuts, Gate, Sampling, node, value_nudge};
 use v_utils::*;
 
-use super::{Rsi, change_1d::Change1d};
+use super::{ChangeBack, Knobs};
 use crate::config::{Screen, strategy};
 
 /// Top gainer: overbought on 4h while up on the day. The 1m series is the screening clock, so a
@@ -15,12 +15,16 @@ impl Cell for RsiScreener {
 #[node]
 impl Blind for RsiScreener {
 	/// The sampled RSI level stands until the next publish, however many minutes that takes.
-	type Deps = (trading_data::Bars<{ TF_1MIN }>, Change1d, Sampling<Rsi>);
+	type Deps = (
+		trading_data::Bars<{ TF_1MIN }>,
+		ChangeBack<{ TF_1MIN }, { TF_1H }, { TF_1D }, { Timeframe(TF_1D.0 + TF_1H.0) }>,
+		Sampling<trading_data::Rsi<trading_data::Bars<{ TF_5MIN }>, Knobs>>,
+	);
 
 	const WHY: &'static str = "a screen is a threshold predicate, awaiting the `Predicate` kernel";
 
 	fn advance<'t>(&'t mut self, (bars, change_1d, rsi): DepOuts<'t, Self>) -> Self::Out<'t> {
-		assert_eq!(bars.len(), change_1d.len(), "Bar:1m/Change1d rate mismatch");
+		assert_eq!(bars.len(), change_1d.len(), "Bar:1m/ChangeBack:1m/1d rate mismatch");
 		let Screen::Rsi(c) = strategy().screen else {
 			panic!("the graph is wired for RsiScreener; config.nix names {:?}", strategy().screen)
 		};

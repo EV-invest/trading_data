@@ -19,7 +19,7 @@ impl Decides for StdScreener {
 	/// Dropping it would make the gate a level at the read clock instead of the minute pulse
 	/// `Classify` takes its own rate from. The sampled momentum level stands until the next publish,
 	/// however many minutes that takes.
-	type Deps = (trading_data::Bars<{ TF_1MIN }>, Sampling<Momentum>);
+	type Deps = (trading_data::Bars<{ TF_1MIN }>, Sampling<Momentum<{ TF_5MIN }, 181>>);
 
 	fn body(&self, v: Vars) -> impl Expr {
 		let Screen::Std(c) = strategy().screen else {

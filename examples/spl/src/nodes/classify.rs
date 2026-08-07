@@ -1,9 +1,9 @@
 use core::fmt;
 
-use trading_data::{Blind, Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Ink, McRoot, OiRoot, Plot, ProbabilisticDistribution, Sampling, Usd, node, value_nudge};
+use trading_data::{Blind, Buffering, Bump, Cell, DepOuts, Flat, Gating, Glance, Ink, McRoot, OiRoot, Over, Plot, ProbabilisticDistribution, Sampling, Usd, node, value_nudge};
 use v_utils::*;
 
-use super::{Change1d, Change3m, Imbalance, Momentum, Screener, Spread, VolUsd, oi_delta::OiReach};
+use super::{Change, ChangeBack, Imbalance, Momentum, Screener, Spread, VolUsd};
 
 /// The wire order of [`Classified`]'s slots, category-major.
 const CATEGORIES: [Category; 5] = [Category::Indeterminate, Category::Liquidations, Category::MmClosing, Category::Manipulation, Category::Momentum];
@@ -276,9 +276,9 @@ impl Blind for Classify {
 	type Deps = (
 		Gating<Screener>,
 		trading_data::Bars<{ TF_1MIN }>,
-		Sampling<Momentum>,
-		Change1d,
-		Change3m,
+		Sampling<Momentum<{ TF_5MIN }, 181>>,
+		ChangeBack<{ TF_1MIN }, { TF_1H }, { TF_1D }, { Timeframe(TF_1D.0 + TF_1H.0) }>,
+		Change<{ TF_1MIN }, { TF_3MIN }>,
 		VolUsd<{ TF_1MIN }>,
 		// the hour standing at this minute: the notional is clocked at its own period, and the carry
 		// across the minutes it publishes nothing on is the engine's.
@@ -286,7 +286,9 @@ impl Blind for Classify {
 		Imbalance,
 		Spread,
 		Sampling<McRoot>,
-		Buffering<OiRoot, OiReach>,
+		// `TF_5MIN` is Bybit's open-interest publish cadence; the freshest publish is what the ratio
+		// against a USD market cap is read off.
+		Buffering<OiRoot, Over<{ Timeframe(4 * TF_5MIN.0) }>>,
 	);
 
 	/// The out is a distribution, so the slots stack to a full bar and the scale is fixed to it.

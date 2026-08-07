@@ -39,16 +39,12 @@ impl Config {
 			.unwrap_or_else(|e| panic!("failed to run `nix eval` (is nix installed?): {e}"));
 		assert!(out.status.success(), "nix evaluation of '{}' failed:\n{}", path.display(), String::from_utf8_lossy(&out.stderr));
 		let parsed: Self = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("config '{}' does not match the expected shape: {e}", path.display()));
-		// Failing here names the key; failing at the leg would only look like an indie that never warms.
+		// The series an indie runs on is wiring — it is the `Bars<..>` the graph names — but the
+		// timeframe is half the indie's signature, and everything reporting the indie reads it from
+		// here, so the config still names it and the two have to agree. Failing here names the key;
+		// failing at the node would only look like an indie that never warms.
 		let fast = parsed.strategy.indies.momentum.fast;
-		assert!(
-			crate::nodes::LEGS.contains(&fast),
-			"indies.momentum.fast = {fast}, over which no window is retained — the graph buffers {} and {}",
-			crate::nodes::LEGS[0],
-			crate::nodes::LEGS[1]
-		);
-		// The series an indie runs on is wiring — `RsiSeries` — but the timeframe is half the indie's
-		// signature, so the config still names it and the two have to agree.
+		assert_eq!(fast, TF_5MIN, "indies.momentum.fast = {fast}, where the Sharpe window is wired onto {TF_5MIN}");
 		let tf = parsed.strategy.indies.rsi.timeframe;
 		assert_eq!(tf, TF_5MIN, "indies.rsi.timeframe = {tf}, where the RSI chain is wired onto {TF_5MIN}");
 		assert!(CONFIG.set(parsed).is_ok(), "Config::load runs once");

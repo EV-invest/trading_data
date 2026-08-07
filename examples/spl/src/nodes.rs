@@ -64,9 +64,9 @@ mod atr;
 #[macro_use]
 mod book_top;
 #[macro_use]
-mod change_1d;
+mod change;
 #[macro_use]
-mod change_3m;
+mod change_back;
 #[macro_use]
 mod classify;
 #[macro_use]
@@ -77,8 +77,6 @@ mod deprecator;
 mod imbalance;
 #[macro_use]
 mod momentum;
-#[macro_use]
-mod oi_delta;
 #[macro_use]
 mod rsi;
 #[macro_use]
@@ -92,15 +90,14 @@ mod vol_usd;
 
 pub use atr::Atr;
 pub use book_top::{BookTop, BookTopSnap};
-pub use change_1d::Change1d;
-pub use change_3m::Change3m;
+pub use change::Change;
+pub use change_back::ChangeBack;
 pub use classify::{Category, Classified, Classify, Quality};
 pub use decision::{Decided, Decision};
 pub use deprecator::{Deprecator, Intent, TrailingStop};
 pub use imbalance::Imbalance;
-pub use momentum::{LEGS, Momentum};
-pub use oi_delta::{OiDelta5m, OiDelta15m, OiReach};
-pub use rsi::{AvgGain, AvgLoss, Knobs, Rsi, RsiDelta, RsiSeries};
+pub use momentum::Momentum;
+pub use rsi::Knobs;
 pub use rsi_screener::RsiScreener;
 pub use spread::Spread;
 pub use std_screener::StdScreener;
@@ -122,7 +119,7 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[BookDelta], anchors: BookAnchors[BookShape], oi: OiRoot[Oi], mc: McRoot[Mc] };
 	out TickOut;
-	outputs { bar_1m: trading_data::Bars<{ TF_1MIN }>, deprecator: Deprecator, rsi: Rsi }
+	outputs { bar: trading_data::Bars<{ TF_1MIN }>, deprecator: Deprecator, rsi: trading_data::Rsi<trading_data::Bars<{ TF_5MIN }>, Knobs> }
 }
 
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it

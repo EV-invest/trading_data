@@ -7,19 +7,10 @@ use core::fmt;
 
 use trading_data::{
 	Buffering, Bump, Carried, Cell, Elems, Env, Exact, Expr, Flat, FoldOuts, Folding, Folds, Glance, Horizon, Lagged, Lanes, Over, RsiSpec, RunOuts, Runs, Side, Slots, Stamped, Symbolic,
-	TradeCols, Trades, Vars, Witness, always_present, constant, node, slice_nudge,
+	Tag, Timeframe, TradeCols, Trades, Vars, Witness, always_present, constant, node, slice_nudge,
 };
 use v_utils::*;
 
-// the graph reaches every cell through a shim keyed on its name, and a bare `use` leaves no shim
-// behind — so a cell is named through its crate rather than imported.
-trading_data::node_alias! { pub Rsi14 = trading_data::Rsi<trading_data::Bars<{ TF_1MIN }>, Len14>; }
-
-/// λ's window, in minutes.
-pub const LAMBDA_WINDOW: usize = 60;
-/// The reach both windowed readings are served from: λ's `window + 1`, which the hour of volume
-/// rides along inside.
-type Win = Elems<{ LAMBDA_WINDOW + 1 }>;
 /// Wilder's own lengths, and the whole of what this graph configures.
 pub struct Len14;
 impl RsiSpec for Len14 {
@@ -38,26 +29,39 @@ impl RsiSpec for Len14 {
 /// clocked by the tape rather than by a bar.
 #[derive(Clone, Default)]
 pub struct Cvd(Carried);
-/// A minute of signed order flow, and the close it left the price at. Its own series rather than a
+/// One period of signed order flow, and the close it left the price at. Its own series rather than a
 /// field of [`trading_data::Bar`]: signed flow is not something a shared bar carries, and λ is its
 /// only reader.
 #[derive(Clone, Copy, Debug)]
 pub struct Flow {
 	pub ts_close: i64,
 	pub close: f64,
-	/// Σ signed `price*qty` (Buy = +, Sell = −) over the minute.
+	/// Σ signed `price*qty` (Buy = +, Sell = −) over the period.
 	pub quote: f64,
 }
+/// [`Flow`] per closed `TF`, as [`trading_data::Bars`] is [`trading_data::Bar`] per closed period.
 #[derive(Clone, Default)]
-pub struct Flow1m(Option<Flow>);
-/// Kyle's λ: through-origin OLS of per-minute Δclose on signed flow, `λ = Σ(Δp·f) / Σ(f²)`, over the
-/// [`LAMBDA_WINDOW`] deltas a `LAMBDA_WINDOW + 1` minute window spans.
+pub struct Flows<const TF: Timeframe>(Option<Flow>);
+impl<const TF: Timeframe> Flows<TF> {
+	const TAG: Tag = Tag::new("Flow:", TF);
+}
+
+/// Kyle's λ: through-origin OLS of per-period Δclose on signed flow, `λ = Σ(Δp·f) / Σ(f²)`, over the
+/// `WIN - 1` deltas a `WIN`-element window spans.
 #[derive(Clone, Default)]
-pub struct Lambda1m;
-/// Rolling 60-bar quote volume. `None` until the hour is whole — a partial sum compared against a
-/// threshold is a lie, not a warmup.
+pub struct Lambda<const TF: Timeframe, const WIN: usize>;
+impl<const TF: Timeframe, const WIN: usize> Lambda<TF, WIN> {
+	const TAG: Tag = Tag::new("Lambda:", TF).count(WIN);
+}
+
+/// Rolling `WIN`-bar quote volume. `None` until the window is whole — a partial sum compared against
+/// a threshold is a lie, not a warmup.
 #[derive(Clone, Default)]
-pub struct VolUsd1h;
+pub struct RollingVolUsd<const TF: Timeframe, const WIN: usize>;
+impl<const TF: Timeframe, const WIN: usize> RollingVolUsd<TF, WIN> {
+	const TAG: Tag = Tag::new("RollingVolUsd:", TF).count(WIN);
+}
+
 /// A pure blend of the current levels — the one genuinely differentiable node here (every other
 /// kernel is stateful or batch). Its value *is* an [`Expr`] of the scalar (`.last()`) views of its
 /// deps, so it differentiates and documents itself exactly; `main` asserts the exact Jacobian
@@ -135,20 +139,21 @@ impl Stamped for Flow {
 	}
 }
 always_present!(Flow);
-
-impl Cell for Flow1m {
+impl<const TF: Timeframe> Cell for Flows<TF> {
 	type Out<'t> = &'t [Flow];
+
+	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl Runs for Flow1m {
-	/// The partial minute is the whole of the state, so the trades it holds reach back exactly one.
-	type Deps = (Folding<Trades, Over<TF_1MIN>>,);
+impl<const TF: Timeframe> Runs for Flows<TF> {
+	/// The partial period is the whole of the state, so the trades it holds reach back exactly one.
+	type Deps = (Folding<Trades, Over<TF>>,);
 
 	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
 	fn emit(&mut self, (trades,): RunOuts<'_, Self>, out: &mut Vec<Flow>) {
 		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
-		let step = Exact::from_nanos(TF_1MIN.duration().as_nanos() as i64);
+		let step = Exact::from_nanos(TF.duration().as_nanos() as i64);
 		for (i, exec) in trades.exec().iter().enumerate() {
 			let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
 			let ts_close = exec.floor(step).as_nanos() + step.as_nanos();
@@ -172,19 +177,20 @@ impl Runs for Flow1m {
 		}
 	}
 }
-slice_nudge!(Flow1m, Flow);
-
-impl Cell for Lambda1m {
+slice_nudge!([const TF: Timeframe] Flows<TF>, Flow);
+impl<const TF: Timeframe, const WIN: usize> Cell for Lambda<TF, WIN> {
 	type Out<'t> = &'t [Option<f64>];
+
+	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl Runs for Lambda1m {
-	type Deps = (Buffering<Flow1m, Win>,);
+impl<const TF: Timeframe, const WIN: usize> Runs for Lambda<TF, WIN> {
+	type Deps = (Buffering<Flows<TF>, Elems<WIN>>,);
 
 	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
 	fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
-		out.extend(hist.narrowed(Horizon::Elems(LAMBDA_WINDOW + 1)).trailing().map(|w| w.map(kyle_lambda)));
+		out.extend(hist.narrowed(Horizon::Elems(WIN)).trailing().map(|w| w.map(kyle_lambda)));
 	}
 }
 fn kyle_lambda(flows: &[Flow]) -> f64 {
@@ -194,29 +200,30 @@ fn kyle_lambda(flows: &[Flow]) -> f64 {
 	}
 	flows.windows(2).map(|w| (w[1].close - w[0].close) * w[1].quote).sum::<f64>() / denom
 }
-slice_nudge!(Lambda1m, Option<f64>);
-
-impl Cell for VolUsd1h {
+slice_nudge!([const TF: Timeframe, const WIN: usize] Lambda<TF, WIN>, Option<f64>);
+impl<const TF: Timeframe, const WIN: usize> Cell for RollingVolUsd<TF, WIN> {
 	type Out<'t> = &'t [Option<f64>];
+
+	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl Runs for VolUsd1h {
-	type Deps = (Buffering<trading_data::Bars<{ TF_1MIN }>, Win>,);
+impl<const TF: Timeframe, const WIN: usize> Runs for RollingVolUsd<TF, WIN> {
+	type Deps = (Buffering<trading_data::Bars<TF>, Elems<WIN>>,);
 
 	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
 
 	fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
-		out.extend(hist.narrowed(Horizon::Elems(60)).trailing().map(|w| w.map(|w| w.iter().map(|b| b.vol_base * b.close).sum())));
+		out.extend(hist.narrowed(Horizon::Elems(WIN)).trailing().map(|w| w.map(|w| w.iter().map(|b| b.vol_base * b.close).sum())));
 	}
 }
-slice_nudge!(VolUsd1h, Option<f64>);
+slice_nudge!([const TF: Timeframe, const WIN: usize] RollingVolUsd<TF, WIN>, Option<f64>);
 
 impl Cell for Signal {
 	type Out<'t> = f64;
 }
 #[node]
 impl Symbolic for Signal {
-	type Deps = (Lambda1m, VolUsd1h, Cvd);
+	type Deps = (Lambda<{ TF_1MIN }, 61>, RollingVolUsd<{ TF_1MIN }, 60>, Cvd);
 
 	fn body(&self, v: Vars) -> impl Expr {
 		let (lambda, vol, cvd) = (v.get::<0>(), v.get::<1>(), v.get::<2>());
@@ -230,7 +237,14 @@ trading_data::graph! {
 	roots { trades: Trades[TradeCols] };
 	out TickOut;
 	// `main.rs` reads every one of these: the day-end levels, and `Signal` through the exact/FD witness.
-	outputs { rsi: Rsi14, bar: trading_data::Bars<{ TF_1MIN }>, cvd: Cvd, lambda: Lambda1m, vol_usd_1h: VolUsd1h, signal: Signal }
+	outputs {
+		rsi: trading_data::Rsi<trading_data::Bars<{ TF_1MIN }>, Len14>,
+		bar: trading_data::Bars<{ TF_1MIN }>,
+		cvd: Cvd,
+		lambda: Lambda<{ TF_1MIN }, 61>,
+		vol_usd: RollingVolUsd<{ TF_1MIN }, 60>,
+		signal: Signal
+	}
 }
 
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it

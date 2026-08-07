@@ -10,7 +10,6 @@ use trading_data::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Flat, Glance, R
 
 const TICKS: usize = 200_000;
 /// Deep enough that the memmove dominates, and of the order an indicator's window actually is.
-type Win = Elems<512>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Tick {
@@ -58,7 +57,7 @@ impl Cell for Ends {
 }
 #[node]
 impl Blind for Ends {
-	type Deps = (Buffering<Src, Win>,);
+	type Deps = (Buffering<Src, Elems<512>>,);
 
 	const WHY: &'static str = "the bench's consumer: what it measures is the window's retention, not the arithmetic it reads off the ends";
 
@@ -76,7 +75,7 @@ graph! {
 	batches Batches;
 	roots { src: Src[f64] };
 	out GOut;
-	outputs { ends: Ends, hist: Buffering<Src, Win> }
+	outputs { ends: Ends, hist: Buffering<Src, Elems<512>> }
 }
 
 fn main() {
@@ -88,5 +87,5 @@ fn main() {
 		}];
 		black_box(g.tick(one[0].ts, Batches { src: &one }));
 	}
-	println!("{TICKS} ticks over a {:?} window", <Win as Reach>::HORIZON);
+	println!("{TICKS} ticks over a {:?} window", <Elems<512> as Reach>::HORIZON);
 }

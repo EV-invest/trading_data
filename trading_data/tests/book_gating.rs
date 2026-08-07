@@ -24,7 +24,6 @@ const PREC: PrecisionPriceQty = PrecisionPriceQty {
 	price: Precision(2),
 	qty: Precision(4),
 };
-type Reach15m = Over<TF_15MIN>;
 /// One tumble of the retained net, in nanoseconds — the same grid the checkpoint is written on.
 const PERIOD: i64 = 900_000_000_000;
 
@@ -53,7 +52,7 @@ impl Nudge for GatedBook {
 impl Blind for GatedBook {
 	/// The claim under test, and until the deltas became a retained [`Buffering`] it did not compile:
 	/// a `Folding` dep on a gated node is the one thing the const-assert refuses.
-	type Deps = (Gating<Hot>, BookAnchors, Buffering<BookDeltas, Reach15m>);
+	type Deps = (Gating<Hot>, BookAnchors, Buffering<BookDeltas, Over<{ TF_15MIN }>>);
 
 	const WHY: &'static str = "a book-gating fixture";
 

@@ -90,7 +90,7 @@ trading_data::graph! {
 	batches Batches;
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[BookDelta], anchors: BookAnchors[BookShape] };
 	out TickOut;
-	outputs { cvd: Cvd, book_flow: BookFlow, book: trading_data::Book, bar_1m: trading_data::Bars<{ TF_1MIN }> }
+	outputs { cvd: Cvd, book_flow: BookFlow, book: trading_data::Book, bar: trading_data::Bars<{ TF_1MIN }> }
 }
 
 impl<'t> From<Lanes<'t>> for Batches<'t> {

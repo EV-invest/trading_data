@@ -1,21 +1,10 @@
 use trading_data::RsiSpec;
-use v_utils::*;
 
 use crate::config::strategy;
 
-trading_data::node_alias! {
-	/// Which series the RSI chain runs on. `indies.rsi.timeframe` still *names* it — the timeframe is
-	/// half the indie's signature, and everything reporting the indie reads it from there — but which
-	/// series an indie runs on is wiring, not a knob, so the config is checked against this in
-	/// [`crate::config::Config::load`] rather than dispatched on.
-	pub RsiSeries = trading_data::Bars<{ TF_5MIN }>;
-}
-
-trading_data::node_alias! { pub RsiDelta = trading_data::RsiDelta<RsiSeries>; }
-trading_data::node_alias! { pub AvgGain = trading_data::AvgGain<RsiSeries, Knobs>; }
-trading_data::node_alias! { pub AvgLoss = trading_data::AvgLoss<RsiSeries, Knobs>; }
-trading_data::node_alias! { pub Rsi = trading_data::Rsi<RsiSeries, Knobs>; }
-/// The two Wilder lengths, out of `config.nix`.
+/// The two Wilder lengths, out of `config.nix`. Which series the chain runs on is not here: it is
+/// the `Bars<..>` every naming site writes out, and `indies.rsi.timeframe` is checked against that
+/// in [`crate::config::Config::load`] rather than dispatched on.
 pub struct Knobs;
 impl RsiSpec for Knobs {
 	const NAME: &'static str = "Knobs";
