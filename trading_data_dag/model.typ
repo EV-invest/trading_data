@@ -56,7 +56,7 @@ SWEEP ── `tick(ts, Batches)`, one straight-line monomorphized fn; no dispatc
         │
         ▼
 OBSERVATION ── the same sweep, read. `()` observer ⇒ `want() = Nothing` ⇒ erased entirely.
-   Observer::on(name, dep names, dep gate flags, Fire { vals, jac, exact, formula, … })
+   Observer::on(name, dep FRAMEs, dep gate flags, Fire { vals, jac, exact, formula, … })
    Step order IS topo order, so the observed sequence doubles as the static topology; a dep
    name never seen as a stepped node is a root.
 ```
@@ -150,6 +150,10 @@ Five spellings, no sixth. Every structural fact about an edge is one of these.
  match dep names against frame cell names, and a wrapper that renamed or re-rated its dep would drop
  out of all of them. REACH / FOLDED / RETAINED / Gates are what then say WHICH reading of C is being
  asked for.
+
+ `Cell::FRAME` is the "resolves against" column itself, and the one place it is not the spelling is
+ `Sampling` — `Latest<C>` is a node with a name of its own, so a dep on one can state it. That is
+ what `Observer::on` reports, since an observer is reading the wiring rather than the source.
 
  WHAT a `Buffering` reads is the series' own to say: `Series::Batch` is how the engine ACCUMULATES
  the reach, and its `View` is the out. `Rows<Item>` — every row, handed out as a `Hist` — is the

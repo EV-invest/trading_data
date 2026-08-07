@@ -364,6 +364,16 @@ pub trait Cell {
 	/// compiler's way and the rest of the graph spells the same cells its own.
 	const NAME: &'static str = core::any::type_name::<Self>();
 
+	/// The frame cell a consumer naming this in dep position is wired to, which is the graph
+	/// [`Observer::on`] reports. [`Sampling`] is the one dep spelling that answers something other
+	/// than itself — it resolves against the [`Latest`] beside its source, and an observer told the
+	/// source's name would draw an edge the sweep does not have and leave the level read by nobody.
+	///
+	/// [`Buffering`] keeps the default: its [`Buffer`] is keyed on a horizon joined over every read of
+	/// the series in the graph, so no one dep site holds the name it would have to state — which is
+	/// what [`REACH`](Cell::REACH) is there to say instead.
+	const FRAME: &'static str = Self::NAME;
+
 	/// How far back a consumer naming this in dep position reads. A bare cell is this tick's batch
 	/// and nothing more; the wrappers ([`Buffering`], [`Folding`]) are what state anything else. This
 	/// lives on [`Cell`] rather than a `Dep` trait because [`DepSet`] is implemented over tuples of
@@ -782,6 +792,8 @@ impl Plot {
 pub trait DepSet {
 	type Outs<'t>;
 	const NAMES: &'static [&'static str];
+	/// Per-dep [`Cell::FRAME`], positionally — the wiring, where `NAMES` is the spelling.
+	const FRAMES: &'static [&'static str];
 	/// Per-dep [`Cell::REACH`], positionally — how far back a revived node must look, input by input.
 	const REACH: &'static [Horizon];
 	/// Per-dep [`Cell::FOLDED`], positionally. With `NAMES` and `REACH` this is what picks the frame
@@ -3150,8 +3162,10 @@ where
 	type Out<'t> = Option<<C::Item as Present>::Val>;
 
 	/// Forwarded, for the same reason [`Buffering`]'s is: the graph predicates match dep names against
-	/// frame cell names, and a wrapper that renamed its dep would drop out of every one of them.
+	/// frame cell names, and a wrapper that renamed its dep would drop out of every one of them. What
+	/// this is actually wired to is [`FRAME`](Cell::FRAME) below.
 	const CLOCK: Option<Timeframe> = C::CLOCK;
+	const FRAME: &'static str = <Latest<C> as Cell>::NAME;
 	const NAME: &'static str = C::NAME;
 	const RETAINED: bool = true;
 }
@@ -3291,6 +3305,7 @@ impl DepSet for () {
 
 	const CLOCKS: &'static [Option<Timeframe>] = &[];
 	const FOLDS: &'static [bool] = &[];
+	const FRAMES: &'static [&'static str] = &[];
 	const GATES: &'static [bool] = &[];
 	const NAMES: &'static [&'static str] = &[];
 	const REACH: &'static [Horizon] = &[];
@@ -3341,6 +3356,7 @@ macro_rules! impl_arity {
 
 			const CLOCKS: &'static [Option<Timeframe>] = &[$Th::CLOCK $(, $T::CLOCK)*];
 			const FOLDS: &'static [bool] = &[$Th::FOLDED $(, $T::FOLDED)*];
+			const FRAMES: &'static [&'static str] = &[$Th::FRAME $(, $T::FRAME)*];
 			const GATES: &'static [bool] = &[<$Th::Gates as Bit>::VALUE $(, <$T::Gates as Bit>::VALUE)*];
 			const NAMES: &'static [&'static str] = &[$Th::NAME $(, $T::NAME)*];
 			const REACH: &'static [Horizon] = &[$Th::REACH $(, $T::REACH)*];
@@ -3686,8 +3702,10 @@ pub trait Observer {
 	/// (`r[observe.noninvasive]`) — which is what lets a consumer schedule the expensive reading
 	/// instead of amortizing it.
 	fn want(&self, node: &'static str) -> Want;
-	/// `gates` is [`DepSet::GATES`]: positional with `deps`, marking the ones that are control edges
-	/// rather than data. All-`false` for ungated nodes, empty for roots.
+	/// `deps` is [`DepSet::FRAMES`] — what the node is wired to rather than how it spelled it, so a
+	/// [`Sampling`] dep names the [`Latest`] it reads. `gates` is [`DepSet::GATES`]: positional with
+	/// `deps`, marking the ones that are control edges rather than data. All-`false` for ungated
+	/// nodes, empty for roots.
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>);
 }
 
@@ -3850,7 +3868,7 @@ where
 		let out: N::Out<'t> = unrun();
 		if want != Want::Nothing {
 			let fire = Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Kernel as Level<N>>::FIDELITY, <N::Deps as DepFlat>::DIMS, None);
-			obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
+			obs.on(N::NAME, <N::Deps as DepSet>::FRAMES, <N::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
 	}
@@ -3911,7 +3929,7 @@ where
 		trace: trace.as_ref().map(|t| t as &dyn core::fmt::Display),
 		..Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Kernel as Level<N>>::FIDELITY, <N::Deps as DepFlat>::DIMS, Some(flat))
 	};
-	obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
+	obs.on(N::NAME, <N::Deps as DepSet>::FRAMES, <N::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
 }
 
@@ -3967,7 +3985,7 @@ where
 		let out: &'t [E::Item] = &e.buf;
 		if want != Want::Nothing {
 			let fire = Fire::of(&out, <E as Emit>::PLOTS, <E as Cell>::CLOCK, <E::Kernel as Run<E>>::FIDELITY, <E::Deps as DepFlat>::DIMS, None);
-			obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
+			obs.on(E::NAME, <E::Deps as DepSet>::FRAMES, <E::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
 	}
@@ -4021,7 +4039,7 @@ where
 		<E::Deps as DepFlat>::DIMS,
 		Some(flat),
 	);
-	obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
+	obs.on(E::NAME, <E::Deps as DepSet>::FRAMES, <E::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
 }
 
