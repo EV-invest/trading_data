@@ -325,10 +325,13 @@ gateable the moment the lane became a run of rows the engine could retain for it
    │    │                   set is SEALED, so there is no body the engine cannot also read.
    │    │                     Level::advance   the value
    │    │                     Level::pre/jac   the ONE-STEP derivative, priced per `Want`
+   │    │                     Level::exact     the same derivative over each dep's WHOLE reach,
+   │    │                                      one column group per lag; defaults to filling
+   │    │                                      nothing, so a kernel that cannot answer says so
    │    │                     Level::formula   the equation, where the kernel has one
    │    │                     Level::FIDELITY  Exact | Partial(omits) | Opaque(why) — how much
-   │    │                                      of what the body READ the Jacobian covers, which
-   │    │                                      is not the same question as whether it was
+   │    │                                      of what the body READ the fullest reading covers,
+   │    │                                      which is not the same question as whether it was
    │    │                                      differentiated or bumped
    │    │
    │    ├── Gate            Out<'t> = bool. Scalar-out always; the gated node may be batch,
@@ -368,18 +371,21 @@ gateable the moment the lane became a run of rows the engine could retain for it
    │                        counts it into `FIDELITY`. `Clone` is a supertrait because the
    │                        finite-difference witness is what it has instead of a derivative.
    │
-   ├── Scans: Series+Clone  EXTRA · BEYOND · fn read(deps, i, env) -> Option<i64>
+   ├── Scans: Series+Clone  fn read<W: Witness>(deps, i, &mut Env<W>) -> Option<i64>
    │                        · fn body(&self, Vars) -> impl Slots               ⇒ kernel `Scan`
    │                        ONE out element per element of the LEADING dep, whose rate it
    │                        therefore keeps, carrying nothing between them. WHICH elements the
    │                        env is read from is Rust — an index is constant wrt everything being
    │                        differentiated (`r[kernels.selection.index-is-not-a-variable]`), so
-   │                        it has no slope to state; the numbers are all algebra. The env's
-   │                        first DepFlat::LEN slots are the deps' own flattenings, which is
-   │                        what lines the body's gradient up with the Jacobian's columns.
+   │                        it has no slope to state; the numbers are all algebra.
    │                        `read -> None` is absence ARRIVING (answered without evaluating
-   │                        anything); NaN out of the body is the body DECLINING. BEYOND names
-   │                        what was read past the point, and is what makes it Partial.
+   │                        anything); NaN out of the body is the body DECLINING.
+   │                        Exact unconditionally, and that is what `Env` bought: slots are
+   │                        APPENDED, each naming the dep and the lag it was copied off
+   │                        (`env.dep(0).lag(n).put(&b)`) or standing for no element at all
+   │                        (`env.opaque()`). Leading with the deps' own elements at lag 0 lines
+   │                        the gradient up with the Jacobian's columns; the lags are what let
+   │                        `exact` scatter that same gradient over the whole reach in one pass.
    │
    ├── Closes: Series+Clone PERIOD · fn read(..) · fn open(Vars) · fn fold(Vars)
    │                        · fn pending(_mut)                                 ⇒ kernel `Close`
@@ -389,9 +395,11 @@ gateable the moment the lane became a run of rows the engine could retain for it
    │                        body's); the body owns the numbers, as what a first element opens
    │                        with and what a further one folds in — the accumulator's slots
    │                        following the element's, so both read the element at one set of
-   │                        indices. Rate-CHANGING by construction. Partial: the column stands
-   │                        for the element that closed the reported one, and the rest of its
-   │                        period reached it only through the accumulator, which is no dep.
+   │                        indices. Rate-CHANGING by construction. Partial, `exact` block and
+   │                        all: the column stands for the element that closed the reported one,
+   │                        and the rest of its period reached it only through the accumulator —
+   │                        those elements live in the dep's DECLARATION (`Folding<Trades,
+   │                        Over<TF>>`) and not in its out, so there is no lag to index them at.
    │
    ├── Folds: Series+Clone  STATE · EXTRA · fn read(..) · fn step(Vars) · fn value(Vars)
    │                        · fn carried(_mut)                                  ⇒ kernel `Fold`
@@ -401,8 +409,9 @@ gateable the moment the lane became a run of rows the engine could retain for it
    │                        advanced by an absence. Its Jacobian is the chain rule across the
    │                        two bodies with the PRIOR state held fixed, which is what makes it
    │                        the one-step reading. Permanently Partial("state history, by
-   │                        design"): the state is no dep and has no column, and a derivative
-   │                        carrying accumulated state sensitivity is a different quantity.
+   │                        design"), `exact` block and all: the state is no dep and has no
+   │                        reach to be indexed at, and a derivative carrying accumulated state
+   │                        sensitivity is a different quantity.
    │
    ├── Runs: Series+Clone   const WHY · fn emit(&mut self, RunOuts, out: &mut Vec<Item>)
    │                        ⇒ kernel `Raw`, through the `Emit` impl `#[node]` writes.
@@ -418,6 +427,19 @@ gateable the moment the lane became a run of rows the engine could retain for it
                             ⇒ `Armed<Self>` is the only gate it can be. Where a hand-written
                             `Latch` leaves the loop open (nothing checks that the gate you
                             armed is the gate your episode cuts), this closes it in the type.
+
+  WHAT AN OBSERVER ASKS FOR — `Want`, per node, priced per tick and never per build:
+      Nothing < Vals < Jac < Exact
+      Nothing  the bare chain: no flatten, no capture, nothing.
+      Vals     the out and the deps, flattened.
+      Jac      `out_len × DepFlat::LEN` — one column group per dep, its NEWEST element.
+      Exact    one column group per LAG of each dep's reach, grown as the kernel goes
+               (a wall-clock window over an aperiodic series has no static element count).
+               `Scan` answers it over everything its `read` named; `Pure`/`Predicate` at the
+               one point they read; `Close`/`Fold` at lag 0, which is the `Jac` column;
+               `Opaque`/`Raw` not at all — a block filled by finite differences would need an
+               element index threaded through `Nudge::stage`, and `Opaque` already says these
+               have no algebra.
 
   ENGINE-OWNED NODES — real frame cells nobody writes:  Buffer<C,H>   Latest<C>   Armed<N>
       each: ungated, historic, exactly one per series/episode, advances EVERY tick.

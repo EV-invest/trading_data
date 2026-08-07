@@ -1,4 +1,4 @@
-use trading_data::{Cell, Flat, Plot, ScanOuts, Scans, Slots, Vars, constant, gt, node, select, slice_nudge};
+use trading_data::{Cell, Env, Lagged, Plot, ScanOuts, Scans, Slots, Vars, Witness, constant, gt, node, select, slice_nudge};
 
 use super::book_top::BookTop;
 
@@ -19,9 +19,10 @@ impl Scans for Imbalance {
 		..Plot::DEFAULT
 	}];
 
-	fn read((top,): &ScanOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
-		top[i].flat(env);
-		top[i].map(|d| d.ts_ns)
+	fn read<W: Witness>((top,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let (t, lag) = top.at(i)?;
+		env.dep(0).lag(lag).put(t);
+		t.map(|d| d.ts_ns)
 	}
 
 	fn body(&self, v: Vars) -> impl Slots {

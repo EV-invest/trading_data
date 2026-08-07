@@ -22,6 +22,7 @@ trading_data_dag::Decides
 trading_data_dag::DepOuts
 trading_data_dag::Elems
 trading_data_dag::EmitOuts
+trading_data_dag::Env
 trading_data_dag::Episode
 trading_data_dag::Episodic
 trading_data_dag::Fidelity
@@ -38,6 +39,7 @@ trading_data_dag::Guide
 trading_data_dag::Hist
 trading_data_dag::Horizon
 trading_data_dag::Ink
+trading_data_dag::Lagged
 trading_data_dag::Latch
 trading_data_dag::Level
 trading_data_dag::Nudge
@@ -66,6 +68,7 @@ trading_data_dag::TriggerOut
 trading_data_dag::Unbounded
 trading_data_dag::Unflat
 trading_data_dag::Want
+trading_data_dag::Witness
 trading_data_dag::__dag
 trading_data_dag::always_present
 trading_data_dag::graph

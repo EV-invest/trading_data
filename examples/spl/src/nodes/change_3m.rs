@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Flat, Over, ScanOuts, Scans, Slots, Stamped, Vars, constant, gt, node, select, slice_nudge};
+use trading_data::{Buffering, Cell, Env, Over, ScanOuts, Scans, Slots, Stamped, Vars, Witness, constant, gt, node, select, slice_nudge};
 use v_utils::*;
 
 /// Percent change over the trailing three minutes, off the closed 1m bars inside it. SPL's backtest
@@ -12,14 +12,15 @@ impl Cell for Change3m {
 impl Scans for Change3m {
 	type Deps = (Buffering<trading_data::Bars<{ TF_1MIN }>, Over<TF_3MIN>>,);
 
-	const BEYOND: Option<&'static str> = Some("the open of the bar three minutes back, which no one-step column stands for");
-	const EXTRA: usize = 1;
-
-	fn read((m1,): &ScanOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
-		let b = m1.lagged_at(i, 0).expect("element i of this tick's own fresh run");
-		b.flat(&mut env[..5]);
-		// an incomplete window declines, and NaN is how it says so.
-		env[5] = m1.trailing_at(i).map_or(f64::NAN, |w| w[0].open);
+	fn read<W: Witness>((m1,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let (b, lag) = m1.lagged_at(i, 0).expect("element i of this tick's own fresh run");
+		env.dep(0).lag(lag).put(b);
+		match m1.trailing_at(i) {
+			// `open` is slot 0 of a bar, which is the default this leaves unsaid.
+			Some((w, lag)) => env.dep(0).lag(lag).put(&w[0].open),
+			// an incomplete window declines, and NaN is how it says so.
+			None => env.opaque().put(&f64::NAN),
+		}
 		Some(b.ts_ns())
 	}
 

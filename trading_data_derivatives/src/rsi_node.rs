@@ -1,8 +1,8 @@
 use core::{fmt, marker::PhantomData};
 
 use trading_data_dag::{
-	Buffering, Bump, Carried, Cell, Elems, Ex, Expr, Flat, FoldOuts, Folding, Folds, Glance, Plot, Rows, ScanOuts, Scans, Series, Slots, Stamped, Tag, Unbounded, Unflat, Vars, constant, gt,
-	lt, max, min, node, select, slice_nudge,
+	Buffering, Bump, Carried, Cell, Elems, Env, Ex, Expr, Flat, FoldOuts, Folding, Folds, Glance, Lagged, Plot, Rows, ScanOuts, Scans, Series, Slots, Stamped, Tag, Unbounded, Unflat, Vars,
+	Witness, constant, gt, lt, max, min, node, select, slice_nudge,
 };
 
 use crate::{bar::Bar, wilder};
@@ -54,13 +54,16 @@ impl<B: Series<Item = Bar, Batch = Rows<Bar>>> Scans for RsiDelta<B> {
 	/// engine's retention rather than the node's, so nothing here survives a tick.
 	type Deps = (Buffering<B, Elems<2>>,);
 
-	const BEYOND: Option<&'static str> = Some("the previous close, which no one-step column stands for");
-	const EXTRA: usize = 1;
-
-	fn read((bars,): &ScanOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
-		let b = bars.lagged_at(i, 0).expect("element i of this tick's own fresh run");
-		b.flat(&mut env[..5]);
-		env[5] = bars.lagged_at(i, 1).map_or(f64::NAN, |p| p.close);
+	fn read<W: Witness>((bars,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let (b, lag) = bars.lagged_at(i, 0).expect("element i of this tick's own fresh run");
+		env.dep(0).lag(lag).put(b);
+		match bars.lagged_at(i, 1) {
+			// `close` is slot 3 of a bar, and saying so is what puts this partial in the lagged
+			// element's own column rather than in a column of its own.
+			Some((p, lag)) => env.dep(0).lag(lag).slot(3).put(&p.close),
+			// the first bar of a run has nothing behind it, and NaN is how that declines.
+			None => env.opaque().put(&f64::NAN),
+		}
 		Some(b.ts_ns())
 	}
 
@@ -114,8 +117,9 @@ macro_rules! wilder_half {
 
 			/// The first bar has no delta, and an average is not advanced by an absence — which is
 			/// exactly what declining leaves the state doing.
-			fn read((deltas,): &FoldOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
-				env[0] = deltas[i]?;
+			fn read<W: Witness>((deltas,): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+				let (d, lag) = deltas.at(i)?;
+				env.dep(0).lag(lag).put(&(*d)?);
 				Some(0)
 			}
 
@@ -224,10 +228,11 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Folds for Rsi<B, S> {
 	const STATE: usize = 2;
 
 	/// Both legs warm together, so an element either carries both averages or neither.
-	fn read((gain, loss): &FoldOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
+	fn read<W: Witness>((gain, loss): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		assert_eq!(gain.len(), loss.len(), "AvgGain/AvgLoss rate mismatch");
-		env[0] = gain[i]?;
-		env[1] = loss[i]?;
+		let ((g, g_lag), (l, l_lag)) = (gain.at(i)?, loss.at(i)?);
+		env.dep(0).lag(g_lag).put(&(*g)?);
+		env.dep(1).lag(l_lag).put(&(*l)?);
 		Some(0)
 	}
 

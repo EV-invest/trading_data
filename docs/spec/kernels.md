@@ -52,7 +52,9 @@ r[kernels.jac.two-quantities]
 
 A node's one-step Jacobian and its derivative over a dep's whole reach are different quantities and
 MUST NOT be conflated. A reading MUST say which of the two it carries, and a consumer that draws one
-MUST label it.
+MUST label it. A kernel that can produce the second MUST offer it as a reading of its own rather
+than by widening the first, and one that cannot MUST say so rather than fill a block it cannot
+stand behind.
 
 `Fire::jac` is the one-step reading: each dep's *last* element perturbed, prior state held fixed.
 Differentiating the body and finite-differencing it both land on that same number — which is why one
@@ -62,9 +64,26 @@ rather than in every tick. What neither says is anything about the rest of a dep
 reading `.trailing()` over 181 bars has one column describing bar 180 and silence about bars 0–179.
 `slice_nudge!`'s `stage` bumps `s.last_mut()` and nothing else, so the finite difference is a
 one-step impulse there by construction, and the algebraic column beside it would be the same. That
-silence is not an error — a one-step impulse response is a real quantity and the one an impact-edge
-viz wants — but it means "exact" cannot be read as "covers what the body read", which is what
-`r[kernels.fidelity.stated]` is for.
+silence is not an error — a one-step impulse response is a real quantity — but it means "exact"
+cannot be read as "covers what the body read", which is what `r[kernels.fidelity.stated]` is for.
+
+`Fire::exact_block` is the second quantity, asked for separately (`Want::Exact`) because it costs
+separately: one column group per *lag* of a dep's reach, per dep, oldest first, so a dep's last group
+is exactly its one-step column and the groups before it are the reach that column was silent about.
+It is grown rather than shaped, because a wall-clock window over an aperiodic series has no static
+element count to declare.
+
+What closes the gap for a per-element kernel is that every slot of its env is a *copy* of one element
+slot and never a computation of one — `∂env/∂element` is a 0/1 selection, licensed by
+`r[kernels.selection.index-is-not-a-variable]`. So a reading that reports the `(dep, lag, slot)` of
+each slot it fills lets the body's gradient scatter over the whole reach in one pass, at no cost to
+the value path: `Env<W: Witness>` is generic over whether anyone is watching, and the `scan == raw`
+half of `r[kernels.pure.zero-cost]` is what proves the recording monomorphizes away.
+
+A kernel whose omission is not a range still declines. A recurrence's state is no dep and has no lag
+to be indexed at; a period's accumulator holds elements that live in the dep's *declaration* rather
+than in its out. Both stay partial with a block in hand, which is the distinction
+`r[kernels.fidelity.stated]` exists to keep.
 
 This withdraws `r[kernels.jac.one-reading]`, whose justification — that the two readings are the
 same quantity — holds only where a dep's reach is `Unit`.

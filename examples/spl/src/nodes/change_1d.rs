@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Exact, Flat, Over, ScanOuts, Scans, Slots, Stamped, Vars, abs, closed_by, constant, gt, node, select, slice_nudge};
+use trading_data::{Bar, Buffering, Cell, Env, Exact, Lagged, Over, ScanOuts, Scans, Slots, Stamped, Vars, Witness, abs, closed_by, constant, gt, node, select, slice_nudge};
 use v_utils::*;
 
 /// Percent change against the 1h close standing a day back, asked once per closed 1m bar.
@@ -14,17 +14,17 @@ impl Scans for Change1d {
 	/// up to a whole period past the newest close of it.
 	type Deps = (trading_data::Bars<{ TF_1MIN }>, Buffering<trading_data::Bars<{ TF_1H }>, Over<{ Timeframe(TF_1D.0 + TF_1H.0) }>>);
 
-	const BEYOND: Option<&'static str> = Some("the 1h bar standing a day back, which the hourly column describes in place of the series' own newest");
-
-	fn read((m1, h1): &ScanOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
-		let b = m1[i];
-		b.flat(&mut env[..5]);
+	fn read<W: Witness>((m1, h1): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let (b, lag) = m1.at(i)?;
+		env.dep(0).lag(lag).put(b);
 		let closed_1h = closed_by(h1.all(), b.ts_close);
 		let day_ago = b.ts_close - Exact::from(TF_1D.duration());
 		// The close standing a day back is the first one after `day_ago`; index 0 means the retained
 		// run does not reach behind it, so there is nothing a day old to compare against yet.
-		let oldest = closed_1h.iter().position(|h| h.ts_close > day_ago).filter(|&i| i > 0).map(|i| closed_1h[i]);
-		oldest.flat(&mut env[5..]);
+		match closed_1h.as_slice().iter().position(|h| h.ts_close > day_ago).filter(|&i| i > 0).and_then(|i| closed_1h.at(i)) {
+			Some((h, lag)) => env.dep(1).lag(lag).put(h),
+			None => env.opaque().put(&None::<Bar>),
+		}
 		Some(b.ts_ns())
 	}
 

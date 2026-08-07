@@ -1,4 +1,4 @@
-use trading_data::{Cell, Flat, ScanOuts, Scans, Slots, Stamped, Tag, Timeframe, Vars, node, slice_nudge};
+use trading_data::{Cell, Env, Lagged, ScanOuts, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, node, slice_nudge};
 
 /// A closed bar's notional, `volume * close` — the close standing in for vwap, as SPL's own volume
 /// indie does. The period is a parameter, as [`trading_data::Bars`]'s is; a consumer clocked faster
@@ -18,9 +18,10 @@ impl<const TF: Timeframe> Cell for VolUsd<TF> {
 impl<const TF: Timeframe> Scans for VolUsd<TF> {
 	type Deps = (trading_data::Bars<TF>,);
 
-	fn read((bars,): &ScanOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
-		bars[i].flat(env);
-		Some(bars[i].ts_ns())
+	fn read<W: Witness>((bars,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let (b, lag) = bars.at(i)?;
+		env.dep(0).lag(lag).put(b);
+		Some(b.ts_ns())
 	}
 
 	fn body(&self, v: Vars) -> impl Slots {

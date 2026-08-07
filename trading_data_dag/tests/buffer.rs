@@ -4,7 +4,8 @@
 //! the point of engine-owned retention.
 
 use trading_data_dag::{
-	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Over, RunOuts, Runs, Stamped, Want, graph, node, slice_nudge,
+	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Env, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Over, RunOuts, Runs, ScanOuts, Scans, Slots, Stamped,
+	Vars, Want, Witness, graph, node, slice_nudge,
 };
 use v_utils::{Timeframe, TimeframeDesignator};
 
@@ -67,20 +68,28 @@ fn a_buffer_names_itself_from_its_source_and_its_reach() {
 	assert_eq!(<Buffer<Src, { Horizon::Elems(61) }> as Cell>::NAME, format!("Buffer<{}, Elems(61)>", Src::NAME));
 }
 
-/// Reads a 3-deep window per fresh element: rate-preserving, `None` while short.
+/// Reads a 3-deep window per fresh element: rate-preserving, `None` while short. A `Scans` body, so
+/// one node carries both halves of `r[kernels.jac.two-quantities]` — the one-step column and the
+/// block over the reach it is silent about.
 #[derive(Clone, Default)]
 struct Sum3;
 impl Cell for Sum3 {
 	type Out<'t> = &'t [Option<f64>];
 }
 #[node]
-impl Runs for Sum3 {
+impl Scans for Sum3 {
 	type Deps = (Buffering<Src, Elems<3>>,);
 
-	const WHY: &'static str = "a buffer fixture";
+	fn read<W: Witness>((hist,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let (win, oldest) = hist.trailing_at(i)?;
+		for (k, x) in win.iter().enumerate() {
+			env.dep(0).lag(oldest - k).put(x);
+		}
+		Some(win[win.len() - 1].ts)
+	}
 
-	fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
-		out.extend(hist.trailing().map(|w| w.map(|w| w.iter().map(|x| x.v).sum())));
+	fn body(&self, v: Vars) -> impl Slots {
+		v.get::<0>() + v.get::<1>() + v.get::<2>()
 	}
 }
 slice_nudge!(Sum3, Option<f64>);
@@ -263,6 +272,44 @@ fn a_window_reader_gets_one_column_for_its_whole_reach() {
 	assert!((jac[0] - 1.0).abs() < 1e-3, "the newest element's partial, and only it: {jac:?}");
 }
 
+// r[verify kernels.jac.two-quantities]
+/// The other half, off the same node: asked at `Want::Exact`, the kernel replays its own reading
+/// under a witness and scatters the body's gradient over every lag that reading named. Three columns
+/// where the Jacobian had one, all of them numbers — and the newest of them *is* the Jacobian's, so
+/// the two readings agree where they overlap and the block is strictly the wider one.
+#[test]
+fn the_exact_block_covers_the_reach_the_column_is_silent_about() {
+	#[derive(Default)]
+	struct Rec {
+		jac: Option<Vec<f64>>,
+		block: Option<(Vec<f64>, Vec<usize>)>,
+	}
+	impl Observer for Rec {
+		fn want(&self, _: &'static str) -> Want {
+			Want::Exact
+		}
+
+		fn on(&mut self, node: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
+			if node.ends_with("Sum3") {
+				self.jac = fire.jac.map(<[f64]>::to_vec);
+				self.block = fire.exact_block.map(|(b, w)| (b.to_vec(), w.to_vec()));
+			}
+		}
+	}
+
+	let mut g = G::default();
+	g.tick(0, Batches { src: &[t(1.0), t(2.0)] });
+
+	let mut rec = Rec::default();
+	g.tick_obs(0, Batches { src: &[t(3.0)] }, &mut rec);
+	let (block, widths) = rec.block.expect("a Scans kernel answers the exact reading");
+	assert_eq!(widths, vec![3], "one dep, three lags of one slot each — the reach, stated");
+	assert_eq!(block.len(), 3, "one out slot × three lags: {block:?}");
+	assert!(block.iter().all(|w| (w - 1.0).abs() < 1e-9), "each element enters the sum once: {block:?}");
+	let jac = rec.jac.expect("Sum3 fires on a warm window");
+	assert_eq!(block.last(), jac.last(), "oldest lag first, so the block's last group is the one-step column");
+}
+
 /// Window retention over an irregular stream: what a window reaches back over is wall clock, so a gap
 /// wider than the span leaves the current element alone in it rather than a stale one that would be
 /// read as a whole span's worth of change.
@@ -285,16 +332,16 @@ mod span {
 		// nothing before the first element seen is claimed, so a 10s window over a 6s-old run is
 		// incomplete — where "have I been running long enough" would be a guess.
 		let o = s.tick(0, SBatches { src: &start });
-		assert_eq!(o.hist.trailing_at(2), None);
+		assert_eq!(o.hist.trailing_at(2).map(|(w, _)| w), None);
 
 		// a whole span past the first element: the window begins strictly inside `t - 10s`.
 		let o = s.tick(0, SBatches { src: &on });
-		assert_eq!(o.hist.trailing_at(0), Some(&[t(3.0), t(6.0), t(12.0)] as &[Tick]));
+		assert_eq!(o.hist.trailing_at(0).map(|(w, _)| w), Some(&[t(3.0), t(6.0), t(12.0)] as &[Tick]));
 
 		// a gap wider than the span: one element, not a window reaching 28s back.
 		let o = s.tick(0, SBatches { src: &after_gap });
 		assert_eq!(o.hist.past(), &[t(3.0), t(6.0), t(12.0)], "retention keys on the pre-batch newest");
-		assert_eq!(o.hist.trailing_at(0), Some(&[t(40.0)] as &[Tick]));
+		assert_eq!(o.hist.trailing_at(0).map(|(w, _)| w), Some(&[t(40.0)] as &[Tick]));
 	}
 }
 
@@ -387,7 +434,7 @@ mod revive {
 		fn advance<'t>(&'t mut self, (live, hist): DepOuts<'t, Self>) -> Self::Out<'t> {
 			assert!(live, "a gating dep reads true inside `advance`");
 			self.t += 1;
-			Some(Phase(self.t, hist.trailing_at(0).map_or(0, <[Tick]>::len)))
+			Some(Phase(self.t, hist.trailing_at(0).map_or(0, |(w, _)| w.len())))
 		}
 	}
 

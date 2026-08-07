@@ -1,4 +1,4 @@
-use trading_data::{Carried, Cell, Flat, FoldOuts, Folding, Folds, Slots, Stamped, Unbounded, Vars, abs, constant, lt, max, node, select, slice_nudge, wilder};
+use trading_data::{Carried, Cell, Env, FoldOuts, Folding, Folds, Lagged, Slots, Stamped, Unbounded, Vars, Witness, abs, constant, lt, max, node, select, slice_nudge, wilder};
 use v_utils::*;
 
 use crate::config::strategy;
@@ -20,9 +20,10 @@ impl Folds for Atr {
 	/// zero that is not zero.
 	const STATE: usize = 3;
 
-	fn read((bars,): &FoldOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
-		bars[i].flat(env);
-		Some(bars[i].ts_ns())
+	fn read<W: Witness>((bars,): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let (b, lag) = bars.at(i)?;
+		env.dep(0).lag(lag).put(b);
+		Some(b.ts_ns())
 	}
 
 	fn step(&self, v: Vars) -> impl Slots {

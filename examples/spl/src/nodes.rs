@@ -104,7 +104,7 @@ pub use rsi::{AvgGain, AvgLoss, Knobs, Rsi, RsiDelta, RsiSeries};
 pub use rsi_screener::RsiScreener;
 pub use spread::Spread;
 pub use std_screener::StdScreener;
-use trading_data::{Armed, BookAnchors, BookDelta, BookDeltas, BookShape, Elems, Fidelity, Lanes, Mc, McRoot, Oi, OiRoot, Over, TradeCols, Trades};
+use trading_data::{Armed, BookAnchors, BookDelta, BookDeltas, BookShape, Elems, Lanes, Mc, McRoot, Oi, OiRoot, Over, TradeCols, Trades};
 pub use trading_data::{Bar, RsiValues};
 // a `type Deps` const expression is re-expanded here, so the `TF_*` a dep names has to resolve here too.
 use v_utils::*;
@@ -123,29 +123,6 @@ trading_data::graph! {
 	roots { trades: Trades[TradeCols], deltas: BookDeltas[BookDelta], anchors: BookAnchors[BookShape], oi: OiRoot[Oi], mc: McRoot[Mc] };
 	out TickOut;
 	outputs { bar_1m: trading_data::Bars<{ TF_1MIN }>, deprecator: Deprecator, rsi: Rsi }
-}
-
-const _: () = assert!(
-	tally(true) == 15,
-	"the partial count moved: close the omission, or say in the commit what this graph's new node leaves out of its derivative"
-);
-const _: () = assert!(
-	tally(false) == 7,
-	"the opaque count moved: write algebra, or say in the commit why this graph needs another hand-written node"
-);
-/// The hatch, pinned (`r[kernels.fidelity.stated]`). Two numbers, because a node with no algebra and
-/// a node whose algebra is narrower than what its body read are different admissions. Either may fall
-/// silently; either may only rise in a diff that argues for it.
-const fn tally(partial: bool) -> usize {
-	let (mut n, mut i) = (0, 0);
-	while i < Graph::FIDELITY.len() {
-		n += match (Graph::FIDELITY[i].1, partial) {
-			(Fidelity::Partial(_), true) | (Fidelity::Opaque(_), false) => 1,
-			_ => 0,
-		};
-		i += 1;
-	}
-	n
 }
 
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it

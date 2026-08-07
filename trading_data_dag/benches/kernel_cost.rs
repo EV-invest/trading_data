@@ -23,7 +23,9 @@
 use std::hint::black_box;
 
 use iai_callgrind::{Callgrind, EventKind, LibraryBenchmarkConfig, library_benchmark, library_benchmark_group, main};
-use trading_data_dag::{Blind, Cell, Cons, DepOuts, Emit, Emitter, Flat, Nil, Node, Opaque, Pure, Raw, RunOuts, Runs, Scan, ScanOuts, Scans, Slots, Symbolic, step, step_emit, value_nudge};
+use trading_data_dag::{
+	Blind, Cell, Cons, DepOuts, Emit, Emitter, Env, Lagged, Nil, Node, Opaque, Pure, Raw, RunOuts, Runs, Scan, ScanOuts, Scans, Slots, Symbolic, Witness, step, step_emit, value_nudge,
+};
 use trading_data_expr::{Expr, Vars, constant};
 
 const TICKS: usize = 1_000;
@@ -133,8 +135,9 @@ trading_data_dag::slice_nudge!(Scanned, f64);
 impl Scans for Scanned {
 	type Deps = (Src,);
 
-	fn read((src,): &ScanOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
-		src[i].flat(env);
+	fn read<W: Witness>((src,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let (e, lag) = src.at(i)?;
+		env.dep(0).lag(lag).put(e);
 		Some(0)
 	}
 

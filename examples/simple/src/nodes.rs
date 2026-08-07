@@ -6,8 +6,8 @@
 use core::fmt;
 
 use trading_data::{
-	Buffering, Bump, Carried, Cell, Elems, Exact, Expr, Flat, FoldOuts, Folding, Folds, Glance, Horizon, Lanes, Over, RsiSpec, RunOuts, Runs, Side, Slots, Stamped, Symbolic, TradeCols,
-	Trades, Vars, always_present, constant, node, slice_nudge,
+	Buffering, Bump, Carried, Cell, Elems, Env, Exact, Expr, Flat, FoldOuts, Folding, Folds, Glance, Horizon, Lagged, Lanes, Over, RsiSpec, RunOuts, Runs, Side, Slots, Stamped, Symbolic,
+	TradeCols, Trades, Vars, Witness, always_present, constant, node, slice_nudge,
 };
 use v_utils::*;
 
@@ -82,11 +82,13 @@ impl Folds for Cvd {
 	const EXTRA: usize = 1;
 	const STATE: usize = 1;
 
-	fn read((trades,): &FoldOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
-		env[0] = trades.price[i] as f64 / trades.prec.price.scale();
-		env[1] = trades.qty[i] as f64 / trades.prec.qty.scale();
-		env[2] = signed(trades.side[i], 1.0);
-		Some(trades.exec()[i].as_nanos())
+	fn read<W: Witness>((trades,): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let (exec, lag) = trades.exec().at(i)?;
+		env.dep(0)
+			.lag(lag)
+			.put(&[trades.price[i] as f64 / trades.prec.price.scale(), trades.qty[i] as f64 / trades.prec.qty.scale()]);
+		env.opaque().put(&signed(trades.side[i], 1.0));
+		Some(exec.as_nanos())
 	}
 
 	fn step(&self, v: Vars) -> impl Slots {

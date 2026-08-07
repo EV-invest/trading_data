@@ -12,7 +12,9 @@ fn delta_back(hist: &Hist<'_, Oi>, i: usize, steps: i64) -> Option<f64> {
 	let step_ns = TF_5MIN.duration().as_nanos() as i64;
 	let cur = &hist.fresh()[i];
 	let target = cur.ts_ns() - steps * step_ns;
-	let o = hist.trailing_at(i)?.iter().rev().find(|o| o.ts_ns() <= target)?;
+	// the lag goes unread: this is a `Runs` body, and what has no algebra has no column to index.
+	let (win, _) = hist.trailing_at(i)?;
+	let o = win.iter().rev().find(|o| o.ts_ns() <= target)?;
 	// SPL's own zero guard: an OI of exactly zero is a dead contract, reported as no change.
 	(target - o.ts_ns() < step_ns).then(|| if o.oi != 0.0 { (cur.oi - o.oi) / o.oi * 100.0 } else { 0.0 })
 }

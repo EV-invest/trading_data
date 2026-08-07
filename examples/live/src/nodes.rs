@@ -3,8 +3,8 @@
 //! `Book`, and 1m bars off the same trades — the bars are what the chart draws price from.
 
 use trading_data::{
-	BookAnchors, BookDelta, BookDeltas, BookShape, Carried, Cell, FoldOuts, Folding, Folds, FrameKind, Lanes, Over, RunOuts, Runs, Side, Slots, TradeCols, Trades, Unbounded, Vars, node,
-	slice_nudge,
+	BookAnchors, BookDelta, BookDeltas, BookShape, Carried, Cell, Env, FoldOuts, Folding, Folds, FrameKind, Lagged, Lanes, Over, RunOuts, Runs, Side, Slots, TradeCols, Trades, Unbounded,
+	Vars, Witness, node, slice_nudge,
 };
 use v_utils::*;
 
@@ -25,14 +25,14 @@ impl Folds for Cvd {
 	const EXTRA: usize = 1;
 	const STATE: usize = 1;
 
-	fn read((t,): &FoldOuts<'_, Self>, i: usize, env: &mut [f64]) -> Option<i64> {
-		env[0] = t.price[i] as f64 / t.prec.price.scale();
-		env[1] = t.qty[i] as f64 / t.prec.qty.scale();
-		env[2] = match t.side[i] {
+	fn read<W: Witness>((t,): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let (exec, lag) = t.exec().at(i)?;
+		env.dep(0).lag(lag).put(&[t.price[i] as f64 / t.prec.price.scale(), t.qty[i] as f64 / t.prec.qty.scale()]);
+		env.opaque().put(&match t.side[i] {
 			Side::Buy => 1.0,
 			Side::Sell => -1.0,
-		};
-		Some(t.exec()[i].as_nanos())
+		});
+		Some(exec.as_nanos())
 	}
 
 	fn step(&self, v: Vars) -> impl Slots {
