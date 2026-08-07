@@ -32,5 +32,11 @@ trading_data_persistence.workspace = true
 # only through this facade still has to spell a `Timeframe`.
 v_utils.workspace = true
 
+[dev-dependencies]
+insta.workspace = true
+# the facade's own `pub use` lists, and the sub-crate signatures they reach, read as syntax rather
+# than as text: the invariants under test are about types, and a regex over them is a guess.
+syn = { workspace = true, features = ["visit"] }
+
 [lints]
 workspace = true

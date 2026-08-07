@@ -7,7 +7,7 @@ use std::any::TypeId;
 pub mod bench;
 
 // r[impl boundaries.examples.facade-only]
-pub use trading_data_core::{Asset, ExchangeName, Instrument, Pair, Symbol};
+pub use trading_data_core::{Asset, ExchangeName, Instrument, Pair, RelayCols, Symbol};
 #[doc(hidden)]
 pub use trading_data_dag as __dag;
 pub use trading_data_dag::{
@@ -41,7 +41,7 @@ pub use trading_data_derivatives::{
 	rsi,
 	wilder,
 };
-pub use trading_data_expr::{Expr, Slots, Vars, abs, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum};
+pub use trading_data_expr::{Ex, Expr, Slots, Vars, abs, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum};
 pub use trading_data_persistence::{
 	__td_node_Book, Aggregate, Arrival, BatchTrades, Book, BookAnchors, BookChunk, BookDelta, BookDeltas, BookShape, BookUpdate, Catalog, CatalogError, Clock, Direction, Exact, Feather,
 	Feed, FrameKind, InnerTrade, LaneKind, LaneReader, Lanes, LatencyConfig, Live, LiveClock, Local, Mc, McRoot, Oi, OiRoot, Precision, PrecisionPriceQty, ReadClock, Replay, RotationPolicy,
