@@ -26,7 +26,7 @@ LL | pub fn step_when_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, d
 ...
 LL |     N::Out<'t>: Glance + Latent,
   |                          ^^^^^^ required by this bound in `step_when_obs`
-     = note: this error originates in the macro `graph` (in Nightly builds, run with -Z macro-backtrace for more info)
+  = note: this error originates in the macro `graph` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: aborting due to 1 previous error
 

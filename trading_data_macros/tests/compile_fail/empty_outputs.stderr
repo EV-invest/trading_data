@@ -10,7 +10,7 @@ LL | |     outputs {}
 LL | | }
   | |_^
   |
-   = note: this error originates in the macro `graph` (in Nightly builds, run with -Z macro-backtrace for more info)
+  = note: this error originates in the macro `graph` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: aborting due to 1 previous error
 

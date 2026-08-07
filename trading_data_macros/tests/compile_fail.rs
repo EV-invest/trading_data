@@ -35,7 +35,6 @@ fn base_config(dir: PathBuf, root: &Path) -> ui_test::Config {
 	// otherwise shifts every line number, and with it the gutter width.
 	config.stderr_filter(r"\.rs:\d+:\d+", ".rs:LL:CC");
 	config.stderr_filter(r"(?m)^ *\d+( *\|)", "LL$1");
-	config.stderr_filter(r"(?m)^ *(\||-->)", "  $1");
 	// rustc spills an over-long type to a side file whose name carries a per-run hash.
 	config.stderr_filter(r"long-type-\d+\.txt", "long-type.txt");
 	// A const-eval panic is reported against `core`'s own `panic.rs`, which is the toolchain's, not
@@ -44,6 +43,10 @@ fn base_config(dir: PathBuf, root: &Path) -> ui_test::Config {
 	// both spellings onto the note, so these snapshots pin our message and not the toolchain layout.
 	config.stderr_filter(r"(?:/rustc/[0-9a-f]+|/nix/store/[^/]+/lib/rustlib/src/rust)/library/", "<sysroot>/library/");
 	config.stderr_filter(r"(?m)^LL \| *\$crate::panicking::panic_fmt.*\n", "");
-	config.stderr_filter(r"(?m)^ *\| *\^+ (evaluation of .* failed here)$", "    = note: $1");
+	config.stderr_filter(r"(?m)^ *\| *\^+ (evaluation of .* failed here)$", "= note: $1");
+	// Last, so it also squares the line above: rustc indents every gutter decoration to the width of
+	// the widest line number in the snippet, and `LL` has already thrown those away. Two nightlies two
+	// days apart disagreed by one space on one `= note:`, which is a red suite about nothing.
+	config.stderr_filter(r"(?m)^ *(-->|\||:::|=)", "  $1");
 	config
 }

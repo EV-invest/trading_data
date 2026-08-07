@@ -18,7 +18,7 @@ LL | |     N: Symbolic + Node<Deps = <N as Symbolic>::Deps>,
 LL | |     for<'t> N: Cell<Out<'t> = f64>,
 LL | |     <N as Symbolic>::Deps: DepFlat,
   | |___________________________________^
-     = note: required for `Pure` to implement `Level<NoAlgebra>`
+  = note: required for `Pure` to implement `Level<NoAlgebra>`
 note: required by a bound in `trading_data_dag::Node::Kernel`
   --> $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
