@@ -50,6 +50,13 @@ trading_data_macros         proc-macro home of `#[node]` and `graph!`: the first
 What each arrow may and may not be — and why an example is allowed exactly one of them — is stated
 in [docs/spec/boundaries.md](spec/boundaries.md).
 
+`trading_data`'s `pub use` lists are the client's whole vocabulary, and are pinned as such: a name is
+there because a graph, a `#[node]` body or a call into the storage tier can spell it, and everything
+`#[node]`/`graph!` writes on the author's behalf is reached through `__dag` instead. Two invariants
+hold it together, both checked in `trading_data/tests/facade_surface.rs` — a cell and its
+`__td_node_` shim are exported together, and a type a client must spell to call an exported item is
+itself exported — over a snapshot of the list, so a name enters or leaves by review.
+
 `trading_data_core` sits below both persistence and the external `v_exchanges` bridge, so a live ws
 `BatchTrades` extends the lane columns and the parquet writer in one pass — no exchange type leaks
 into the store, no store type leaks into the exchange layer.
