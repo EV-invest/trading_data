@@ -227,6 +227,7 @@ impl Reach for Unbounded {
 /// const-generic over the reach it retains (the join `graph!` computed, which no type can name) and
 /// still has to state that reach in dep position. Nothing else should reach for this — a dep that
 /// knows its own reach spells it [`Over`] or [`Elems`].
+#[doc(hidden)]
 pub struct At<const H: Horizon>;
 impl<const H: Horizon> Reach for At<H> {
 	const HORIZON: Horizon = H;
@@ -2521,6 +2522,7 @@ impl<T: Glance> Glance for Hist<'_, T> {
 ///
 /// One `Buffer<C, _>` per series per frame — two make every `Buffering<C, _>` ambiguous, the same
 /// failure as two instances of one node type.
+#[doc(hidden)]
 pub struct Buffer<C: Series, const H: Horizon> {
 	batch: C::Batch,
 }
@@ -2657,6 +2659,7 @@ where
 /// The invariant is monotone — once it holds a value it holds one forever. That is what a consumer
 /// clocked by *another* series needs: on its own ticks this one has emitted nothing, and reading the
 /// empty run there would read absence where a standing level is the truth.
+#[doc(hidden)]
 pub struct Latest<C: Series>
 where
 	C::Item: Present, {

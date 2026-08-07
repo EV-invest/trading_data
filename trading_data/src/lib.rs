@@ -11,10 +11,10 @@ pub use trading_data_core::{Asset, ExchangeName, Instrument, Pair, Symbol};
 #[doc(hidden)]
 pub use trading_data_dag as __dag;
 pub use trading_data_dag::{
-	__graph_resolve, Armed, At, Batch, Blind, Buffer, Buffering, Bump, Carried, Cell, Close, CloseOuts, Closes, Cons, Decides, DepOuts, Elems, Emit, EmitOuts, Episode, Episodic, Fidelity,
-	Fire, Flat, Fold, FoldOuts, Folding, Folds, Gate, Gating, Glance, Guide, Hist, Horizon, Ink, Jac, Latch, Latest, Level, Nil, Node, Nudge, Observer, Opaque, Over, Pending, Plot,
-	Predicate, Present, ProbabilisticDistribution, Pure, Raw, Reach, Roots, Rows, Run, RunOuts, Runs, Sampling, Scan, ScanOuts, Scans, Series, Stamped, Sweep, Symbolic, Tag, TriggerOut,
-	Unbounded, Unflat, Want, always_present, graph, node, node_alias, observe_root, slice_nudge, step, step_obs, value_nudge,
+	__graph_resolve, Armed, Batch, Blind, Buffering, Bump, Carried, Cell, Close, CloseOuts, Closes, Cons, Decides, DepOuts, Elems, Emit, EmitOuts, Episode, Episodic, Fidelity, Fire, Flat,
+	Fold, FoldOuts, Folding, Folds, Gate, Gating, Glance, Guide, Hist, Horizon, Ink, Jac, Latch, Level, Nil, Node, Nudge, Observer, Opaque, Over, Pending, Plot, Predicate, Present,
+	ProbabilisticDistribution, Pure, Raw, Reach, Roots, Rows, Run, RunOuts, Runs, Sampling, Scan, ScanOuts, Scans, Series, Stamped, Sweep, Symbolic, Tag, TriggerOut, Unbounded, Unflat,
+	Want, always_present, graph, node, node_alias, observe_root, slice_nudge, step, step_obs, value_nudge,
 };
 pub use trading_data_derivatives::{
 	// the dep shims: a `#[node]` writes one at its own crate's root, and a graph naming the cell
