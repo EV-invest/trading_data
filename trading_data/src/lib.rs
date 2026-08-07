@@ -11,10 +11,9 @@ pub use trading_data_core::{Asset, ExchangeName, Instrument, Pair, Symbol};
 #[doc(hidden)]
 pub use trading_data_dag as __dag;
 pub use trading_data_dag::{
-	__graph_resolve, Armed, Batch, Blind, Buffering, Bump, Carried, Cell, Close, CloseOuts, Closes, Cons, Decides, DepOuts, Elems, Emit, EmitOuts, Episode, Episodic, Fidelity, Fire, Flat,
-	Fold, FoldOuts, Folding, Folds, Gate, Gating, Glance, Guide, Hist, Horizon, Ink, Jac, Latch, Level, Nil, Node, Nudge, Observer, Opaque, Over, Pending, Plot, Predicate, Present,
-	ProbabilisticDistribution, Pure, Raw, Reach, Roots, Rows, Run, RunOuts, Runs, Sampling, Scan, ScanOuts, Scans, Series, Stamped, Sweep, Symbolic, Tag, TriggerOut, Unbounded, Unflat,
-	Want, always_present, graph, node, node_alias, observe_root, slice_nudge, step, step_obs, value_nudge,
+	Armed, Batch, Blind, Buffering, Bump, Carried, Cell, Close, CloseOuts, Closes, Decides, DepOuts, Elems, EmitOuts, Episode, Episodic, Fidelity, Fire, Flat, Fold, FoldOuts, Folding,
+	Folds, Gate, Gating, Glance, Guide, Hist, Horizon, Ink, Latch, Level, Nudge, Observer, Over, Pending, Plot, Predicate, Present, ProbabilisticDistribution, Reach, Roots, Rows, Run,
+	RunOuts, Runs, Sampling, Scan, ScanOuts, Scans, Series, Stamped, Symbolic, Tag, TriggerOut, Unbounded, Unflat, Want, always_present, graph, node, node_alias, slice_nudge, value_nudge,
 };
 pub use trading_data_derivatives::{
 	// the dep shims: a `#[node]` writes one at its own crate's root, and a graph naming the cell
@@ -38,16 +37,11 @@ pub use trading_data_derivatives::{
 	RsiValues,
 	Volume,
 	Volumes,
-	Wilder,
-	WilderAtr,
-	WilderAvgGainLoss,
 	closed_by,
 	rsi,
 	wilder,
 };
-pub use trading_data_expr::{
-	Abs, Add, Ast, Const, Div, Ex, Expr, Mul, Neg, Slots, Square, Sub, Sum, Trace, Var, Vars, abs, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum,
-};
+pub use trading_data_expr::{Expr, Slots, Vars, abs, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum};
 pub use trading_data_persistence::{
 	__td_node_Book, Aggregate, Arrival, BatchTrades, Book, BookAnchors, BookChunk, BookDelta, BookDeltas, BookShape, BookUpdate, Catalog, CatalogError, Clock, Direction, Exact, Feather,
 	Feed, FrameKind, InnerTrade, LaneKind, LaneReader, Lanes, LatencyConfig, Live, LiveClock, Local, Mc, McRoot, Oi, OiRoot, Precision, PrecisionPriceQty, ReadClock, Replay, RotationPolicy,
