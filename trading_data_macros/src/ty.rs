@@ -32,14 +32,14 @@ pub fn unwrap_dep(ty: &Type) -> syn::Result<(Type, Wrap)> {
 	let bare = || Ok((ty.clone(), Wrap::Bare));
 	let Type::Path(p) = ty else { return bare() };
 	let Some(seg) = p.path.segments.last() else { return bare() };
-	match seg.ident.to_string().as_str() {
+	let engine_cell = match seg.ident.to_string().as_str() {
 		"Buffer" =>
-			return Err(syn::Error::new_spanned(
-				ty,
-				"`Buffer<C, H>` is the frame cell `graph!` grows for you — its reach is the join of every read of `C` in the graph, so it is not yours to state. Write `Buffering<C, R>`",
-			)),
-		"Latest" => return Err(syn::Error::new_spanned(ty, "`Latest<C>` is the frame cell `graph!` grows for you. Write `Sampling<C>`")),
-		_ => (),
+			Some("`Buffer<C, H>` is the frame cell `graph!` grows for you — its reach is the join of every read of `C` in the graph, so it is not yours to state. Write `Buffering<C, R>`"),
+		"Latest" => Some("`Latest<C>` is the frame cell `graph!` grows for you. Write `Sampling<C>`"),
+		_ => None,
+	};
+	if let Some(write_instead) = engine_cell {
+		return Err(syn::Error::new_spanned(ty, write_instead));
 	}
 	let PathArguments::AngleBracketed(args) = &seg.arguments else { return bare() };
 	let mut it = args.args.iter().filter(|a| !matches!(a, GenericArgument::Lifetime(_)));
