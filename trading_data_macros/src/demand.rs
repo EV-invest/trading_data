@@ -28,7 +28,7 @@ fn key_of(ts: &TokenStream) -> syn::Result<String> {
 /// The cell is canonicalized first, for the reason `visit` canonicalizes it: a retention is keyed on
 /// the series it holds, and an alias is a second spelling of one series rather than a second series.
 fn spelling(st: &State, ts: &TokenStream) -> syn::Result<(String, Wrap)> {
-	let (cell, wrap) = ty::unwrap_dep(&ty::parse_type(&ty::flatten(ts.clone()))?);
+	let (cell, wrap) = ty::unwrap_dep(&ty::parse_type(&ty::flatten(ts.clone()))?)?;
 	let named = ty::norm(&cell);
 	let cell = st.aliases.iter().find(|(a, _)| *a == named).map_or(named, |(_, answered)| answered.clone());
 	let key = match wrap {

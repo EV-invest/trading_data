@@ -137,10 +137,10 @@ fn re_walk(st: &mut State, dep: &Dep) {
 /// Walks one edge. `Ok(Some(..))` is a question only the compiler can answer: emit it and pause.
 fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 	let (_, full) = key_of(&dep.ty)?;
-	let (cell, wrap) = ty::unwrap_dep(&full);
+	let (cell, wrap) = ty::unwrap_dep(&full)?;
 	let key = ty::norm(&cell);
 
-	if let Wrap::Buf { reach, typed } = wrap {
+	if let Wrap::Buf { reach } = wrap {
 		// A cell reached through a `node_alias!` answers under its own key. Keying the retention on the
 		// spelling instead would put a second `Buffer` over one series in the frame, which makes every
 		// `Buffering` of it ambiguous — so the cell is resolved first and the key taken from its answer.
@@ -155,13 +155,8 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 			None => key,
 		};
 		let dag = &st.cfg.dag;
-		// `Buffer<C, K>` states a `Horizon` and `Buffering<C, R>` a [`Reach`] type; the join is over
-		// values, so the type is projected here and the two meet as one list.
-		let reach = match (reach, typed) {
-			(Some(r), true) => quote!(<#r as #dag::Reach>::HORIZON),
-			(Some(r), false) => r,
-			(None, _) => quote!(#dag::Horizon::Unit),
-		};
+		// the join is over `Horizon` values, so the [`Reach`] type the dep stated is projected here.
+		let reach = quote!(<#reach as #dag::Reach>::HORIZON);
 		let bkey = format!("Buffer<{key}>");
 		match st.bufs.iter_mut().find(|b| b.key == bkey) {
 			Some(b) => b.reaches.push(reach),

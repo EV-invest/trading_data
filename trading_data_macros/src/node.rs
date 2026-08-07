@@ -199,7 +199,7 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 	let deps: Vec<TokenStream> = deps
 		.into_iter()
 		.map(|d| -> syn::Result<TokenStream> {
-			let (cell, _) = ty::unwrap_dep(d);
+			let (cell, _) = ty::unwrap_dep(d)?;
 			// a dep that *is* a parameter has no shim until the caller says: it passes one alongside.
 			let shim = match &cell {
 				Type::Path(p) if p.qself.is_none() && p.path.get_ident().is_some_and(|i| sig.idents().contains(i)) => {
@@ -255,7 +255,7 @@ impl Parse for Alias {
 /// naming a node both ways still lands on one field.
 pub fn node_alias(input: TokenStream) -> syn::Result<TokenStream> {
 	let Alias { attrs, vis, name, ty } = syn::parse2(input)?;
-	if !matches!(ty::unwrap_dep(&ty).1, Wrap::Bare) {
+	if !matches!(ty::unwrap_dep(&ty)?.1, Wrap::Bare) {
 		return Err(syn::Error::new_spanned(&ty, "a `node_alias!` names a cell, not a dep-position wrapper"));
 	}
 	let target = dep_shim(&ty, "__td_node_")?;

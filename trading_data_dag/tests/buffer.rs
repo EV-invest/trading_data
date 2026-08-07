@@ -4,7 +4,7 @@
 //! the point of engine-owned retention.
 
 use trading_data_dag::{
-	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, RunOuts, Runs, Stamped, Want, graph, node, slice_nudge,
+	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Over, RunOuts, Runs, Stamped, Want, graph, node, slice_nudge,
 };
 use v_utils::{Timeframe, TimeframeDesignator};
 
@@ -137,7 +137,7 @@ graph! {
 	roots { src: Src[f64] };
 	out GOut;
 	// the frame's retention is the join of every read of it, and `Elems(3)` is the deepest here.
-	outputs { sum3: Sum3, split: Split, level: Level, hist: Buffer<Src, { Horizon::Elems(3) }> }
+	outputs { sum3: Sum3, split: Split, level: Level, hist: Buffering<Src, Elems<3>> }
 }
 
 /// Two consumers of one series at different reaches. `all()` must answer at the *declared* one, or a
@@ -274,7 +274,7 @@ mod span {
 		batches SBatches;
 		roots { src: Src[f64] };
 		out SOut;
-		outputs { hist: Buffer<Src, { Horizon::Over(Timeframe::from_naive(10, TimeframeDesignator::Seconds)) }> }
+		outputs { hist: Buffering<Src, Over<{ Timeframe::from_naive(10, TimeframeDesignator::Seconds) }>> }
 	}
 
 	#[test]
@@ -396,7 +396,7 @@ mod revive {
 		batches LBatches;
 		roots { src: Src[f64], trig: Trig[u32] };
 		out LOut;
-		outputs { episodic: Episodic, hist: Buffer<Src, { Horizon::Elems(3) }> }
+		outputs { episodic: Episodic, hist: Buffering<Src, Elems<3>> }
 	}
 
 	const ARM: &[f64] = &[1.0];

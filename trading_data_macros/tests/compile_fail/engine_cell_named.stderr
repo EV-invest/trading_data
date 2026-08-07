@@ -1,0 +1,14 @@
+error: `Buffer<C, H>` is the frame cell `graph!` grows for you — its reach is the join of every read of `C` in the graph, so it is not yours to state. Write `Buffering<C, R>`
+  --> $DIR/trading_data_macros/tests/compile_fail/engine_cell_named.rs:LL:CC
+  |
+LL |     type Deps = (Buffer<Src, { Horizon::Elems(3) }>,);
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: `Latest<C>` is the frame cell `graph!` grows for you. Write `Sampling<C>`
+  --> $DIR/trading_data_macros/tests/compile_fail/engine_cell_named.rs:LL:CC
+  |
+LL |     type Deps = (Latest<Src>,);
+  |                  ^^^^^^^^^^^
+
+error: aborting due to 2 previous errors
+

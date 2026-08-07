@@ -9,13 +9,9 @@ use syn::{GenericArgument, PathArguments, Type, TypePath};
 pub enum Wrap {
 	Bare,
 	Fold,
-	/// The reach the *engine* is asked to retain, which is what a `Buffer` field is sized on. `None`
-	/// where the dep omitted it: the default is `Horizon::Unit`, and only the driver knows the dag's
-	/// path to spell it under. `typed` says which vocabulary it came in as — a `Buffering`'s reach is
-	/// a [`Reach`] type, a `Buffer`'s is the `Horizon` value the driver joins.
+	/// The [`Reach`] type the *engine* is asked to retain, which is what a `Buffer` field is sized on.
 	Buf {
-		reach: Option<TokenStream>,
-		typed: bool,
+		reach: TokenStream,
 	},
 	/// The point-level read. No reach to carry: a `Latest` field holds one item, whatever was asked.
 	Sample,
@@ -30,34 +26,36 @@ pub fn parse_type(ts: &TokenStream) -> syn::Result<Type> {
 /// was. Matched on the last path segment, so a wrapper named through any path spelling still reads
 /// as one.
 ///
-/// `Buffer<C, H>` / `Latest<C>` named outright read as the requests they are: the frame holds one of
-/// each per series, so asking for it by its type and asking for it through a dep must land on the
-/// same field.
-pub fn unwrap_dep(ty: &Type) -> (Type, Wrap) {
-	let Type::Path(p) = ty else { return (ty.clone(), Wrap::Bare) };
-	let Some(seg) = p.path.segments.last() else { return (ty.clone(), Wrap::Bare) };
-	let PathArguments::AngleBracketed(args) = &seg.arguments else {
-		return (ty.clone(), Wrap::Bare);
-	};
-	// positional, not by `GenericArgument` kind: a `Buffer`'s reach is a const and a `Buffering`'s is a
-	// type, and the parser cannot tell one bare path from the other.
+/// `Buffer<C, H>` and `Latest<C>` are the frame cells those two resolve *against*, and are rejected
+/// here rather than aliased onto the field they name — the same seal `#[node]` puts on `impl Node`.
+pub fn unwrap_dep(ty: &Type) -> syn::Result<(Type, Wrap)> {
+	let bare = || Ok((ty.clone(), Wrap::Bare));
+	let Type::Path(p) = ty else { return bare() };
+	let Some(seg) = p.path.segments.last() else { return bare() };
+	match seg.ident.to_string().as_str() {
+		"Buffer" =>
+			return Err(syn::Error::new_spanned(
+				ty,
+				"`Buffer<C, H>` is the frame cell `graph!` grows for you — its reach is the join of every read of `C` in the graph, so it is not yours to state. Write `Buffering<C, R>`",
+			)),
+		"Latest" => return Err(syn::Error::new_spanned(ty, "`Latest<C>` is the frame cell `graph!` grows for you. Write `Sampling<C>`")),
+		_ => (),
+	}
+	let PathArguments::AngleBracketed(args) = &seg.arguments else { return bare() };
 	let mut it = args.args.iter().filter(|a| !matches!(a, GenericArgument::Lifetime(_)));
 	let (Some(GenericArgument::Type(cell)), reach) = (it.next(), it.next()) else {
-		return (ty.clone(), Wrap::Bare);
+		return bare();
 	};
-	match seg.ident.to_string().as_str() {
+	Ok(match seg.ident.to_string().as_str() {
 		"Folding" => (cell.clone(), Wrap::Fold),
 		"Gating" => (cell.clone(), Wrap::Gate),
-		"Buffering" | "Buffer" => (
-			cell.clone(),
-			Wrap::Buf {
-				reach: reach.map(ToTokens::to_token_stream),
-				typed: seg.ident == "Buffering",
-			},
-		),
-		"Sampling" | "Latest" => (cell.clone(), Wrap::Sample),
+		"Buffering" => {
+			let reach = reach.ok_or_else(|| syn::Error::new_spanned(ty, "a `Buffering` dep names the reach the engine retains for it: write `Buffering<C, R>`"))?;
+			(cell.clone(), Wrap::Buf { reach: reach.to_token_stream() })
+		}
+		"Sampling" => (cell.clone(), Wrap::Sample),
 		_ => (ty.clone(), Wrap::Bare),
-	}
+	})
 }
 
 /// What a node is deduped on: the last path segment and its arguments, recursively. Path-insensitive

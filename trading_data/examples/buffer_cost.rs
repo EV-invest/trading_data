@@ -6,7 +6,7 @@
 
 use std::hint::black_box;
 
-use trading_data::{Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Flat, Glance, Reach, Stamped, graph, node, slice_nudge};
+use trading_data::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Flat, Glance, Reach, Stamped, graph, node, slice_nudge};
 
 const TICKS: usize = 200_000;
 /// Deep enough that the memmove dominates, and of the order an indicator's window actually is.
@@ -76,7 +76,7 @@ graph! {
 	batches Batches;
 	roots { src: Src[f64] };
 	out GOut;
-	outputs { ends: Ends, hist: Buffer<Src, { <Win as Reach>::HORIZON }> }
+	outputs { ends: Ends, hist: Buffering<Src, Win> }
 }
 
 fn main() {
