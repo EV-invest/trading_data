@@ -3,9 +3,8 @@
 #set par(justify: false)
 #show raw.where(block: true): it => block(fill: luma(248), inset: 8pt, radius: 3pt, width: 100%, text(size: 7.6pt, it))
 
-// Every number below is read, not typed. `viz_cost` writes `cost.json`; `tests/cost.rs` fails when
-// the graph it was taken over stops matching the one that compiles. Nothing here is maintained by
-// hand, so nothing here can quietly drift from what the code does.
+// Every number below is read, not typed: `viz_cost` writes `cost.json` and this reads it, so nothing
+// here is maintained by hand.
 #let m = json("cost.json")
 #let s(x) = str(calc.round(x, digits: 2))
 #let pct(x) = str(calc.round(100 * x / m.total_s, digits: 1)) + "%"
@@ -95,7 +94,7 @@ them with a plain `taskset` and nothing else is scheduled there. What the reserv
 mostly spread rather than mean: the legs that move on a contended core are `handoff` and
 `backpressure`, which is what a second runnable thread looks like from the producer side.
 
-`tests/cost.rs` asserts `cost.json`'s derived closure still equals `Graph::NODES`, so adding or
-removing a node fails the suite rather than leaving this document quietly describing a graph that no
-longer exists. It deliberately does not re-measure: a leg wants the whole parquet cache, which is not
-a thing `cargo t` may assume.
+`cost.json` carries the derived closure the legs were taken over, and the header above counts it, so
+a graph that has since changed shows up as a node count that no longer matches the one `spl` prints
+on startup. Re-run `--example viz_cost` when it does — a leg wants the whole parquet cache, so this
+is a thing to redo rather than a thing to check on every `cargo t`.
