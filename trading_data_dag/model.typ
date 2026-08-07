@@ -142,6 +142,10 @@ Five spellings, no sixth. Every structural fact about an edge is one of these.
  cannot take a `Reach`, since no type names a join over reads the macro has not seen yet. `At<H>` is
  the identity lift, and the only place the two meet: `Buffer`'s own dep on the series it retains.
 
+ Which is why the "resolves against" column is not a second spelling: `Buffer<C,H>`/`Latest<C>` in
+ dep position are a `#[node]` error naming the wrapper to write instead. `K` is the join over every
+ read of `C` in the graph, so no one dep site holds what it would have to state.
+
  Every wrapper forwards `Cell::NAME = C::NAME` and `Cell::CLOCK = C::CLOCK` — the graph predicates
  match dep names against frame cell names, and a wrapper that renamed or re-rated its dep would drop
  out of all of them. REACH / FOLDED / RETAINED / Gates are what then say WHICH reading of C is being
@@ -420,6 +424,9 @@ gateable the moment the lane became a run of rows the engine could retain for it
       Being warm is their whole job — that is what makes darkening a consumer cheap.
       Two `Buffer<C, _>` in one frame make every `Buffering<C, _>` ambiguous: same failure
       as two instances of any node type.
+      "Nobody writes" is now checked, not asked: `Buffer`/`Latest` are off the facade and a
+      dep naming either is a `#[node]` error (§1.3). `Armed<N>` stays nameable, and is the
+      one of the three an author does name — `Gating<Armed<E>>`, because it is the gate.
 ```
 
 #align(center, diagram(
