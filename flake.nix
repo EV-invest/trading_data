@@ -169,6 +169,7 @@
               mold
               openssl
               pkg-config
+              (v_flakes.qlty system)
               rust
               # The Firefox Profiler UI over the same samples, and the one that needs no root.
               samply
