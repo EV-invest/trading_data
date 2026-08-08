@@ -1,4 +1,4 @@
-error: dep cycle: A → B → A — a graph is a dag, and a node cannot read what it feeds
+error: dep cycle: A → B → A
   --> $DIR/trading_data_macros/tests/compile_fail/dep_cycle.rs:LL:CC
   |
 LL | / graph! {
@@ -10,6 +10,8 @@ LL | |     outputs { a: A }
 LL | | }
   | |_^
   |
+  = note: a graph is a dag: a node cannot read what it feeds
+  = help: if the back edge is meant to read the *previous* tick, that is state the node keeps itself, not a dep
   = note: this error originates in the macro `::trading_data_dag::__graph_resolve` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: aborting due to 1 previous error

@@ -7,12 +7,12 @@ impl Cell for Root {
 }
 
 // nothing is asked for, so nothing is built
-graph! { //~ ERROR: graph! needs at least one output
+graph! {
 	struct G;
 	batches Batches;
 	roots { r: Root[u8] };
 	out GOut;
-	outputs {}
+	outputs {} //~ ERROR: graph! needs at least one output
 }
 
 fn main() {}

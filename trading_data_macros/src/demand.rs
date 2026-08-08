@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use proc_macro2::{Span, TokenStream};
 
 use crate::{
+	diag::{Diag, Result},
 	state::{NodeInfo, State},
 	ty::{self, Wrap},
 };
@@ -20,20 +21,20 @@ struct Edge {
 	fold: bool,
 }
 
-fn key_of(ts: &TokenStream) -> syn::Result<String> {
+fn key_of(ts: &TokenStream) -> Result<String> {
 	Ok(ty::norm(&ty::parse_type(&ty::flatten(ts.clone()))?))
 }
 
 /// The cell a dep spelling names, wrapper stripped and aliases resolved — the reason `visit`
 /// canonicalizes too: an alias is a second spelling of one series rather than a second series.
-pub fn cell(st: &State, ts: &TokenStream) -> syn::Result<(String, Wrap)> {
+pub fn cell(st: &State, ts: &TokenStream) -> Result<(String, Wrap)> {
 	let (cell, wrap) = ty::unwrap_dep(&ty::parse_type(&ty::flatten(ts.clone()))?)?;
 	let named = ty::norm(&cell);
 	Ok((st.aliases.iter().find(|(a, _)| *a == named).map_or(named, |(_, answered)| answered.clone()), wrap))
 }
 
 /// The key a dep or output spelling was recorded under — `visit`'s reading of it, wrapper and all.
-fn spelling(st: &State, ts: &TokenStream) -> syn::Result<(String, Wrap)> {
+fn spelling(st: &State, ts: &TokenStream) -> Result<(String, Wrap)> {
 	let (cell, wrap) = cell(st, ts)?;
 	let key = match wrap {
 		Wrap::Buf { .. } => format!("Buffer<{cell}>"),
@@ -45,7 +46,7 @@ fn spelling(st: &State, ts: &TokenStream) -> syn::Result<(String, Wrap)> {
 
 /// The node a dep spelling reads — the same three readings `resolve::visit` walks, in that order,
 /// plus the alias table, since a spelling need not be a key.
-fn target(st: &State, order: &[String], key: &str) -> syn::Result<Option<usize>> {
+fn target(st: &State, order: &[String], key: &str) -> Result<Option<usize>> {
 	if let Some(i) = order.iter().position(|k| k == key) {
 		return Ok(Some(i));
 	}
@@ -55,18 +56,18 @@ fn target(st: &State, order: &[String], key: &str) -> syn::Result<Option<usize>>
 		}
 	}
 	let Some((_, answered)) = st.aliases.iter().find(|(a, _)| a == key) else {
-		return Err(syn::Error::new(
+		return Err(Diag::new(
 			Span::call_site(),
 			format!("`{key}` is no root, node, alias or buffer of this graph — the walk resolved it, so a demand pass that cannot is a driver bug"),
 		));
 	};
 	match order.iter().position(|k| k == answered) {
 		Some(i) => Ok(Some(i)),
-		None => Err(syn::Error::new(Span::call_site(), format!("`{key}` aliases `{answered}`, which the walk never stepped"))),
+		None => Err(Diag::new(Span::call_site(), format!("`{key}` aliases `{answered}`, which the walk never stepped"))),
 	}
 }
 
-fn edges(st: &State, order: &[String], n: &NodeInfo) -> syn::Result<Vec<Edge>> {
+fn edges(st: &State, order: &[String], n: &NodeInfo) -> Result<Vec<Edge>> {
 	n.deps
 		.iter()
 		.map(|d| {
@@ -108,11 +109,11 @@ fn or(mut a: Vec<BTreeSet<usize>>, b: Vec<BTreeSet<usize>>) -> Vec<BTreeSet<usiz
 /// where something will fetch back what it skipped, and whether anything will is the feed's answer,
 /// not the graph's. An anchored node names itself; a retention read only by anchored nodes names all
 /// of them.
-pub fn suppressors(st: &State) -> syn::Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
+pub fn suppressors(st: &State) -> Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
 	let order = &st.order;
 	let n = order.len();
 	let info: Vec<&NodeInfo> = order.iter().map(|k| st.known.iter().find(|x| x.key == *k).expect("an ordered node is known")).collect();
-	let edges: Vec<Vec<Edge>> = info.iter().map(|x| edges(st, order, x)).collect::<syn::Result<_>>()?;
+	let edges: Vec<Vec<Edge>> = info.iter().map(|x| edges(st, order, x)).collect::<Result<_>>()?;
 
 	let mut consumers: Vec<Vec<usize>> = vec![Vec::new(); n];
 	// the gates that dominate a node's own run. A latch is among them, but only ever suppresses a node

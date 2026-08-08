@@ -11,6 +11,7 @@ use syn::{
 };
 
 use crate::{
+	diag::{Diag, Result},
 	state::{Awaiting, Cfg, Dep, Named, Root, State},
 	ty,
 };
@@ -74,11 +75,13 @@ impl Parse for GraphDef {
 
 		input.parse::<kw::roots>()?;
 		let content;
-		braced!(content in input);
+		// the braces rather than `input`, which by here has moved past them and would mark the next
+		// clause for a mistake made in this one.
+		let brace = braced!(content in input);
 		let roots: Punctuated<RootDef, Token![,]> = Punctuated::parse_terminated(&content)?;
 		input.parse::<Token![;]>()?;
 		if roots.is_empty() {
-			return Err(syn::Error::new(input.span(), "graph! needs at least one root"));
+			return Err(syn::Error::new(brace.span.join(), "graph! needs at least one root"));
 		}
 
 		input.parse::<kw::out>()?;
@@ -87,11 +90,11 @@ impl Parse for GraphDef {
 
 		input.parse::<kw::outputs>()?;
 		let content;
-		braced!(content in input);
+		let brace = braced!(content in input);
 		let named: Vec<NamedDef> = Punctuated::<NamedDef, Token![,]>::parse_terminated(&content)?.into_iter().collect();
 		if named.is_empty() {
 			return Err(syn::Error::new(
-				input.span(),
+				brace.span.join(),
 				"graph! needs at least one output: a graph that produces nothing is built out of nothing",
 			));
 		}
@@ -111,7 +114,7 @@ impl Parse for GraphDef {
 /// the facade, which re-exports it. Resolved here because `graph!` is the one entry point — from here
 /// it rides in the driver state, which a `macro_rules!` shim can pass back but not re-derive.
 /// `#[node]` asks separately, since the `impl Node` it writes names the dag at the declaration site.
-pub fn dag_path() -> syn::Result<TokenStream> {
+pub fn dag_path() -> Result<TokenStream> {
 	let reach = |name: &str, item: TokenStream| match crate_name(name) {
 		Ok(FoundCrate::Itself) => Some(quote!(crate #item)),
 		Ok(FoundCrate::Name(n)) => {
@@ -121,14 +124,13 @@ pub fn dag_path() -> syn::Result<TokenStream> {
 		Err(_) => None,
 	};
 	reach("trading_data_dag", quote!()).or_else(|| reach("trading_data", quote!(::__dag))).ok_or_else(|| {
-		syn::Error::new(
-			Span::call_site(),
-			"`graph!` expands to dag paths: this crate depends on neither `trading_data` nor `trading_data_dag`",
-		)
+		Diag::new(Span::call_site(), "this expands to dag paths, and the crate reaches no dag")
+			.help("add `trading_data` to this crate's `[dependencies]` — it re-exports the engine")
+			.note("`trading_data_dag` on its own also answers, for a crate that is building the engine rather than using it")
 	})
 }
 
-pub fn graph(input: TokenStream) -> syn::Result<TokenStream> {
+pub fn graph(input: TokenStream) -> Result<TokenStream> {
 	let def: GraphDef = syn::parse2(input)?;
 	let dag = dag_path()?;
 
@@ -141,7 +143,7 @@ pub fn graph(input: TokenStream) -> syn::Result<TokenStream> {
 				ty: n.ty.to_token_stream(),
 			})
 		})
-		.collect::<syn::Result<_>>()?;
+		.collect::<Result<_>>()?;
 
 	let st = State {
 		cfg: Cfg {

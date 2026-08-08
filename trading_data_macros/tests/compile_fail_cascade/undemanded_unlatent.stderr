@@ -1,4 +1,4 @@
-error[E0277]: `f64` has no unfired reading — a node read only behind a gate must be able to decline: make its out `Option`-valued, or give it a consumer that is not gated
+error[E0277]: `f64` has no unfired reading
   --> $DIR/trading_data_macros/tests/compile_fail_cascade/undemanded_unlatent.rs:LL:CC
   |
 LL | / graph! {
@@ -8,8 +8,10 @@ LL | |     roots { src: Src[Ev] };
 LL | |     out GOut;
 LL | |     outputs { sink: Sink }
 LL | | }
-  | |_^ the trait `Latent` is not implemented for `f64`
+  | |_^ no `Latent` impl
   |
+  = help: the trait `Latent` is not implemented for `f64`
+  = note: a node every reader of which sits behind one gate is skipped while that gate is false, so it has to be able to decline: make its out `Option`-valued, or give it a consumer that is not gated
 help: the following other types implement trait `Latent`
   --> $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
