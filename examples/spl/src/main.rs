@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use exec_viz::{Backpressure, Rec, Recorder, Viz};
 use indicatif::ProgressBar;
-use trading_data::{Catalog, Cell, Exact, ExchangeName, Feed, LatencyConfig, Observer, ReadClock, Replay, Side, Ts, read_mc, read_oi, required_lanes};
+use trading_data::{Catalog, Cell, Exact, ExchangeName, Feed, LatencyConfig, Observer, ReadClock, Replay, Side, Step, Ts, read_mc, read_oi, required_lanes};
 use trading_data_spl::{
 	asset,
 	config::{self, Config},
@@ -185,7 +185,9 @@ impl Observed for Recorder {
 async fn replay(graph: &mut Graph, day: &mut Day, days: &[jiff::civil::Date], feed: impl Fn(jiff::civil::Date) -> Replay, pb: &ProgressBar, run_start: i64, obs: &mut impl Observed) {
 	for d in days {
 		let mut feed = feed(*d);
-		while let Some(lanes) = feed.next() {
+		// `step` rather than `next`: the book is anchored, so it sleeps while nothing demands it and is
+		// replayed out of this past on the tick something does.
+		while let Some(Step { lanes, mut past }) = feed.step() {
 			day.ticks += 1;
 			let ts_ns = lanes.ts_venue.as_nanos();
 			if day.ticks % 256 == 0 {
@@ -198,7 +200,7 @@ async fn replay(graph: &mut Graph, day: &mut Day, days: &[jiff::civil::Date], fe
 					pb.set_message(format!("{} episodes, {} intents{}", day.episodes, day.intents, day.violations_msg()));
 				}
 			}
-			let out = graph.tick_obs(ts_ns, lanes.into(), &mut obs.at(ts_ns));
+			let out = graph.tick_rewind_obs(ts_ns, lanes.into(), &mut past, &mut obs.at(ts_ns));
 
 			for intent in out.deprecator {
 				day.check_intent(*intent);

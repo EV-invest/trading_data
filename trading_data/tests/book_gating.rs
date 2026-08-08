@@ -6,13 +6,15 @@
 //! 3. dark **within one period**, it wakes onto the same book an ungated twin folded row by row,
 //!    without a checkpoint and without a new epoch: the retained net covers the whole period, so
 //!    there is nothing a sleeping book missed that the net cannot hand it;
-//! 4. dark **across a period boundary**, the net it woke into no longer reaches back over what it
-//!    missed, so it resyncs — from the checkpoint written on that same boundary, one new epoch, and
-//!    onto the twin's book again. With no such checkpoint it stays dark rather than fold onto stale
-//!    state.
+//! 4. dark **across one period boundary**, the net it woke into still reaches: the tumble sets the
+//!    closing period's net aside rather than dropping it, so the two join over everything missed —
+//!    same book as the twin, same epoch, and no checkpoint needed;
+//! 5. dark past **two** boundaries, the join no longer reaches, so it declines to fold onto stale
+//!    state and resyncs off the next checkpoint instead — one new epoch, and onto the twin's book.
+//!    That is the bound, not a guarantee: it is a wider reach, and the guarantee is a replay.
 //!
-//! (3) and (4) are why gating a book is sound where gating a recurrence is not: the engine retains
-//! the deltas as a *net*, so a wake costs depth rather than the length of the sleep.
+//! (3)–(5) are why gating a book is sound where gating a recurrence is not: the engine retains the
+//! deltas as a *net*, so a wake costs depth rather than the length of the sleep.
 
 use trading_data::{
 	Blind, Book, BookAnchors, BookDelta, BookDeltas, BookShape, Buffering, Cell, DepOuts, FrameKind, Gate, Gating, Nudge, Over, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols,
@@ -188,7 +190,7 @@ fn a_gate_closed_within_one_period_costs_no_resync() {
 }
 
 #[test]
-fn a_gate_closed_across_a_boundary_resyncs_from_that_boundary_s_checkpoint() {
+fn a_gate_closed_across_one_boundary_wakes_off_the_joined_net() {
 	let mut g = G::default();
 	let mut trades = TradeBuf::new(PREC);
 
@@ -197,21 +199,42 @@ fn a_gate_closed_across_a_boundary_resyncs_from_that_boundary_s_checkpoint() {
 
 	// dark for the rest of the period, and on past its end — the net tumbles under the sleeping book.
 	tick(&mut g, &mut trades, false, None, &run(200, &[(2, Side::Sell, 10_005, 2)]));
-	let (_, twin, _) = tick(&mut g, &mut trades, false, None, &run(300, &[(3, Side::Buy, 9_998, 9)]));
-	// the checkpoint the recorder writes on the boundary: the book as it stood when the period closed
-	let (bids, asks) = twin.expect("the twin never sleeps").1;
-	let boundary = anchor(&bids, &asks);
-
+	tick(&mut g, &mut trades, false, None, &run(300, &[(3, Side::Buy, 9_998, 9)]));
 	tick(&mut g, &mut trades, false, None, &run(PERIOD + 100, &[(4, Side::Sell, 10_004, 1)]));
 
-	// 1. woken with no checkpoint: the net covers only this period, and levels 2..3 are behind it.
-	//    Folding on would fold onto stale state, so it declines instead.
-	let (gated, _, mid) = tick(&mut g, &mut trades, true, None, &run(PERIOD + 200, &[(5, Side::Buy, 9_999, 4)]));
-	assert_eq!((gated, mid), (None, None), "past the net's reach and without a seed, a book is not readable");
+	// woken with no checkpoint at all: the closing period's net was set aside at the tumble, and it
+	// joins this one over exactly the levels that went by.
+	let (gated, twin, mid) = tick(&mut g, &mut trades, true, None, &run(PERIOD + 200, &[(5, Side::Buy, 9_999, 4)]));
+	assert_eq!(gated, twin, "one boundary is a boundary the two nets span between them");
+	assert_eq!(gated.map(|(e, _)| e), Some(1), "nothing was rebuilt, so nothing is a new epoch");
+	assert_eq!(mid, Some(100.015));
+}
 
-	// 2. the boundary checkpoint re-arms it: one resync, then the period's net on top — and that is
-	//    the twin's book, not an approximation of it.
-	let (gated, twin, mid) = tick(&mut g, &mut trades, true, Some(&boundary), &run(PERIOD + 300, &[(6, Side::Sell, 10_003, 8)]));
+#[test]
+fn two_boundaries_are_past_the_reach_and_wait_for_a_checkpoint() {
+	let mut g = G::default();
+	let mut trades = TradeBuf::new(PREC);
+
+	let seed = anchor(&[(9_990, 3)], &[(10_010, 4)]);
+	tick(&mut g, &mut trades, true, Some(&seed), &run(100, &[(1, Side::Buy, 9_995, 7)]));
+
+	tick(&mut g, &mut trades, false, None, &run(200, &[(2, Side::Sell, 10_005, 2)]));
+	tick(&mut g, &mut trades, false, None, &run(300, &[(3, Side::Buy, 9_998, 9)]));
+	let (_, twin, _) = tick(&mut g, &mut trades, false, None, &run(PERIOD + 100, &[(4, Side::Sell, 10_004, 1)]));
+	// the checkpoint the recorder writes inside the period that is about to close under the sleeper
+	let (bids, asks) = twin.expect("the twin never sleeps").1;
+	let checkpoint = anchor(&bids, &asks);
+
+	tick(&mut g, &mut trades, false, None, &run(2 * PERIOD + 100, &[(5, Side::Buy, 9_999, 4)]));
+
+	// 1. woken with no checkpoint: the two retained nets reach back to seq 4, and seqs 2..3 are behind
+	//    them. Folding on would fold onto stale state, so it declines instead.
+	let (gated, _, mid) = tick(&mut g, &mut trades, true, None, &run(2 * PERIOD + 200, &[(6, Side::Sell, 10_003, 8)]));
+	assert_eq!((gated, mid), (None, None), "past the reach and without a seed, a book is not readable");
+
+	// 2. the checkpoint re-arms it: one resync, then this period's net on top — and that is the twin's
+	//    book, not an approximation of it.
+	let (gated, twin, mid) = tick(&mut g, &mut trades, true, Some(&checkpoint), &run(2 * PERIOD + 300, &[(7, Side::Buy, 9_997, 6)]));
 	assert_eq!(
 		gated.as_ref().map(|(_, l)| l),
 		twin.as_ref().map(|(_, l)| l),

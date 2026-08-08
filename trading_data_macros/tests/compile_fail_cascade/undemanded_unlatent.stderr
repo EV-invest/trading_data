@@ -18,6 +18,9 @@ LL | impl<T: Copy> Latent for Option<T> {
 ...
 LL | impl<T> Latent for &[T] {
   | ^^^^^^^^^^^^^^^^^^^^^^^ `&[T]`
+...
+LL | impl<T> Latent for Hist<'_, T> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Hist<'_, T>`
 note: required by a bound in `trading_data_dag::step_when_obs`
   --> $DIR/trading_data_dag/src/lib.rs:LL:CC
   |

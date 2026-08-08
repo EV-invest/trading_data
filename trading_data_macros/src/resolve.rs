@@ -11,7 +11,13 @@ use crate::{
 };
 
 enum Answer {
-	Node { emit: bool, latch: bool, self_ty: TokenStream, deps: Vec<Dep> },
+	Node {
+		emit: bool,
+		latch: bool,
+		anchored: bool,
+		self_ty: TokenStream,
+		deps: Vec<Dep>,
+	},
 	Trigger(Dep),
 }
 
@@ -21,6 +27,8 @@ fn read_answer(r: &mut Reader) -> Option<Answer> {
 		let emit = r.ident() == "emit";
 		r.at("latch");
 		let latch = r.flag();
+		r.at("anchored");
+		let anchored = r.flag();
 		r.at("self");
 		let self_ty = r.brace();
 		r.at("deps");
@@ -29,7 +37,13 @@ fn read_answer(r: &mut Reader) -> Option<Answer> {
 		while !dr.eof() {
 			deps.push(Dep { shim: dr.brace(), ty: dr.brace() });
 		}
-		return Some(Answer::Node { emit, latch, self_ty, deps });
+		return Some(Answer::Node {
+			emit,
+			latch,
+			anchored,
+			self_ty,
+			deps,
+		});
 	}
 	if r.peek_at("trigger") {
 		r.at("trigger");
@@ -74,7 +88,16 @@ fn accept(st: &mut State, answer: Option<Answer>) -> syn::Result<()> {
 	let awaiting = core::mem::replace(&mut st.awaiting, Awaiting::Nothing);
 	match (awaiting, answer) {
 		(Awaiting::Nothing, None) => Ok(()),
-		(Awaiting::Node(asked, req), Some(Answer::Node { emit, latch, self_ty, deps })) => {
+		(
+			Awaiting::Node(asked, req),
+			Some(Answer::Node {
+				emit,
+				latch,
+				anchored,
+				self_ty,
+				deps,
+			}),
+		) => {
 			let (key, _) = key_of(&self_ty)?;
 			// an alias answers under the aliased cell's own key, and every consumer edge naming it by
 			// the alias has to find its way back here.
@@ -89,6 +112,7 @@ fn accept(st: &mut State, answer: Option<Answer>) -> syn::Result<()> {
 					emit,
 					generated: false,
 					latch,
+					anchored,
 					deps,
 				},
 			)
@@ -101,6 +125,7 @@ fn accept(st: &mut State, answer: Option<Answer>) -> syn::Result<()> {
 				emit: false,
 				generated: false,
 				latch: true,
+				anchored: false,
 				deps: vec![arm],
 			},
 		),
@@ -175,6 +200,7 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 				emit: false,
 				generated: true,
 				latch: false,
+				anchored: false,
 				deps: vec![Dep {
 					shim: dep.shim,
 					ty: cell.to_token_stream(),
@@ -196,6 +222,7 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 				emit: false,
 				generated: true,
 				latch: false,
+				anchored: false,
 				deps: vec![Dep {
 					shim: dep.shim,
 					ty: quote!(#dag::Folding<#cell, #dag::Unbounded>),
@@ -267,7 +294,48 @@ fn field_of(key: &str) -> Ident {
 	Ident::new(&format!("__n_{s}"), Span::call_site())
 }
 
+/// What `#[node(anchored)]` may be written on. Here rather than in a `const` assert because the
+/// message has to name the node *and* the dep that broke it, and an `assert!` message is a literal.
+///
+/// A rewind re-reads a node's inputs out of the past, and only a root maps one-to-one onto a lane a
+/// past can be read from. A derived dep would want its own producer replayed first, recursively;
+/// that is a playback architecture this does not have yet, and the dominant use of anchoring is
+/// volume-bottlenecked nodes, which are input-shaped and so covered by roots.
+fn anchoring(st: &State) -> syn::Result<()> {
+	let err = |m: String| syn::Error::new(Span::call_site(), m);
+	for n in st.known.iter().filter(|n| n.anchored) {
+		if n.emit {
+			return Err(err(format!(
+				"`{}` is `#[node(anchored)]` on a run-shaped node: a rewind restores what a node *holds*, and an emitter's out is the engine's buffer, which is this tick's and no other's",
+				n.key
+			)));
+		}
+		for d in &n.deps {
+			let (dep, wrap) = crate::demand::cell(st, &d.ty)?;
+			// a gating dep is permission, not data: it is read at the sweep position like any other
+			// tick's, and no rewind re-reads it.
+			if matches!(wrap, Wrap::Gate) {
+				continue;
+			}
+			if matches!(wrap, Wrap::Fold) {
+				return Err(err(format!(
+					"`{}` is `#[node(anchored)]` and folds `{dep}` itself: a `Folding` reach is the node's own state, so a rewind that re-read it would fold it twice. State it as `Buffering<{dep}, R>` and the reach becomes the frame's",
+					n.key
+				)));
+			}
+			if !is_root(st, &dep) {
+				return Err(err(format!(
+					"`{}` is `#[node(anchored)]` and reads `{dep}`, which is no root of this graph: a rewind reads a node's inputs back out of the past, and only a root is a lane a past can be read from. (Temporary — replaying an arbitrary producer is a thing the playback side may grow; it is not needed yet.)",
+					n.key
+				)));
+			}
+		}
+	}
+	Ok(())
+}
+
 fn emit(st: State) -> syn::Result<TokenStream> {
+	anchoring(&st)?;
 	let c = &st.cfg;
 	let dag = &c.dag;
 	let (vis, graph, batches, out) = (&c.vis, &c.graph, &c.batches, &c.out);
@@ -291,7 +359,7 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 		.collect();
 	let fields: Vec<Ident> = nodes.iter().map(|n| field_of(&n.key)).collect();
 	let names: Vec<String> = nodes.iter().map(|n| n.key.clone()).collect();
-	let sup = crate::demand::suppressors(&st)?;
+	let (sup, rewinders) = crate::demand::suppressors(&st)?;
 
 	let latched: Vec<usize> = (0..nodes.len()).filter(|i| nodes[*i].latch).collect();
 	let lfields: Vec<&Ident> = latched.iter().map(|i| &fields[*i]).collect();
@@ -334,9 +402,39 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 		.map(|((n, f), t)| if n.emit { quote!(#f: #dag::Emitter<#t>) } else { quote!(#f: #t) })
 		.collect();
 
+	// the anchored set: what `P` has to be a past for, and — since nothing else names `P` — the whole
+	// of what a driver's feed owes the sweep.
+	let rewound: Vec<TokenStream> = (0..nodes.len())
+		.filter(|i| nodes[*i].anchored)
+		.map(|i| {
+			let t = &node_tys[i];
+			quote!(#dag::Rewound<#t>)
+		})
+		.collect();
+	// `!REWINDS` per node, as a demand disjunct: a past that does not rewind is one nothing may sleep
+	// behind. Same erasure as `!REWARMS`, and the whole of what `Awake` (and so a live feed) costs.
+	let pinned_awake: Vec<Vec<TokenStream>> = rewinders
+		.iter()
+		.map(|rs| {
+			rs.iter()
+				.map(|r| {
+					let t = &node_tys[*r];
+					quote!(!const { <P as #dag::Rewound<#t>>::REWINDS })
+				})
+				.collect()
+		})
+		.collect();
+	let past_bound = match rewound.is_empty() {
+		true => TokenStream::new(),
+		false => quote!(where P: #(#rewound)+*),
+	};
+	// `P` is then a parameter of the shape alone — the entry point is the same one either way, so a
+	// driver need not know whether the graph it holds happens to anchor anything.
+	let past_unread = rewound.is_empty().then(|| quote!(let _ = past;));
+
 	// the demand is hoisted into its own binding: as an argument it would sit after `f`, which the
 	// call moves before the gate reads could borrow it.
-	let steps = nodes.iter().zip(&fields).zip(&sup).zip(&node_tys).map(|(((n, f), s), ty)| {
+	let steps = nodes.iter().zip(&fields).zip(&sup).zip(&node_tys).zip(&pinned_awake).map(|((((n, f), s), ty), awake)| {
 		// a `Gate`'s out *is* the `bool`, and `Gating::opens` is the identity — nothing to unwrap.
 		let mut disj: Vec<TokenStream> = s
 			.iter()
@@ -356,13 +454,27 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 		if s.iter().flatten().any(|g| nodes[*g].latch) {
 			disj.push(quote!(!const { <#ty as #dag::Cell>::REWARMS }));
 		}
+		disj.extend(awake.iter().cloned());
 		let demand = quote!(let d = #(#disj)||*;);
 		let uncond = s.len() == 1 && s[0].is_empty();
+		// at the node's own sweep position: its retention has stepped and its consumer has not read it
+		// yet, so this is the one point where the tick it is demanded on is still the tick it answers
+		// on. Conditioned on the whole of `advances`, not on the demand alone — an anchored node that
+		// nothing suppresses still goes dark behind its own gate, and rewinding one that will not run
+		// would be the fold the sleep was taken to avoid.
+		let rewind = n.anchored.then(|| {
+			let demanded = if uncond { quote!(true) } else { quote!(d) };
+			quote! {
+				if const { <P as #dag::Rewound<#ty>>::REWINDS } && #dag::advances::<#ty, _, _>(&f, #demanded) {
+					<P as #dag::Rewound<#ty>>::rewind(past, &mut *#f);
+				}
+			}
+		});
 		match (n.emit, uncond) {
 			(true, true) => quote!(let f = #dag::step_emit_obs(f, #f, true, ts, __sweep, obs);),
 			(true, false) => quote!(#demand let f = #dag::step_emit_obs(f, #f, d, ts, __sweep, obs);),
-			(false, true) => quote!(let f = #dag::step_obs(f, #f, __sweep, obs);),
-			(false, false) => quote!(#demand let f = #dag::step_when_obs(f, #f, d, __sweep, obs);),
+			(false, true) => quote!(#rewind let f = #dag::step_obs(f, #f, __sweep, obs);),
+			(false, false) => quote!(#demand #rewind let f = #dag::step_when_obs(f, #f, d, __sweep, obs);),
 		}
 	});
 
@@ -495,11 +607,25 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 
 			/// `ts` is the tick's event time in nanoseconds — what a node's declared `Emit::CLOCK` is
 			/// read against, and the only thing the sweep needs from a tick besides its batches.
+			///
+			/// Every anchored node is pinned awake here: `Awake` is a past that never rewinds, so nothing
+			/// sleeps behind a replay that is not going to happen.
 			#vis fn tick<'t>(&'t mut self, ts: i64, b: #batches<'t>) -> #out<'t> {
-				self.tick_obs(ts, b, &mut ())
+				self.tick_rewind_obs(ts, b, &mut #dag::Awake, &mut ())
 			}
 
 			#vis fn tick_obs<'t>(&'t mut self, ts: i64, b: #batches<'t>, obs: &mut impl #dag::Observer) -> #out<'t> {
+				self.tick_rewind_obs(ts, b, &mut #dag::Awake, obs)
+			}
+
+			/// [`tick`](Self::tick) with a past the anchored nodes may sleep behind: each is replayed
+			/// forward on the tick it is demanded, so a sleep is invisible to whoever reads it.
+			#vis fn tick_rewind<'t, P>(&'t mut self, ts: i64, b: #batches<'t>, past: &mut P) -> #out<'t> #past_bound {
+				self.tick_rewind_obs(ts, b, past, &mut ())
+			}
+
+			#vis fn tick_rewind_obs<'t, P>(&'t mut self, ts: i64, b: #batches<'t>, past: &mut P, obs: &mut impl #dag::Observer) -> #out<'t> #past_bound {
+				#past_unread
 				// deferred commutation: apply last tick's terminals before anything borrows self.
 				#(#apply_pending)*
 				// after the commutation, so a spent episode reads open here and nothing behind it stays

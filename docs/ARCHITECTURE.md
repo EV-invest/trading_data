@@ -152,8 +152,9 @@ consequences shape how a strategy is written; the mechanisms are `model.typ`'s s
   cannot — so the compiler refuses to gate a node that folds its own reach. *How* the engine holds it
   is the series' own to say: the default keeps every row, and a series whose rows collapse — a book's
   levels keep only the last qty per price — declares a fold instead and pays depth rather than
-  volume. That is what makes retention affordable for a lane no buffer could otherwise hold, and so
-  what makes the book gateable at all.
+  volume. That is what makes retention affordable for a lane no buffer could otherwise hold. It
+  *bounds* how long a node may sleep, though; it does not close the question, and a sleep past the
+  bound is what anchoring below is for.
 - **Gating and demand are the same edge read in the two directions.** Gating states what a node
   needs; demand is whether anyone will read what it produces, derived per node from the gates
   dominating every path to an output. Neither is the author's to restate — a hand-written badge on
@@ -166,6 +167,12 @@ consequences shape how a strategy is written; the mechanisms are `model.typ`'s s
   is what decides whether a *latch* may appear in the formula: a gate stepped earlier is read off the
   frame and darkens its producers on the same tick, a latch is read from its standing bit and darkens
   them one tick ahead of the consumer arming.
+  A node whose sleep outruns every bound is **anchored** instead: it is replayed forward out of the
+  driver's recorded past on the tick it is demanded, so there is no window in which a wired node
+  reports absence. Recoverability is then the *feed's* claim rather than the graph's — the dag names
+  the past by trait and never by type, and a feed with none to seek (any live one) pins every
+  anchored node awake for free. The win is upstream of the node: a retention read only by anchored
+  nodes sleeps with them, so an undemanded book folds no delta anywhere, not merely none of its own.
 - **A node owns its rate.** How often a node publishes is declared on the node, never in `Deps` — so
   no consumer can change the rate of what it reads, and a node clocked to a timeframe sees completed
   elements only. The counterpart obligation is on the dep side: a read never says whether that dep

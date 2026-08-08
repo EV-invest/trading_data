@@ -11,7 +11,7 @@ pub use clock::{Clock, LiveClock};
 pub use feather::{Feather, RotationPolicy};
 pub use read::{LaneReader, read_mc, read_oi, read_trades};
 pub use row::{Mc, McRoot, Oi, OiRoot, Row, Trade, UnixNanos};
-pub use sync::{Feed, LaneKind, Lanes, Live, Replay, Sink};
+pub use sync::{Feed, LaneKind, Lanes, Live, Past, Replay, Sink, Step};
 pub use trading_data_core::{
 	// `Book`'s dep shim: a `#[node]` writes it at its own crate's root, and a graph naming the cell
 	// through this facade asks for it under the same path.

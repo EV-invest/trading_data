@@ -24,8 +24,9 @@ use std::sync::{
 };
 
 use trading_data_core::{
-	Arrival, BatchTrades, BookDelta, BookShape, BookUpdate, Exact, ExchangeName, Local, PrecisionPriceQty, ReadClock, ShadowBook, Symbol, TradeBuf, TradeCols, Ts, Venue,
+	Arrival, BatchTrades, Book, BookDelta, BookShape, BookUpdate, Exact, ExchangeName, Local, PrecisionPriceQty, ReadClock, ShadowBook, Symbol, TradeBuf, TradeCols, Ts, Venue,
 };
+use trading_data_dag::Rewound;
 use v_utils::distributions::LatencyConfig;
 
 use crate::{
@@ -63,10 +64,34 @@ pub struct Lanes<'a> {
 	pub mc: &'a [Mc],
 }
 
+/// One emission, and the past it stands on. Two values rather than one because [`Feed::next`] ties
+/// its [`Lanes`] to `&mut self`, so the feed cannot be read alongside the batch it just handed out.
+pub struct Step<'a> {
+	pub lanes: Lanes<'a>,
+	pub past: Past<'a>,
+}
+
+/// Everything already delivered on the book lanes, and nothing else. The slices are truncated where
+/// the weave stands, so a row it has not emitted is not *representable* here — which is the whole of
+/// what keeps a rewind from reading its own future.
+#[derive(Clone, Copy, Default)]
+pub struct Past<'a> {
+	deltas: &'a [BookDelta],
+	anchors: &'a [BookShape],
+}
+
 /// A source of woven lanes. `None` = exhausted (end-of-range for [`Replay`]; all senders dropped
 /// and drained for [`Live`]).
 pub trait Feed {
 	fn next(&mut self) -> Option<Lanes<'_>>;
+
+	/// The same emission, carrying the past an anchored node is replayed out of. Empty by default:
+	/// a feed that has not recorded a past cannot seek one, and a driver holding such a feed drives
+	/// [`tick`](trading_data_dag::Rewound) rather than `tick_rewind` — the node is then pinned awake
+	/// and never asks.
+	fn step(&mut self) -> Option<Step<'_>> {
+		self.next().map(|lanes| Step { lanes, past: Past::default() })
+	}
 }
 
 trait LaneBuf {
@@ -214,7 +239,11 @@ impl Weaver {
 		self.mc.compact();
 	}
 
-	fn next(&mut self) -> Option<Lanes<'_>> {
+	/// The pre-tick book cursors are read here and nowhere else: taking them after the winner advances
+	/// would hand a rewind this tick's own batch to fold a second time, and a book fold being
+	/// idempotent is precisely what would make that silent.
+	fn step(&mut self) -> Option<Step<'_>> {
+		let (past_d, past_a) = (self.deltas.cur, self.anchors.cur);
 		let heads = [self.trades.head(), self.deltas.head(), self.anchors.head(), self.oi.head(), self.mc.head()];
 		let winner = (0..heads.len()).filter(|&i| heads[i].is_some()).min_by_key(|&i| heads[i].expect("filtered to Some"))?;
 		let win_ts = heads[winner].expect("winner has a head");
@@ -259,15 +288,25 @@ impl Weaver {
 			}
 		};
 
-		Some(Lanes {
-			arrival: self.prev_emit,
-			ts_venue,
-			trades: self.trades.buf.cols(t.0..t.1),
-			deltas: &self.deltas.buf[d.0..d.1],
-			anchor: self.anchors.buf[a.0..a.1].last(),
-			oi: &self.oi.buf[o.0..o.1],
-			mc: &self.mc.buf[m.0..m.1],
+		Some(Step {
+			lanes: Lanes {
+				arrival: self.prev_emit,
+				ts_venue,
+				trades: self.trades.buf.cols(t.0..t.1),
+				deltas: &self.deltas.buf[d.0..d.1],
+				anchor: self.anchors.buf[a.0..a.1].last(),
+				oi: &self.oi.buf[o.0..o.1],
+				mc: &self.mc.buf[m.0..m.1],
+			},
+			past: Past {
+				deltas: &self.deltas.buf[..past_d],
+				anchors: &self.anchors.buf[..past_a],
+			},
 		})
+	}
+
+	fn next(&mut self) -> Option<Lanes<'_>> {
+		self.step().map(|s| s.lanes)
 	}
 }
 
@@ -378,6 +417,47 @@ impl Replay {
 impl Feed for Replay {
 	fn next(&mut self) -> Option<Lanes<'_>> {
 		self.weaver.next()
+	}
+
+	fn step(&mut self) -> Option<Step<'_>> {
+		self.weaver.step()
+	}
+}
+
+/// The seek a backtest has and a live feed does not: the whole recorded past is already in memory,
+/// so a book that slept is fetched back rather than waited for.
+///
+/// Which resume is taken is a cost question and nothing more — both land on the same book, because a
+/// level is absolute in `(side, price)` and the newer row always wins.
+impl Rewound<Book> for Past<'_> {
+	fn rewind(&mut self, b: &mut Book) {
+		let Some(need) = self.deltas.last() else { return };
+		if b.seq() == Some(need.monotonic_seq) {
+			return; // awake last tick: one integer compare, which is the steady state
+		}
+		// where our own cursor resumes
+		let here = b.seq().map(|s| self.deltas.partition_point(|d| d.monotonic_seq <= s));
+		// and where the newest delivered checkpoint does. Strictly-before, so a tie re-folds a row the
+		// checkpoint already holds — free — where skipping one is not; and clamped into the stream, so
+		// either resume ends on `need` and leaves the same cursor behind it.
+		let seek = self
+			.anchors
+			.last()
+			.map(|a| (a, self.deltas.partition_point(|d| d.ts_local_recv < a.ts.local_recv.last).min(self.deltas.len() - 1)));
+
+		let rows = |from: usize| self.deltas.len() - from;
+		match (here, seek) {
+			(Some(h), Some((a, k))) if a.bids.len() + a.asks.len() + rows(k) < rows(h) => b.rewind(Some(a), &self.deltas[k..]),
+			(Some(h), _) => b.rewind(None, &self.deltas[h..]),
+			(None, Some((a, k))) => b.rewind(Some(a), &self.deltas[k..]),
+			// no place in the chain and no checkpoint delivered yet: there is no past to be replayed to,
+			// which is the same thing an unseeded book already says for itself.
+			(None, None) => return,
+		}
+		// the tripwire for everything above: a book left anywhere but on the last delivered row makes
+		// the next `Book::step` read `Reach::Gone`, and a `Gone` in a rewound backtest means the past
+		// lied about where it ended.
+		debug_assert_eq!(b.seq(), Some(need.monotonic_seq), "a rewind must stand the book on the last row the past holds");
 	}
 }
 
@@ -657,6 +737,55 @@ impl Live {
 			// A drained feed is a catalog someone is about to read.
 			r.writer.finish();
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use trading_data_core::{FrameKind, Precision, Side};
+
+	use super::*;
+
+	const PREC: PrecisionPriceQty = PrecisionPriceQty {
+		price: Precision(2),
+		qty: Precision(2),
+	};
+
+	fn delta(seq: u64, ns: i64) -> BookDelta {
+		BookDelta {
+			prec: PREC,
+			ts_venue_exec: Ts::from_nanos(ns),
+			ts_local_recv: Ts::from_nanos(ns),
+			monotonic_seq: seq,
+			kind: FrameKind::Update,
+			side: Side::Buy,
+			price: 100,
+			qty: seq as u32,
+		}
+	}
+
+	/// I3, structurally. A rewind reading its own future is not a bug a [`Past`] can have: its slices
+	/// are cut where the weave stands, so a row the feed has not emitted is not a value it can build.
+	/// This is the one line of the design that a plausible-looking `len()` would silently break —
+	/// `Replay` holds the whole day, so reading past the cursor still produces a well-formed book.
+	#[test]
+	fn a_past_stops_where_the_weave_stands() {
+		let mut w = Weaver::new(ReadClock::EVENT);
+		for (i, seq) in [1u64, 2, 3].into_iter().enumerate() {
+			w.deltas.extend(Arrival::from_nanos(2 * i as i64 + 1), &[delta(seq, seq as i64)]);
+		}
+		for i in 0..2i64 {
+			w.anchors.push(Arrival::from_nanos(2 * i + 2), BookShape { prec: PREC, ..Default::default() });
+		}
+
+		// what the past holds as each of the five interleaved arrivals is emitted
+		let want: [(&[u64], usize); 5] = [(&[], 0), (&[1], 0), (&[1], 1), (&[1, 2], 1), (&[1, 2], 2)];
+		for (n, (deltas, anchors)) in want.into_iter().enumerate() {
+			let s = w.step().unwrap_or_else(|| panic!("five keyed rows are five steps, and step {n} is not one"));
+			assert_eq!(s.past.deltas.iter().map(|d| d.monotonic_seq).collect::<Vec<_>>(), deltas, "step {n}");
+			assert_eq!(s.past.anchors.len(), anchors, "step {n}");
+		}
+		assert!(w.step().is_none(), "the weave is drained");
 	}
 }
 

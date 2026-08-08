@@ -59,22 +59,24 @@ slice_nudge!(BookDeltas, BookDelta, BookChunk);
 impl Cell for Book {
 	type Out<'t> = Option<&'t Book>;
 
-	/// Deliberately **not** `REWARMS`. `Reach::Net` spends a sleep that stayed inside one chunk period,
-	/// but a sleep past a boundary needs a checkpoint, and one arrives on the anchor cadence rather
-	/// than on the tick that woke — so a later tick recovers the book only *eventually*, and a consumer
-	/// that wanted it now reads `None` until then. `trading_data/tests/book_gating.rs` claim (4) is that
-	/// window; `REWARMS` is a claim about the tick, not about eventually.
-	const REWARMS: bool = false;
+	/// What makes a lost tick recoverable is not the retention — a sleep past two of the chunk's
+	/// boundaries outruns that — but the *seek*: an anchored node's past is fetched rather than
+	/// awaited, and it is fetched on the tick the consumer asked. A feed with no past to seek pins
+	/// this awake instead ([`Awake`](trading_data_dag::Awake)), where it costs nothing and says
+	/// nothing.
+	const REWARMS: bool = true;
 }
 
-#[node]
+#[node(anchored)]
 impl Blind for Book {
-	/// The reach back over the deltas is exactly one checkpoint interval, and it is the *engine's* —
-	/// a `Buffering` dep, so it accumulates whether or not this node is dark, which is the whole of
-	/// what makes the book gateable. `trading_data_persistence` reads its anchor-age bound off this.
+	/// Both deps are roots, which is what anchoring currently asks: a rewind reads them back out of
+	/// the past, and a past is read per lane.
 	///
-	/// The `BookChunk` behind it tumbles on the same absolute boundary the checkpoint is written on,
-	/// so a wake is one resync plus one net — depth, not the length of the sleep.
+	/// The reach back over the deltas is the *engine's* — a `Buffering` dep, so it accumulates whether
+	/// or not this node is dark. `trading_data_persistence` reads its anchor-age bound off this.
+	///
+	/// `BookAnchors` is a dep and not merely a lane: `required_lanes` walks `DepSet::NAMES`, so
+	/// dropping it here would stop the checkpoint lane loading and leave a replay nothing to seek.
 	type Deps = (BookAnchors, Buffering<BookDeltas, Over<TF_15MIN>>);
 
 	const WHY: &'static str = "an order book fold is not a scalar function of its deltas";

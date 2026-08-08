@@ -15,12 +15,19 @@
 //! right too: the per-`Emit` buffer cleared every tick; a closed [`StdScreener`] gate meaning the
 //! node is *not called* and reads its `Latent` out, which is not the same as calling it with empty
 //! deps; and the [`Armed`] latch's *deferred* commutation, applied at the start of the next tick.
+//!
+//! A third path runs beside them: the same graph driven through `tick_rewind`, where [`Book`] sleeps
+//! while nothing demands it and is replayed forward out of the feed's [`Past`] on the tick something
+//! does. That one is held to **exact** equality — the tolerance below exists because `Direct`
+//! reproduces the sweep by hand, and two `Graph`s over one tape have no such excuse. `wakes` is what
+//! keeps the claim from being vacuous: a graph that never slept is the same graph.
 
 use std::path::{Path, PathBuf};
 
 use trading_data::{
 	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Close, Elems, Episode, Exact, ExchangeName, Feed as _, Fold, Horizon, Latch as _, LatencyConfig,
-	Level as _, Mc, McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, Predicate, ReadClock, Replay, Run as _, Runs as _, Scan, Side, TradeCols, Volume, Volumes, bench::ring::Ring, required_lanes,
+	Level as _, Mc, McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, Past, Predicate, ReadClock, Replay, Rewound, Run as _, Runs as _, Scan, Side, Step, TradeCols, Volume, Volumes, bench::ring::Ring,
+	required_lanes,
 };
 use trading_data_spl::{
 	config::Config,
@@ -41,6 +48,7 @@ async fn main() {
 	// Every node asserts the config names what it wires as it is built, so both sides are constructed
 	// before a byte of archive is touched.
 	let mut graph = Graph::default();
+	let mut slept = Graph::default();
 	let mut direct = Direct::default();
 
 	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(situation.pair.replace("-", ""));
@@ -55,27 +63,28 @@ async fn main() {
 	// what makes that a failure rather than a pass.
 	let days = trading_days(situation);
 	let mut ticks = 0u64;
-	let (mut want_ran, mut got_ran) = (Outcome::default(), Outcome::default());
+	let mut wakes = 0u64;
+	let (mut want_ran, mut got_ran, mut slept_ran) = (Outcome::default(), Outcome::default(), Outcome::default());
 	for d in &days {
 		let (start, end) = day_bounds(*d);
 		let mut feed = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &kinds, latency, read_clock);
-		while let Some(l) = feed.next() {
+		while let Some(Step { lanes: l, past }) = feed.step() {
 			let (trades, deltas, anchor, oi, mc) = (l.trades, l.deltas, l.anchor, l.oi, l.mc);
-			let want: Vec<Option<Intent>> = graph
-				.tick(
-					l.ts_venue.as_nanos(),
-					Batches {
-						trades,
-						deltas,
-						anchors: anchor,
-						oi,
-						mc,
-					},
-				)
-				.deprecator
-				.to_vec();
+			let batches = || Batches {
+				trades,
+				deltas,
+				anchors: anchor,
+				oi,
+				mc,
+			};
+			let want: Vec<Option<Intent>> = graph.tick(l.ts_venue.as_nanos(), batches()).deprecator.to_vec();
 			want_ran.absorb(&want);
 			got_ran.absorb(direct.tick(trades, deltas, anchor, oi, mc));
+
+			let mut counted = Counted(past, 0);
+			let woke: Vec<Option<Intent>> = slept.tick_rewind(l.ts_venue.as_nanos(), batches(), &mut counted).deprecator.to_vec();
+			slept_ran.absorb(&woke);
+			wakes += counted.1;
 			ticks += 1;
 		}
 	}
@@ -84,11 +93,29 @@ async fn main() {
 		"{ticks} ticks over {} days closed no episode at all — the gate compared two silent paths",
 		days.len()
 	);
+	assert!(
+		wakes > 0,
+		"{ticks} ticks and the anchored path never slept — the exact equality below compares one graph with itself"
+	);
+	assert_eq!(want_ran, slept_ran, "a book that slept and was replayed back is not the same strategy as one that never slept");
 	want_ran.agrees_with(&got_ran);
-	println!("equivalence: {ticks} ticks, {want_ran:?}, graph == direct");
+	println!("equivalence: {ticks} ticks, {wakes} wakes, {want_ran:?}, graph == direct == rewound");
 }
 
-#[derive(Debug, Default)]
+/// [`Past`], with the one thing the comparison cannot see off the outcomes: whether the second graph
+/// slept at all. A wake is a rewind that actually moved the book's cursor — the steady-state call
+/// finds it already where the past ends and does nothing.
+struct Counted<'a>(Past<'a>, u64);
+
+impl Rewound<Book> for Counted<'_> {
+	fn rewind(&mut self, b: &mut Book) {
+		let before = b.seq();
+		self.0.rewind(b);
+		self.1 += u64::from(b.seq() != before);
+	}
+}
+
+#[derive(Debug, Default, PartialEq)]
 struct Outcome {
 	/// one per closed episode
 	episodes: usize,

@@ -7,17 +7,21 @@
 
 use core::ops::Range;
 
-use trading_data_dag::{Batch, Flat, Glance, Horizon};
+use trading_data_dag::{Batch, Flat, Glance, Horizon, Latent};
 
-use crate::{BookDelta, Side, Span, Venue};
+use crate::{BookDelta, Side, Span, Ts, Venue};
 
 /// The net effect of one period's deltas.
 ///
 /// **Tumbling, not sliding.** [`Rows`](trading_data_dag::Rows) trims by timestamp every tick; a
-/// folded level cannot be un-folded, so there is nothing here to trim. It resets on the absolute
+/// folded level cannot be un-folded, so there is nothing here to trim. It tumbles on the absolute
 /// `Horizon::Over` boundary instead — floored from the epoch, the same grid
-/// [`ReadClock::cell_end`](crate::ReadClock::cell_end) cuts on — which is why a wake pairs with the
-/// checkpoint written at that same boundary.
+/// [`ReadClock::cell_end`](crate::ReadClock::cell_end) cuts on.
+///
+/// Two periods are kept, not one. A boundary is exactly where a sleeping book's reach ends, and the
+/// net that would carry it across is the one the tumble throws away — so the tumble sets it aside
+/// instead. The reach becomes `[15m, 30m)` rather than `[0, 15m)` for one more level pair and no
+/// per-row work; it is a wider bound, not a guarantee, and the guarantee is a replay.
 #[derive(Clone, Debug)]
 pub struct BookChunk {
 	/// Absolute period start the net is measured from; `i64::MIN` until the first row lands.
@@ -31,6 +35,13 @@ pub struct BookChunk {
 	contiguous: bool,
 	span: Span<Venue>,
 	fresh: Vec<BookDelta>,
+	/// The period before the one `base` names, kept whole. The tumble is precisely where a sleeping
+	/// book loses its reach, so what it needs on waking is the net thrown away there; setting it
+	/// aside costs one period's levels and nothing per row.
+	prev_bids: Vec<(i32, u32)>,
+	prev_asks: Vec<(i32, u32)>,
+	prev_seq: Option<Range<u64>>,
+	prev_contiguous: bool,
 }
 
 impl Default for BookChunk {
@@ -43,6 +54,10 @@ impl Default for BookChunk {
 			contiguous: true,
 			span: Span::default(),
 			fresh: Vec::new(),
+			prev_bids: Vec::new(),
+			prev_asks: Vec::new(),
+			prev_seq: None,
+			prev_contiguous: true,
 		}
 	}
 }
@@ -53,16 +68,30 @@ impl BookChunk {
 		&self.fresh
 	}
 
-	/// The period's net levels, in no meaningful order: they are absolute sets on distinct keys, so
-	/// applying them in any order lands in the same book.
-	pub fn net(&self) -> impl Iterator<Item = (Side, i32, u32)> + '_ {
+	/// The period's net levels, within one period in no meaningful order: they are absolute sets on
+	/// distinct keys, so applying them in any order lands in the same book. `joined` prepends the
+	/// period before, and *that* order is load-bearing — a key touched in both must end at the later
+	/// value.
+	pub fn net(&self, joined: bool) -> impl Iterator<Item = (Side, i32, u32)> + '_ {
 		let side = |s: Side| move |&(p, q): &(i32, u32)| (s, p, q);
-		self.bids.iter().map(side(Side::Buy)).chain(self.asks.iter().map(side(Side::Sell)))
+		let prev = joined
+			.then(|| self.prev_bids.iter().map(side(Side::Buy)).chain(self.prev_asks.iter().map(side(Side::Sell))))
+			.into_iter()
+			.flatten();
+		prev.chain(self.bids.iter().map(side(Side::Buy))).chain(self.asks.iter().map(side(Side::Sell)))
+	}
+
+	/// The seqs a two-period net speaks for, `None` unless the previous period meets this one and
+	/// both ran unbroken: a net missing rows cannot stand in for them, and neither can two nets that
+	/// do not join.
+	pub fn joined(&self) -> Option<Range<u64>> {
+		let (prev, cur) = (self.prev_seq.clone()?, self.seq.clone()?);
+		(self.prev_contiguous && self.contiguous && prev.end + 1 == cur.start).then_some(prev.start..cur.end)
 	}
 
 	/// What the retention actually costs: levels, not rows.
 	pub fn levels(&self) -> usize {
-		self.bids.len() + self.asks.len()
+		self.bids.len() + self.asks.len() + self.prev_bids.len() + self.prev_asks.len()
 	}
 
 	pub fn seq(&self) -> Option<Range<u64>> {
@@ -79,9 +108,13 @@ impl BookChunk {
 
 	fn reset(&mut self, base: i64) {
 		self.base = base;
+		// swapped rather than taken, so the two periods ping-pong one pair of allocations between them
+		core::mem::swap(&mut self.bids, &mut self.prev_bids);
+		core::mem::swap(&mut self.asks, &mut self.prev_asks);
+		self.prev_seq = self.seq.take();
+		self.prev_contiguous = self.contiguous;
 		self.bids.clear();
 		self.asks.clear();
-		self.seq = None;
 		self.contiguous = true;
 		self.span = Span::default();
 	}
@@ -120,6 +153,32 @@ impl Flat for &BookChunk {
 
 	fn fires(&self) -> usize {
 		self.fresh.len()
+	}
+}
+
+/// The reading of a retention that was not stepped: `graph!` publishes this where every consumer of
+/// the buffer is anchored and every one of them is dark, so nobody is there to read it. What makes
+/// the rows it did not fold recoverable is the replay, not this — this only has to be honest about
+/// having folded nothing.
+impl Latent for &BookChunk {
+	fn latent() -> Self {
+		static UNSTEPPED: BookChunk = BookChunk {
+			base: i64::MIN,
+			bids: Vec::new(),
+			asks: Vec::new(),
+			seq: None,
+			contiguous: true,
+			span: Span {
+				first: Ts::from_nanos(0),
+				last: Ts::from_nanos(0),
+			},
+			fresh: Vec::new(),
+			prev_bids: Vec::new(),
+			prev_asks: Vec::new(),
+			prev_seq: None,
+			prev_contiguous: true,
+		};
+		&UNSTEPPED
 	}
 }
 
