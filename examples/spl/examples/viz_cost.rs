@@ -10,7 +10,7 @@ use std::{
 	time::Instant,
 };
 
-use exec_viz::{Backpressure, Viz};
+use exec_viz::{Backpressure, Tape, Viz};
 use trading_data::{Cell, Exact, ExchangeName, Feed as _, Fire, LatencyConfig, Observer, ReadClock, Replay, Want, required_lanes};
 use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, symbol, trading_days};
 use v_utils::*;
@@ -71,7 +71,7 @@ async fn main() {
 	let tape = |mode| {
 		let began = Instant::now();
 		let mut graph = Graph::default();
-		let (_viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, mode);
+		let (tape, mut recorder) = Tape::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, mode);
 		let mut f = feed();
 		while let Some(l) = f.next() {
 			let ts_ns = l.ts_venue.as_nanos();

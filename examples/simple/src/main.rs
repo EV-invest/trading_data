@@ -10,7 +10,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use clap::Parser;
-use exec_viz::{Backpressure, Rec, Recorder, Viz};
+use exec_viz::{Backpressure, Rec, Recorder, Tape, Viz};
 use trading_data::{Cell, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, ReadClock, Replay, RsiValues, Want, required_lanes};
 use trading_data_simple::{day_bounds, ensure_catalog, nodes::Graph, symbol};
 use v_utils::*;
@@ -62,7 +62,8 @@ async fn main() {
 		return;
 	}
 
-	let (viz, recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, Backpressure::Block);
+	let (tape, recorder) = Tape::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, Backpressure::Block);
+	let viz = tape.viz();
 	// `Signal`'s own documentation and the viz recording are two readings of one sweep.
 	let mut watched = (SignalDoc::default(), recorder);
 	run(&mut feed, &mut graph, &mut watched).report();
