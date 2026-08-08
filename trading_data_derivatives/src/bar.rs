@@ -2,7 +2,7 @@ use core::fmt;
 
 use trading_data_core::{Timestamped, Timestamps, TradeCols, Trades, Ts, Venue};
 use trading_data_dag::{
-	Bump, Cell, CloseOuts, Closes, Env, Flat, Folding, Glance, Lagged, Over, Pending, Plot, ScanOuts, Scans, Slots, Stamped, Tag, Tail, Unflat, Vars, Witness, always_present, max, min,
+	Bump, Cell, CloseOuts, Closes, Env, Flat, Folding, Glance, Ink, Lagged, Over, Pending, Plot, ScanOuts, Scans, Slots, Stamped, Tag, Tail, Unflat, Vars, Witness, always_present, max, min,
 	node, slice_nudge,
 };
 use v_utils::Timeframe;
@@ -277,6 +277,10 @@ impl<const TF: Timeframe> Closes for Volumes<TF> {
 }
 slice_nudge!([const TF: Timeframe] Volumes<TF>, Volume);
 
+/// Candles are the ground every overlay is read against, so they carry near-zero chroma: hue on the
+/// price pane belongs to what a node has to say about the price, not to the price itself.
+const CANDLE: Ink = Ink { c: 0.008, ..Ink::MAIN };
+
 /// Stateless: both accumulators close a period on the same trade, so the join is this tick's two
 /// batches zipped.
 #[derive(Clone, Default)]
@@ -300,6 +304,7 @@ impl<const TF: Timeframe> Scans for Bars<TF> {
 	/// price pane draws its own volume off the price node directly.
 	const PLOTS: &'static [Plot] = &[Plot {
 		slots: &[0, 1, 2, 3],
+		inks: &[CANDLE; 4],
 		overlay: true,
 		candles: true,
 		..Plot::DEFAULT
