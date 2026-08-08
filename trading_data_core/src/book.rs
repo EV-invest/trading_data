@@ -93,6 +93,12 @@ impl Book {
 		self.epoch
 	}
 
+	/// The venue time this fold is *as of* — the newest row it has absorbed, whatever tick it is read
+	/// on. A reading taken off the book is stamped with this rather than with the tick.
+	pub fn ts(&self) -> Ts<Venue> {
+		self.span.last
+	}
+
 	/// Where a fold may resume us from: exact, gate-aware and hole-aware, because it is written by the
 	/// folds themselves. `None` before the first row, after a resync until the next one, and while
 	/// desynced — three states, one answer, because to anyone asking where to resume they are the same

@@ -36,7 +36,7 @@ DERIVATION ── proc-macro walk of `type Deps`, backwards from `outputs`
    │               `Buffering<C, J>` }. K is nobody's to declare.
    ├─ demand       per node, a formula in DNF: ⋁ over consumers c of (demand(c) ∧ ⋀ gates(c)).
    │               `true` ⇒ somebody reads it always.
-   │                 · a latch dominates only what declares `Cell::REWARMS` (it is read one
+   │                 · a latch dominates only what a later tick rebuilds (it is read one
    │                   tick ahead — §1.3), and a gate the sweep has not reached yet not at all
    │                 · anything holding history is pinned  (Folding dep, Buffer,
    │                   latch, gate itself — state cannot re-warm through a skip)
@@ -211,13 +211,15 @@ Demand reads these edges backwards, and what it derives is a FORMULA, not a set:
    stepped earlier  read off the frame     ⇒ suppresses upstream on the SAME tick the consumer
                                              is dark — co-extensive, always safe, nothing declared
    a latch          read from `standing()` ⇒ suppresses ONE TICK AHEAD of the consumer arming,
-                    at tick start             so only where the node says it survives that tick
+                    at tick start             so only where that tick is one a later one rebuilds
 
- `Cell::REWARMS` is that permission, false by default — so no existing graph changes, and a node
- that does not opt in is unconditionally demanded wherever a latch reaches it. The consequence is
- not hidden: on the tick a latch ARMS, a node darkened by it is still dark, and wakes the tick
- after. A gate the sweep has not resolved yet is the other exemption — that disjunct degrades to
- standing demand rather than failing the build, which is exactly the answer the intersection gave.
+ That permission is nobody's to declare — it is `Deps` read again: a root's batch and an emitter's
+ buffer are this tick's and no other's, where a level node's out is state it keeps, so a node
+ reading only levels reads the same thing again and anything else is unconditionally demanded
+ wherever a latch reaches it. The consequence is not hidden: on the tick a latch ARMS, a node
+ darkened by it is still dark, and wakes the tick after. A gate the sweep has not resolved yet is
+ the other exemption — that disjunct degrades to standing demand rather than failing the build,
+ which is exactly the answer the intersection gave.
 ```
 
 #align(center, diagram(
@@ -320,7 +322,7 @@ gateable the moment the lane became a run of rows the engine could retain for it
 === 1.5 Node kinds — how a cell computes
 
 ```
-  Cell                      type Out<'t>: Copy · NAME · REACH · FOLDED · RETAINED · REWARMS
+  Cell                      type Out<'t>: Copy · NAME · REACH · FOLDED · RETAINED
    │                                              · CLOCK · Gates
    │                        the floor. A root is a Cell with no Node impl.
    │
@@ -461,7 +463,7 @@ gateable the moment the lane became a run of rows the engine could retain for it
   node-stroke: 0.7pt,
   label-size: 7.5pt,
 
-  node((0, 0), align(center)[`Cell` \ #text(7pt)[`Out<'t>: Copy` · `NAME` · `REACH` · `FOLDED` · `RETAINED` · `REWARMS` · `CLOCK` · `Gates`]], fill: luma(235), name: <cell>),
+  node((0, 0), align(center)[`Cell` \ #text(7pt)[`Out<'t>: Copy` · `NAME` · `REACH` · `FOLDED` · `RETAINED` · `CLOCK` · `Gates`]], fill: luma(235), name: <cell>),
 
   node((-2.4, 1.3), align(center)[`Symbolic` · `Decides` \ #text(7pt)[`body -> impl Expr`]], name: <sy>),
   node((-1.1, 1.3), align(center)[`Node` \ #text(7pt)[`type Kernel`, no method]], name: <nd>),
