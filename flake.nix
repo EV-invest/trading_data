@@ -16,7 +16,7 @@
       let
         pkgs = import v_flakes.default_nixpkgs { inherit system; config.allowUnfree = true; };
         rust = v_flakes.rs.default_nightly system;
-        pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
+        pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; stripClaudeSignature = true; });
         manifest = (pkgs.lib.importTOML ./trading_data/Cargo.toml).package;
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
