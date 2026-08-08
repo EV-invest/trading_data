@@ -88,7 +88,7 @@ tempfile = "3"
 thiserror = "^2.0"
 tokio = { version = "^1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 tracing = "^0.1"
-trading_data = { path = "trading_data" }
+trading_data = { path = "trading_data" } # re-export for the examples, the only members naming it; leave unpinned, a `version` here duplicates the crate's own
 ui_test = "0.30"
 ureq = "^3"
 v_utils = { version = "^2.17.2", features = ["io", "macros", "cli", "distributions"] }

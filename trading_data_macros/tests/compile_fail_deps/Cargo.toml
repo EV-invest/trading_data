@@ -14,5 +14,9 @@ publish = false
 trading_data_macros = { path = "../.." }
 trading_data_dag = { path = "../../../trading_data_dag" }
 
+# The `tests/compile_fail/*.rs` cases name them; nothing under `src/` does.
+[package.metadata.cargo-machete]
+ignored = ["trading_data_dag", "trading_data_macros"]
+
 [lib]
 path = "src/lib.rs"
