@@ -13,7 +13,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use exchange_interactions::prelude::*;
-use exec_viz::{Backpressure, Viz};
+use exec_viz::{Backpressure, Tape, Viz};
 use trading_data::{Catalog, Cell, Feed, Live, LiveClock};
 use trading_data_live_example::{nodes::Graph, pair, pump_book, pump_trades, symbol};
 use v_utils::*;
@@ -49,7 +49,8 @@ async fn main() {
 	// per-event series either side of the price pane that wants the fine grain.
 	// Dropping: a fill must never wait on a study aid. What was dropped is counted, not hidden —
 	// `ActivationFrame::dropped`.
-	let (viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 100, Backpressure::Drop);
+	let (tape, mut recorder) = Tape::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 100, Backpressure::Drop);
+	let viz = tape.viz();
 	let mut server = tokio::task::JoinSet::new();
 	let base: u16 = std::env::var("PORT").expect("PORT: the devShell sets the base of the port range").parse().expect("PORT is a u16");
 	server.spawn(viz.clone().serve_on(Viz::bind(base + ORDINAL).await));

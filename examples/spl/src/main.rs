@@ -21,7 +21,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use exec_viz::{Backpressure, Rec, Recorder, Viz};
+use exec_viz::{Backpressure, Rec, Recorder, Tape, Viz};
 use indicatif::ProgressBar;
 use trading_data::{Catalog, Cell, Exact, ExchangeName, Feed, LatencyConfig, Observer, ReadClock, Replay, Side, Step, Ts, read_mc, read_oi, required_lanes};
 use trading_data_spl::{
@@ -148,7 +148,8 @@ async fn main() {
 		}
 		false => {
 			// Blocking: a replay wants the whole tape, and its feed is a file that will wait.
-			let (viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), cli.capacity, 60_000, Backpressure::Block);
+			let (tape, mut recorder) = Tape::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), cli.capacity, 60_000, Backpressure::Block);
+			let viz = tape.viz();
 			// Bound before a byte is read, and printed before the bar starts redrawing over it: the point
 			// of serving concurrently is that the URL works from the first second.
 			let port = std::env::var("PORT").map_or(PORT_BASE, |p| p.parse().expect("PORT is a u16")) + ORDINAL;
