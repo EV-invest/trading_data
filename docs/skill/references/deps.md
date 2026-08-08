@@ -91,11 +91,11 @@ You never write it. What a skip costs you is a *type*: a suppressed node is boun
 out with no unfired reading cannot be skipped and says so at compile time (`Option<T> ⇒ None`,
 `&[T] ⇒ &[]`).
 
-`#[node(rewarms)]` is the one thing you state: *a reading not taken is not a reading lost*. It is what
-lets a **latch** appear in the formula — a latch is read from its standing bit at tick start, so it
-darkens producers one tick *ahead* of the consumer arming, and only a node that survives that tick may
-be darkened by it. A gate stepped earlier needs no permission: it is read off the frame on the same
-tick, co-extensively.
+You do not state the one exemption either. A **latch** is read from its standing bit at tick start, so
+it darkens producers one tick *ahead* of the consumer arming, and only a node that survives that tick
+may be darkened by it — read off `Deps` again, since a root's batch and an `Emit`'s buffer are this
+tick's and no other's where a level node's out is state it keeps. A gate stepped earlier needs no
+exemption: it is read off the frame on the same tick, co-extensively.
 
 Consequence, not hidden: on the tick a latch arms, a node darkened by it is still dark and wakes the
 tick after.

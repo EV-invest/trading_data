@@ -184,11 +184,11 @@ a statement about the element sequence, identical under every grouping.
 ### `Runs` — the run hatch
 
 ```rust
-#[node(rewarms)]
+#[node]
 impl Runs for BookTop {
-    type Deps = (Book, BookDeltas);
+    type Deps = (Book,);
     const WHY: &'static str = "reading the top of a book is a lookup into a fold, not an expression over it";
-    fn emit(&mut self, (book, levels): RunOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) { .. }
+    fn emit(&mut self, (book,): RunOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) { .. }
 }
 slice_nudge!(BookTop, Option<BookTopSnap>);
 ```
@@ -221,7 +221,6 @@ shim are exported together.
 |---|---|
 | `#[node]` | the default |
 | `#[node(latch)]` | this cell has a hand-written `impl Latch` (a separate impl) |
-| `#[node(rewarms)]` | a skipped tick is recoverable — the permission a latch needs to darken this node one tick ahead |
 | `#[node(anchored)]` | replay this node forward out of the driver's past on the tick it is demanded |
 
 One shim per cell. Put `#[node]` on the body impl (`Blind`/`Runs`/`Symbolic`/`Decides`/`Scans`/
