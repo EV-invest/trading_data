@@ -1,8 +1,8 @@
 error: graph! needs at least one root
   --> $DIR/trading_data_macros/tests/compile_fail/empty_roots.rs:LL:CC
   |
-LL |     out GOut;
-  |     ^^^
+LL |     roots {};
+  |           ^^
 
 error: aborting due to 1 previous error
 

@@ -10,8 +10,8 @@ impl Cell for N {
 graph! {
 	struct G;
 	batches Batches;
-	roots {};
-	out GOut; //~ ERROR: graph! needs at least one root
+	roots {}; //~ ERROR: graph! needs at least one root
+	out GOut;
 	outputs { n: N }
 }
 

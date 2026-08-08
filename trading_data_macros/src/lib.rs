@@ -3,17 +3,23 @@
 //! one from the other. Generated code reaches the dag through whichever path the invoking crate has
 //! it under — resolved once, in `graph!`, and carried in the driver state from there.
 
+#![feature(proc_macro_diagnostic, proc_macro_span)]
+
 use proc_macro::TokenStream;
 
 mod demand;
+mod diag;
 mod graph;
 mod node;
 mod resolve;
 mod state;
 mod ty;
 
-fn out(r: syn::Result<proc_macro2::TokenStream>) -> TokenStream {
-	r.unwrap_or_else(syn::Error::into_compile_error).into()
+fn out(r: diag::Result<proc_macro2::TokenStream>) -> TokenStream {
+	match r {
+		Ok(ts) => ts.into(),
+		Err(d) => d.emit(),
+	}
 }
 
 /// Builds a frame from its outputs: the node set, its topological order, the `Emitter` wrapping, the

@@ -1,11 +1,12 @@
 //! `__graph_resolve!` — the driver. It walks the dep tree one node per expansion, calling back into
 //! each cell's shim for edges it cannot see, and emits the graph once the closure is complete.
 
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{ToTokens, quote};
 use syn::Type;
 
 use crate::{
+	diag::{Diag, Result},
 	state::{Awaiting, Buf, Dep, NodeInfo, Reader, State},
 	ty::{self, Wrap},
 };
@@ -52,7 +53,7 @@ fn read_answer(r: &mut Reader) -> Option<Answer> {
 	None
 }
 
-fn key_of(ts: &TokenStream) -> syn::Result<(String, Type)> {
+fn key_of(ts: &TokenStream) -> Result<(String, Type)> {
 	let t: Type = ty::parse_type(&ty::flatten(ts.clone()))?;
 	Ok((ty::norm(&t), t))
 }
@@ -61,18 +62,17 @@ fn on_stack(st: &State, key: &str) -> bool {
 	st.stack.iter().any(|(k, _)| k == key)
 }
 
-fn cycle(st: &State, key: &str) -> syn::Error {
+fn cycle(st: &State, key: &str) -> Diag {
 	let mut path: Vec<&str> = st.stack.iter().map(|(k, _)| k.as_str()).collect();
 	path.push(key);
-	syn::Error::new(
-		Span::call_site(),
-		format!("dep cycle: {} — a graph is a dag, and a node cannot read what it feeds", path.join(" → ")),
-	)
+	Diag::new(Span::call_site(), format!("dep cycle: {}", path.join(" → ")))
+		.note("a graph is a dag: a node cannot read what it feeds")
+		.help("if the back edge is meant to read the *previous* tick, that is state the node keeps itself, not a dep")
 }
 
 /// Records a resolved node, unless the answer names one already walked — which is what an alias
 /// looks like from here: asked about under one spelling, answering under its own.
-fn record(st: &mut State, info: NodeInfo) -> syn::Result<()> {
+fn record(st: &mut State, info: NodeInfo) -> Result<()> {
 	if st.known.iter().any(|n| n.key == info.key) {
 		return match on_stack(st, &info.key) {
 			true => Err(cycle(st, &info.key)),
@@ -84,7 +84,7 @@ fn record(st: &mut State, info: NodeInfo) -> syn::Result<()> {
 	Ok(())
 }
 
-fn accept(st: &mut State, answer: Option<Answer>) -> syn::Result<()> {
+fn accept(st: &mut State, answer: Option<Answer>) -> Result<()> {
 	let awaiting = core::mem::replace(&mut st.awaiting, Awaiting::Nothing);
 	match (awaiting, answer) {
 		(Awaiting::Nothing, None) => Ok(()),
@@ -129,7 +129,12 @@ fn accept(st: &mut State, answer: Option<Answer>) -> syn::Result<()> {
 				deps: vec![arm],
 			},
 		),
-		_ => panic!("__graph_resolve: a shim answered a question the driver did not ask"),
+		// `#[node]` names a body-trait shim `__td_node_` and an `Episodic` one `__td_trigger_`, so a cell
+		// asked for under the wrong reading fails to resolve the macro rather than reaching here. What
+		// does reach here is a shim nothing in this crate wrote.
+		_ => Err(Diag::new(Span::call_site(), "a shim answered a question `graph!` did not ask").note(
+			"`__td_node_*` and `__td_trigger_*` are written by `#[node]` and read by the driver alone: one hand-written, or left behind by another version of this crate, is what gets here",
+		)),
 	}
 }
 
@@ -160,7 +165,7 @@ fn re_walk(st: &mut State, dep: &Dep) {
 }
 
 /// Walks one edge. `Ok(Some(..))` is a question only the compiler can answer: emit it and pause.
-fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
+fn visit(st: &mut State, dep: Dep) -> Result<Option<TokenStream>> {
 	let (_, full) = key_of(&dep.ty)?;
 	let (cell, wrap) = ty::unwrap_dep(&full)?;
 	let key = ty::norm(&cell);
@@ -244,7 +249,7 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 
 	// `Armed<N>`'s dep is `N::Trigger` — an associated type, so the arm is asked for by name.
 	if ty::head_is(&cell, "Armed") {
-		let inner = ty::sole_arg(&cell).ok_or_else(|| syn::Error::new(Span::call_site(), "`Armed` without an episode"))?;
+		let inner = ty::sole_arg(&cell).ok_or_else(|| Diag::spanned(&cell, "`Armed` names the episode it latches").help("write `Armed<C>`"))?;
 		let shim = ty::shim_path(&inner, "__td_trigger_")?;
 		st.awaiting = Awaiting::Trigger(key, cell.to_token_stream());
 		let dag = &st.cfg.dag;
@@ -255,7 +260,7 @@ fn visit(st: &mut State, dep: Dep) -> syn::Result<Option<TokenStream>> {
 	Ok(Some(ask(st, &dep.shim, &cell)))
 }
 
-pub fn resolve(input: TokenStream) -> syn::Result<TokenStream> {
+pub fn resolve(input: TokenStream) -> Result<TokenStream> {
 	let mut r = Reader::new(input);
 	let answer = read_answer(&mut r);
 	r.at("state");
@@ -301,14 +306,12 @@ fn field_of(key: &str) -> Ident {
 /// past can be read from. A derived dep would want its own producer replayed first, recursively;
 /// that is a playback architecture this does not have yet, and the dominant use of anchoring is
 /// volume-bottlenecked nodes, which are input-shaped and so covered by roots.
-fn anchoring(st: &State) -> syn::Result<()> {
-	let err = |m: String| syn::Error::new(Span::call_site(), m);
+fn anchoring(st: &State) -> Result<()> {
+	let at = |m: String| Diag::new(Span::call_site(), m);
 	for n in st.known.iter().filter(|n| n.anchored) {
 		if n.emit {
-			return Err(err(format!(
-				"`{}` is `#[node(anchored)]` on a run-shaped node: a rewind restores what a node *holds*, and an emitter's out is the engine's buffer, which is this tick's and no other's",
-				n.key
-			)));
+			return Err(at(format!("`{}` is `#[node(anchored)]` on a run-shaped node", n.key))
+				.note("a rewind restores what a node *holds*, and an emitter's out is the engine's buffer, which is this tick's and no other's"));
 		}
 		for d in &n.deps {
 			let (dep, wrap) = crate::demand::cell(st, &d.ty)?;
@@ -318,23 +321,21 @@ fn anchoring(st: &State) -> syn::Result<()> {
 				continue;
 			}
 			if matches!(wrap, Wrap::Fold) {
-				return Err(err(format!(
-					"`{}` is `#[node(anchored)]` and folds `{dep}` itself: a `Folding` reach is the node's own state, so a rewind that re-read it would fold it twice. State it as `Buffering<{dep}, R>` and the reach becomes the frame's",
-					n.key
-				)));
+				return Err(at(format!("`{}` is `#[node(anchored)]` and folds `{dep}` itself", n.key))
+					.help(format!("state it as `Buffering<{dep}, R>`, and the reach becomes the frame's"))
+					.note("a `Folding` reach is the node's own state, so a rewind that re-read it would fold it twice"));
 			}
 			if !is_root(st, &dep) {
-				return Err(err(format!(
-					"`{}` is `#[node(anchored)]` and reads `{dep}`, which is no root of this graph: a rewind reads a node's inputs back out of the past, and only a root is a lane a past can be read from. (Temporary — replaying an arbitrary producer is a thing the playback side may grow; it is not needed yet.)",
-					n.key
-				)));
+				return Err(at(format!("`{}` is `#[node(anchored)]` and reads `{dep}`, which is no root of this graph", n.key))
+					.note("a rewind reads a node's inputs back out of the past, and only a root is a lane a past can be read from")
+					.note("replaying an arbitrary producer is a thing the playback side may grow; it is not needed yet"));
 			}
 		}
 	}
 	Ok(())
 }
 
-fn emit(st: State) -> syn::Result<TokenStream> {
+fn emit(st: State) -> Result<TokenStream> {
 	anchoring(&st)?;
 	let c = &st.cfg;
 	let dag = &c.dag;
@@ -358,6 +359,7 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 		})
 		.collect();
 	let fields: Vec<Ident> = nodes.iter().map(|n| field_of(&n.key)).collect();
+	let indices: Vec<Literal> = (0..nodes.len()).map(Literal::usize_unsuffixed).collect();
 	let names: Vec<String> = nodes.iter().map(|n| n.key.clone()).collect();
 	let (sup, rewinders) = crate::demand::suppressors(&st)?;
 
@@ -549,7 +551,12 @@ fn emit(st: State) -> syn::Result<TokenStream> {
 
 			// the derived node set is deduped on how the deps spell each cell; two spellings that are
 			// one type but normalise apart would otherwise surface as an inscrutable `Has` ambiguity.
-			assert!(#dag::distinct(NAMES), "two nodes of this graph share a `Cell::NAME`");
+			// Per node rather than over the set, so the message can name a field: `assert!` reads a
+			// non-literal message as a format string, and const panic formats nothing.
+			#(assert!(
+				!#dag::contains(NAMES.split_at(#indices).0, #dag::node_name::<#node_tys>()),
+				concat!(stringify!(#fields), " shares its `Cell::NAME` with a node stepped before it — one cell reached under two spellings the driver read apart")
+			);)*
 
 			// a latch is cut from within: what it gates must be what cuts it. The *field*, not the type:
 			// a const-generic type name carries braces, and `assert!` reads its message as a format string.

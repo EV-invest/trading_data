@@ -5,6 +5,8 @@ use proc_macro2::{Delimiter, Group, Ident, Punct, Spacing, Span, TokenStream, To
 use quote::{ToTokens, quote};
 use syn::{GenericArgument, PathArguments, Type, TypePath};
 
+use crate::diag::{Diag, Result};
+
 /// The dep-position wrappers the driver knows structurally — everything else is the cell itself.
 pub enum Wrap {
 	Bare,
@@ -18,8 +20,8 @@ pub enum Wrap {
 	Gate,
 }
 
-pub fn parse_type(ts: &TokenStream) -> syn::Result<Type> {
-	syn::parse2(ts.clone())
+pub fn parse_type(ts: &TokenStream) -> Result<Type> {
+	Ok(syn::parse2(ts.clone())?)
 }
 
 /// `Folding<C, R>` / `Buffering<C, R>` / `Sampling<C>` / `Gating<C>` → `C` plus which of them it
@@ -28,18 +30,20 @@ pub fn parse_type(ts: &TokenStream) -> syn::Result<Type> {
 ///
 /// `Buffer<C, H>` and `Latest<C>` are the frame cells those two resolve *against*, and are rejected
 /// here rather than aliased onto the field they name — the same seal `#[node]` puts on `impl Node`.
-pub fn unwrap_dep(ty: &Type) -> syn::Result<(Type, Wrap)> {
+pub fn unwrap_dep(ty: &Type) -> Result<(Type, Wrap)> {
 	let bare = || Ok((ty.clone(), Wrap::Bare));
 	let Type::Path(p) = ty else { return bare() };
 	let Some(seg) = p.path.segments.last() else { return bare() };
-	let engine_cell = match seg.ident.to_string().as_str() {
+	match seg.ident.to_string().as_str() {
 		"Buffer" =>
-			Some("`Buffer<C, H>` is the frame cell `graph!` grows for you — its reach is the join of every read of `C` in the graph, so it is not yours to state. Write `Buffering<C, R>`"),
-		"Latest" => Some("`Latest<C>` is the frame cell `graph!` grows for you. Write `Sampling<C>`"),
-		_ => None,
-	};
-	if let Some(write_instead) = engine_cell {
-		return Err(syn::Error::new_spanned(ty, write_instead));
+			return Err(Diag::spanned(ty, "`Buffer<C, H>` is the frame cell `graph!` grows for you, not a dep spelling")
+				.help("write `Buffering<C, R>`, naming the reach *this* node reads")
+				.note("the frame's `Buffer` is sized on the join of every read of `C` in the graph, so no one dep site is in a position to state its reach")),
+		"Latest" =>
+			return Err(Diag::spanned(ty, "`Latest<C>` is the frame cell `graph!` grows for you, not a dep spelling")
+				.help("write `Sampling<C>`")
+				.note("every reader of a level asks for the same one item, so the dep says which cell and the frame says the rest")),
+		_ => {}
 	}
 	let PathArguments::AngleBracketed(args) = &seg.arguments else { return bare() };
 	let mut it = args.args.iter().filter(|a| !matches!(a, GenericArgument::Lifetime(_)));
@@ -50,7 +54,8 @@ pub fn unwrap_dep(ty: &Type) -> syn::Result<(Type, Wrap)> {
 		"Folding" => (cell.clone(), Wrap::Fold),
 		"Gating" => (cell.clone(), Wrap::Gate),
 		"Buffering" => {
-			let reach = reach.ok_or_else(|| syn::Error::new_spanned(ty, "a `Buffering` dep names the reach the engine retains for it: write `Buffering<C, R>`"))?;
+			let reach = reach
+				.ok_or_else(|| Diag::spanned(ty, "a `Buffering` dep names the reach the engine retains for it").help("write `Buffering<C, R>` — `Over<TF>`, `Elems<N>` or `Unbounded`"))?;
 			(cell.clone(), Wrap::Buf { reach: reach.to_token_stream() })
 		}
 		"Sampling" => (cell.clone(), Wrap::Sample),
@@ -119,12 +124,16 @@ fn dollar_crate() -> TokenStream {
 /// crate is asked for unqualified, textually, which is why a node's impl must precede the `graph!`
 /// reaching it and why a module of cells is declared `#[macro_use]`. A cell named *through* its
 /// crate keeps that crate: cross-crate the path resolution works.
-pub fn shim_path(ty: &Type, prefix: &str) -> syn::Result<TokenStream> {
+pub fn shim_path(ty: &Type, prefix: &str) -> Result<TokenStream> {
 	let Type::Path(TypePath { qself, path, .. }) = ty else {
-		return Err(syn::Error::new_spanned(ty, "a dep is a named cell: this is not a path type"));
+		return Err(
+			Diag::spanned(ty, "a dep is a named cell, and this is not a path type").help("name the cell itself, or the wrapper reading it: `Trades`, `Buffering<Bars<TF_1MIN>, Elems<14>>`")
+		);
 	};
 	if qself.is_some() {
-		return Err(syn::Error::new_spanned(ty, "cannot resolve an associated type in `Deps`; name a concrete cell"));
+		return Err(Diag::spanned(ty, "an associated type names no cell `graph!` can ask about")
+			.help("write the concrete cell")
+			.note("deps are resolved as tokens, before the type system runs, so nothing here can project `<T as Trait>::Assoc` to the cell it would name"));
 	}
 	let last = path.segments.last().expect("a path has a segment");
 	let mac = Ident::new(&format!("{prefix}{}", last.ident), last.ident.span());

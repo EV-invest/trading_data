@@ -201,6 +201,11 @@ impl Horizon {
 /// This exists because a braced const argument may not mention a generic parameter, so
 /// `Folding<C, { Horizon::Over(TF) }>` does not parse — but an associated const on a *type* may read
 /// its impl's generics freely.
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` names no reach",
+	label = "no `Reach` impl",
+	note = "a reach is `Over<TF>` for a span of wall clock, `Elems<N>` for a count, or `Unbounded` for the whole run"
+)]
 pub trait Reach {
 	const HORIZON: Horizon;
 }
@@ -349,12 +354,22 @@ const fn timeframe(buf: &mut [u8; 256], len: usize, tf: Timeframe) -> usize {
 /// A retained item's own event time. Required of every [`Buffer`]ed item — a history you cannot
 /// index by time is one you can only read at an assumed cadence, which is the bug [`Horizon::Over`]
 /// replaces.
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` carries no event time",
+	label = "no `Stamped` impl",
+	note = "the default `Rows` retention trims by `ts_ns` on every tick, so an item it holds has to be able to say when it happened — or name a `Series::Batch` that keeps its reach some other way"
+)]
 pub trait Stamped {
 	fn ts_ns(&self) -> i64;
 }
 
 /// A value slot in the frame. `Out<'t>: Copy` — references are `Copy`, so a batch out enters the
 /// frame as `&'t [T]` and heavy root/node state is lent as `&'t State`.
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` is not a cell",
+	label = "no `Cell` impl",
+	note = "a cell states what it hands the frame — `impl Cell for {Self}` with `type Out<'t> = &'t [Item]` for a run, or an owned `Copy` value for a level"
+)]
 pub trait Cell {
 	type Out<'t>: Copy;
 
@@ -453,6 +468,11 @@ impl Bit for No {
 /// A cell output as a fixed-shape element array: the unit of observation and differentiation.
 /// `DIMS` is the shape (`[]` scalar, `[n]` vector, `[r, c]` row-major, any rank). A batch out
 /// (`&[T]`) flattens to its *last* element — the observer sees end-of-batch.
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` cannot be read as a flat element",
+	label = "no `Flat` impl",
+	note = "everything the engine observes or differentiates is a fixed-shape `f64` array: state `DIMS` and write every slot of `flat`, returning whether the element fired"
+)]
 pub trait Flat: Copy {
 	const DIMS: &'static [usize];
 	const LEN: usize = {
@@ -477,6 +497,11 @@ pub trait Flat: Copy {
 /// move in whole ticks, and pretending otherwise divides the difference by a step never taken.
 /// `0.0` ⇒ this slot cannot be perturbed (discrete, structural), so its Jacobian column stays NaN
 /// rather than a fabricated zero.
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` cannot be perturbed",
+	label = "no `Bump` impl",
+	note = "the Jacobian moves one slot at a time in the element's own units; a slot that cannot move returns `(self, 0.0)` and its column stays NaN rather than a fabricated zero"
+)]
 pub trait Bump: Copy {
 	fn bump(self, slot: usize, h: f64) -> (Self, f64);
 }
@@ -484,6 +509,11 @@ pub trait Bump: Copy {
 /// [`Flat`]'s inverse: an item rebuilt from the slots a per-element kernel computed, plus the event
 /// time. The time is the kernel's to carry rather than a slot, because a slot is a differentiation
 /// variable and an index may not be one (`r[kernels.selection.index-is-not-a-variable]`).
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` cannot be rebuilt from the slots a kernel computed",
+	label = "no `Unflat` impl",
+	note = "a per-element kernel writes `f64` slots and the run is made of items, so a run-shaped node's item owes `Flat`'s inverse"
+)]
 pub trait Unflat: Flat {
 	fn unflat(ts_ns: i64, slots: &[f64]) -> Self;
 }
@@ -643,6 +673,11 @@ impl<T: Flat> Flat for &[T] {
 /// The headline a human reads off a node at a glance — one compact line for the graph viz, the
 /// display-dual of [`Flat`]'s numeric flattening. A batch renders its *last* element (empty
 /// ⇒ `[]`), matching the observer's end-of-batch view.
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` has no one-line reading",
+	label = "no `Glance` impl",
+	note = "every node the sweep steps is drawable, so its out owes the viz a compact line — the display-dual of `Flat`"
+)]
 pub trait Glance {
 	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result;
 }
@@ -789,6 +824,11 @@ impl Plot {
 	}
 }
 
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` is no dep set",
+	label = "not a tuple of cells",
+	note = "`type Deps` is a tuple, wrappers and all — `(Trades, Buffering<Bars<TF_1MIN>, Elems<14>>)`. A single dep still needs its comma: `(Trades,)`"
+)]
 pub trait DepSet {
 	type Outs<'t>;
 	const NAMES: &'static [&'static str];
@@ -878,6 +918,11 @@ pub trait DepFlat: DepSet {
 /// `Scratch = Vec<T>`, a value cell stores the value in `Scratch` — which unties the re-advance
 /// lifetime from the pulled `'t`, so re-`advance`ing a short-lived clone typechecks. No blanket
 /// impl — the value/slice cases overlap — so every observed cell writes its own short impl.
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` has no finite-difference witness",
+	label = "no `Nudge` impl",
+	note = "every observed cell owes one, and a macro writes it: `slice_nudge!({Self}, Item)` where the out is a run, `value_nudge!({Self})` where it is a level. A generic cell writes its parameters in leading brackets"
+)]
 pub trait Nudge: Cell {
 	type Scratch: Default;
 	/// Materialize `out` into `scratch`; if `bump` is `Some(slot)`, perturb that element by about
@@ -981,7 +1026,9 @@ pub trait Pull<'t, F, I>: DepSet {
 }
 
 #[diagnostic::on_unimplemented(
-	message = "`{Self}` has no unfired reading — a node read only behind a gate must be able to decline: make its out `Option`-valued, or give it a consumer that is not gated"
+	message = "`{Self}` has no unfired reading",
+	label = "no `Latent` impl",
+	note = "a node every reader of which sits behind one gate is skipped while that gate is false, so it has to be able to decline: make its out `Option`-valued, or give it a consumer that is not gated"
 )]
 /// No `Copy` supertrait: a [`Cell::Out`] is `Copy` already, and stating it twice makes every
 /// signature that bounds an out by both this and [`Flat`] ambiguous over which clause proves it.
@@ -2343,12 +2390,22 @@ where
 
 /// A binary control signal. A node naming it through a [`Gating`] dep is not advanced while it is
 /// false: deps not pulled, no work done, out = [`Latent::latent`]. Gates are scalar-out.
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` is not a gate",
+	label = "no `Gate` impl",
+	note = "a `Gating<C>` dep reads permission rather than data, so `C`'s out has to be the `bool` — `impl Gate for {Self} {{}}` is what says the node means it that way"
+)]
 pub trait Gate: Node
 where
 	for<'t> Self: Cell<Out<'t> = bool>, {
 }
 
 /// Episode lifecycle on an out value; the initial state is the node's `Default`.
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` says nothing about an episode ending",
+	label = "no `Episode` impl",
+	note = "a latch commutates on its `Cut`'s terminal out, so that out has to report `terminal`"
+)]
 pub trait Episode: Copy {
 	fn terminal(&self) -> bool;
 }
@@ -2514,6 +2571,11 @@ impl<'t, N: Cell, T> Cons<'t, N, T> {
 pub enum Here {}
 pub struct There<I>(core::marker::PhantomData<I>);
 
+#[diagnostic::on_unimplemented(
+	message = "no frame cell answers for `{N}`",
+	label = "not in this frame",
+	note = "the frame holds what the walk derived from `outputs`, so a cell nothing reaches is never stepped and cannot be read off it"
+)]
 pub trait Has<'t, N: Cell, I> {
 	fn get(&self) -> N::Out<'t>;
 }
@@ -2522,6 +2584,10 @@ impl<'t, N: Cell, T> Has<'t, N, Here> for Cons<'t, N, T> {
 		self.out
 	}
 }
+// The frame is a cons list, so a cell N frames deep is reached through N nested obligations. Left
+// recommendable, rustc walks the whole chain back at the reader instead of saying which cell it
+// failed to find.
+#[diagnostic::do_not_recommend]
 impl<'t, N: Cell, M: Cell, T, I> Has<'t, N, There<I>> for Cons<'t, M, T>
 where
 	T: Has<'t, N, I>,
@@ -2534,6 +2600,11 @@ where
 /// A cell whose out is a run of `Item`s — the bufferable shape. The associated `Item` is what keeps
 /// the [`Buffering`] `Has` impl below free of an unconstrained element parameter (E0207).
 /// [`slice_nudge!`] declares it.
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` is not declared a run of items",
+	label = "no `Series` impl",
+	note = "`slice_nudge!({Self}, Item)` declares it and writes the finite-difference witness in one go — the two say the same thing about the out, so one macro states both"
+)]
 pub trait Series
 where
 	for<'x> Self: Cell<Out<'x> = &'x [Self::Item]>, {
@@ -4202,23 +4273,6 @@ pub const fn clock_divides(clock: Option<Timeframe>, deps: &[Option<Timeframe>])
 		i += 1;
 	}
 	tf.0 > 0
-}
-
-/// Whether every name in `set` occurs once — [`graph!`]'s backstop on its own dedup.
-#[doc(hidden)]
-pub const fn distinct(set: &[&str]) -> bool {
-	let mut i = 0;
-	while i < set.len() {
-		let mut j = i + 1;
-		while j < set.len() {
-			if str_eq(set[i], set[j]) {
-				return false;
-			}
-			j += 1;
-		}
-		i += 1;
-	}
-	true
 }
 
 #[doc(hidden)]
