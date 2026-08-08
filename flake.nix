@@ -112,6 +112,8 @@
             and `measure` on PATH.
             Args after `--` reach the app: `nix run .#spl -- --config other.nix`. The examples build
             debug; `-r` there builds release, which `spl`'s two-day replay wants.
+            `spl` takes `-c/--capacity <ticks>` for how far back the tape can be scrubbed — the run's
+            dominant memory cost, and `exec_viz`'s README is what to size it against.
             EOF
           '');
         };
