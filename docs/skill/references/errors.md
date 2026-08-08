@@ -36,6 +36,7 @@ the fix; this table adds *why* it exists, so you don't work around it.
 | ``{Self}` cannot be perturbed`` | `impl Bump`. A slot that cannot move returns `(self, 0.0)` — its column stays NaN, never a fabricated zero |
 | ``{Self}` cannot be rebuilt from the slots a kernel computed`` | `impl Unflat` — a per-element kernel writes `f64` slots and the run is made of items |
 | ``{Self}` carries no event time`` | `impl Stamped`: the default `Rows` retention trims by `ts_ns` every tick |
+| ``can't compare `X` with `X` ``, required by a bound in `Latest<C>` | derive `PartialEq` on the sampled item's `Val` — a level publishes on change, so it has to compare |
 | ``{Self}` has no one-line reading`` | `impl Glance` — every stepped node is drawable |
 | ``{Self}` is not a gate`` | `impl Gate for {Self} {}` — and its out must be `bool` |
 | ``{Self}` says nothing about an episode ending`` | `impl Episode` — a latch commutates on its `Cut`'s terminal out |

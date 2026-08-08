@@ -21,6 +21,11 @@ type Deps = (Gating<Screener>, Buffering<Bars<TF>, Over<OVER>>, Sampling<Momentu
 telling you the wrapper to write instead. `Armed<E>` is the one engine-owned node you do name, because
 it is the gate.
 
+`Sampling` hands you what *stands*, on every tick, and says nothing about when it was set — that is
+`r[rates.deps.tick-opaque]` on the dep side. The frame cell behind it carries both: `Latest<C>` takes a
+new value only where the sampled item differs, so an observer sees a level fire on the publications
+rather than on every tick it merely still stood. The item's `Val` owes `PartialEq` for it.
+
 ### Reach is a type in dep position, a value everywhere else
 
 `Over<TF>` · `Elems<N>` · `Unbounded` are `Reach` impls carrying one `HORIZON` const. That is what
