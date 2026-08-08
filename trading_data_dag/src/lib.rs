@@ -3160,18 +3160,22 @@ where
 }
 
 /// Engine-owned point-level over a [`Series`] — [`Buffer`]'s sibling, an ordinary node (ungated,
-/// `Deps = (Folding<C, Unbounded>,)`) sitting *next to* its source in the frame. Unbounded
-/// because a level it never saw is one it can never stand on, and it retains nothing: one item, not
-/// a window.
+/// `Deps = (C,)`) sitting *next to* its source in the frame. It retains nothing: one item, not a
+/// window, so what it reads is this tick's run and no more.
 ///
 /// The invariant is monotone — once it holds a value it holds one forever. That is what a consumer
 /// clocked by *another* series needs: on its own ticks this one has emitted nothing, and reading the
 /// empty run there would read absence where a standing level is the truth.
+///
+/// A tick skipped is therefore a value lost and not a reach lost — recoverable by one lookup, which
+/// is what [`Rewound`] is asked for where the level is `#[node(anchored)]`.
 #[doc(hidden)]
 pub struct Latest<C: Series>
 where
 	C::Item: Present, {
-	held: Option<<C::Item as Present>::Val>,
+	/// A rewind's whole job: the level as of the start of this tick. Public for the feed that
+	/// replays it, which is no crate of this one's.
+	pub held: Option<<C::Item as Present>::Val>,
 }
 
 // hand-written for the same reason [`Buffer`]'s are: `derive` would demand them of the source node.
@@ -3221,7 +3225,7 @@ impl<C: Series> Blind for Latest<C>
 where
 	C::Item: Present,
 {
-	type Deps = (Folding<C, Unbounded>,);
+	type Deps = (C,);
 
 	const WHY: &'static str = "holding the last value across a silence is a carry, and a carry has no slope of its own";
 
@@ -3599,6 +3603,10 @@ pub struct Fire<'a> {
 	/// The node's [`Cell::CLOCK`] — the period one of its elements *covers*, which is what a viz needs
 	/// to draw a slower series at its own width instead of the chart's.
 	pub clock: Option<Timeframe>,
+	/// Whether the sweep advanced the node at all. What [`fires`](Self::fires) cannot say: a clocked
+	/// node between publications and one the sweep skipped are both `fires: 0`, and only this
+	/// separates them.
+	pub ran: bool,
 	/// Elements the node fired this tick: slice len, or 0/1 for scalar/`Option` outs.
 	pub fires: usize,
 	/// Flattened *last* element; `None` = didn't fire.
@@ -3641,15 +3649,17 @@ pub struct Fire<'a> {
 impl<'a> Fire<'a> {
 	/// Everything a stepped node reads off its out and its [`Flats`]. The three algebra fields are
 	/// the exception rather than the shape, spliced in with `..` at the one site that states them.
-	/// `flat: None` is the unfired reading — no flattening happened, so there is none to report.
+	/// `flat: None` is the unflattened reading — nothing was computed to flatten. It is not
+	/// [`ran`](Fire::ran): an [`Emit`] whose period has not closed was stepped and published nothing.
 	#[inline]
-	fn of<T: Flat + Glance>(out: &'a T, plots: &'static [Plot], clock: Option<Timeframe>, fidelity: Fidelity, dep_dims: &'a [&'static [usize]], flat: Option<Flats<'a>>) -> Self {
+	fn of<T: Flat + Glance>(out: &'a T, plots: &'static [Plot], clock: Option<Timeframe>, fidelity: Fidelity, dep_dims: &'a [&'static [usize]], ran: bool, flat: Option<Flats<'a>>) -> Self {
 		Fire {
 			glance: out,
 			dims: T::DIMS,
 			plots,
 			clock,
 			fidelity,
+			ran,
 			fires: out.fires(),
 			vals: flat.and_then(|f| f.fired.then_some(f.vals)),
 			dep_dims,
@@ -4001,7 +4011,7 @@ where
 	if !run {
 		let out: N::Out<'t> = unrun();
 		if want != Want::Nothing {
-			let fire = Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Kernel as Level<N>>::FIDELITY, <N::Deps as DepFlat>::DIMS, None);
+			let fire = Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Kernel as Level<N>>::FIDELITY, <N::Deps as DepFlat>::DIMS, false, None);
 			obs.on(N::NAME, <N::Deps as DepSet>::FRAMES, <N::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
@@ -4061,7 +4071,15 @@ where
 		formula: formula.map(|f| f as &dyn core::fmt::Display),
 		deriv: deriv.as_ref().map(|d| d as &dyn core::fmt::Display),
 		trace: trace.as_ref().map(|t| t as &dyn core::fmt::Display),
-		..Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Kernel as Level<N>>::FIDELITY, <N::Deps as DepFlat>::DIMS, Some(flat))
+		..Fire::of(
+			&out,
+			N::PLOTS,
+			<N as Cell>::CLOCK,
+			<N::Kernel as Level<N>>::FIDELITY,
+			<N::Deps as DepFlat>::DIMS,
+			true,
+			Some(flat),
+		)
 	};
 	obs.on(N::NAME, <N::Deps as DepSet>::FRAMES, <N::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
@@ -4114,11 +4132,21 @@ where
 	let want = obs.want(E::NAME);
 
 	// gate closed, nobody reading, or the period still running: no emit, no dep flatten, no FD — the
-	// empty run is the honest view.
-	if !demanded || !<E::Deps as Pull<'t, F, I>>::open(&frame) || !e.opens(ts) {
+	// empty run is the honest view. The clock is not part of `ran`: a period still running is a node
+	// the sweep *did* reach, which is the whole distinction `Fire::ran` carries.
+	let ran = demanded && <E::Deps as Pull<'t, F, I>>::open(&frame);
+	if !ran || !e.opens(ts) {
 		let out: &'t [E::Item] = &e.buf;
 		if want != Want::Nothing {
-			let fire = Fire::of(&out, <E as Emit>::PLOTS, <E as Cell>::CLOCK, <E::Kernel as Run<E>>::FIDELITY, <E::Deps as DepFlat>::DIMS, None);
+			let fire = Fire::of(
+				&out,
+				<E as Emit>::PLOTS,
+				<E as Cell>::CLOCK,
+				<E::Kernel as Run<E>>::FIDELITY,
+				<E::Deps as DepFlat>::DIMS,
+				ran,
+				None,
+			);
 			obs.on(E::NAME, <E::Deps as DepSet>::FRAMES, <E::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
@@ -4171,6 +4199,7 @@ where
 		<E as Cell>::CLOCK,
 		<E::Kernel as Run<E>>::FIDELITY,
 		<E::Deps as DepFlat>::DIMS,
+		true,
 		Some(flat),
 	);
 	obs.on(E::NAME, <E::Deps as DepSet>::FRAMES, <E::Deps as DepSet>::GATES, fire);
@@ -4361,5 +4390,5 @@ where
 		block: None,
 	};
 	// a root is not computed here at all: nothing read it, so nothing was omitted from a reading.
-	obs.on(C::NAME, &[], &[], Fire::of(&out, &[Plot::DEFAULT], C::CLOCK, Fidelity::Exact, &[], Some(flat)));
+	obs.on(C::NAME, &[], &[], Fire::of(&out, &[Plot::DEFAULT], C::CLOCK, Fidelity::Exact, &[], true, Some(flat)));
 }
