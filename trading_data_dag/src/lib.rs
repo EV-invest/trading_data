@@ -4301,6 +4301,29 @@ pub const fn contains(set: &[&str], name: &str) -> bool {
 	false
 }
 
+/// Whether every input this node reads for data is one that survives a tick it did not run —
+/// [`Cell::RETAINED`] over the non-[`Gating`] deps, which is the whole of "a later tick rebuilds
+/// what this one lost". A gate is permission and carries no reading, so it is passed over; a node
+/// reading nothing at all has nothing to rebuild from and answers `false`.
+///
+/// This is what a *latch* asks before it may darken something: its bit is read a tick ahead of the
+/// consumer arming, so the lost tick is one no rewind at the node's own sweep position can answer
+/// for.
+#[doc(hidden)]
+pub const fn rebuilds(retains: &[bool], gates: &[bool]) -> bool {
+	let (mut i, mut read) = (0, false);
+	while i < retains.len() {
+		if !gates[i] {
+			if !retains[i] {
+				return false;
+			}
+			read = true;
+		}
+		i += 1;
+	}
+	read
+}
+
 /// Whether `deps` names `gate` in a gating position — the const mirror of a [`Gating`] dep.
 #[doc(hidden)]
 pub const fn gates_on(deps: &[&str], gates: &[bool], gate: &str) -> bool {
