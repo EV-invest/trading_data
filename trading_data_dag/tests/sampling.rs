@@ -240,3 +240,33 @@ fn a_declining_emission_does_not_unseat_the_level() {
 	assert_eq!(o.naive, None);
 	assert_eq!(o.sampled, Some(7.0));
 }
+
+/// A level is a node too, and a `Sampling` dep is the one edge that resolves against something other
+/// than the cell it names.
+#[test]
+fn shape() {
+	insta::assert_snapshot!(G::SHAPE, @r#"
+	graph G
+
+	╷ Src                          root src
+	│ ╷ Clk                          root clk
+	├─┼─╮
+	│ │ ● Sparse                       emit  Opaque("a sampling fixture")
+	│ ├─├─╮
+	│ │ │ ● Naive                        node  pin·output  →out naive  Opaque("a sampling fixture")
+	│ │ ╰
+	│ │ ● Latest<Sparse>               latest  pin·fold  ⟳Sparse@Unbounded  Opaque("holding the last value across a silence is a carry, and a carry has no slope of its own")
+	│ ├─╯
+	│ │ ● Sampled                      node  pin·output  ·Latest<Sparse>  →out sampled  Opaque("a sampling fixture")
+	├─┼─╮
+	│ │ ● Buffer<Src, Elems(1)>        buffer  pin·retention  ⟳Src@Elems(1)  Opaque("a retention window is the engine's bookkeeping over a run, not a function of its elements")
+	│ ├─╯
+	│ │ ● Windowed                     node  pin·output  ⌸@Elems(1)  →out windowed  Opaque("a sampling fixture")
+	╰ │
+	● │ Latest<Src>                  latest  pin·fold  ⟳Src@Unbounded  Opaque("holding the last value across a silence is a carry, and a carry has no slope of its own")
+	╰─╯
+	● Whole                        node  pin·output  ·Latest<Src>  →out whole  Opaque("a sampling fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	"#);
+}

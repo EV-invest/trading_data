@@ -24,6 +24,7 @@ v_utils.workspace = true
 
 [dev-dependencies]
 iai-callgrind.workspace = true
+insta.workspace = true
 
 [[bench]]
 name = "sweep"

@@ -5392,6 +5392,7 @@ name = "trading_data_dag"
 version = "0.3.0"
 dependencies = [
  "iai-callgrind",
+ "insta",
  "trading_data_expr",
  "trading_data_macros",
  "v_utils",
@@ -5433,6 +5434,7 @@ dependencies = [
 name = "trading_data_macros"
 version = "0.2.0"
 dependencies = [
+ "insta",
  "proc-macro-crate",
  "proc-macro2",
  "quote",

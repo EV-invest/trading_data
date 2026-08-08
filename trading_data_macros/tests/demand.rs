@@ -595,3 +595,38 @@ fn a_retention_read_only_by_anchored_nodes_sleeps_with_them() {
 	assert_eq!(tick(&mut g, -2.0, false), None);
 	assert_eq!(tick(&mut g, 3.0, false), Some(2.0), "pinned awake, the retention folded the tick its reader skipped");
 }
+
+/// The relaxation above, as the graph states it rather than as a feed exercises it: with the gate
+/// shut, both the anchored reader and the retention it is the only reader of go dark — and both are
+/// marked as sleeping only behind a past that rewinds, which is the whole of what the rule is
+/// conditioned on.
+#[test]
+fn anchored_shape() {
+	insta::assert_snapshot!(Anchored::SHAPE, @r#"
+	graph Anchored
+
+	╷ Src                        root src
+	├─╮
+	│ ● Hot                        gate  pin·gate  Opaque("a hot-path fixture")
+	╰ │
+	● │ Buffer<Src, Elems(2)>      buffer  ⟳Src@Elems(2)  Opaque("a retention window is the engine's bookkeeping over a run, not a function of its elements")
+	╰─╌
+	● Summed                     node  pin·output  ⊣Hot ⌸@Elems(2)  →out summed  Opaque("a demand fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	"#);
+	insta::assert_snapshot!(Anchored::SHAPE.under(&[("Hot", false)]), @r#"
+	graph Anchored  ·  Hot=closed
+
+	╷ Src                         root src
+	├─╮
+	│ ● Hot                         gate  pin·gate  Opaque("a hot-path fixture")
+	╰ │
+	░⟲ │ Buffer<Src, Elems(2)>        buffer  ⟳Src@Elems(2)  Opaque("a retention window is the engine's bookkeeping over a run, not a function of its elements")
+	╰─╌
+	░⟲ Summed                       node  pin·output  ⊣Hot ⌸@Elems(2)  →out summed  Opaque("a demand fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	2 of 4 dark
+	"#);
+}

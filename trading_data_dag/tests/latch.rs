@@ -185,3 +185,51 @@ fn arm_terminal_commutate_rearm() {
 	// bystander never reset: counted every tick.
 	assert_eq!(o.ticks, 6.0);
 }
+
+/// The compiled shape: `Deprec` sits behind the latch, `Ticks` beside it. Which of the two a closed
+/// latch darkens is the whole of what `Gating<Live>` buys, and it is a question the graph answers
+/// without a feed.
+#[test]
+fn shape() {
+	insta::assert_snapshot!(G::SHAPE, @r#"
+	graph G
+
+	╷ Trig        root trig
+	├─╮
+	│ ● Live        latch  pin·latch  →out live  Opaque("a latch fixture")
+	├─╌
+	│ ● Deprec      node  pin·output  ⊣Live  →out deprec  Opaque("a latch fixture")
+	╰
+	● Ticks       node  pin·output  →out ticks  Opaque("a latch fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	"#);
+	insta::assert_snapshot!(G::SHAPE.under(&[("Live", false)]), @r#"
+	graph G  ·  Live=closed
+
+	╷ Trig        root trig
+	├─╮
+	│ ● Live        latch  pin·latch  →out live  Opaque("a latch fixture")
+	├─╌
+	│ ░ Deprec      node  pin·output  ⊣Live  →out deprec  Opaque("a latch fixture")
+	╰
+	● Ticks       node  pin·output  →out ticks  Opaque("a latch fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	1 of 4 dark
+	"#);
+	insta::assert_snapshot!(G::SHAPE.under(&[("Live", true)]), @r#"
+	graph G  ·  Live=open
+
+	╷ Trig        root trig
+	├─╮
+	│ ● Live        latch  pin·latch  →out live  Opaque("a latch fixture")
+	├─╌
+	│ ● Deprec      node  pin·output  ⊣Live  →out deprec  Opaque("a latch fixture")
+	╰
+	● Ticks       node  pin·output  →out ticks  Opaque("a latch fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	0 of 4 dark
+	"#);
+}
