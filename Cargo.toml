@@ -44,54 +44,54 @@ manual_is_multiple_of = "allow"
 unused_features = "allow"
 
 [workspace.dependencies]
+trading_data_core.path = "trading_data_core"
+trading_data_dag.path = "trading_data_dag"
+trading_data_derivatives.path = "trading_data_derivatives"
+trading_data_expr.path = "trading_data_expr"
+trading_data_macros.path = "trading_data_macros"
+trading_data_persistence.path = "trading_data_persistence"
+
 anyhow = "1"
 arrayvec = "0.7"
 arrow = "59"
 clap = { version = "^4.6.5", features = ["derive", "env"] }
 color-eyre = "^0.6.5"
-derive-new = "^0"
-derive_more = { version = "^2.1", features = ["full"] }
+derive-new = "0"
+derive_more = "2.1"
 exchange_interactions = { path = "../exchange_interactions/exchange_interactions" }
 # The examples attach it to their own graph and run its server on their own runtime; its `web`
 # feature (the wasm front-end) is never enabled from here.
 exec_viz = { path = "../exec_viz/exec_viz" }
-eyre = "^0.6"
-# Named rather than inherited: `parquet` is what turns `zlib-rs` on today, and every trade archive
-# we inflate rides on that staying true. Dropping to the `miniz_oxide` default would be silent.
-flate2 = { version = "^1", features = ["zlib-rs"] }
+eyre = "0.6"
+flate2 = "1"
 iai-callgrind = "0.16"
-indicatif = "^0.18"
+indicatif = "0.18"
 insta = "^1"
 jiff = { version = "^0.2", features = ["serde"] }
 libm = "0.2"
 miette = { version = "^7.6.0", features = ["fancy", "serde", "syntect-highlighter"] }
-parquet = { version = "59", features = ["arrow", "snap", "zstd"] }
-proc-macro-crate = "^3"
-proc-macro2 = "^1"
-quote = "^1"
+nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
+nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
+nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
+nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
+nautilus-persistence-macros = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2" }
+parquet = "59"
+proc-macro-crate = "3"
+proc-macro2 = "1"
+quote = "1"
 serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
-snapshot_fonts = { version = "^1.3", path = "../../snapshot_fonts" }
-strum = { version = "^0.28", features = ["derive"] }
+snapshot_fonts = { version = "1.3", path = "../../snapshot_fonts" }
+strum = "0.28"
 syn = { version = "^3", features = ["full", "extra-traits"] }
 tempfile = "3"
 thiserror = "^2.0"
 tokio = { version = "^1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 tracing = "^0.1"
-trading_data = { path = "trading_data", version = "0.4.0" }
-# Unversioned on purpose: `publish = false`, so it can only ever be a dev-dependency of a workspace
-# member and never reaches a shipped build.
-trading_data_core = { path = "trading_data_core", version = "0.3.0" }
-trading_data_dag = { path = "trading_data_dag", version = "0.3.0" }
-trading_data_derivatives = { path = "trading_data_derivatives", version = "0.3.0" }
-trading_data_expr = { path = "trading_data_expr", version = "0.3.0" }
-trading_data_live_example = { path = "examples/live" }
-trading_data_macros = { path = "trading_data_macros", version = "0.2.0" }
-trading_data_persistence = { path = "trading_data_persistence", version = "0.3.0" }
+trading_data = { path = "trading_data" } # re-export for the examples, the only members naming it; leave unpinned, a `version` here duplicates the crate's own
 ui_test = "0.30"
 ureq = "^3"
 v_utils = { version = "^2.17.2", features = ["io", "macros", "cli", "distributions"] }
-zip = "^8"
 
 # A separate profile, so `release` stays bit-for-bit what it is. `debug = 1` is line tables only —
 # enough for `perf`/`samply` to name a frame, and no `force-frame-pointer`, which would need
@@ -108,4 +108,4 @@ strip = false
 # graphs resolve to an incompatible second copy of the shared parse-boundary types.
 trading_data_core = { path = "trading_data_core" }
 # TODO: drop once v_utils 2.17.2 (the `TF_*` consts) is on crates.io.
-v_utils = { path = "../../v_utils/v_utils" }
+v_utils = { path = "/home/v/s/v_utils/v_utils" }

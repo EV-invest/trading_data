@@ -11,17 +11,19 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# `clientside!` names both unqualified, so they are direct deps that no source file mentions.
+[package.metadata.cargo-machete]
+ignored = ["color-eyre", "miette"]
+
 [dependencies]
 color-eyre.workspace = true
 # The only edge pointing out of this workspace, declared here rather than in the root manifest so
 # `trading_data` itself has no path back to a venue adapter.
 exchange_interactions = { workspace = true }
 exec_viz.workspace = true
-jiff.workspace = true
 miette.workspace = true
 tokio.workspace = true
-tracing.workspace = true
-trading_data.workspace = true
+trading_data = { workspace = true }
 v_utils.workspace = true
 
 [lints]
