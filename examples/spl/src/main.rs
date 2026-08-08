@@ -54,11 +54,12 @@ const ORDINAL: u16 = 3;
 /// on the slot the flake would have given it.
 const PORT_BASE: u16 = 59990;
 
-/// Retained ticks. A trading day weaves into ~8× this (159 210, per `cost.json`), so most of the run
-/// survives only on the thinned backbone — which `exec_viz` fills by fire rather than by index, so
-/// what a scrub is for keeps its resolution while the book flood loses it. At this value the 5m and
-/// 1h nodes come through nearly whole; `exec_viz`'s README on `capacity` is how to size it.
-const SCROLLBACK: usize = 20_000;
+/// Default retained ticks, overridden by `--capacity`. A trading day weaves into 159 210 of them
+/// (`cost.json`), so this holds a `--days 1` run whole — every tick addressable, no thinning at all —
+/// and thins only a multi-day one. Where it does, `exec_viz` fills the backbone by fire rather than
+/// by index, so the bars and the classification keep their resolution while the book flood loses it.
+/// Measured: ~390 MB resident against ~100 MB at 20 000. `exec_viz`'s README is the trade in full.
+const SCROLLBACK: usize = 250_000;
 const HOUR_NS: i64 = 3600 * 1_000_000_000;
 const DAY_NS: i64 = 24 * HOUR_NS;
 #[derive(Parser)]
@@ -77,6 +78,10 @@ struct Cli {
 	/// firing the checks below spuriously.
 	#[arg(long)]
 	days: Option<usize>,
+	/// Ticks the tape retains — how far back the browser can scrub, and the run's dominant memory
+	/// cost. A trading day is 159 210 ticks. Ignored under `--headless`, which records nothing.
+	#[arg(short, long, default_value_t = SCROLLBACK)]
+	capacity: usize,
 }
 
 #[tokio::main]
@@ -143,7 +148,7 @@ async fn main() {
 		}
 		false => {
 			// Blocking: a replay wants the whole tape, and its feed is a file that will wait.
-			let (viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), SCROLLBACK, 60_000, Backpressure::Block);
+			let (viz, mut recorder) = Viz::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), cli.capacity, 60_000, Backpressure::Block);
 			// Bound before a byte is read, and printed before the bar starts redrawing over it: the point
 			// of serving concurrently is that the URL works from the first second.
 			let port = std::env::var("PORT").map_or(PORT_BASE, |p| p.parse().expect("PORT is a u16")) + ORDINAL;
