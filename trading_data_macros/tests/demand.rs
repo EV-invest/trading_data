@@ -530,3 +530,68 @@ fn a_latch_suppresses_what_declares_it_re_warms() {
 	assert_eq!(tick(-1.0), (Some(Phase(2)), 1));
 	assert_eq!(tick(-1.0), (None, 1));
 }
+
+// ---- graph three: a retention read only by anchored nodes goes dark with them ----
+
+/// The relaxation Phase 6 of the anchoring work turned on, and the only one there is to the rule
+/// that frame retention must be hole-free. What justifies it is not that the hole is harmless — it
+/// is a hole, and this test is written to show it — but that a rewind fetches those rows back out of
+/// the recorded past on the tick something asks. That is the driver's promise, not the graph's, so
+/// the whole relaxation is conditioned on `Rewound::REWINDS`.
+#[derive(Clone, Default)]
+struct Summed;
+impl Cell for Summed {
+	type Out<'t> = Option<f64>;
+}
+#[node(anchored)]
+impl Blind for Summed {
+	type Deps = (Gating<Hot>, Buffering<Src, Elems<2>>);
+
+	const WHY: &'static str = "a demand fixture";
+
+	fn advance<'t>(&'t mut self, (hot, h): DepOuts<'t, Self>) -> Self::Out<'t> {
+		assert!(hot, "a gating dep reads true inside `advance`");
+		let h: Hist<'t, P> = h;
+		Some(h.all().iter().map(|x| x.v).sum())
+	}
+}
+
+graph! {
+	struct Anchored;
+	batches AnchoredBatches;
+	roots { src: Src[P] };
+	out AnchoredOut;
+	outputs { summed: Summed }
+}
+
+/// The fixture holds no state to restore — what is under test is which nodes the sweep steps, not
+/// what a replay puts back.
+struct Tape;
+impl trading_data_dag::Rewound<Summed> for Tape {
+	fn rewind(&mut self, _: &mut Summed) {}
+}
+
+#[test]
+fn a_retention_read_only_by_anchored_nodes_sleeps_with_them() {
+	let mut g = Anchored::default();
+	let tick = |g: &mut Anchored, v: f64, past: bool| {
+		let b = [p(v)];
+		match past {
+			true => g.tick_rewind(0, AnchoredBatches { src: &b }, &mut Tape).summed,
+			false => g.tick(0, AnchoredBatches { src: &b }).summed,
+		}
+	};
+
+	// gate open, then shut, then open. With a past to seek, the shut tick's row never entered the
+	// window at all: what the third tick sums is 1 and 3, and -2 is on disk for whoever asks.
+	assert_eq!(tick(&mut g, 1.0, true), Some(1.0));
+	assert_eq!(tick(&mut g, -2.0, true), None);
+	assert_eq!(tick(&mut g, 3.0, true), Some(4.0), "the retention skipped the tick its only reader skipped");
+
+	// and `Awake` — a live feed's past, which is no past — pins the retention through the same shut
+	// tick, because nothing would ever fetch that row back: 1, -2 and 3 are all still in the window.
+	let mut g = Anchored::default();
+	assert_eq!(tick(&mut g, 1.0, false), Some(1.0));
+	assert_eq!(tick(&mut g, -2.0, false), None);
+	assert_eq!(tick(&mut g, 3.0, false), Some(2.0), "pinned awake, the retention folded the tick its reader skipped");
+}

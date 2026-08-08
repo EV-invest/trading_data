@@ -24,13 +24,17 @@ fn key_of(ts: &TokenStream) -> syn::Result<String> {
 	Ok(ty::norm(&ty::parse_type(&ty::flatten(ts.clone()))?))
 }
 
-/// The key a dep or output spelling was recorded under — `visit`'s reading of it, wrapper and all.
-/// The cell is canonicalized first, for the reason `visit` canonicalizes it: a retention is keyed on
-/// the series it holds, and an alias is a second spelling of one series rather than a second series.
-fn spelling(st: &State, ts: &TokenStream) -> syn::Result<(String, Wrap)> {
+/// The cell a dep spelling names, wrapper stripped and aliases resolved — the reason `visit`
+/// canonicalizes too: an alias is a second spelling of one series rather than a second series.
+pub fn cell(st: &State, ts: &TokenStream) -> syn::Result<(String, Wrap)> {
 	let (cell, wrap) = ty::unwrap_dep(&ty::parse_type(&ty::flatten(ts.clone()))?)?;
 	let named = ty::norm(&cell);
-	let cell = st.aliases.iter().find(|(a, _)| *a == named).map_or(named, |(_, answered)| answered.clone());
+	Ok((st.aliases.iter().find(|(a, _)| *a == named).map_or(named, |(_, answered)| answered.clone()), wrap))
+}
+
+/// The key a dep or output spelling was recorded under — `visit`'s reading of it, wrapper and all.
+fn spelling(st: &State, ts: &TokenStream) -> syn::Result<(String, Wrap)> {
+	let (cell, wrap) = cell(st, ts)?;
 	let key = match wrap {
 		Wrap::Buf { .. } => format!("Buffer<{cell}>"),
 		Wrap::Sample => format!("Latest<{cell}>"),
@@ -97,8 +101,14 @@ fn or(mut a: Vec<BTreeSet<usize>>, b: Vec<BTreeSet<usize>>) -> Vec<BTreeSet<usiz
 	a.iter().filter(|c| !a.iter().any(|o| o.len() < c.len() && o.is_subset(c))).cloned().collect()
 }
 
-/// Per node in `State::order`, the condition under which its out is read by anybody.
-pub fn suppressors(st: &State) -> syn::Result<Vec<Dnf>> {
+/// Per node in `State::order`: the condition under which its out is read by anybody, and which
+/// anchored nodes' pasts have to rewind before it may go dark at all.
+///
+/// The second list is what makes sleeping conditional on the *driver*: a node may only be suppressed
+/// where something will fetch back what it skipped, and whether anything will is the feed's answer,
+/// not the graph's. An anchored node names itself; a retention read only by anchored nodes names all
+/// of them.
+pub fn suppressors(st: &State) -> syn::Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
 	let order = &st.order;
 	let n = order.len();
 	let info: Vec<&NodeInfo> = order.iter().map(|k| st.known.iter().find(|x| x.key == *k).expect("an ordered node is known")).collect();
@@ -122,11 +132,29 @@ pub fn suppressors(st: &State) -> syn::Result<Vec<Dnf>> {
 		}
 	}
 
+	// A retention read *only* by anchored nodes may go dark with them. It is the one relaxation of the
+	// hole-free rule, and it is the whole win: a book that sleeps still costs every delta its buffer
+	// folds for it, and here nothing folds them at all. The hole is not a hole — the rows are on disk,
+	// and the rewind is what fetches them back.
+	let held: Vec<bool> = (0..n)
+		.map(|i| st.bufs.iter().any(|b| b.key == order[i]) && !consumers[i].is_empty() && consumers[i].iter().all(|&c| info[c].anchored))
+		.collect();
+
 	// never suppressed: node-held state cannot re-warm through a skip (the same reason `Pull::open`
-	// forbids `Gating` + `Folding`), frame retention must be hole-free, a latch is momentary, and a
-	// gate is what *decides* demand rather than something conditioned on it.
+	// forbids `Gating` + `Folding`), frame retention must be hole-free unless the above says
+	// otherwise, a latch is momentary, and a gate is what *decides* demand rather than something
+	// conditioned on it.
 	let pinned: Vec<bool> = (0..n)
-		.map(|i| edges[i].iter().any(|e| e.fold) || st.bufs.iter().any(|b| b.key == order[i]) || info[i].latch || is_gate[i])
+		.map(|i| edges[i].iter().any(|e| e.fold) || (st.bufs.iter().any(|b| b.key == order[i]) && !held[i]) || info[i].latch || is_gate[i])
+		.collect();
+
+	// whose past has to be a real one before each node may sleep
+	let rewinders: Vec<Vec<usize>> = (0..n)
+		.map(|i| match (info[i].anchored, held[i]) {
+			(true, _) => vec![i],
+			(false, true) => consumers[i].clone(),
+			(false, false) => Vec::new(),
+		})
 		.collect();
 
 	let mut outputs = BTreeSet::new();
@@ -165,5 +193,5 @@ pub fn suppressors(st: &State) -> syn::Result<Vec<Dnf>> {
 		live[i] = acc;
 	}
 
-	Ok(live.into_iter().map(|d| d.into_iter().map(|c| c.into_iter().collect()).collect()).collect())
+	Ok((live.into_iter().map(|d| d.into_iter().map(|c| c.into_iter().collect()).collect()).collect(), rewinders))
 }

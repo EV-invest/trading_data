@@ -1,0 +1,16 @@
+error: `Held` is `#[node(anchored)]` and reads `Mid`, which is no root of this graph: a rewind reads a node's inputs back out of the past, and only a root is a lane a past can be read from. (Temporary — replaying an arbitrary producer is a thing the playback side may grow; it is not needed yet.)
+  --> $DIR/trading_data_macros/tests/compile_fail/anchored_derived_dep.rs:LL:CC
+  |
+LL | / graph! {
+LL | |     struct G;
+LL | |     batches Batches;
+LL | |     roots { src: Src[u8] };
+LL | |     out GOut;
+LL | |     outputs { held: Held }
+LL | | }
+  | |_^
+  |
+  = note: this error originates in the macro `::trading_data_dag::__graph_resolve` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 1 previous error
+

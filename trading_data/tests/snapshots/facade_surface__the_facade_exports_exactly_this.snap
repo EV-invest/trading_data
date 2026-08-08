@@ -9,6 +9,7 @@ trading_data_core::Pair
 trading_data_core::RelayCols
 trading_data_core::Symbol
 trading_data_dag::Armed
+trading_data_dag::Awake
 trading_data_dag::Batch
 trading_data_dag::Blind
 trading_data_dag::Buffering
@@ -51,6 +52,7 @@ trading_data_dag::Predicate
 trading_data_dag::Present
 trading_data_dag::ProbabilisticDistribution
 trading_data_dag::Reach
+trading_data_dag::Rewound
 trading_data_dag::Roots
 trading_data_dag::Rows
 trading_data_dag::Run
@@ -144,6 +146,7 @@ trading_data_persistence::Mc
 trading_data_persistence::McRoot
 trading_data_persistence::Oi
 trading_data_persistence::OiRoot
+trading_data_persistence::Past
 trading_data_persistence::Precision
 trading_data_persistence::PrecisionPriceQty
 trading_data_persistence::ReadClock
@@ -154,6 +157,7 @@ trading_data_persistence::ShadowBook
 trading_data_persistence::Side
 trading_data_persistence::Sink
 trading_data_persistence::Span
+trading_data_persistence::Step
 trading_data_persistence::Trade
 trading_data_persistence::TradeBuf
 trading_data_persistence::TradeCols

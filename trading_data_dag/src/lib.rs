@@ -2819,6 +2819,21 @@ impl<T> Clone for Hist<'_, T> {
 }
 impl<T> Copy for Hist<'_, T> {}
 
+/// The reading of a retention that was not stepped — `graph!` publishes this where every consumer of
+/// a [`Buffer`] is anchored and every one of them is dark, so nobody is there to read it. The rows it
+/// did not retain are recoverable through the replay, not through this; all this has to be is honest
+/// about holding none.
+impl<T> Latent for Hist<'_, T> {
+	fn latent() -> Self {
+		Hist {
+			all: &[],
+			fresh: 0,
+			horizon: Horizon::Unit,
+			watermark: i64::MIN,
+		}
+	}
+}
+
 impl<'t, T> Hist<'t, T> {
 	/// This tick's emissions — identical to the unbuffered series out.
 	pub fn fresh(self) -> &'t [T] {
@@ -3802,6 +3817,54 @@ where
 	fd_cols(j.dep_buf, j.out_buf, j.out, j.bumped, |slot, h, bumped| {
 		fd_col::<N>(pre, &mut clone, deps, &mut scratch, slot, h, bumped)
 	})
+}
+
+/// A past for one node: what it needs to fold itself forward over the ticks it was not stepped on.
+/// Indexed by the node and implemented by the driver's feed — the dag names no storage, so what a
+/// past *is* is not this crate's to say.
+///
+/// This is what an anchored node has instead of a wait. A gated node that slept is replayed back
+/// into existence on the tick its consumer demands it, so there is no window in which it is present,
+/// wired, and reporting nothing.
+pub trait Rewound<N: Node> {
+	/// `false` pins the node awake — the demand formula reads it, and [`rewind`](Rewound::rewind) is
+	/// then never called. That is a live feed's reading: it cannot seek a past it has not recorded.
+	const REWINDS: bool = true;
+
+	/// Bring `n` to the state it would have held at the *start* of this tick. This tick's own batch is
+	/// the sweep's to fold, and folding it here would fold it twice.
+	fn rewind(&mut self, n: &mut N);
+}
+
+/// Whether a node will advance this tick: its consumers demand it *and* its own gates are open —
+/// [`step_when_obs`]'s `run`, hoisted so the sweep can act on it before the step rather than inside
+/// it. An anchored node is replayed forward on exactly the tick it runs and on no other, which is
+/// what makes a sleep both invisible to its consumer and worth taking.
+///
+/// Both halves are load-bearing and neither implies the other: demand is what the consumers say, and
+/// `open` is what the node's own [`Gating`] deps say. An anchored *output* has no consumer to darken
+/// it and still goes dark behind its own gate.
+#[doc(hidden)]
+#[cfg_attr(feature = "profile", inline(always))]
+pub fn advances<'t, N, F, I>(frame: &F, demanded: bool) -> bool
+where
+	N: Node,
+	N::Deps: Pull<'t, F, I>,
+	F: 't, {
+	demanded && <N::Deps as Pull<'t, F, I>>::open(frame)
+}
+
+/// The past that is never read, because the node it would rewind never sleeps. Erased through
+/// [`REWINDS`](Rewound::REWINDS), so a graph driven with this is the sweep it was before anything
+/// was anchored.
+pub struct Awake;
+
+impl<N: Node> Rewound<N> for Awake {
+	const REWINDS: bool = false;
+
+	fn rewind(&mut self, _: &mut N) {
+		unreachable!("REWINDS is false, so the sweep pins the node awake and never asks")
+	}
 }
 
 /// [`step`] + [`Observer::on`] before the push. The `()` observer erases to exactly `step`.

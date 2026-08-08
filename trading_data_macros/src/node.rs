@@ -17,18 +17,21 @@ use crate::{
 	ty::{self, Wrap},
 };
 
-/// `#[node]`, `#[node(latch)]` — the one flag the impl cannot state on its own, because the trait
-/// that would state it (`Latch`) is a second impl and a node has only one shim.
+/// `#[node]`, `#[node(latch)]`, `#[node(anchored)]` — the flags the impl cannot state on its own,
+/// because the trait that would state either (`Latch`, `Rewound`) is a second impl and a node has
+/// only one shim.
 struct Flags {
 	latch: bool,
+	anchored: bool,
 }
 impl Parse for Flags {
 	fn parse(input: ParseStream) -> syn::Result<Self> {
-		let mut f = Flags { latch: false };
+		let mut f = Flags { latch: false, anchored: false };
 		for i in Punctuated::<Ident, Token![,]>::parse_terminated(input)? {
 			match i.to_string().as_str() {
 				"latch" => f.latch = true,
-				_ => return Err(syn::Error::new(i.span(), "expected `latch`")),
+				"anchored" => f.anchored = true,
+				_ => return Err(syn::Error::new(i.span(), "expected `latch` or `anchored`")),
 			}
 		}
 		Ok(f)
@@ -170,6 +173,7 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 		true => quote!(emit),
 	};
 	let latch = Ident::new(&flags.latch.to_string(), Span::call_site());
+	let anchored = Ident::new(&flags.anchored.to_string(), Span::call_site());
 
 	// the `Node`/`Emit` impl nobody writes: `Deps` and `PLOTS` are forwarded off the body trait, so a
 	// node site states each exactly once.
@@ -223,7 +227,7 @@ pub fn node(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
 		macro_rules! #name {
 			#m => {
 				$__driver! {
-					@kind #kind @latch #latch @self { #self_ty }
+					@kind #kind @latch #latch @anchored #anchored @self { #self_ty }
 					@deps [ #(#deps),* ]
 					@state $($__state)*
 				}
