@@ -1516,6 +1516,103 @@ dependencies = [
 ]
 
 [[package]]
+name = "exchange_interactions"
+version = "0.19.2"
+dependencies = [
+ "exchange_interactions_methods",
+]
+
+[[package]]
+name = "exchange_interactions_adapters"
+version = "0.19.2"
+dependencies = [
+ "ahash 0.8.12",
+ "base64 0.23.0",
+ "derive-new",
+ "derive_more",
+ "exchange_interactions_api_generics",
+ "eyre",
+ "hex",
+ "hmac",
+ "jiff",
+ "rand 0.10.2",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2",
+ "smart-default",
+ "thiserror 2.0.19",
+ "tracing",
+ "url",
+ "ustr",
+ "v_utils",
+]
+
+[[package]]
+name = "exchange_interactions_api_generics"
+version = "0.21.2"
+dependencies = [
+ "ahash 0.8.12",
+ "arc-swap",
+ "bytes",
+ "dashmap",
+ "derive-new",
+ "derive_more",
+ "eyre",
+ "futures-util",
+ "jiff",
+ "miette",
+ "netwatcher",
+ "nonzero_ext",
+ "rand 0.10.2",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+ "ustr",
+ "v_utils",
+]
+
+[[package]]
+name = "exchange_interactions_methods"
+version = "0.2.2"
+dependencies = [
+ "ahash 0.8.12",
+ "arrayvec",
+ "async-trait",
+ "cfg-if",
+ "derive-new",
+ "derive_more",
+ "enum_dispatch",
+ "exchange_interactions_adapters",
+ "eyre",
+ "flate2",
+ "futures-util",
+ "jiff",
+ "miette",
+ "reqwest",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "smart-default",
+ "strum",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "trading_data_core",
+ "uuid",
+ "v_utils",
+ "zip",
+]
+
+[[package]]
 name = "exec_viz"
 version = "0.1.0"
 dependencies = [
@@ -5322,13 +5419,13 @@ name = "trading_data_live_example"
 version = "0.3.0"
 dependencies = [
  "color-eyre",
+ "exchange_interactions",
  "exec_viz",
  "jiff",
  "miette",
  "tokio",
  "tracing",
  "trading_data",
- "v_exchanges",
  "v_utils",
 ]
 
@@ -5384,6 +5481,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
+ "exchange_interactions",
  "exec_viz",
  "indicatif",
  "jiff",
@@ -5399,7 +5497,6 @@ dependencies = [
  "tracing",
  "trading_data",
  "ureq",
- "v_exchanges",
  "v_utils",
 ]
 
@@ -5629,103 +5726,6 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "v_exchanges"
-version = "0.19.2"
-dependencies = [
- "v_exchanges_methods",
-]
-
-[[package]]
-name = "v_exchanges_adapters"
-version = "0.19.2"
-dependencies = [
- "ahash 0.8.12",
- "base64 0.23.0",
- "derive-new",
- "derive_more",
- "eyre",
- "hex",
- "hmac",
- "jiff",
- "rand 0.10.2",
- "secrecy",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sha2",
- "smart-default",
- "thiserror 2.0.19",
- "tracing",
- "url",
- "ustr",
- "v_exchanges_api_generics",
- "v_utils",
-]
-
-[[package]]
-name = "v_exchanges_api_generics"
-version = "0.21.2"
-dependencies = [
- "ahash 0.8.12",
- "arc-swap",
- "bytes",
- "dashmap",
- "derive-new",
- "derive_more",
- "eyre",
- "futures-util",
- "jiff",
- "miette",
- "netwatcher",
- "nonzero_ext",
- "rand 0.10.2",
- "reqwest",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "thiserror 2.0.19",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "url",
- "ustr",
- "v_utils",
-]
-
-[[package]]
-name = "v_exchanges_methods"
-version = "0.2.2"
-dependencies = [
- "ahash 0.8.12",
- "arrayvec",
- "async-trait",
- "cfg-if",
- "derive-new",
- "derive_more",
- "enum_dispatch",
- "eyre",
- "flate2",
- "futures-util",
- "jiff",
- "miette",
- "reqwest",
- "secrecy",
- "serde",
- "serde_json",
- "serde_with",
- "smart-default",
- "strum",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "trading_data_core",
- "uuid",
- "v_exchanges_adapters",
- "v_utils",
- "zip",
 ]
 
 [[package]]

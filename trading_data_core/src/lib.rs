@@ -1,4 +1,4 @@
-//! Shared trade primitives: the parse boundary between exchange feeds (`v_exchanges`) and the
+//! Shared trade primitives: the parse boundary between exchange feeds (`exchange_interactions`) and the
 //! persistence tier. Both sides see the same types, so a websocket stream parses straight into
 //! persistence rows with no lossy hand-off.
 

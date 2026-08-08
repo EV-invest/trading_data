@@ -7,7 +7,7 @@
 //! historic ob200 archive plus OI and market cap. Each step is skipped if its artifact exists; any
 //! failure is a loud panic, and missing input is a failure.
 //!
-//! Staging for v_exchanges — self-contained and liftable, like `examples/demo`'s.
+//! Staging for exchange_interactions — self-contained and liftable, like `examples/demo`'s.
 
 pub mod config;
 pub mod nodes;
@@ -25,12 +25,12 @@ use std::{
 	},
 };
 
+use exchange_interactions::core::{Exchange, ExchangeInit as _, ExchangeStream, History, RequestRange};
 use indicatif::{MultiProgress, ProgressBar};
 use trading_data::{
 	Aggregate, Asset, BookShape, BookUpdate, Catalog, Clock, ExchangeName, Feather, Feed as _, Instrument, Live, Local, Mc, Oi, Pair, PrecisionPriceQty, Row as _, Side, Sink, Span, Symbol,
 	Trade, TradeBuf, Ts, Venue, read_mc, read_oi, read_trades,
 };
-use v_exchanges::core::{Exchange, ExchangeInit as _, ExchangeStream, History, RequestRange};
 
 use crate::config::Situation;
 

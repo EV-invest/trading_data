@@ -51,6 +51,7 @@ clap = { version = "^4.6.5", features = ["derive", "env"] }
 color-eyre = "^0.6.5"
 derive-new = "^0"
 derive_more = { version = "^2.1", features = ["full"] }
+exchange_interactions = { path = "../exchange_interactions/exchange_interactions" }
 # The examples attach it to their own graph and run its server on their own runtime; its `web`
 # feature (the wasm front-end) is never enabled from here.
 exec_viz = { path = "../exec_viz/exec_viz" }
@@ -95,7 +96,6 @@ trading_data_macros = { path = "trading_data_macros", version = "0.2.0" }
 trading_data_persistence = { path = "trading_data_persistence", version = "0.3.0" }
 ui_test = "0.30"
 ureq = "^3"
-v_exchanges = { path = "../../v_exchanges/v_exchanges" }
 v_utils = { version = "^2.17.2", features = ["io", "macros", "cli", "distributions"] }
 zip = "^8"
 
@@ -109,7 +109,7 @@ debug = 1
 strip = false
 
 [patch.crates-io]
-# `trading_data_core` dev-depends on `snapshot_fonts`, and `v_exchanges` names it from crates-io;
+# `trading_data_core` dev-depends on `snapshot_fonts`, and `exchange_interactions` names it from crates-io;
 # `[patch]` is only honored from the top-level workspace, so the redirect has to live here or those
 # graphs resolve to an incompatible second copy of the shared parse-boundary types.
 trading_data_core = { path = "trading_data_core" }

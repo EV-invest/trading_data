@@ -19,6 +19,7 @@ profile = ["trading_data/profile"]
 
 [dependencies]
 clap.workspace = true
+exchange_interactions.workspace = true
 exec_viz.workspace = true
 indicatif.workspace = true
 jiff.workspace = true
@@ -28,7 +29,6 @@ tokio.workspace = true
 tracing.workspace = true
 trading_data.workspace = true
 ureq.workspace = true
-v_exchanges.workspace = true
 v_utils.workspace = true
 
 # The benches replay this same strategy on NautilusTrader to measure what the DAG buys over an

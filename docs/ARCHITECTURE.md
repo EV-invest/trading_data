@@ -32,7 +32,7 @@ trading_data_expr           #![no_std], zero deps — the primitive algebra: one
 trading_data_dag                     #![no_std], zero deps — domain-free derivation engine
 trading_data_derivatives    the fundamental primitives: indicator state machines, and the bar/RSI nodes that are
                             nothing but those machines wired to a series — every strategy names these
-trading_data_core           the shared parse boundary both v_exchanges and persistence see: BatchTrades, the raw
+trading_data_core           the shared parse boundary both exchange_interactions and persistence see: BatchTrades, the raw
                             columnar lane holders, the Book fold + ShadowBook, and (orphan rules) their dag impls
 trading_data_persistence    arrow/parquet — catalog, lanes, feather writer, and `sync`: the central replay/live weaver
 trading_data_macros         proc-macro home of `#[node]` and `graph!`: the first leaves a node's `Deps` where a
@@ -57,7 +57,7 @@ hold it together, both checked in `trading_data/tests/facade_surface.rs` — a c
 `__td_node_` shim are exported together, and a type a client must spell to call an exported item is
 itself exported — over a snapshot of the list, so a name enters or leaves by review.
 
-`trading_data_core` sits below both persistence and the external `v_exchanges` bridge, so a live ws
+`trading_data_core` sits below both persistence and the external `exchange_interactions` bridge, so a live ws
 `BatchTrades` extends the lane columns and the parquet writer in one pass — no exchange type leaks
 into the store, no store type leaks into the exchange layer.
 

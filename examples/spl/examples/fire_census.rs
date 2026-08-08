@@ -12,6 +12,32 @@ use trading_data_spl::{config::Config, day_bounds, ensure_lanes, nodes::Graph, s
 
 const GATE: &str = "StdScreener";
 
+#[tokio::main]
+async fn main() {
+	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
+	let situation = &cfg.situation;
+	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(situation.pair.replace("-", ""));
+	let catalog = ensure_lanes(&cache, situation).await;
+	let lanes = required_lanes::<Graph>();
+	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
+	let read_clock = ReadClock::from(Exact::from(cfg.backtest.read_clock.duration()));
+	let (start, end) = day_bounds(trading_days(situation)[0]);
+
+	let mut graph = Graph::default();
+	let mut census = Census::default();
+	let mut f = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency, read_clock);
+	while let Some(l) = f.next() {
+		census.ticks += 1;
+		graph.tick_obs(l.ts_venue.as_nanos(), l.into(), &mut census);
+	}
+
+	println!("{} ticks, {} of them with `{GATE}` true\n", census.ticks, census.open_ticks);
+	println!("  {:<44} {:>10} {:>10}", "node (step order)", "fires", "of-which-open");
+	for n in &census.order {
+		let (all, open) = census.hits[n];
+		println!("  {n:<44} {all:>10} {open:>10}");
+	}
+}
 #[derive(Default)]
 struct Census {
 	/// insertion order is step order, which is topo order
@@ -41,32 +67,5 @@ impl Observer for Census {
 			e.0 += 1;
 			e.1 += self.gate_open as u64;
 		}
-	}
-}
-
-#[tokio::main]
-async fn main() {
-	let cfg = Config::load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.nix")));
-	let situation = &cfg.situation;
-	let cache = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tmp/spl_cache")).join(situation.pair.replace("-", ""));
-	let catalog = ensure_lanes(&cache, situation).await;
-	let lanes = required_lanes::<Graph>();
-	let latency: LatencyConfig = cfg.backtest.arrival_latency.into();
-	let read_clock = ReadClock::from(Exact::from(cfg.backtest.read_clock.duration()));
-	let (start, end) = day_bounds(trading_days(situation)[0]);
-
-	let mut graph = Graph::default();
-	let mut census = Census::default();
-	let mut f = Replay::new(&catalog, ExchangeName::Bybit, symbol(situation), start, end, &lanes, latency, read_clock);
-	while let Some(l) = f.next() {
-		census.ticks += 1;
-		graph.tick_obs(l.ts_venue.as_nanos(), l.into(), &mut census);
-	}
-
-	println!("{} ticks, {} of them with `{GATE}` true\n", census.ticks, census.open_ticks);
-	println!("  {:<44} {:>10} {:>10}", "node (step order)", "fires", "of-which-open");
-	for n in &census.order {
-		let (all, open) = census.hits[n];
-		println!("  {n:<44} {all:>10} {open:>10}");
 	}
 }

@@ -12,10 +12,10 @@
 
 use std::{path::PathBuf, sync::Arc};
 
+use exchange_interactions::prelude::*;
 use exec_viz::{Backpressure, Viz};
 use trading_data::{Catalog, Cell, Feed, Live, LiveClock};
 use trading_data_live_example::{nodes::Graph, pair, pump_book, pump_trades, symbol};
-use v_exchanges::prelude::*;
 use v_utils::*;
 
 /// This app's slot in the devShell's `PORT` range — the devShell owns the base, each app claims a

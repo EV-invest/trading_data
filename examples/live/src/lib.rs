@@ -3,13 +3,13 @@
 #![recursion_limit = "512"]
 //! The live graph and the ws plumbing that feeds it, for the watchpoint binary here.
 //!
-//! The v_exchanges → push-handle layer is a temporary bridge; when v_exchanges learns a native
+//! The exchange_interactions → push-handle layer is a temporary bridge; when exchange_interactions learns a native
 //! `Listener` it dies. Kept thin and self-contained accordingly.
 
 pub mod nodes;
 
+use exchange_interactions::prelude::*;
 use trading_data::Sink;
-use v_exchanges::prelude::*;
 
 pub fn pair() -> Pair {
 	Pair::from_str("BTCUSDT").expect("static pair")

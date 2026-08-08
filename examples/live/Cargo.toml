@@ -13,15 +13,15 @@ categories.workspace = true
 
 [dependencies]
 color-eyre.workspace = true
+# The only edge pointing out of this workspace, declared here rather than in the root manifest so
+# `trading_data` itself has no path back to a venue adapter.
+exchange_interactions = { workspace = true }
 exec_viz.workspace = true
 jiff.workspace = true
 miette.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 trading_data.workspace = true
-# The only edge pointing out of this workspace, declared here rather than in the root manifest so
-# `trading_data` itself has no path back to a venue adapter.
-v_exchanges = { workspace = true }
 v_utils.workspace = true
 
 [lints]
