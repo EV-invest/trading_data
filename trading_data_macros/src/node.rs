@@ -18,21 +18,31 @@ use crate::{
 	ty::{self, Wrap},
 };
 
-/// `#[node]`, `#[node(latch)]`, `#[node(anchored)]` — the flags the impl cannot state on its own,
-/// because the trait that would state either (`Latch`, `Rewound`) is a second impl and a node has
-/// only one shim.
+/// `#[node]`, `#[node(latch)]`, `#[node(anchored)]`, `#[node(rewarms)]` — the flags the impl cannot
+/// state on its own, because the trait that would state any of them (`Latch`, `Rewound`) is a second
+/// impl and a node has only one shim.
 struct Flags {
 	latch: bool,
 	anchored: bool,
+	/// A latch's bit is read at tick start, so it darkens what feeds its consumer one tick before the
+	/// consumer arms — earlier than any rewind at the node's own sweep position can answer for. This
+	/// is the node saying that one tick is one a later tick rebuilds, and it is the whole of what
+	/// lets a latch suppress anything at all.
+	rewarms: bool,
 }
 impl Parse for Flags {
 	fn parse(input: ParseStream) -> syn::Result<Self> {
-		let mut f = Flags { latch: false, anchored: false };
+		let mut f = Flags {
+			latch: false,
+			anchored: false,
+			rewarms: false,
+		};
 		for i in Punctuated::<Ident, Token![,]>::parse_terminated(input)? {
 			match i.to_string().as_str() {
 				"latch" => f.latch = true,
 				"anchored" => f.anchored = true,
-				_ => return Err(syn::Error::new(i.span(), "expected `latch` or `anchored`")),
+				"rewarms" => f.rewarms = true,
+				_ => return Err(syn::Error::new(i.span(), "expected `latch`, `anchored` or `rewarms`")),
 			}
 		}
 		Ok(f)
@@ -184,6 +194,7 @@ pub fn node(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
 	};
 	let latch = Ident::new(&flags.latch.to_string(), Span::call_site());
 	let anchored = Ident::new(&flags.anchored.to_string(), Span::call_site());
+	let rewarms = Ident::new(&flags.rewarms.to_string(), Span::call_site());
 
 	// the `Node`/`Emit` impl nobody writes: `Deps` and `PLOTS` are forwarded off the body trait, so a
 	// node site states each exactly once.
@@ -241,7 +252,7 @@ pub fn node(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
 		macro_rules! #name {
 			#m => {
 				$__driver! {
-					@kind #kind @latch #latch @anchored #anchored @self { #self_ty }
+					@kind #kind @latch #latch @anchored #anchored @rewarms #rewarms @self { #self_ty }
 					@deps [ #(#deps),* ]
 					@state $($__state)*
 				}

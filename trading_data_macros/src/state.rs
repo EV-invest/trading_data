@@ -131,6 +131,9 @@ pub struct NodeInfo {
 	pub latch: bool,
 	/// Whether a sleep of this node is one a replay undoes — see [`Rewound`](trading_data_dag::Rewound).
 	pub anchored: bool,
+	/// `#[node(rewarms)]`: the node says the one tick a latch's early read costs it is one a later
+	/// tick rebuilds. Nothing else may be darkened by a latch.
+	pub rewarms: bool,
 	pub deps: Vec<Dep>,
 }
 
@@ -215,7 +218,7 @@ impl State {
 		let mut kr = r.list();
 		let mut known = Vec::new();
 		while !kr.eof() {
-			let (key, ty, emit, generated, latch, anchored) = (kr.text(), kr.brace(), kr.flag(), kr.flag(), kr.flag(), kr.flag());
+			let (key, ty, emit, generated, latch, anchored, rewarms) = (kr.text(), kr.brace(), kr.flag(), kr.flag(), kr.flag(), kr.flag(), kr.flag());
 			let mut dr = kr.list();
 			let mut deps = Vec::new();
 			while !dr.eof() {
@@ -228,6 +231,7 @@ impl State {
 				generated,
 				latch,
 				anchored,
+				rewarms,
 				deps,
 			});
 		}
@@ -318,12 +322,12 @@ impl ToTokens for State {
 		}));
 		ts.append(list(&self.known, |n| {
 			let (k, t) = (text(&n.key), brace(&n.ty));
-			let (e, d, l, a) = (flag(n.emit), flag(n.generated), flag(n.latch), flag(n.anchored));
+			let (e, d, l, a, w) = (flag(n.emit), flag(n.generated), flag(n.latch), flag(n.anchored), flag(n.rewarms));
 			let deps = list(&n.deps, |d| {
 				let (s, t) = (brace(&d.shim), brace(&d.ty));
 				quote!(#s #t)
 			});
-			quote!(#k #t #e #d #l #a #deps)
+			quote!(#k #t #e #d #l #a #w #deps)
 		}));
 		ts.append(list(&self.stack, |(k, i)| {
 			let (k, i) = (text(k), Literal::usize_unsuffixed(*i));

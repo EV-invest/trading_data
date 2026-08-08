@@ -58,16 +58,13 @@ slice_nudge!(BookDeltas, BookDelta, BookChunk);
 /// without pulling deps, so no checkpoint and no frame is even read.
 impl Cell for Book {
 	type Out<'t> = Option<&'t Book>;
-
-	/// What makes a lost tick recoverable is not the retention — a sleep past two of the chunk's
-	/// boundaries outruns that — but the *seek*: an anchored node's past is fetched rather than
-	/// awaited, and it is fetched on the tick the consumer asked. A feed with no past to seek pins
-	/// this awake instead ([`Awake`](trading_data_dag::Awake)), where it costs nothing and says
-	/// nothing.
-	const REWARMS: bool = true;
 }
 
-#[node(anchored)]
+/// `rewarms`: what makes the tick a latch costs recoverable is not the retention — a sleep past two
+/// of the chunk's boundaries outruns that — but the *seek*, which `anchored` is the whole of. A feed
+/// with no past to seek pins this awake instead ([`Awake`](trading_data_dag::Awake)), where it costs
+/// nothing and says nothing.
+#[node(anchored, rewarms)]
 impl Blind for Book {
 	/// Both deps are roots, which is what anchoring currently asks: a rewind reads them back out of
 	/// the past, and a past is read per lane.

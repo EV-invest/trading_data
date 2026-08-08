@@ -467,11 +467,9 @@ static REBUILT: AtomicUsize = AtomicUsize::new(0);
 struct Rebuilt;
 impl Cell for Rebuilt {
 	type Out<'t> = &'t [P];
-
-	const REWARMS: bool = true;
 }
 slice_nudge!(Rebuilt, P);
-#[node]
+#[node(rewarms)]
 impl Runs for Rebuilt {
 	type Deps = (Src,);
 

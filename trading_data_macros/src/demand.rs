@@ -117,8 +117,8 @@ pub fn suppressors(st: &State) -> Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
 
 	let mut consumers: Vec<Vec<usize>> = vec![Vec::new(); n];
 	// the gates that dominate a node's own run. A latch is among them, but only ever suppresses a node
-	// that declares `Cell::REWARMS` — that carve-out is the sweep's to emit, since a `const` is not
-	// something this pass can read.
+	// written `#[node(rewarms)]` — that carve-out is emitted at the node's sweep position, where the
+	// formula this returns is already in hand.
 	let mut hard: Vec<Vec<usize>> = vec![Vec::new(); n];
 	let mut is_gate = vec![false; n];
 	for c in 0..n {

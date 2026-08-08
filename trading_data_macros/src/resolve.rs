@@ -16,6 +16,7 @@ enum Answer {
 		emit: bool,
 		latch: bool,
 		anchored: bool,
+		rewarms: bool,
 		self_ty: TokenStream,
 		deps: Vec<Dep>,
 	},
@@ -30,6 +31,8 @@ fn read_answer(r: &mut Reader) -> Option<Answer> {
 		let latch = r.flag();
 		r.at("anchored");
 		let anchored = r.flag();
+		r.at("rewarms");
+		let rewarms = r.flag();
 		r.at("self");
 		let self_ty = r.brace();
 		r.at("deps");
@@ -42,6 +45,7 @@ fn read_answer(r: &mut Reader) -> Option<Answer> {
 			emit,
 			latch,
 			anchored,
+			rewarms,
 			self_ty,
 			deps,
 		});
@@ -94,6 +98,7 @@ fn accept(st: &mut State, answer: Option<Answer>) -> Result<()> {
 				emit,
 				latch,
 				anchored,
+				rewarms,
 				self_ty,
 				deps,
 			}),
@@ -113,6 +118,7 @@ fn accept(st: &mut State, answer: Option<Answer>) -> Result<()> {
 					generated: false,
 					latch,
 					anchored,
+					rewarms,
 					deps,
 				},
 			)
@@ -126,6 +132,7 @@ fn accept(st: &mut State, answer: Option<Answer>) -> Result<()> {
 				generated: false,
 				latch: true,
 				anchored: false,
+				rewarms: false,
 				deps: vec![arm],
 			},
 		),
@@ -206,6 +213,8 @@ fn visit(st: &mut State, dep: Dep) -> Result<Option<TokenStream>> {
 				generated: true,
 				latch: false,
 				anchored: false,
+				// a reach the engine holds is the one thing a skipped tick puts a hole in.
+				rewarms: false,
 				deps: vec![Dep {
 					shim: dep.shim,
 					ty: cell.to_token_stream(),
@@ -241,6 +250,9 @@ fn visit(st: &mut State, dep: Dep) -> Result<Option<TokenStream>> {
 				generated: true,
 				latch: false,
 				anchored: root,
+				// the value published on the tick a latch's early read costs is simply lost; that a
+				// lookup could fetch it back is `anchored`, and the two are read at different moments.
+				rewarms: false,
 				deps: vec![Dep { shim: dep.shim, ty: dep_ty }],
 			},
 		)
@@ -424,7 +436,8 @@ fn emit(st: State) -> Result<TokenStream> {
 		})
 		.collect();
 	// `!REWINDS` per node, as a demand disjunct: a past that does not rewind is one nothing may sleep
-	// behind. Same erasure as `!REWARMS`, and the whole of what `Awake` (and so a live feed) costs.
+	// behind. Same erasure as the latch carve-out above, and the whole of what `Awake` (and so a live
+	// feed) costs.
 	let pinned_awake: Vec<Vec<TokenStream>> = rewinders
 		.iter()
 		.map(|rs| {
@@ -463,8 +476,8 @@ fn emit(st: State) -> Result<TokenStream> {
 			.collect();
 		// a latch is read one tick ahead of the consumer it arms, so it may only darken a node that says
 		// the tick it loses is one a later tick rebuilds.
-		if s.iter().flatten().any(|g| nodes[*g].latch) {
-			disj.push(quote!(!const { <#ty as #dag::Cell>::REWARMS }));
+		if !n.rewarms && s.iter().flatten().any(|g| nodes[*g].latch) {
+			disj.push(quote!(true));
 		}
 		disj.extend(awake.iter().cloned());
 		let demand = quote!(let d = #(#disj)||*;);
