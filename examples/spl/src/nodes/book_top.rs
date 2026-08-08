@@ -38,11 +38,10 @@ impl Glance for BookTopSnap {
 pub struct BookTop;
 impl Cell for BookTop {
 	type Out<'t> = &'t [Option<BookTopSnap>];
-
-	/// A reading not taken, not a reading lost: the top of the book is whatever it is next tick.
-	const REWARMS: bool = true;
 }
-#[node]
+/// `rewarms`: a reading not taken, not a reading lost — the top of the book is whatever it is next
+/// tick, and this node holds nothing between them.
+#[node(rewarms)]
 impl Runs for BookTop {
 	// the reach is the book's own — a `Buffering` it holds, not a `Folding` declared here — so this
 	// edge carries no claim about its producer, and demand is free to darken both ends of it.
