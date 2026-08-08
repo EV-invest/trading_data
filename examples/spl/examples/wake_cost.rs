@@ -32,7 +32,11 @@ async fn main() {
 	let mut peak = [0usize; 4];
 	let mut tumbles = [0usize; 4];
 	let mut base = [i64::MIN; 4];
+	let mut prev_base = [i64::MIN; 4];
 	let mut broke = [false; 4];
+	// How far back the *joined* two-period net reaches at each tick — the previous period's base,
+	// which is what a wake there may fold from. The bound is measured here rather than argued.
+	let mut reach: Vec<f64> = Vec::new();
 
 	let (mut ts, mut anchor_ts) = (Vec::new(), Vec::new());
 	let mut with_deltas = 0u64;
@@ -47,8 +51,12 @@ async fn main() {
 				let b = d.ts_venue_exec.as_nanos().div_euclid(period) * period;
 				if base[i] != i64::MIN && b != base[i] {
 					tumbles[i] += 1;
+					prev_base[i] = base[i];
 				}
 				base[i] = b;
+				if i == 0 && prev_base[0] != i64::MIN {
+					reach.push((d.ts_venue_exec.as_nanos() - prev_base[0]) as f64 / 1e9);
+				}
 			}
 		}
 		with_deltas += !l.deltas.is_empty() as u64;
@@ -84,12 +92,33 @@ async fn main() {
 			blind.push((a - t) as f64 / 1e9);
 		}
 	}
+	let worst_blind = pct(&mut blind, 1.0);
 	println!(
 		"blind s after a wake past a tumble:  p50 {:.1}  p90 {:.1}  p99 {:.1}  max {:.1}",
 		pct(&mut blind, 0.5),
 		pct(&mut blind, 0.9),
 		pct(&mut blind, 0.99),
-		pct(&mut blind, 1.0)
+		worst_blind
+	);
+
+	// Would the joined two-period net have reached back over those windows? The reach at a tick is
+	// how far behind it the previous period's base sits; a sleep shorter than that is one the two
+	// nets span between them, with no checkpoint and no wait.
+	let shortest = pct(&mut reach, 0.0);
+	println!(
+		"two-period reach at a wake, s:  min {:.1}  p10 {:.1}  p50 {:.1}  max {:.1}",
+		shortest,
+		pct(&mut reach, 0.1),
+		pct(&mut reach, 0.5),
+		pct(&mut reach, 1.0)
+	);
+	println!(
+		"  → the shortest reach ({shortest:.1}s) {} the worst window ({worst_blind:.1}s): {}",
+		if shortest >= worst_blind { "covers" } else { "does NOT cover" },
+		match shortest >= worst_blind {
+			true => "every blind window observed is one the two nets close",
+			false => "some window outruns the bound, and only a replay closes it",
+		}
 	);
 
 	println!("\n  tumble period   tumbles/day   net peak (levels)   recording gapless");
