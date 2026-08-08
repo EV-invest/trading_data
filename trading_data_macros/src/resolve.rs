@@ -16,7 +16,6 @@ enum Answer {
 		emit: bool,
 		latch: bool,
 		anchored: bool,
-		rewarms: bool,
 		self_ty: TokenStream,
 		deps: Vec<Dep>,
 	},
@@ -31,8 +30,6 @@ fn read_answer(r: &mut Reader) -> Option<Answer> {
 		let latch = r.flag();
 		r.at("anchored");
 		let anchored = r.flag();
-		r.at("rewarms");
-		let rewarms = r.flag();
 		r.at("self");
 		let self_ty = r.brace();
 		r.at("deps");
@@ -45,7 +42,6 @@ fn read_answer(r: &mut Reader) -> Option<Answer> {
 			emit,
 			latch,
 			anchored,
-			rewarms,
 			self_ty,
 			deps,
 		});
@@ -98,7 +94,6 @@ fn accept(st: &mut State, answer: Option<Answer>) -> Result<()> {
 				emit,
 				latch,
 				anchored,
-				rewarms,
 				self_ty,
 				deps,
 			}),
@@ -118,7 +113,6 @@ fn accept(st: &mut State, answer: Option<Answer>) -> Result<()> {
 					generated: false,
 					latch,
 					anchored,
-					rewarms,
 					deps,
 				},
 			)
@@ -132,7 +126,6 @@ fn accept(st: &mut State, answer: Option<Answer>) -> Result<()> {
 				generated: false,
 				latch: true,
 				anchored: false,
-				rewarms: false,
 				deps: vec![arm],
 			},
 		),
@@ -213,8 +206,6 @@ fn visit(st: &mut State, dep: Dep) -> Result<Option<TokenStream>> {
 				generated: true,
 				latch: false,
 				anchored: false,
-				// a reach the engine holds is the one thing a skipped tick puts a hole in.
-				rewarms: false,
 				deps: vec![Dep {
 					shim: dep.shim,
 					ty: cell.to_token_stream(),
@@ -250,9 +241,6 @@ fn visit(st: &mut State, dep: Dep) -> Result<Option<TokenStream>> {
 				generated: true,
 				latch: false,
 				anchored: root,
-				// the value published on the tick a latch's early read costs is simply lost; that a
-				// lookup could fetch it back is `anchored`, and the two are read at different moments.
-				rewarms: false,
 				deps: vec![Dep { shim: dep.shim, ty: dep_ty }],
 			},
 		)
@@ -459,59 +447,44 @@ fn emit(st: State) -> Result<TokenStream> {
 
 	// the demand is hoisted into its own binding: as an argument it would sit after `f`, which the
 	// call moves before the gate reads could borrow it.
-	let steps = nodes
-		.iter()
-		.zip(&fields)
-		.zip(&sup)
-		.zip(&node_tys)
-		.zip(&pinned_awake)
-		.zip(&node_deps)
-		.map(|(((((n, f), s), ty), awake), deps)| {
-			// a `Gate`'s out *is* the `bool`, and `Gating::opens` is the identity — nothing to unwrap.
-			let mut disj: Vec<TokenStream> = s
-				.iter()
-				.map(|conj| {
-					let terms = conj.iter().map(|g| match &standing[*g] {
-						Some(id) => quote!(#id),
-						None => {
-							let gt = &node_tys[*g];
-							quote!(#dag::Has::<#gt, _>::get(&f))
-						}
-					});
-					quote!((#(#terms)&&*))
-				})
-				.collect();
-			// A latch is read one tick ahead of the consumer it arms, so it may only darken a node whose
-			// lost tick a later one rebuilds. Two ways to be that node, and the graph is already told both:
-			// one whose every data input is retained reads the same thing again next tick, and an anchored
-			// one is fetched back. `#[node(rewarms)]` is what is left for a node that is neither and
-			// recovers anyway.
-			if !n.rewarms && !n.anchored && s.iter().flatten().any(|g| nodes[*g].latch) {
-				disj.push(quote!(!const { #dag::rebuilds(<#deps as #dag::DepSet>::RETAINS, <#deps as #dag::DepSet>::GATES) }));
-			}
-			disj.extend(awake.iter().cloned());
-			let demand = quote!(let d = #(#disj)||*;);
-			let uncond = s.len() == 1 && s[0].is_empty();
-			// at the node's own sweep position: its retention has stepped and its consumer has not read it
-			// yet, so this is the one point where the tick it is demanded on is still the tick it answers
-			// on. Conditioned on the whole of `advances`, not on the demand alone — an anchored node that
-			// nothing suppresses still goes dark behind its own gate, and rewinding one that will not run
-			// would be the fold the sleep was taken to avoid.
-			let rewind = n.anchored.then(|| {
-				let demanded = if uncond { quote!(true) } else { quote!(d) };
-				quote! {
-					if const { <P as #dag::Rewound<#ty>>::REWINDS } && #dag::advances::<#ty, _, _>(&f, #demanded) {
-						<P as #dag::Rewound<#ty>>::rewind(past, &mut *#f);
+	let steps = nodes.iter().zip(&fields).zip(&sup).zip(&node_tys).zip(&pinned_awake).map(|((((n, f), s), ty), awake)| {
+		// a `Gate`'s out *is* the `bool`, and `Gating::opens` is the identity — nothing to unwrap.
+		let mut disj: Vec<TokenStream> = s
+			.iter()
+			.map(|conj| {
+				let terms = conj.iter().map(|g| match &standing[*g] {
+					Some(id) => quote!(#id),
+					None => {
+						let gt = &node_tys[*g];
+						quote!(#dag::Has::<#gt, _>::get(&f))
 					}
+				});
+				quote!((#(#terms)&&*))
+			})
+			.collect();
+		disj.extend(awake.iter().cloned());
+		let demand = quote!(let d = #(#disj)||*;);
+		let uncond = s.len() == 1 && s[0].is_empty();
+		// at the node's own sweep position: its retention has stepped and its consumer has not read it
+		// yet, so this is the one point where the tick it is demanded on is still the tick it answers
+		// on. Conditioned on the whole of `advances`, not on the demand alone — an anchored node that
+		// nothing suppresses still goes dark behind its own gate, and rewinding one that will not run
+		// would be the fold the sleep was taken to avoid.
+		let rewind = n.anchored.then(|| {
+			let demanded = if uncond { quote!(true) } else { quote!(d) };
+			quote! {
+				if const { <P as #dag::Rewound<#ty>>::REWINDS } && #dag::advances::<#ty, _, _>(&f, #demanded) {
+					<P as #dag::Rewound<#ty>>::rewind(past, &mut *#f);
 				}
-			});
-			match (n.emit, uncond) {
-				(true, true) => quote!(let f = #dag::step_emit_obs(f, #f, true, ts, __sweep, obs);),
-				(true, false) => quote!(#demand let f = #dag::step_emit_obs(f, #f, d, ts, __sweep, obs);),
-				(false, true) => quote!(#rewind let f = #dag::step_obs(f, #f, __sweep, obs);),
-				(false, false) => quote!(#demand #rewind let f = #dag::step_when_obs(f, #f, d, __sweep, obs);),
 			}
 		});
+		match (n.emit, uncond) {
+			(true, true) => quote!(let f = #dag::step_emit_obs(f, #f, true, ts, __sweep, obs);),
+			(true, false) => quote!(#demand let f = #dag::step_emit_obs(f, #f, d, ts, __sweep, obs);),
+			(false, true) => quote!(#rewind let f = #dag::step_obs(f, #f, __sweep, obs);),
+			(false, false) => quote!(#demand #rewind let f = #dag::step_when_obs(f, #f, d, __sweep, obs);),
+		}
+	});
 
 	// an `Emitter` resets through its own method: `Default::default()` on the wrapper would drop the
 	// buffer's capacity, which the next episode only has to earn back.

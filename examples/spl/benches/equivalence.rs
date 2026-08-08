@@ -263,7 +263,7 @@ impl Direct {
 		self.b_top.clear();
 		self.chunk.advance(deltas, Horizon::Over(v_utils::TF_15MIN));
 		let folded = self.book.advance((anchor, &self.chunk));
-		self.book_top.emit((folded, deltas), &mut self.b_top);
+		self.book_top.emit((folded,), &mut self.b_top);
 
 		self.m1.push(&self.b_bars[0]);
 		self.m5.push(&self.b_bars[1]);

@@ -117,8 +117,7 @@ pub fn suppressors(st: &State) -> Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
 
 	let mut consumers: Vec<Vec<usize>> = vec![Vec::new(); n];
 	// the gates that dominate a node's own run. A latch is among them, but only ever suppresses a node
-	// written `#[node(rewarms)]` — that carve-out is emitted at the node's sweep position, where the
-	// formula this returns is already in hand.
+	// `rebuilds` below answers for.
 	let mut hard: Vec<Vec<usize>> = vec![Vec::new(); n];
 	let mut is_gate = vec![false; n];
 	for c in 0..n {
@@ -158,6 +157,18 @@ pub fn suppressors(st: &State) -> Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
 		})
 		.collect();
 
+	// Whether every input this node reads for data stands into the next tick, which is the whole of "a
+	// later tick rebuilds what this one lost". A root's out is the tick's own batch and an `Emit`'s is
+	// the engine's buffer — both are flows, gone by the next tick; a level node's out borrows state it
+	// keeps, so it reads the same again. A gate is permission and carries no reading, so it is passed
+	// over; a node reading nothing at all has nothing to rebuild from.
+	let rebuilds: Vec<bool> = (0..n)
+		.map(|i| {
+			let data: Vec<&Edge> = edges[i].iter().filter(|e| !e.gate).collect();
+			!data.is_empty() && data.iter().all(|e| e.to.is_some_and(|t| !info[t].emit))
+		})
+		.collect();
+
 	let mut outputs = BTreeSet::new();
 	for named in &st.cfg.named {
 		if let Some(i) = target(st, order, &spelling(st, &named.ty)?.0)? {
@@ -192,6 +203,16 @@ pub fn suppressors(st: &State) -> Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
 			acc = truth();
 		}
 		live[i] = acc;
+	}
+
+	// A latch's bit is read at tick start, a tick ahead of the consumer it arms, so it may darken only a
+	// node `rebuilds` answers for — or an anchored one, which is fetched back instead. Anything else is
+	// demanded outright. After the propagation above rather than inside it: what a node forced awake
+	// reads is still read behind the latch, and moving the carve-out upstream would wake that too.
+	for i in 0..n {
+		if !rebuilds[i] && !info[i].anchored && live[i].iter().flatten().any(|g| info[*g].latch) {
+			live[i] = truth();
+		}
 	}
 
 	Ok((live.into_iter().map(|d| d.into_iter().map(|c| c.into_iter().collect()).collect()).collect(), rewinders))

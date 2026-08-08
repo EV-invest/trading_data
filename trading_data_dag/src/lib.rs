@@ -3152,6 +3152,58 @@ where
 /// clocked by *another* series needs: on its own ticks this one has emitted nothing, and reading the
 /// empty run there would read absence where a standing level is the truth.
 ///
+/// A level as the frame carries it: the value that stands, and whether this tick set it. Reading it
+/// takes the value; *observing* it takes the change.
+///
+/// The two are separate because availability and publication are separate facts about a level, and
+/// an `Option` carries one bit for both: a value that stands forever is `Some` forever, so an
+/// observer told only that would read a change on every tick the level was merely still there.
+#[derive(Clone, Copy)]
+#[doc(hidden)]
+pub struct Held<V> {
+	val: Option<V>,
+	fresh: bool,
+}
+
+// r[impl outs.absence.one-reading]
+impl<V: Flat> Flat for Held<V> {
+	const DIMS: &'static [usize] = V::DIMS;
+
+	fn flat(&self, out: &mut [f64]) -> bool {
+		match self.val {
+			Some(v) if self.fresh => v.flat(out),
+			_ => {
+				out.fill(f64::NAN);
+				false
+			}
+		}
+	}
+
+	fn fires(&self) -> usize {
+		(self.val.is_some() && self.fresh) as usize
+	}
+}
+
+impl<V: Glance> Glance for Held<V> {
+	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		self.val.glance(f)
+	}
+}
+
+impl<V: Copy> Latent for Held<V> {
+	fn latent() -> Self {
+		Self { val: None, fresh: false }
+	}
+}
+
+/// The perturbation is of the value; whether the tick set it is structural and does not move.
+impl<V: Bump> Bump for Held<V> {
+	fn bump(self, slot: usize, h: f64) -> (Self, f64) {
+		let (val, dh) = self.val.bump(slot, h);
+		(Self { val, fresh: self.fresh }, dh)
+	}
+}
+
 /// A tick skipped is therefore a value lost and not a reach lost — recoverable by one lookup, which
 /// is what [`Rewound`] is asked for where the level is `#[node(anchored)]`.
 #[doc(hidden)]
@@ -3192,7 +3244,7 @@ impl<C: Series> Cell for Latest<C>
 where
 	C::Item: Present,
 {
-	type Out<'t> = Option<<C::Item as Present>::Val>;
+	type Out<'t> = Held<<C::Item as Present>::Val>;
 
 	/// Unlike its [`Sampling`] dep this is a frame cell of its own, so it takes a name of its own.
 	const NAME: &'static str = Self::TAG.as_str();
@@ -3201,6 +3253,7 @@ where
 impl<C: Series> Node for Latest<C>
 where
 	C::Item: Present,
+	<C::Item as Present>::Val: PartialEq,
 {
 	type Deps = <Self as Blind>::Deps;
 	type Kernel = Opaque;
@@ -3209,16 +3262,21 @@ where
 impl<C: Series> Blind for Latest<C>
 where
 	C::Item: Present,
+	<C::Item as Present>::Val: PartialEq,
 {
 	type Deps = (C,);
 
 	const WHY: &'static str = "holding the last value across a silence is a carry, and a carry has no slope of its own";
 
-	fn advance<'t>(&'t mut self, (fresh,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		if let Some(v) = fresh.iter().rev().find_map(|x| x.present()) {
-			self.held = Some(v);
-		}
-		self.held
+	fn advance<'t>(&'t mut self, (run,): DepOuts<'t, Self>) -> Self::Out<'t> {
+		let fresh = match run.iter().rev().find_map(|x| x.present()) {
+			Some(v) if self.held.as_ref() != Some(&v) => {
+				self.held = Some(v);
+				true
+			}
+			_ => false,
+		};
+		Held { val: self.held, fresh }
 	}
 }
 
@@ -3245,12 +3303,15 @@ where
 	const RETAINED: bool = true;
 }
 
+/// The projection that keeps the change bit off the dep side: the frame cell carries whether this
+/// tick set the level, a consumer reads only what stands.
 impl<'t, C: Series, T> Has<'t, Sampling<C>, Here> for Cons<'t, Latest<C>, T>
 where
 	C::Item: Present,
+	<C::Item as Present>::Val: PartialEq,
 {
 	fn get(&self) -> Option<<C::Item as Present>::Val> {
-		self.out
+		self.out.val
 	}
 }
 
@@ -4299,29 +4360,6 @@ pub const fn contains(set: &[&str], name: &str) -> bool {
 		i += 1;
 	}
 	false
-}
-
-/// Whether every input this node reads for data is one that survives a tick it did not run —
-/// [`Cell::RETAINED`] over the non-[`Gating`] deps, which is the whole of "a later tick rebuilds
-/// what this one lost". A gate is permission and carries no reading, so it is passed over; a node
-/// reading nothing at all has nothing to rebuild from and answers `false`.
-///
-/// This is what a *latch* asks before it may darken something: its bit is read a tick ahead of the
-/// consumer arming, so the lost tick is one no rewind at the node's own sweep position can answer
-/// for.
-#[doc(hidden)]
-pub const fn rebuilds(retains: &[bool], gates: &[bool]) -> bool {
-	let (mut i, mut read) = (0, false);
-	while i < retains.len() {
-		if !gates[i] {
-			if !retains[i] {
-				return false;
-			}
-			read = true;
-		}
-		i += 1;
-	}
-	read
 }
 
 /// Whether `deps` names `gate` in a gating position — the const mirror of a [`Gating`] dep.
