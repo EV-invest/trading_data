@@ -65,12 +65,6 @@ insta = "^1"
 jiff = { version = "^0.2", features = ["serde"] }
 libm = "0.2"
 miette = { version = "^7.6.0", features = ["fancy", "serde", "syntect-highlighter"] }
-nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
-nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
-nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
-nautilus-data = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
-nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
-nautilus-persistence-macros = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2" }
 parquet = { version = "59", features = ["arrow", "snap", "zstd"] }
 proc-macro-crate = "^3"
 proc-macro2 = "^1"

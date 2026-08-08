@@ -40,7 +40,6 @@ anyhow = { workspace = true }
 nautilus-backtest = { workspace = true }
 nautilus-common = { workspace = true }
 nautilus-core = { workspace = true }
-nautilus-data = { workspace = true }
 nautilus-model = { workspace = true }
 nautilus-persistence-macros = { workspace = true }
 trading_data = { workspace = true, features = ["bench"] }
