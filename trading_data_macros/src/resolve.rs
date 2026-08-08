@@ -219,6 +219,19 @@ fn visit(st: &mut State, dep: Dep) -> Result<Option<TokenStream>> {
 		let dag = &st.cfg.dag;
 		// no reach to join: unlike a buffer, every reader of a level asks for the same one thing, so
 		// the frame type is settled here rather than in `emit`.
+		//
+		// What a level reads is this tick's run of `C`, of which it keeps the last present element —
+		// a `Unit` reach, never the node's own to hold. So where the level can be replayed it says so
+		// as the bare cell and `anchoring` below is satisfied by the same `is_root` that picked it.
+		//
+		// Where it cannot, the reach is overstated on purpose: a level that slept through a
+		// publication holds a stale value, and until a dormant *derived* producer can be replayed
+		// (`anchoring`'s note says what that needs), the fold claim is what keeps it awake.
+		let root = is_root(st, &key);
+		let dep_ty = match root {
+			true => cell.to_token_stream(),
+			false => quote!(#dag::Folding<#cell, #dag::Unbounded>),
+		};
 		return record(
 			st,
 			NodeInfo {
@@ -227,11 +240,8 @@ fn visit(st: &mut State, dep: Dep) -> Result<Option<TokenStream>> {
 				emit: false,
 				generated: true,
 				latch: false,
-				anchored: false,
-				deps: vec![Dep {
-					shim: dep.shim,
-					ty: quote!(#dag::Folding<#cell, #dag::Unbounded>),
-				}],
+				anchored: root,
+				deps: vec![Dep { shim: dep.shim, ty: dep_ty }],
 			},
 		)
 		.map(|()| None);
