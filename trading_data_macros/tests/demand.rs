@@ -461,23 +461,24 @@ impl Latch for Held {
 
 static REBUILT: AtomicUsize = AtomicUsize::new(0);
 
-/// Same shape as `Warm`, but it says a skipped tick is one it can recover — so the latch may darken
-/// it, a tick behind the arming.
+/// `Warm`'s contrast, and the only thing that differs is the *reach* of its one dep: it reads what
+/// the engine retains rather than the tick's own batch, so a tick it skipped is one it reads again —
+/// and the latch may darken it, a tick behind the arming.
 #[derive(Clone, Default)]
 struct Rebuilt;
 impl Cell for Rebuilt {
 	type Out<'t> = &'t [P];
 }
 slice_nudge!(Rebuilt, P);
-#[node(rewarms)]
+#[node]
 impl Runs for Rebuilt {
-	type Deps = (Src,);
+	type Deps = (Buffering<Src, Elems<1>>,);
 
 	const WHY: &'static str = "a pass-through of its dep's run";
 
 	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<P>) {
 		REBUILT.fetch_add(1, Ordering::Relaxed);
-		out.extend_from_slice(src);
+		out.extend(src.all().iter().copied());
 	}
 }
 
@@ -510,7 +511,7 @@ graph! {
 }
 
 #[test]
-fn a_latch_suppresses_what_declares_it_re_warms() {
+fn a_latch_suppresses_what_reads_only_what_is_retained() {
 	let mut g = Latched::default();
 	let r0 = REBUILT.load(Ordering::Relaxed);
 	let mut tick = |v: f64| {
