@@ -594,3 +594,77 @@ fn a_retention_read_only_by_anchored_nodes_sleeps_with_them() {
 	assert_eq!(tick(&mut g, -2.0, false), None);
 	assert_eq!(tick(&mut g, 3.0, false), Some(2.0), "pinned awake, the retention folded the tick its reader skipped");
 }
+
+/// The relaxation above, as the graph states it rather than as a feed exercises it: with the gate
+/// shut, both the anchored reader and the retention it is the only reader of go dark — and both are
+/// marked as sleeping only behind a past that rewinds, which is the whole of what the rule is
+/// conditioned on.
+#[test]
+fn anchored_shape() {
+	insta::assert_snapshot!(Anchored::SHAPE, @r#"
+	graph Anchored
+
+	╷ Src                        root src
+	├─╮
+	│ ● Hot                        gate  pin·gate  Opaque("a hot-path fixture")
+	╰ │
+	● │ Buffer<Src, Elems(2)>      buffer  ⟳Src@Elems(2)  Opaque("a retention window is the engine's bookkeeping over a run, not a function of its elements")
+	╰─╌
+	● Summed                     node  pin·output  ⊣Hot ⌸@Elems(2)  →out summed  Opaque("a demand fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	"#);
+	insta::assert_snapshot!(Anchored::SHAPE.under(&[("Hot", false)]), @r#"
+	graph Anchored  ·  Hot=closed
+
+	╷ Src                         root src
+	├─╮
+	│ ● Hot                         gate  pin·gate  Opaque("a hot-path fixture")
+	╰ │
+	░⟲ │ Buffer<Src, Elems(2)>        buffer  ⟳Src@Elems(2)  Opaque("a retention window is the engine's bookkeeping over a run, not a function of its elements")
+	╰─╌
+	░⟲ Summed                       node  pin·output  ⊣Hot ⌸@Elems(2)  →out summed  Opaque("a demand fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	2 of 4 dark
+	"#);
+}
+
+/// The two halves of the latch rule, as pictures. A latch is read a tick ahead of the consumer it
+/// arms, so it may darken only a node whose lost tick a later one gives back: `Rebuilt` reads what
+/// the engine retains and goes dark with `Held`, where `Warm` reads the tick's own batch and is
+/// demanded outright — which is what `pin·flow` names, and the one pin a reader could not otherwise
+/// recover from the formula beside it.
+#[test]
+fn what_a_latch_may_and_may_not_darken() {
+	insta::assert_snapshot!(Episodic::SHAPE.under(&[("Live", false)]), @r#"
+	graph Episodic  ·  Live=closed
+
+	╷ Src       root src
+	├─╮
+	│ ● Live      latch  pin·latch  Opaque("a latch fixture")
+	╰ │
+	● │ Warm      emit  pin·flow  Opaque("a demand fixture")
+	╰─╌
+	░ Ep        node  pin·output  ⊣Live  →out ep  Opaque("an episode fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	1 of 4 dark
+	"#);
+	insta::assert_snapshot!(Latched::SHAPE.under(&[("Held", false)]), @r#"
+	graph Latched  ·  Held=closed
+
+	╷ Src                        root src
+	├─╮
+	│ ● Held                       latch  pin·latch  Opaque("a latch is state over the run, not a function of this tick")
+	╰ │
+	● │ Buffer<Src, Elems(1)>      buffer  pin·retention  ⟳Src@Elems(1)  Opaque("a retention window is the engine's bookkeeping over a run, not a function of its elements")
+	╰ │
+	░ │ Rebuilt                    emit  ⌸@Elems(1)  Opaque("a pass-through of its dep's run")
+	╰─╌
+	░ Managed                    node  pin·output  ⊣Held  →out ep  Opaque("a tick counter is state, not a function of its deps")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	2 of 5 dark
+	"#);
+}

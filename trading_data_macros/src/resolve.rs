@@ -371,7 +371,8 @@ fn emit(st: State) -> Result<TokenStream> {
 	let fields: Vec<Ident> = nodes.iter().map(|n| field_of(&n.key)).collect();
 	let indices: Vec<Literal> = (0..nodes.len()).map(Literal::usize_unsuffixed).collect();
 	let names: Vec<String> = nodes.iter().map(|n| n.key.clone()).collect();
-	let (sup, rewinders) = crate::demand::suppressors(&st)?;
+	let demand = crate::demand::suppressors(&st)?;
+	let (sup, rewinders) = (&demand.live, &demand.rewinders);
 
 	let latched: Vec<usize> = (0..nodes.len()).filter(|i| nodes[*i].latch).collect();
 	let lfields: Vec<&Ident> = latched.iter().map(|i| &fields[*i]).collect();
@@ -447,7 +448,7 @@ fn emit(st: State) -> Result<TokenStream> {
 
 	// the demand is hoisted into its own binding: as an argument it would sit after `f`, which the
 	// call moves before the gate reads could borrow it.
-	let steps = nodes.iter().zip(&fields).zip(&sup).zip(&node_tys).zip(&pinned_awake).map(|((((n, f), s), ty), awake)| {
+	let steps = nodes.iter().zip(&fields).zip(sup).zip(&node_tys).zip(&pinned_awake).map(|((((n, f), s), ty), awake)| {
 		// a `Gate`'s out *is* the `bool`, and `Gating::opens` is the identity — nothing to unwrap.
 		let mut disj: Vec<TokenStream> = s
 			.iter()
@@ -524,6 +525,8 @@ fn emit(st: State) -> Result<TokenStream> {
 	});
 
 	let (ofields, otys): (Vec<&Ident>, Vec<&TokenStream>) = c.named.iter().map(|n| (&n.field, &n.ty)).unzip();
+
+	let shape = crate::shape::shape_const(&st, &demand, &node_tys);
 
 	Ok(quote! {
 		#vis struct #batches<'t> {
@@ -609,6 +612,12 @@ fn emit(st: State) -> Result<TokenStream> {
 		impl #graph {
 			/// The derived closure, in sweep order — what this graph's outputs actually cost.
 			#vis const NODES: &'static [&'static str] = &[#(#names),*];
+
+			/// How this graph *compiles*: the sweep order, every edge and its kind, and the demand
+			/// formula each node's dormancy is decided by. `Display` draws it, and `Shape::under`
+			/// answers the question a running graph cannot be asked — who goes dark under a gate
+			/// assignment that has not happened.
+			#vis const SHAPE: #dag::Shape = #shape;
 
 			/// Every node this graph *declares*, and how much of what it read its Jacobian covers
 			/// (`r[kernels.fidelity.stated]`). The engine's own `Buffer`/`Latest` fields are left out: nobody

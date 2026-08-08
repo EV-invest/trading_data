@@ -12,6 +12,7 @@ mod diag;
 mod graph;
 mod node;
 mod resolve;
+mod shape;
 mod state;
 mod ty;
 

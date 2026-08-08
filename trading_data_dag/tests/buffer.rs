@@ -477,3 +477,24 @@ mod revive {
 		assert_eq!(o.episodic, Some(Phase(1, 3)), "revived warm — a client-owned window would read 0 here");
 	}
 }
+
+/// The retention is a node of the frame in its own right, read at two different reaches, and pinned
+/// because a frame's history may not have holes.
+#[test]
+fn shape() {
+	insta::assert_snapshot!(G::SHAPE, @r#"
+	graph G
+
+	╷ Src                      root src
+	╰
+	● Buffer<Src, Elems(3)>    buffer  pin·retention  ⟳Src@Elems(3)  →out hist  Opaque("a retention window is the engine's bookkeeping over a run, not a function of its elements")
+	├─╮
+	│ ● Sum3                     emit  pin·output  ⌸@Elems(3)  →out sum3
+	├─╮
+	│ ● Split                    emit  pin·output  ⌸@Elems(3)  →out split  Opaque("a buffer fixture")
+	╰
+	● Level                    node  pin·output  ⌸@Elems(1)  →out level  Opaque("a retention fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	"#);
+}
