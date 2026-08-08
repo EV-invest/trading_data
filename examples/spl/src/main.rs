@@ -54,9 +54,10 @@ const ORDINAL: u16 = 3;
 /// on the slot the flake would have given it.
 const PORT_BASE: u16 = 59990;
 
-/// Retained ticks. A trading day weaves into ~50× this, so most of the run is only reachable at a
-/// stride — the tape thins with age rather than forgetting its front, which keeps the degradation
-/// at the end tick-exact and the morning still walkable.
+/// Retained ticks. A trading day weaves into ~8× this (159 210, per `cost.json`), so most of the run
+/// survives only on the thinned backbone — which `exec_viz` fills by fire rather than by index, so
+/// what a scrub is for keeps its resolution while the book flood loses it. At this value the 5m and
+/// 1h nodes come through nearly whole; `exec_viz`'s README on `capacity` is how to size it.
 const SCROLLBACK: usize = 20_000;
 const HOUR_NS: i64 = 3600 * 1_000_000_000;
 const DAY_NS: i64 = 24 * HOUR_NS;
