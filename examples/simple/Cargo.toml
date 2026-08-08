@@ -19,10 +19,12 @@ profile = ["trading_data/profile"]
 [dependencies]
 clap.workspace = true
 exec_viz.workspace = true
-flate2.workspace = true
+# Named rather than inherited: `parquet` is what turns `zlib-rs` on today, and every trade archive
+# we inflate rides on that staying true. Dropping to the `miniz_oxide` default would be silent.
+flate2 = { workspace = true, features = ["zlib-rs"] }
 jiff.workspace = true
 tokio.workspace = true
-trading_data.workspace = true
+trading_data = { workspace = true }
 ureq.workspace = true
 v_utils.workspace = true
 

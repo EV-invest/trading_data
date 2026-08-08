@@ -12,9 +12,9 @@ categories.workspace = true
 
 [dependencies]
 arrayvec.workspace = true
-arrow.workspace = true
+arrow = { workspace = true }
 jiff.workspace = true
-parquet.workspace = true
+parquet = { workspace = true, features = ["arrow", "snap", "zstd"] }
 thiserror.workspace = true
 tracing.workspace = true
 trading_data_core.workspace = true
@@ -25,7 +25,7 @@ v_utils.workspace = true
 color-eyre.workspace = true
 iai-callgrind.workspace = true
 miette.workspace = true
-tempfile.workspace = true
+tempfile = { workspace = true }
 
 [[bench]]
 name = "write_throughput"

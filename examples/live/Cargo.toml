@@ -21,7 +21,7 @@ jiff.workspace = true
 miette.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-trading_data.workspace = true
+trading_data = { workspace = true }
 v_utils.workspace = true
 
 [lints]

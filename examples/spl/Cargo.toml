@@ -21,13 +21,13 @@ profile = ["trading_data/profile"]
 clap.workspace = true
 exchange_interactions.workspace = true
 exec_viz.workspace = true
-indicatif.workspace = true
+indicatif = { workspace = true }
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-trading_data.workspace = true
+trading_data = { workspace = true }
 ureq.workspace = true
 v_utils.workspace = true
 
@@ -37,11 +37,11 @@ v_utils.workspace = true
 [dev-dependencies]
 # `DataActor`'s callbacks and the `#[custom_data]` expansion both name it.
 anyhow = { workspace = true }
-nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
-nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
-nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
-nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
-nautilus-persistence-macros = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2" }
+nautilus-backtest = { workspace = true }
+nautilus-common = { workspace = true }
+nautilus-core = { workspace = true }
+nautilus-model = { workspace = true }
+nautilus-persistence-macros = { workspace = true }
 trading_data = { workspace = true, features = ["bench"] }
 
 # the gate the other three rest on: our nodes called by hand must produce the graph's intent stream.

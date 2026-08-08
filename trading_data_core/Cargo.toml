@@ -12,12 +12,12 @@ categories.workspace = true
 
 [dependencies]
 arrayvec.workspace = true
-derive-new.workspace = true
-derive_more.workspace = true
-eyre.workspace = true
+derive-new = { workspace = true }
+derive_more = { workspace = true, features = ["full"] }
+eyre = { workspace = true }
 jiff.workspace = true
 serde.workspace = true
-strum.workspace = true
+strum = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 trading_data_dag.workspace = true
 v_utils.workspace = true
@@ -25,7 +25,7 @@ v_utils.workspace = true
 [dev-dependencies]
 iai-callgrind.workspace = true
 insta.workspace = true
-snapshot_fonts.workspace = true
+snapshot_fonts = { workspace = true }
 
 [[bench]]
 name = "book_fold"
