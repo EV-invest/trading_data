@@ -398,6 +398,34 @@ impl Blind for Under {
 	}
 }
 
+// r[verify outs.fired.on-change]
+/// A level is observed publishing when its value *moves*, not on every tick it runs. `None` is what
+/// a consumer reads and it never changed here; the fired bit is the observation plane's own axis, and
+/// no dep read can see it (`r[rates.deps.tick-opaque]`).
+#[test]
+fn a_level_fires_only_where_its_value_moved() {
+	#[derive(Default)]
+	struct Fires(Vec<(usize, bool)>);
+	impl Observer for Fires {
+		fn want(&self, _: &'static str) -> Want {
+			Want::Vals
+		}
+
+		fn on(&mut self, _: &'static str, _: &'static [&'static str], _: &'static [bool], fire: Fire<'_>) {
+			self.0.push((fire.fires, fire.vals.is_some()));
+		}
+	}
+
+	let (mut seen, mut sweep, mut level) = (Fires::default(), Sweep::default(), Level);
+	for q in [1.0, 1.0, 2.0, 2.0, 1.0] {
+		sweep.restart();
+		let f = Cons::<Trades, Nil> { out: None, tail: Nil };
+		let f = Cons::<Quotes, _> { out: Some(q), tail: f };
+		step_obs(f, &mut level, &mut sweep, &mut seen);
+	}
+	assert_eq!(seen.0, [(1, true), (0, false), (1, true), (0, false), (1, true)]);
+}
+
 #[test]
 fn fd_bump_unfired_nan_column() {
 	let mut rec = JacRec::default();

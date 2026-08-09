@@ -35,3 +35,4 @@ shape_sweep 0 4 1742470698  # under Hot=false Warm=false, the shape says `Latest
 # the last element rather than a fourth state of the out.
 noninvasive 15490212636682683044 8 1429616719  # the observer was never called, so the comparison is vacuous
 absence 0 4 1429616719  # tick 0, `fuzz::fixture::Total`: fires=3 says fired, the flattening says unfired — that is a third state
+shape_sweep 0 4 2572823603  # the `Latest` shape/sweep divergence showed up 0 times, not 2: if it is fixed, delete the quarantine in gates.rs; if it spread, it is no longer the one case that was triaged

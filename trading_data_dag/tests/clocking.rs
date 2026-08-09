@@ -263,17 +263,15 @@ fn shape() {
 	insta::assert_snapshot!(G::SHAPE, @r#"
 	graph G
 
-	╷ Src              root src
+	╷ Src             root src
 	├─╮
-	│ ● Latest<Src>      latest  Opaque("holding the last value across a silence is a carry, and a carry has no slope of its own")
-	│ ├─╮
-	│ │ ● Minutely         @1m  emit  pin·output  ·Latest<Src>  →out minutely  Opaque("a clocking fixture")
-	│ ╰
-	│ ● Continuous       emit  pin·output  ·Latest<Src>  →out continuous  Opaque("a clocking fixture")
+	│ ● Minutely        @1m  emit  pin·output  ·Src  →out minutely  Opaque("a clocking fixture")
+	├─╮
+	│ ● Continuous      emit  pin·output  ·Src  →out continuous  Opaque("a clocking fixture")
 	╰
-	● Closes           @1m  emit  pin·fold  ⟳Src@Over(1m)  →out closes  Opaque("a clocking fixture")
+	● Closes          @1m  emit  pin·fold  ⟳Src@Over(1m)  →out closes  Opaque("a clocking fixture")
 	╰
-	● Joined           @1m  emit  pin·output  →out joined  Opaque("a clocking fixture")
+	● Joined          @1m  emit  pin·output  →out joined  Opaque("a clocking fixture")
 
 	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
 	"#);

@@ -359,7 +359,7 @@ impl DataActor for Screen {
 
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
 		if signal.name == MOMENTUM {
-			// the frame's `Latest<Momentum>`: a level, so it is never cleared after a read.
+			// the frame's carry over `Momentum`: a level, so it is never cleared after a read.
 			if let Some(v) = decode::<Vec<Option<f64>>>(signal).iter().rev().find_map(|x| *x) {
 				self.mom = Some(v);
 			}
@@ -540,7 +540,7 @@ impl DataActor for Classifier {
 
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
 		match signal.name.as_str() {
-			// the frame's `Latest<Momentum>`: a level, so it is never cleared after a read.
+			// the frame's carry over `Momentum`: a level, so it is never cleared after a read.
 			MOMENTUM => {
 				if let Some(v) = decode::<Vec<Option<f64>>>(signal).iter().rev().find_map(|x| *x) {
 					self.mom = Some(v);
@@ -550,7 +550,7 @@ impl DataActor for Classifier {
 			CHANGE1D => return Ok(self.c1d = decode(signal)),
 			CHANGE3M => return Ok(self.c3m = decode(signal)),
 			VOLUSD1M => return Ok(self.vol_usd_1m = decode(signal)),
-			// the frame's `Latest<VolUsd<1h>>`: a level, so it is never cleared after a read.
+			// the frame's carry over `VolUsd<1h>`: a level, so it is never cleared after a read.
 			VOLUSD1H => {
 				if let Some(v) = decode::<Vec<f64>>(signal).last() {
 					self.vol_usd_1h = Some(*v);
@@ -582,7 +582,7 @@ impl DataActor for Classifier {
 			&self.imb,
 			&self.spr,
 			// `Ring` bridges into `Hist` alone, and an `Mc` is never an absence — so the newest row it
-			// ever held is what the frame's `Latest<McRoot>` holds.
+			// ever held is what the frame's carry over `McRoot` holds.
 			self.mc.hist::<Buffering<McRoot, Elems<1>>>().all().last().copied(),
 			self.oi.hist::<Buffering<OiRoot, Over<{ Timeframe(4 * TF_5MIN.0) }>>>(),
 		));
@@ -632,7 +632,7 @@ impl DataActor for Deprecate {
 
 	fn on_signal(&mut self, signal: &Signal) -> anyhow::Result<()> {
 		match signal.name.as_str() {
-			// the frame's `Latest<Atr>`: a level, and ungated, so neither a read nor the commutation
+			// the frame's carry over `Atr`: a level, and ungated, so neither a read nor the commutation
 			// below clears it.
 			ATR => {
 				if let Some(v) = decode::<Vec<Option<f64>>>(signal).iter().rev().find_map(|x| *x) {

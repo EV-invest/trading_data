@@ -1,9 +1,9 @@
-//! `Latest`/`Sampling` through `graph!`: the level a consumer clocked by *another* series stands on,
-//! and the two ways the run it samples can say nothing — an empty batch, and a batch of items
-//! carrying their own absence. Neither may unseat what is held.
+//! `Sampling` through `graph!`: the level a consumer clocked by *another* series stands on, and the
+//! two ways the run it samples can say nothing — an empty batch, and a batch of items carrying their
+//! own absence. Neither may unseat what is held.
 
 use trading_data_dag::{
-	Blind, Buffering, Bump, Cell, DepOuts, Elems, Fire, Flat, Glance, Latest, Observer, RunOuts, Runs, Sampling, Stamped, Want, always_present, graph, node, slice_nudge, value_nudge,
+	Blind, Buffering, Bump, Cell, DepOuts, Elems, Fire, Flat, Glance, Observer, RunOuts, Runs, Sampling, Stamped, Want, always_present, graph, node, slice_nudge, value_nudge,
 };
 
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.
@@ -155,20 +155,19 @@ graph! {
 	outputs { naive: Naive, sampled: Sampled, windowed: Windowed, whole: Whole }
 }
 
-/// A level is a frame cell of its own, so it takes a name of its own — composed from its source's,
-/// which is how every other card in the graph spells the same series.
+/// A level is storage, not a node: it advances in its source's own sweep line, so it takes no name,
+/// no card and no position of its own.
 #[test]
-fn a_level_names_itself_from_its_source() {
-	assert_eq!(<Latest<Sparse> as Cell>::NAME, format!("Latest<{}>", Sparse::NAME));
-	assert!(G::NODES.contains(&"Latest<Sparse>"), "the sampled series is a node of the frame: {:?}", G::NODES);
-	assert!(G::NODES.contains(&"Latest<Src>"), "one level per series, source and derived alike: {:?}", G::NODES);
+fn a_level_is_no_node_of_the_frame() {
+	assert_eq!(<Sampling<Sparse> as Cell>::NAME, Sparse::NAME);
+	assert!(!G::NODES.iter().any(|n| n.contains("Latest")), "nothing is stepped for the carry: {:?}", G::NODES);
+	assert_eq!(G::NODES.len(), 6, "two roots aside, exactly the four authored nodes and the one buffer: {:?}", G::NODES);
 }
 
-/// What a sampler reads is the level, not the series behind it. An observer told otherwise draws a
-/// graph the sweep does not have: the source looks read by its consumer directly, so it inherits
-/// that consumer's gates instead of the level's, and the level itself looks read by nobody.
+/// What a sampler is observed reading is the series it samples — which is the edge the sweep has,
+/// now that the carry rides in that series' own line.
 #[test]
-fn a_sampler_is_observed_reading_the_level() {
+fn a_sampler_is_observed_reading_its_source() {
 	#[derive(Default)]
 	struct Deps(Vec<(&'static str, Vec<&'static str>)>);
 	impl Observer for Deps {
@@ -184,13 +183,12 @@ fn a_sampler_is_observed_reading_the_level() {
 	let mut seen = Deps::default();
 	G::default().tick_obs(0, Batches { src: &[t(1.0)], clk: &[t(1.0)] }, &mut seen);
 	let of = |n: &str| seen.0.iter().find(|(k, _)| *k == n).unwrap_or_else(|| panic!("`{n}` stepped, saw {:?}", seen.0)).1.clone();
-	let level = <Latest<Sparse> as Cell>::NAME;
 
-	assert_eq!(of(level), [Sparse::NAME], "a level reads the series it holds");
-	assert_eq!(of(Sampled::NAME), [Clk::NAME, level]);
-	// the long spelling is unchanged: a `Buffer` is drawn on its source's own card, so the dep names
-	// the series and the retention is read off `Cell::REACH` beside it.
+	assert_eq!(of(Sampled::NAME), [Clk::NAME, Sparse::NAME]);
+	// the long spelling reads the same: a `Buffer` is drawn on its source's own card too, and the
+	// retention is read off `Cell::REACH` beside it.
 	assert_eq!(of(Windowed::NAME), [Clk::NAME, Src::NAME]);
+	assert!(!seen.0.iter().any(|(k, _)| k.contains("Latest")), "no third card: {:?}", seen.0);
 }
 
 #[test]
@@ -241,8 +239,8 @@ fn a_declining_emission_does_not_unseat_the_level() {
 	assert_eq!(o.sampled, Some(7.0));
 }
 
-/// A level is a node too, and a `Sampling` dep is the one edge that resolves against something other
-/// than the cell it names.
+/// Every edge points at the cell its dep names; what the `·` says is that the read is of the level
+/// the engine carries beside that cell rather than of this tick's run.
 #[test]
 fn shape() {
 	insta::assert_snapshot!(G::SHAPE, @r#"
@@ -254,18 +252,14 @@ fn shape() {
 	│ │ ● Sparse                       emit  Opaque("a sampling fixture")
 	│ ├─├─╮
 	│ │ │ ● Naive                        node  pin·output  →out naive  Opaque("a sampling fixture")
-	│ │ ╰
-	│ │ ● Latest<Sparse>               latest  pin·fold  Opaque("holding the last value across a silence is a carry, and a carry has no slope of its own")
 	│ ├─╯
-	│ │ ● Sampled                      node  pin·output  ·Latest<Sparse>  →out sampled  Opaque("a sampling fixture")
+	│ │ ● Sampled                      node  pin·output  ·Sparse  →out sampled  Opaque("a sampling fixture")
 	├─┼─╮
 	│ │ ● Buffer<Src, Elems(1)>        buffer  pin·retention  ⟳Src@Elems(1)  Opaque("a retention window is the engine's bookkeeping over a run, not a function of its elements")
 	│ ├─╯
 	│ │ ● Windowed                     node  pin·output  ⌸@Elems(1)  →out windowed  Opaque("a sampling fixture")
-	╰ │
-	● │ Latest<Src>                  latest  Opaque("holding the last value across a silence is a carry, and a carry has no slope of its own")
 	╰─╯
-	● Whole                        node  pin·output  ·Latest<Src>  →out whole  Opaque("a sampling fixture")
+	● Whole                        node  pin·output  ·Src  →out whole  Opaque("a sampling fixture")
 
 	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
 	"#);

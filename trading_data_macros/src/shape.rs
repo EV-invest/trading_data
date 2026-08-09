@@ -74,12 +74,11 @@ pub fn shape_const(st: &State, d: &Demand, node_tys: &[TokenStream]) -> TokenStr
 			false => quote!(<<#ty as #dag::Node>::Kernel as #dag::Level<#ty>>::FIDELITY),
 		};
 
-		// the `Buffer`/`Latest` keys are the driver's own spellings, so a node is one of them exactly
-		// where the driver wrote it as one — not where its name happens to read like one.
+		// the `Buffer` key is the driver's own spelling, so a node is one exactly where the driver wrote
+		// it as one — not where its name happens to read like one.
 		let buffer = st.bufs.iter().any(|b| b.key == n.key);
 		let kind = match () {
 			_ if buffer => quote!(Buffer),
-			_ if n.generated => quote!(Latest),
 			_ if n.latch => quote!(Latch),
 			_ if d.is_gate[i] => quote!(Gate),
 			_ if n.emit => quote!(Emit),

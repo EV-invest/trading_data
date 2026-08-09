@@ -21,28 +21,6 @@ pub const VERSION: u32 = crate::corpus::fnv(&[include_str!("frng.rs"), include_s
 /// it rather than a guess — and `G::SHAPE.gates()` is what says the set is still these two.
 const DRIVEN_BY: [&str; 2] = ["Hot", "Warm"];
 
-/// How a level names itself: `Latest<{source}>`, composed rather than compiler-rendered, so a chart
-/// spells the series the same way every other card does.
-const LEVEL: &str = "Latest<";
-
-/// **A known, unfixed divergence between the shape and the sweep, quarantined rather than papered
-/// over.** The shape reports a `Latest` dark once the only consumer reading it through `Sampling` is
-/// gated shut; the sweep advances it anyway, exactly like the `Buffer` beside it.
-///
-/// The cause is one arm: `trading_data_macros/src/demand.rs` pins a retention cell it finds in
-/// `st.bufs` as `Pin::Retention`, and a level is not in `st.bufs`, so it gets `Pin::None` and its
-/// demand is propagated from its consumers like any ordinary node. The picture then draws `░⟲` where
-/// the emitted code runs the node.
-///
-/// **The sweep is the correct one.** A level that slept would wake its consumer onto a stale
-/// reading, and `run_rewarm` shows it does not — so this is a wrong reading in `Under`, not a wrong
-/// sweep. Fixing it is a macro change this fuzzer does not own.
-///
-/// This is not a blanket exemption: only *shape-dark, sweep-live* on a level is waved through, so
-/// the opposite divergence still fails. And the count is asserted below — the day the pin lands, the
-/// quarantine stops being reached and this target fails until someone deletes it.
-const LEVEL_DIVERGES: usize = 2;
-
 /// Records `ran` per node. `Fire::ran` is "whether the sweep advanced the node at all", reported for
 /// skipped nodes too as long as the observer wants more than `Want::Nothing` — so which nodes
 /// advanced needs no new `pub` and no counter threaded through the fixture.
@@ -175,8 +153,6 @@ pub fn run_shape_sweep(f: &mut Frng, verbose: bool) -> Result<(), String> {
 	if data.is_empty() {
 		return Ok(());
 	}
-	let mut diverged = 0;
-
 	for bits in 0..1u32 << gates.len() {
 		let want = (bits & 1 != 0, bits & 2 != 0);
 		let hold = |open: bool, ts: i64| vec![fixture::t(ts, if open { 1.0 } else { -1.0 })];
@@ -224,11 +200,6 @@ pub fn run_shape_sweep(f: &mut Frng, verbose: bool) -> Result<(), String> {
 					seen.0.keys().collect::<Vec<_>>()
 				));
 			};
-			// ponytail: one known divergence, quarantined rather than fixed — see [`LEVEL_DIVERGES`].
-			if n.name.starts_with(LEVEL) && !want_live && ran {
-				diverged += 1;
-				continue;
-			}
 			check!(
 				ran == want_live,
 				"under {}={} {}={}, the shape says `{}` is {} and the sweep {} it",
@@ -242,10 +213,6 @@ pub fn run_shape_sweep(f: &mut Frng, verbose: bool) -> Result<(), String> {
 			);
 		}
 	}
-	check!(
-		diverged == LEVEL_DIVERGES,
-		"the `Latest` shape/sweep divergence showed up {diverged} times, not {LEVEL_DIVERGES}: if it is fixed, delete the quarantine in gates.rs; if it spread, it is no longer the one case that was triaged"
-	);
 	Ok(())
 }
 

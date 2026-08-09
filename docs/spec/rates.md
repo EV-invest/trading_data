@@ -23,9 +23,9 @@ reading nor the trade-by-trade one, and no consumer can say which it holds.
 
 r[rates.deps.tick-opaque]
 
-A dep read MUST NOT reveal whether that dep produced anything on this tick. `None` means *no value
-has ever been produced*, and carries no other information — in particular a dep whose gate is shut
-and a dep that has never published are the same state, deliberately and permanently.
+A dep read MUST NOT reveal whether that dep produced anything on this tick. `None` means *nothing
+stands*, and carries no other information — a dep that has never published, one that decided to
+stop, and one whose gate is shut are the same state, deliberately and permanently.
 
 This is the invariant the whole dep vocabulary exists to serve. Where a read exposes the tick, two
 groupings of one message sequence give two different results, and the node's output becomes a

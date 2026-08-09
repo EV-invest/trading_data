@@ -26,6 +26,9 @@ struct Edge {
 	at: At,
 	gate: bool,
 	fold: bool,
+	/// [`Cell::RETAINED`](trading_data_dag::Cell::RETAINED) as the driver spelled it — a buffer or a
+	/// carry stands into the next tick whatever the node behind it is.
+	retain: bool,
 }
 
 impl Edge {
@@ -55,7 +58,6 @@ fn spelling(st: &State, ts: &TokenStream) -> Result<(String, Wrap)> {
 	let (cell, wrap) = cell(st, ts)?;
 	let key = match wrap {
 		Wrap::Buf { .. } => format!("Buffer<{cell}>"),
-		Wrap::Sample => format!("Latest<{cell}>"),
 		_ => cell,
 	};
 	Ok((key, wrap))
@@ -93,6 +95,7 @@ fn edges(st: &State, order: &[String], n: &NodeInfo) -> Result<Vec<Edge>> {
 				at: target(st, order, &key)?,
 				gate: matches!(wrap, Wrap::Gate),
 				fold: matches!(wrap, Wrap::Fold),
+				retain: matches!(wrap, Wrap::Buf { .. } | Wrap::Sample),
 			})
 		})
 		.collect()
@@ -223,12 +226,13 @@ pub fn suppressors(st: &State) -> Result<Demand> {
 	// Whether every input this node reads for data stands into the next tick, which is the whole of "a
 	// later tick rebuilds what this one lost". A root's out is the tick's own batch and an `Emit`'s is
 	// the engine's buffer — both are flows, gone by the next tick; a level node's out borrows state it
-	// keeps, so it reads the same again. A gate is permission and carries no reading, so it is passed
-	// over; a node reading nothing at all has nothing to rebuild from.
+	// keeps, and a retained read is the engine's to hold, so both read the same again. A gate is
+	// permission and carries no reading, so it is passed over; a node reading nothing at all has
+	// nothing to rebuild from.
 	let rebuilds: Vec<bool> = (0..n)
 		.map(|i| {
 			let data: Vec<&Edge> = edges[i].iter().filter(|e| !e.gate).collect();
-			!data.is_empty() && data.iter().all(|e| e.to().is_some_and(|t| !info[t].emit))
+			!data.is_empty() && data.iter().all(|e| e.retain || e.to().is_some_and(|t| !info[t].emit))
 		})
 		.collect();
 

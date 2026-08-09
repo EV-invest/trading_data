@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use trading_data::{Book, Exact, ExchangeName, Feed as _, LatencyConfig, Latest, McRoot, Past, ReadClock, Replay, Rewound, Step, required_lanes};
+use trading_data::{Book, Exact, ExchangeName, Feed as _, LatencyConfig, Past, ReadClock, Replay, Rewound, Step, required_lanes};
 use trading_data_spl::{
 	config::Config,
 	day_bounds, ensure_lanes,
@@ -134,12 +134,5 @@ impl Rewound<Book> for Watch<'_> {
 		self.past.rewind(b);
 		// a wake is a rewind that moved the cursor; the steady-state call finds it already there
 		self.woke = b.seq() != before;
-	}
-}
-
-/// What is measured here is the book's sleeps, so the level's rewind is forwarded and not counted.
-impl Rewound<Latest<McRoot>> for Watch<'_> {
-	fn rewind(&mut self, l: &mut Latest<McRoot>) {
-		self.past.rewind(l);
 	}
 }

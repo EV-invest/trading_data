@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 
 use trading_data::{
 	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Close, Elems, Episode, Exact, ExchangeName, Feed as _, Fold, Horizon, Latch as _, LatencyConfig,
-	Latest, Level as _, Mc, McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, Past, Predicate, ReadClock, Replay, Rewound, Run as _, Runs as _, Scan, Side, Step, TradeCols, Volume, Volumes,
-	bench::ring::Ring, required_lanes,
+	Level as _, Mc, McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, Past, Predicate, ReadClock, Replay, Rewound, Run as _, Runs as _, Scan, Side, Step, TradeCols, Volume, Volumes, bench::ring::Ring,
+	required_lanes,
 };
 use trading_data_spl::{
 	config::Config,
@@ -112,14 +112,6 @@ impl Rewound<Book> for Counted<'_> {
 		let before = b.seq();
 		self.0.rewind(b);
 		self.1 += u64::from(b.seq() != before);
-	}
-}
-
-/// A level revives by lookup rather than replay, so there is no cursor to have moved and nothing a
-/// wake count could mean: this one only forwards.
-impl Rewound<Latest<McRoot>> for Counted<'_> {
-	fn rewind(&mut self, l: &mut Latest<McRoot>) {
-		self.0.rewind(l);
 	}
 }
 
@@ -217,7 +209,7 @@ struct Direct {
 	b_spr: Vec<Option<f64>>,
 	b_dep: Vec<Option<Intent>>,
 
-	/// The frame's `Latest<Atr>` / `Latest<Momentum>`. Engine cells, so a replica of the graph owns
+	/// The frame's carries over `Atr` / `Momentum`. Engine storage, so a replica of the graph owns
 	/// them too — ungated, and so untouched by the commutation reset below.
 	l_atr: Option<f64>,
 	l_mom: Option<f64>,
@@ -325,7 +317,7 @@ impl Direct {
 				&self.b_imb,
 				&self.b_spr,
 				// `Ring` bridges into `Hist` alone, and an `Mc` is never an absence — so the newest row it
-				// ever held is what the frame's `Latest<McRoot>` holds.
+				// ever held is what the frame's carry over `McRoot` holds.
 				self.mc.hist::<Buffering<McRoot, Elems<1>>>().all().last().copied(),
 				self.oi.hist::<Buffering<OiRoot, Over<{ Timeframe(4 * TF_5MIN.0) }>>>(),
 			));

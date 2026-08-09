@@ -8,4 +8,10 @@ r[outs.flat.nonempty]
 
 Every `Flat` MUST occupy at least one slot: no `DIMS` may contain `0`.
 
-This is what keeps [`outs.absence.one-reading`](#outsabsenceone-reading) decidable rather than merely intended. Consumers recover the fired bit from the slots being present — a tape stores no flag, it stores the values — and a zero-slot out would fire and leave a buffer byte-identical to an unfired one. Absence would then mean two things at exactly one place, which is the place nobody would look.
+A tape stores no flag, it stores the values. A zero-slot out would fire and leave a buffer byte-identical to an unfired one — a publication nothing downstream could record, and nothing could later read back.
+
+r[outs.fired.on-change]
+
+A level node MUST be observed firing only on the ticks its flattening differs from the one it last published. A run's fire count stays its element count: three identical trades are three events, and "unchanged" is not defined for a run.
+
+This is the observation plane and nowhere else. What a consumer reads off the frame is the node's out, which stands either way; the fired bit is an axis no dep read can reach ([`rates.deps.tick-opaque`](rates.md#ratesdepstick-opaque)), which is what leaves it free to mean *moved* rather than *ran*.
