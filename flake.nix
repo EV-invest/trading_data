@@ -1,9 +1,4 @@
 {
-  nixConfig = {
-    extra-substituters = [ "https://valeratrades.cachix.org" ];
-    extra-trusted-public-keys = [ "valeratrades.cachix.org-1:gXVwhzO5YB+BaiEJYT48qZgzdaErGQew6xtZcz4Fo1Q=" ];
-  };
-
   inputs = {
     v_flakes.url = "github:valeratrades/v_flakes?ref=v1.6";
   };
