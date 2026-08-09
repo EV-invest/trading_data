@@ -287,9 +287,33 @@ impl<E: Expr, const N: i32> Expr for Powi<E, N> {
 	}
 }
 
+/// A NaN operand makes the branch a `Min`/`Max` takes ambiguous: `f64::min`/`f64::max` *ignore* one
+/// and hand back the other operand, where every derivative reading here branches on a `<` that is
+/// false against a NaN and so takes the opposite side. The value and the slope then come off
+/// different branches, and nothing in the array says so.
+///
+/// Debug-only because `r[kernels.pure.zero-cost]` is an equality in retired instructions: a release
+/// build of a `Pure` node costs what the same arithmetic written by hand costs, and a branch here
+/// would be a branch the hand-written version does not have.
+macro_rules! defined_over {
+	($l:expr, $r:expr, $op:literal) => {
+		debug_assert!(
+			!$l.is_nan() && !$r.is_nan(),
+			concat!(
+				$op,
+				" over a NaN operand ({}, {}): NaN is a declination and belongs at the element boundary, where `Unflat for Option` reads it as absence — inside a tree it has no agreed branch"
+			),
+			$l,
+			$r
+		)
+	};
+}
+
 impl<L: Expr, R: Expr> Expr for Min<L, R> {
 	fn eval(&self, env: &[f64]) -> f64 {
-		self.0.eval(env).min(self.1.eval(env))
+		let (lv, rv) = (self.0.eval(env), self.1.eval(env));
+		defined_over!(lv, rv, "min");
+		lv.min(rv)
 	}
 
 	fn grad(&self, env: &[f64], seed: f64, grad: &mut [f64]) -> f64 {
@@ -309,7 +333,9 @@ impl<L: Expr, R: Expr> Expr for Min<L, R> {
 
 impl<L: Expr, R: Expr> Expr for Max<L, R> {
 	fn eval(&self, env: &[f64]) -> f64 {
-		self.0.eval(env).max(self.1.eval(env))
+		let (lv, rv) = (self.0.eval(env), self.1.eval(env));
+		defined_over!(lv, rv, "max");
+		lv.max(rv)
 	}
 
 	fn grad(&self, env: &[f64], seed: f64, grad: &mut [f64]) -> f64 {
@@ -580,8 +606,16 @@ impl Ast {
 			Ast::Sqrt(e) => libm::sqrt(e.eval(env)),
 			Ast::Exp(e) => libm::exp(e.eval(env)),
 			Ast::Powi(e, n) => powi(e.eval(env), *n),
-			Ast::Min(l, r) => l.eval(env).min(r.eval(env)),
-			Ast::Max(l, r) => l.eval(env).max(r.eval(env)),
+			Ast::Min(l, r) => {
+				let (lv, rv) = (l.eval(env), r.eval(env));
+				defined_over!(lv, rv, "min");
+				lv.min(rv)
+			}
+			Ast::Max(l, r) => {
+				let (lv, rv) = (l.eval(env), r.eval(env));
+				defined_over!(lv, rv, "max");
+				lv.max(rv)
+			}
 			Ast::Cmp(l, r) => f64::from(l.eval(env) < r.eval(env)),
 			Ast::Select(c, a, b) => match c.eval(env) != 0.0 {
 				true => a.eval(env),

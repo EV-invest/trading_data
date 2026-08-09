@@ -212,6 +212,12 @@ mod fuzz {
 	/// avoided, it is *detected* below, because avoiding it would be avoiding `Min`/`Max`/`Select`
 	/// altogether and those are exactly where a tie-break has to resolve the same way in the value and
 	/// in the derivative.
+	///
+	/// What *is* avoided is leaving the algebra's domain: `Sqrt` takes an `Abs`, `Div` a denominator
+	/// that cannot be zero, `Powi` a non-negative exponent, and `Exp` an argument bounded above. NaN
+	/// is a declination and `Min`/`Max` refuse one in debug, so a generator that produced NaN would be
+	/// testing the assert rather than the algebra. This is deterministic at a fixed seed, so passing
+	/// once is passing.
 	fn tree(r: &mut Lcg, depth: u32) -> Ast {
 		let leaf = |r: &mut Lcg| match r.below(3) {
 			0 => Ast::Const(r.span(-3.0, 3.0)),
@@ -227,13 +233,14 @@ mod fuzz {
 			0 => Ast::Add(sub(r, depth), sub(r, depth)),
 			1 => Ast::Sub(sub(r, depth), sub(r, depth)),
 			2 => Ast::Mul(sub(r, depth), sub(r, depth)),
-			3 => Ast::Div(sub(r, depth), sub(r, depth)),
+			3 => Ast::Div(sub(r, depth), Box::new(Ast::Add(Box::new(Ast::Abs(sub(r, depth))), Box::new(Ast::Const(1.0))))),
 			4 => Ast::Neg(sub(r, depth)),
 			5 => Ast::Square(sub(r, depth)),
 			6 => Ast::Abs(sub(r, depth)),
-			7 => Ast::Sqrt(sub(r, depth)),
-			8 => Ast::Exp(sub(r, depth)),
-			9 => Ast::Powi(sub(r, depth), r.below(5) as i32 - 1),
+			7 => Ast::Sqrt(Box::new(Ast::Abs(sub(r, depth)))),
+			// `exp` of an unbounded subtree overflows to infinity, and two infinities meeting is a NaN
+			8 => Ast::Exp(Box::new(Ast::Min(sub(r, depth), Box::new(Ast::Const(4.0))))),
+			9 => Ast::Powi(sub(r, depth), r.below(4) as i32),
 			10 => Ast::Min(sub(r, depth), sub(r, depth)),
 			11 => Ast::Max(sub(r, depth), sub(r, depth)),
 			12 => Ast::Cmp(sub(r, depth), sub(r, depth)),
@@ -243,14 +250,8 @@ mod fuzz {
 		}
 	}
 
-	/// Whether every *subexpression* is finite here, not merely the root.
-	///
-	/// A NaN under a `Min`/`Max` does not reach the root: `f64::max` ignores a NaN operand and hands
-	/// back the other one, where both derivative readings branch on `rv < lv`, which is false against
-	/// a NaN and so takes the opposite side. The two readings of one node then disagree — see
-	/// [`the_symbolic_derivative_is_the_numeric_one`]'s note. It is a real gap and a narrow one, and
-	/// it is not this test's to fix, so a point where any subtree is not a number is not a point this
-	/// test has anything to say about.
+	/// Whether every *subexpression* is finite here, not merely the root — an infinity swallowed by a
+	/// `Min` still poisons the difference taken around it, and the root would never say so.
 	fn finite_everywhere(e: &Ast, env: &[f64]) -> bool {
 		if !e.eval(env).is_finite() {
 			return false;
