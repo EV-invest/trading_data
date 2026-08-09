@@ -1,0 +1,23 @@
+# Previously-failing fuzz cases — one `target seed size version` per line (`#` starts a comment,
+# blanks ignored). `fuzz` appends a minimal repro here automatically when it finds a NEW failure;
+# fix the bug, commit the new line, and `regressions` replays it forever. Do not hand-edit the
+# numbers — the trailing comment is the only free-form part.
+#
+# `version` is the generator fingerprint from `corpus.rs`, taken per target over the sources that
+# decide what its `(seed, size)` means. A pair names a *trace* only under that generator: reshape it
+# and the same pair replays some unrelated trace — a random run wearing a regression test's name,
+# which is worse than no test, because it reports green for a case it never runs. So `regressions`
+# replays only lines at the current version, and prints how many it skipped.
+#
+# NEVER DELETE A LINE. A superseded line stops being a test, but it does not stop being the record
+# of what once broke and why, and that costs nothing to keep.
+# The first line the fuzzer ever recorded, and not a product finding: the generator was drawing
+# zero-trade messages, which `BatchTrades::new` rightly refuses. Kept because lines are never
+# deleted; stale at the current fingerprint, so it is documentation and not a test.
+weave 0 9 1841168572  # PANIC: panicked at trading_data_core/src/batch.rs:31:9: BatchTrades is never empty by construction
+# Also not a product finding — an oracle error, and an instructive one. A step reports `arrival` as
+# the *last* key of the run it emitted, so under a coarse clock two steps can share an `arrival`
+# without the weaver having faced a tie at all: an anchors run whose head sits a checkpoint period
+# back swallows the checkpoint sharing this step's stamp, and is emitted ahead of it on its head.
+# The §1.5 tie-break is only observable under `ReadClock::EVENT`, and that is where it is now checked.
+weave 256541034804199029 41 1762018250  # live: at arrival 121000000003 lane deltas follows lane anchors — the tie-break must order ["trades", "deltas", "anchors", "oi", "mc"]

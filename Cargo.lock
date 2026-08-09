@@ -1614,7 +1614,7 @@ dependencies = [
 
 [[package]]
 name = "exec_viz"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "rmp-serde",
@@ -5377,6 +5377,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syn 3.0.3",
+ "tempfile",
  "trading_data_core",
  "trading_data_dag",
  "trading_data_derivatives",

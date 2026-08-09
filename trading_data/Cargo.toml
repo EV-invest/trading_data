@@ -37,6 +37,14 @@ insta.workspace = true
 # the facade's own `pub use` lists, and the sub-crate signatures they reach, read as syntax rather
 # than as text: the invariants under test are about types, and a regex over them is a guess.
 syn = { workspace = true, features = ["visit"] }
+# the fuzz binary records a `Live` session to a throwaway catalog and replays it back
+tempfile.workspace = true
+
+# One integration binary, per matklad's "delete cargo integration tests": every fuzz target shares one
+# FRNG kernel, one corpus and one driver, and a target is a line in its registry.
+[[test]]
+name = "fuzz"
+path = "tests/fuzz/main.rs"
 
 [lints]
 workspace = true
