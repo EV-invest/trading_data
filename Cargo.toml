@@ -109,3 +109,4 @@ strip = false
 # `[patch]` is only honored from the top-level workspace, so the redirect has to live here or those
 # graphs resolve to an incompatible second copy of the shared parse-boundary types.
 trading_data_core = { path = "trading_data_core" }
+trading_data_dag = { path = "trading_data_dag" } # same, for `exec_viz`
