@@ -11,6 +11,9 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[package.metadata.release]
+tag = false # `publish = false`, so a version tag for it is noise
+
 # Forwarded from the facade so `measure flame` can ask the app it profiles for it. Off by default,
 # and never in a `default` set: without it the attribute is absent from the source the compiler sees.
 [features]

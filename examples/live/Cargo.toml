@@ -15,6 +15,9 @@ categories.workspace = true
 [package.metadata.cargo-machete]
 ignored = ["color-eyre", "miette"]
 
+[package.metadata.release]
+tag = false # `publish = false`, so a version tag for it is noise
+
 [dependencies]
 color-eyre.workspace = true
 # The only edge pointing out of this workspace, declared here rather than in the root manifest so
