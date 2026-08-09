@@ -69,6 +69,11 @@ const TARGETS: &[Target] = &[
 		run: schedule::run,
 	},
 	Target {
+		name: "warmup",
+		version: schedule::VERSION,
+		run: schedule::run_warmup,
+	},
+	Target {
 		name: "rewarm",
 		version: gates::VERSION,
 		run: gates::run_rewarm,

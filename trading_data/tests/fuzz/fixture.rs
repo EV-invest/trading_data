@@ -18,8 +18,8 @@
 //! `trading_data_dag/tests/gate.rs` does, so every state reached here is production-reachable.
 
 use trading_data::{
-	Blind, Buffering, Bump, Cell, DepOuts, Elems, Flat, Folding, Gate, Gating, Glance, Over, RunOuts, Runs, Sampling, Stamped, Unbounded, always_present, graph, node, slice_nudge,
-	value_nudge,
+	Blind, Buffering, Bump, Carried, Cell, DepOuts, Elems, Env, Flat, FoldOuts, Folding, Folds, Gate, Gating, Glance, Lagged, Over, Reading, RunOuts, Runs, Sampling, Slots, Stamped,
+	Unbounded, Vars, Witness, absent, always_present, constant, graph, lt, min, node, select, slice_nudge, value_nudge,
 };
 use v_utils::TF_1MIN;
 
@@ -169,6 +169,49 @@ impl Runs for Bucket {
 }
 slice_nudge!(Bucket, f64);
 
+/// How many elements [`Warmup`] is cold for.
+pub const WARM: usize = 3;
+
+/// A fold with a warm-up: absent for exactly its first [`WARM`] elements, a number from there on.
+/// Rate-preserving, so that is a claim about *which* elements rather than about how many there are —
+/// and the element sequence is invariant under grouping (`rates.folds.exactly-once`), which is what
+/// makes the presence boundary a fuzzable property rather than a per-tick one.
+#[derive(Clone, Default)]
+pub struct Warmup(Carried);
+impl Cell for Warmup {
+	type Out<'t> = &'t [Reading];
+}
+#[node]
+impl Folds for Warmup {
+	type Deps = (Folding<Src, Unbounded>,);
+
+	/// The running sum, and how many elements have reached it.
+	const STATE: usize = 2;
+
+	fn read<W: Witness>((src,): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let (x, lag) = src.at(i)?;
+		env.dep(0).lag(lag).put(x);
+		Some(0)
+	}
+
+	fn step(&self, v: Vars) -> impl Slots {
+		(v.get::<1>() + v.get::<0>(), min(v.get::<2>() + constant(1.0), constant(WARM as f64)))
+	}
+
+	fn value(&self, v: Vars) -> impl Slots {
+		select(lt(v.get::<2>(), constant(WARM as f64)), absent(), v.get::<1>())
+	}
+
+	fn carried(&self) -> &Carried {
+		&self.0
+	}
+
+	fn carried_mut(&mut self) -> &mut Carried {
+		&mut self.0
+	}
+}
+slice_nudge!(Warmup, Reading);
+
 /// **The counter-example, and it is here on purpose.** A running extremum over the last element of
 /// each *tick* is a reading of how the feed batched, not of the series — `rates.deps.tick-opaque`'s
 /// closing note and ARCHITECTURE.md both say this is allowed to differ under a coarser clock, and
@@ -289,7 +332,7 @@ graph! {
 	batches Batches;
 	roots { src: Src[Tick], ctl_a: CtlA[u8], ctl_b: CtlB[u16] };
 	out GOut;
-	outputs { total: Total, bucket: Bucket, peak: Peak, win: Win, lvl: Lvl, ra: Ra, rb: Rb }
+	outputs { total: Total, bucket: Bucket, warm: Warmup, peak: Peak, win: Win, lvl: Lvl, ra: Ra, rb: Rb }
 }
 
 /// Every out of one tick, owned and comparable. `Peak` is here so a verbose replay prints it; which
@@ -299,6 +342,7 @@ graph! {
 pub struct Outs {
 	pub total: Vec<Option<f64>>,
 	pub bucket: Vec<f64>,
+	pub warm: Vec<Reading>,
 	pub peak: Option<f64>,
 	pub win: Option<f64>,
 	pub lvl: Option<f64>,
@@ -311,6 +355,7 @@ impl From<GOut<'_>> for Outs {
 		Self {
 			total: o.total.to_vec(),
 			bucket: o.bucket.to_vec(),
+			warm: o.warm.to_vec(),
 			peak: o.peak,
 			win: o.win,
 			lvl: o.lvl,

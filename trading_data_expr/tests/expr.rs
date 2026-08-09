@@ -1,7 +1,7 @@
 //! One kernel, `(x0 + x1)² + |x0 − 1|`, read four ways: value, exact gradient (vs central FD),
 //! symbolic derivative (vs the gradient), and the LaTeX/trace renderings.
 
-use trading_data_expr::{Expr, Vars, abs, constant, square};
+use trading_data_expr::{Expr, Vars, abs, absent, constant, max, square};
 
 /// The shared kernel; returns the typed `impl Expr` so every test reads the same source of truth.
 fn kernel() -> impl Expr {
@@ -145,6 +145,45 @@ fn every_operator_agrees_with_a_numeric_difference() {
 		"cmp-gt": |v| gt(v.get::<0>(), v.get::<1>()),                     at [1.5, 2.5];
 		"select": |v| select(lt(v.get::<0>(), v.get::<1>()), square(v.get::<0>()), v.get::<1>()), at [1.5, 2.5];
 	}
+}
+
+// r[verify outs.absence.typed]
+/// Every comparing operator refuses a NaN operand, and a `Select` *branch* does not — which is how a
+/// body declines. Each site is checked because the disagreement is per-operator: `min`/`max` ignore
+/// a NaN and hand back the other side, `Cmp` reads it as false, and a `Select` condition reads it as
+/// taken, so a rule closed at one of them buys nothing.
+#[test]
+fn nothing_compares_a_declination() {
+	use trading_data_expr::{Ast, lt, min, select};
+
+	// the refusals are `debug_assert` — a release build of a `Pure` node costs what the hand-written
+	// arithmetic costs (`r[kernels.pure.zero-cost]`), so there is nothing to catch there.
+	if !cfg!(debug_assertions) {
+		return;
+	}
+	let nan = || constant(f64::NAN);
+	let b = |a: Ast| Box::new(a);
+	let quiet = std::panic::take_hook();
+	std::panic::set_hook(Box::new(|_| {}));
+	let refused = |label: &str, f: &(dyn Fn() -> f64 + std::panic::RefUnwindSafe)| {
+		assert!(std::panic::catch_unwind(f).is_err(), "{label} compared a NaN operand instead of refusing it");
+	};
+	refused("min", &|| min(nan(), constant(1.0)).0.eval(&[]));
+	refused("max", &|| max(nan(), constant(1.0)).0.eval(&[]));
+	refused("cmp", &|| lt(nan(), constant(1.0)).0.eval(&[]));
+	refused("select's condition", &|| select(nan(), constant(1.0), constant(2.0)).0.eval(&[]));
+	refused("ast min", &|| Ast::Min(b(Ast::Const(f64::NAN)), b(Ast::Const(1.0))).eval(&[]));
+	refused("ast max", &|| Ast::Max(b(Ast::Const(f64::NAN)), b(Ast::Const(1.0))).eval(&[]));
+	refused("ast cmp", &|| Ast::Cmp(b(Ast::Const(f64::NAN)), b(Ast::Const(1.0))).eval(&[]));
+	refused("ast select's condition", &|| {
+		Ast::Select(b(Ast::Const(f64::NAN)), b(Ast::Const(1.0)), b(Ast::Const(2.0))).eval(&[])
+	});
+	std::panic::set_hook(quiet);
+
+	// and the sanctioned decline goes through untouched, by both readings
+	let declined = select(lt(constant(0.0), constant(1.0)), absent(), constant(2.0));
+	assert!(declined.0.eval(&[]).is_nan(), "a `Select` branch is where a body declines");
+	assert!(declined.0.lower().eval(&[]).is_nan());
 }
 
 /// `min`/`max` are branches, and both readings must take the *same* branch — otherwise the exact

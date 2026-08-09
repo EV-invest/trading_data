@@ -36,3 +36,7 @@ shape_sweep 0 4 1742470698  # under Hot=false Warm=false, the shape says `Latest
 noninvasive 15490212636682683044 8 1429616719  # the observer was never called, so the comparison is vacuous
 absence 0 4 1429616719  # tick 0, `fuzz::fixture::Total`: fires=3 says fired, the flattening says unfired — that is a third state
 shape_sweep 0 4 2572823603  # the `Latest` shape/sweep divergence showed up 0 times, not 2: if it is fixed, delete the quarantine in gates.rs; if it spread, it is no longer the one case that was triaged
+# Also mine and not a product finding: the oracle read the warm-up count off by one. The element
+# that *warms* is the one whose own step wrote the count the body reads, so the `WARM`th element
+# publishes and only `WARM - 1` are cold. Stale at the current fingerprint; kept as the record.
+warmup 1876011003808476466 9 4060039342  # grouping 0, element 2: warm before 3 elements had arrived, at 71.17647058823529

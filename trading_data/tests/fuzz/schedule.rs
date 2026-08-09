@@ -12,8 +12,10 @@
 //! `Peak` in the fixture is exactly such a node and no oracle here reads it — asserting it away
 //! would be asserting that a backtest reproduces a live run, which §2 warns against by name.
 
+use trading_data::{Present, Reading};
+
 use crate::{
-	fixture::{self, G, Outs, Step, Tick},
+	fixture::{self, G, Outs, Step, Tick, WARM},
 	frng::Frng,
 };
 
@@ -80,12 +82,14 @@ fn grouping(f: &mut Frng, els: &[Tick], which: usize) -> Vec<Step> {
 struct Folded {
 	total: Vec<Option<f64>>,
 	bucket: Vec<f64>,
+	warm: Vec<Reading>,
 }
 
 fn fold(outs: &[Outs]) -> Folded {
 	Folded {
 		total: outs.iter().flat_map(|o| o.total.iter().copied()).collect(),
 		bucket: outs.iter().flat_map(|o| o.bucket.iter().copied()).collect(),
+		warm: outs.iter().flat_map(|o| o.warm.iter().copied()).collect(),
 	}
 }
 
@@ -122,6 +126,47 @@ pub fn run(f: &mut Frng, verbose: bool) -> Result<(), String> {
 			steps.iter().map(|s| s.src.len()).collect::<Vec<_>>(),
 			runs[0].0.len()
 		);
+	}
+	Ok(())
+}
+
+// r[verify outs.absence.typed]
+/// The presence boundary of a warm-up, under every grouping. A cold element is *absent* and not a
+/// number — the state the representation change is about, since a NaN that leaked into the algebra
+/// would come back out as some number the comparison happened to pick, and a run that went absent
+/// again after warming would be a fold that lost its state.
+///
+/// The grouping axis is the point: `Warmup` folds a `Folding` dep, so its element sequence is
+/// invariant under it (`rates.folds.exactly-once`) — and therefore so is *which* of those elements
+/// carries a value. [`run`] above already compares the whole folded stream across groupings; what
+/// this adds is the claim about the stream's shape, which a single grouping could satisfy while
+/// disagreeing with every other one.
+pub fn run_warmup(f: &mut Frng, verbose: bool) -> Result<(), String> {
+	let els = elements(f);
+	if els.len() <= WARM {
+		return Ok(()); // nothing warms, so there is no boundary to be wrong about
+	}
+	for k in 0..K {
+		let steps = grouping(f, &els, k);
+		let mut g = G::default();
+		let outs: Vec<Outs> = steps.iter().map(|s| fixture::tick(&mut g, s)).collect();
+		let run: Vec<Reading> = outs.iter().flat_map(|o| o.warm.iter().copied()).collect();
+
+		check!(run.len() == els.len(), "grouping {k}: a rate-preserving fold published {} elements over {}", run.len(), els.len());
+		for (i, r) in run.iter().enumerate() {
+			// `i + 1` because the count the body reads is the one this element's own step wrote: the
+			// `WARM`th element is the one that warms, and it publishes.
+			match r.present() {
+				Some(v) => {
+					check!(i + 1 >= WARM, "grouping {k}, element {i}: warm before {WARM} elements had arrived, at {v}");
+					check!(v.is_finite(), "grouping {k}, element {i}: a warm element is a number, not {v}");
+				}
+				None => check!(i + 1 < WARM, "grouping {k}, element {i}: cold again after warming\n  {run:?}"),
+			}
+		}
+		if verbose {
+			eprintln!("  [{k}] {} ticks, {} elements, absent for the first {}", steps.len(), run.len(), WARM - 1);
+		}
 	}
 	Ok(())
 }
