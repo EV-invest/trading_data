@@ -29,7 +29,9 @@ mod stream;
 
 mod fixture;
 mod gates;
+mod latch;
 mod outs;
+mod rewind;
 mod schedule;
 mod weaver;
 
@@ -75,6 +77,16 @@ const TARGETS: &[Target] = &[
 		name: "shape_sweep",
 		version: gates::VERSION,
 		run: gates::run_shape_sweep,
+	},
+	Target {
+		name: "latch",
+		version: latch::VERSION,
+		run: latch::run,
+	},
+	Target {
+		name: "rewind",
+		version: rewind::VERSION,
+		run: rewind::run,
 	},
 	Target {
 		name: "noninvasive",
