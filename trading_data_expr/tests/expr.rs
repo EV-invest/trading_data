@@ -175,3 +175,164 @@ fn min_and_max_break_ties_the_same_way_in_both_readings() {
 		}
 	}
 }
+
+/// **Phase 5 — the algebra against a finite difference, over random trees.** `kernels.jac` makes
+/// exactness normative, and the two readings that must agree are computed by completely different
+/// code: [`Expr::grad`] accumulates partials by the chain rule down the typed tree, [`Ast::diff`]
+/// rewrites the lowered tree symbolically. `eval` differenced numerically is the third opinion, and
+/// the one neither of them can have talked itself into.
+///
+/// The typed tree is nested marker structs, so its *shape* is fixed at compile time and no runtime
+/// generator can vary it. `Ast` is a plain enum, so this fuzzes shapes there and keeps the typed
+/// path pinned by the fixed kernel above — which is the split the type-level algebra forces.
+mod fuzz {
+	use trading_data_expr::Ast;
+
+	/// Deterministic, ten lines, no dependency. The crate is `#![no_std]` and zero-dep on purpose;
+	/// a fuzz loop is not a reason to put `rand` in its dev-tree.
+	struct Lcg(u64);
+	impl Lcg {
+		fn next(&mut self) -> u64 {
+			self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+			self.0 >> 33
+		}
+
+		fn below(&mut self, n: u64) -> u64 {
+			self.next() % n
+		}
+
+		fn span(&mut self, lo: f64, hi: f64) -> f64 {
+			lo + (hi - lo) * (self.next() % 4096) as f64 / 4095.0
+		}
+	}
+
+	const VARS: usize = 3;
+
+	/// A random tree, bounded in depth. Every node kind is in the draw, kinks included: a kink is not
+	/// avoided, it is *detected* below, because avoiding it would be avoiding `Min`/`Max`/`Select`
+	/// altogether and those are exactly where a tie-break has to resolve the same way in the value and
+	/// in the derivative.
+	fn tree(r: &mut Lcg, depth: u32) -> Ast {
+		let leaf = |r: &mut Lcg| match r.below(3) {
+			0 => Ast::Const(r.span(-3.0, 3.0)),
+			_ => Ast::Var(r.below(VARS as u64) as usize),
+		};
+		if depth == 0 {
+			return leaf(r);
+		}
+		fn sub(r: &mut Lcg, depth: u32) -> Box<Ast> {
+			Box::new(tree(r, depth - 1))
+		}
+		match r.below(16) {
+			0 => Ast::Add(sub(r, depth), sub(r, depth)),
+			1 => Ast::Sub(sub(r, depth), sub(r, depth)),
+			2 => Ast::Mul(sub(r, depth), sub(r, depth)),
+			3 => Ast::Div(sub(r, depth), sub(r, depth)),
+			4 => Ast::Neg(sub(r, depth)),
+			5 => Ast::Square(sub(r, depth)),
+			6 => Ast::Abs(sub(r, depth)),
+			7 => Ast::Sqrt(sub(r, depth)),
+			8 => Ast::Exp(sub(r, depth)),
+			9 => Ast::Powi(sub(r, depth), r.below(5) as i32 - 1),
+			10 => Ast::Min(sub(r, depth), sub(r, depth)),
+			11 => Ast::Max(sub(r, depth), sub(r, depth)),
+			12 => Ast::Cmp(sub(r, depth), sub(r, depth)),
+			13 => Ast::Select(sub(r, depth), sub(r, depth), sub(r, depth)),
+			14 => Ast::Sum((0..2 + r.below(2)).map(|_| tree(r, depth - 1)).collect()),
+			_ => leaf(r),
+		}
+	}
+
+	/// Whether every *subexpression* is finite here, not merely the root.
+	///
+	/// A NaN under a `Min`/`Max` does not reach the root: `f64::max` ignores a NaN operand and hands
+	/// back the other one, where both derivative readings branch on `rv < lv`, which is false against
+	/// a NaN and so takes the opposite side. The two readings of one node then disagree — see
+	/// [`the_symbolic_derivative_is_the_numeric_one`]'s note. It is a real gap and a narrow one, and
+	/// it is not this test's to fix, so a point where any subtree is not a number is not a point this
+	/// test has anything to say about.
+	fn finite_everywhere(e: &Ast, env: &[f64]) -> bool {
+		if !e.eval(env).is_finite() {
+			return false;
+		}
+		let kids: Vec<&Ast> = match e {
+			Ast::Const(_) | Ast::Var(_) => vec![],
+			Ast::Neg(a) | Ast::Square(a) | Ast::Abs(a) | Ast::Sqrt(a) | Ast::Exp(a) | Ast::Powi(a, _) => vec![&**a],
+			Ast::Add(a, b) | Ast::Sub(a, b) | Ast::Mul(a, b) | Ast::Div(a, b) | Ast::Min(a, b) | Ast::Max(a, b) | Ast::Cmp(a, b) => vec![&**a, &**b],
+			Ast::Select(a, b, c) => vec![&**a, &**b, &**c],
+			Ast::Sum(xs) => xs.iter().collect(),
+		};
+		kids.into_iter().all(|k| finite_everywhere(k, env))
+	}
+
+	/// The central difference at `h` and at `2h`, Richardson-extrapolated — and `None` where the two
+	/// disagree, which is the whole conditioning test.
+	///
+	/// This is what keeps the tolerance from being a tuning exercise. A point near a kink, a division
+	/// by something near zero, or an `Exp` on its way to infinity all show up as the two step sizes
+	/// disagreeing, and a point the *difference* cannot resolve is no evidence about the derivative.
+	/// A well-conditioned point, meanwhile, is resolved to far better than the tolerance below.
+	fn difference(e: &Ast, env: &[f64], i: usize) -> Option<f64> {
+		let at = |h: f64| {
+			let (mut p, mut m) = (env.to_vec(), env.to_vec());
+			p[i] += h;
+			m[i] -= h;
+			let (a, b) = (e.eval(&p), e.eval(&m));
+			(a.is_finite() && b.is_finite() && a.abs() < 1e9 && b.abs() < 1e9).then(|| (a - b) / (2.0 * h))
+		};
+		let h = 1e-5;
+		let (fine, coarse) = (at(h)?, at(2.0 * h)?);
+		((fine - coarse).abs() <= 1e-4 * (1.0 + fine.abs())).then(|| (4.0 * fine - coarse) / 3.0)
+	}
+
+	// r[verify kernels.jac.two-quantities]
+	/// Every reading of one expression agrees: the symbolic derivative, the simplified symbolic
+	/// derivative, and the numeric difference.
+	#[test]
+	fn the_symbolic_derivative_is_the_numeric_one() {
+		let mut r = Lcg(0x9e37_79b9_7f4a_7c15);
+		let (mut checked, mut skipped, mut recovered) = (0u32, 0u32, 0u32);
+		for _ in 0..2_000 {
+			let depth = 1 + r.below(4) as u32;
+			let e = tree(&mut r, depth);
+			// positive and away from 0, so `Sqrt` and `Div` have a fighting chance; the conditioning
+			// test above is what handles the points where they do not.
+			let env: Vec<f64> = (0..VARS).map(|_| r.span(0.4, 2.6)).collect();
+			if !finite_everywhere(&e, &env) {
+				continue;
+			}
+			for i in 0..VARS {
+				let d = e.diff(i);
+				let (raw, exact) = (d.eval(&env), d.simplify().eval(&env));
+				// Simplification is a rewrite of the same expression, so where both readings are
+				// numbers they are the same number. Where the raw one is *not* a number and the
+				// simplified one is, simplify has removed an indeterminacy the chain rule wrote down
+				// and cannot cancel by evaluating — `∂sqrt(u) = u'/(2·sqrt(u))` is `0/0` where `u` is a
+				// flat `Cmp` reading zero, and the composite's derivative is the `0` the fold finds.
+				// That is why the crate's own tests evaluate `diff(i).simplify()` and not `diff(i)`,
+				// and it is the contract this checks against rather than one it argues with.
+				if raw.is_finite() {
+					assert!((raw - exact).abs() <= 1e-9 * (1.0 + raw.abs()), "simplify moved ∂{i} of {e} from {raw} to {exact} at {env:?}");
+				} else {
+					recovered += 1;
+				}
+				let Some(fd) = difference(&e, &env, i) else {
+					skipped += 1;
+					continue;
+				};
+				if !exact.is_finite() {
+					skipped += 1;
+					continue;
+				}
+				checked += 1;
+				assert!(
+					(exact - fd).abs() <= 1e-4 * (1.0 + exact.abs().max(fd.abs())),
+					"∂{i} of {e} at {env:?}: algebra says {exact}, the difference says {fd}"
+				);
+			}
+		}
+		// Loud, because a conditioning test that rejected everything would report green.
+		eprintln!("expr fuzz: {checked} derivatives checked, {skipped} points too ill-conditioned to be evidence, {recovered} indeterminacies simplify removed");
+		assert!(checked > 2_000, "only {checked} of {} points were well-conditioned enough to check", checked + skipped);
+	}
+}
