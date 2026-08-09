@@ -308,3 +308,80 @@ fn arm_from_a_node_hold_through_a_dark_arm_cut_from_within() {
 	// ungated bystander: never reset, counted every tick.
 	assert_eq!(s.ticks, 6.0);
 }
+
+/// Three roots and two gates — the widest lane picture in the suite, and the one place a latch and a
+/// plain gate darken different parts of the same graph.
+#[test]
+fn shape() {
+	insta::assert_snapshot!(G::SHAPE, @r#"
+	graph G
+
+	╷ Trig                   root trig
+	│ ╷ Feed                   root feed
+	│ │ ╷ Sw                     root sw
+	│ │ ╰
+	│ │ ● Open                   gate  pin·gate  Opaque("an internal-latch fixture")
+	╰─┼─┽
+	● │ │ Classify               node  ⊣Open  Opaque("an internal-latch fixture")
+	├─┼─┼─╮
+	│ │ │ ● Armed<Deprec>          latch  pin·latch  ⟳Classify@Unbounded  →out armed  Opaque("a latch is a bit that stays set: `arms` is a predicate over an episode, not a value with a slope")
+	╰─├─┼─┽
+	● │ │ │ Deprec                 emit  pin·output  ⊣Armed<Deprec>  →out deprec  Opaque("a latch fixture")
+	╭─├─┼─╌
+	● │ │ Leg                    emit  pin·output  ⊣Armed<Deprec>  →out leg  Opaque("an internal-latch fixture")
+	╭─╯ │
+	●   │ Ticks                node  pin·output  →out ticks  Opaque("a latch fixture")
+	╭───╌
+	● Beat                   node  pin·output  ⊣Open  →out beat  Opaque("an internal-latch fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	"#);
+	insta::assert_snapshot!(G::SHAPE.under(&[("Open", true), ("Armed<Deprec>", false)]), @r#"
+	graph G  ·  Open=open  Armed<Deprec>=closed
+
+	╷ Trig                   root trig
+	│ ╷ Feed                   root feed
+	│ │ ╷ Sw                     root sw
+	│ │ ╰
+	│ │ ● Open                   gate  pin·gate  Opaque("an internal-latch fixture")
+	╰─┼─┽
+	● │ │ Classify               node  ⊣Open  Opaque("an internal-latch fixture")
+	├─┼─┼─╮
+	│ │ │ ● Armed<Deprec>          latch  pin·latch  ⟳Classify@Unbounded  →out armed  Opaque("a latch is a bit that stays set: `arms` is a predicate over an episode, not a value with a slope")
+	╰─├─┼─┽
+	░ │ │ │ Deprec                 emit  pin·output  ⊣Armed<Deprec>  →out deprec  Opaque("a latch fixture")
+	╭─├─┼─╌
+	░ │ │ Leg                    emit  pin·output  ⊣Armed<Deprec>  →out leg  Opaque("an internal-latch fixture")
+	╭─╯ │
+	●   │ Ticks                node  pin·output  →out ticks  Opaque("a latch fixture")
+	╭───╌
+	● Beat                   node  pin·output  ⊣Open  →out beat  Opaque("an internal-latch fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	2 of 10 dark
+	"#);
+	insta::assert_snapshot!(G::SHAPE.under(&[("Open", false), ("Armed<Deprec>", true)]), @r#"
+	graph G  ·  Open=closed  Armed<Deprec>=open
+
+	╷ Trig                   root trig
+	│ ╷ Feed                   root feed
+	│ │ ╷ Sw                     root sw
+	│ │ ╰
+	│ │ ● Open                   gate  pin·gate  Opaque("an internal-latch fixture")
+	╰─┼─┽
+	░ │ │ Classify               node  ⊣Open  Opaque("an internal-latch fixture")
+	├─┼─┼─╮
+	│ │ │ ● Armed<Deprec>          latch  pin·latch  ⟳Classify@Unbounded  →out armed  Opaque("a latch is a bit that stays set: `arms` is a predicate over an episode, not a value with a slope")
+	╰─├─┼─┽
+	● │ │ │ Deprec                 emit  pin·output  ⊣Armed<Deprec>  →out deprec  Opaque("a latch fixture")
+	╭─├─┼─╌
+	● │ │ Leg                    emit  pin·output  ⊣Armed<Deprec>  →out leg  Opaque("an internal-latch fixture")
+	╭─╯ │
+	●   │ Ticks                node  pin·output  →out ticks  Opaque("a latch fixture")
+	╭───╌
+	░ Beat                   node  pin·output  ⊣Open  →out beat  Opaque("an internal-latch fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	2 of 10 dark
+	"#);
+}

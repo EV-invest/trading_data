@@ -256,3 +256,25 @@ fn a_clocked_node_reading_a_batch_is_not_withheld_a_tick() {
 		assert!(!closed.is_empty(), "{name}: a comparison of two empty vectors proves nothing");
 	}
 }
+
+/// Declared rates, as the sweep carries them: a clock column per node that states one.
+#[test]
+fn shape() {
+	insta::assert_snapshot!(G::SHAPE, @r#"
+	graph G
+
+	╷ Src              root src
+	├─╮
+	│ ● Latest<Src>      latest  Opaque("holding the last value across a silence is a carry, and a carry has no slope of its own")
+	│ ├─╮
+	│ │ ● Minutely         @1m  emit  pin·output  ·Latest<Src>  →out minutely  Opaque("a clocking fixture")
+	│ ╰
+	│ ● Continuous       emit  pin·output  ·Latest<Src>  →out continuous  Opaque("a clocking fixture")
+	╰
+	● Closes           @1m  emit  pin·fold  ⟳Src@Over(1m)  →out closes  Opaque("a clocking fixture")
+	╰
+	● Joined           @1m  emit  pin·output  →out joined  Opaque("a clocking fixture")
+
+	legend  ╷root ●live ░dark ⟲needs-a-rewinding-past  ⊣gating ⟳folding ⌸buffering ·sampling
+	"#);
+}

@@ -12,13 +12,30 @@ use crate::{
 	ty::{self, Wrap},
 };
 
+/// Where a dep spelling lands. Two readings of one answer: the demand rule walks the sweep alone,
+/// while a rendered graph has to place a root edge too.
+#[derive(Clone, Copy)]
+enum At {
+	Root(usize),
+	Node(usize),
+}
+
 /// One edge, as the demand pass reads it: what it points at, and which of the three dep kinds it
 /// carries that the rule turns on.
 struct Edge {
-	/// `None` where the dep names a root.
-	to: Option<usize>,
+	at: At,
 	gate: bool,
 	fold: bool,
+}
+
+impl Edge {
+	/// `None` where the dep names a root — the only reading the demand rule takes.
+	fn to(&self) -> Option<usize> {
+		match self.at {
+			At::Node(i) => Some(i),
+			At::Root(_) => None,
+		}
+	}
 }
 
 fn key_of(ts: &TokenStream) -> Result<String> {
@@ -46,13 +63,13 @@ fn spelling(st: &State, ts: &TokenStream) -> Result<(String, Wrap)> {
 
 /// The node a dep spelling reads — the same three readings `resolve::visit` walks, in that order,
 /// plus the alias table, since a spelling need not be a key.
-fn target(st: &State, order: &[String], key: &str) -> Result<Option<usize>> {
+fn target(st: &State, order: &[String], key: &str) -> Result<At> {
 	if let Some(i) = order.iter().position(|k| k == key) {
-		return Ok(Some(i));
+		return Ok(At::Node(i));
 	}
-	for r in &st.cfg.roots {
-		if key_of(&r.ty)? == key {
-			return Ok(None);
+	for (r, root) in st.cfg.roots.iter().enumerate() {
+		if key_of(&root.ty)? == key {
+			return Ok(At::Root(r));
 		}
 	}
 	let Some((_, answered)) = st.aliases.iter().find(|(a, _)| a == key) else {
@@ -62,7 +79,7 @@ fn target(st: &State, order: &[String], key: &str) -> Result<Option<usize>> {
 		));
 	};
 	match order.iter().position(|k| k == answered) {
-		Some(i) => Ok(Some(i)),
+		Some(i) => Ok(At::Node(i)),
 		None => Err(Diag::new(Span::call_site(), format!("`{key}` aliases `{answered}`, which the walk never stepped"))),
 	}
 }
@@ -73,7 +90,7 @@ fn edges(st: &State, order: &[String], n: &NodeInfo) -> Result<Vec<Edge>> {
 		.map(|d| {
 			let (key, wrap) = spelling(st, &d.ty)?;
 			Ok(Edge {
-				to: target(st, order, &key)?,
+				at: target(st, order, &key)?,
 				gate: matches!(wrap, Wrap::Gate),
 				fold: matches!(wrap, Wrap::Fold),
 			})
@@ -88,6 +105,46 @@ fn edges(st: &State, order: &[String], n: &NodeInfo) -> Result<Vec<Edge>> {
 /// A set could only have meant AND, and two consumers behind *different* gates intersect to nothing,
 /// which reads as "always demanded" — sound, but the degenerate answer.
 pub type Dnf = Vec<Vec<usize>>;
+
+/// Why the rule below never suppresses a node. Read in the order the variants are written, so a node
+/// answering to more than one reason names the first — which is also the order the rule's `||` chain
+/// evaluates them in.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum Pin {
+	None,
+	Fold,
+	Retention,
+	Latch,
+	Gate,
+	/// Every data input it reads is a flow, so the tick a latch's early read would cost it is one no
+	/// later tick gives back.
+	Flow,
+	Output,
+}
+
+impl Pin {
+	/// Whether this reason makes the node run unconditionally *upstream* — an output is demanded, but
+	/// only on the ticks its own gates let it run, so it is not one of these.
+	fn hard(self) -> bool {
+		!matches!(self, Pin::None | Pin::Output)
+	}
+}
+
+/// What one pass over the graph knows about demand. The sweep reads [`live`](Demand::live) and
+/// [`rewinders`](Demand::rewinders); the rendered shape reads the rest, which the rule computed
+/// either way and used to throw away.
+pub struct Demand {
+	pub live: Vec<Dnf>,
+	pub rewinders: Vec<Vec<usize>>,
+	pub is_gate: Vec<bool>,
+	pub pinned: Vec<Pin>,
+	/// Per node, per dep: where it points, indexed over roots-then-sweep — the layout a rendered
+	/// graph places edges in, and the one thing about an edge only the driver can say.
+	pub deps: Vec<Vec<usize>>,
+	/// Per `outputs` entry, the node it names — `None` where it names a root, which is stepped by
+	/// nobody and so has no sweep index.
+	pub outputs: Vec<Option<usize>>,
+}
 
 fn truth() -> Vec<BTreeSet<usize>> {
 	vec![BTreeSet::new()]
@@ -109,7 +166,7 @@ fn or(mut a: Vec<BTreeSet<usize>>, b: Vec<BTreeSet<usize>>) -> Vec<BTreeSet<usiz
 /// where something will fetch back what it skipped, and whether anything will is the feed's answer,
 /// not the graph's. An anchored node names itself; a retention read only by anchored nodes names all
 /// of them.
-pub fn suppressors(st: &State) -> Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
+pub fn suppressors(st: &State) -> Result<Demand> {
 	let order = &st.order;
 	let n = order.len();
 	let info: Vec<&NodeInfo> = order.iter().map(|k| st.known.iter().find(|x| x.key == *k).expect("an ordered node is known")).collect();
@@ -122,7 +179,7 @@ pub fn suppressors(st: &State) -> Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
 	let mut is_gate = vec![false; n];
 	for c in 0..n {
 		for e in &edges[c] {
-			let Some(i) = e.to else { continue };
+			let Some(i) = e.to() else { continue };
 			assert!(i < c, "post-order: `{}` is stepped after its consumer `{}`", order[i], order[c]);
 			consumers[i].push(c);
 			if e.gate {
@@ -144,8 +201,14 @@ pub fn suppressors(st: &State) -> Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
 	// forbids `Gating` + `Folding`), frame retention must be hole-free unless the above says
 	// otherwise, a latch is momentary, and a gate is what *decides* demand rather than something
 	// conditioned on it.
-	let pinned: Vec<bool> = (0..n)
-		.map(|i| edges[i].iter().any(|e| e.fold) || (st.bufs.iter().any(|b| b.key == order[i]) && !held[i]) || info[i].latch || is_gate[i])
+	let mut pinned: Vec<Pin> = (0..n)
+		.map(|i| match () {
+			_ if edges[i].iter().any(|e| e.fold) => Pin::Fold,
+			_ if st.bufs.iter().any(|b| b.key == order[i]) && !held[i] => Pin::Retention,
+			_ if info[i].latch => Pin::Latch,
+			_ if is_gate[i] => Pin::Gate,
+			_ => Pin::None,
+		})
 		.collect();
 
 	// whose past has to be a real one before each node may sleep
@@ -165,20 +228,25 @@ pub fn suppressors(st: &State) -> Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
 	let rebuilds: Vec<bool> = (0..n)
 		.map(|i| {
 			let data: Vec<&Edge> = edges[i].iter().filter(|e| !e.gate).collect();
-			!data.is_empty() && data.iter().all(|e| e.to.is_some_and(|t| !info[t].emit))
+			!data.is_empty() && data.iter().all(|e| e.to().is_some_and(|t| !info[t].emit))
 		})
 		.collect();
 
 	let mut outputs = BTreeSet::new();
+	let mut named_at: Vec<Option<usize>> = Vec::new();
 	for named in &st.cfg.named {
-		if let Some(i) = target(st, order, &spelling(st, &named.ty)?.0)? {
-			outputs.insert(i);
-		}
+		named_at.push(match target(st, order, &spelling(st, &named.ty)?.0)? {
+			At::Node(i) => {
+				outputs.insert(i);
+				Some(i)
+			}
+			At::Root(_) => None,
+		});
 	}
 
 	let mut live: Vec<Vec<BTreeSet<usize>>> = vec![Vec::new(); n];
 	for i in (0..n).rev() {
-		if pinned[i] || outputs.contains(&i) {
+		if pinned[i].hard() || outputs.contains(&i) {
 			live[i] = truth();
 			continue;
 		}
@@ -187,7 +255,7 @@ pub fn suppressors(st: &State) -> Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
 		for c in consumers[i].iter().copied() {
 			// a pinned consumer runs unconditionally, so what it reads is unconditionally demanded —
 			// which is how retention and folds carry demand upstream without a second closure pass.
-			let term = match pinned[c] {
+			let term = match pinned[c].hard() {
 				true => truth(),
 				false => live[c].iter().map(|conj| conj.iter().chain(&hard[c]).copied().collect()).collect(),
 			};
@@ -208,12 +276,42 @@ pub fn suppressors(st: &State) -> Result<(Vec<Dnf>, Vec<Vec<usize>>)> {
 	// A latch's bit is read at tick start, a tick ahead of the consumer it arms, so it may darken only a
 	// node `rebuilds` answers for — or an anchored one, which is fetched back instead. Anything else is
 	// demanded outright. After the propagation above rather than inside it: what a node forced awake
-	// reads is still read behind the latch, and moving the carve-out upstream would wake that too.
+	// reads is still read behind the latch, and moving the carve-out upstream would wake that too,
+	// which is also why the pin it records is not `hard`.
 	for i in 0..n {
 		if !rebuilds[i] && !info[i].anchored && live[i].iter().flatten().any(|g| info[*g].latch) {
 			live[i] = truth();
+			pinned[i] = Pin::Flow;
 		}
 	}
 
-	Ok((live.into_iter().map(|d| d.into_iter().map(|c| c.into_iter().collect()).collect()).collect(), rewinders))
+	// an output the rule left unpinned still runs for somebody, and that is the one thing a reader of
+	// the shape cannot recover from the formula: its demand is `⊤` for a reason nothing upstream says.
+	for i in outputs {
+		if pinned[i] == Pin::None {
+			pinned[i] = Pin::Output;
+		}
+	}
+
+	let roots = st.cfg.roots.len();
+	let deps = edges
+		.iter()
+		.map(|es| {
+			es.iter()
+				.map(|e| match e.at {
+					At::Root(r) => r,
+					At::Node(i) => roots + i,
+				})
+				.collect()
+		})
+		.collect();
+
+	Ok(Demand {
+		live: live.into_iter().map(|d| d.into_iter().map(|c| c.into_iter().collect()).collect()).collect(),
+		rewinders,
+		is_gate,
+		pinned,
+		deps,
+		outputs: named_at,
+	})
 }

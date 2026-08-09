@@ -96,8 +96,11 @@
 
 extern crate alloc;
 
+mod shape;
+
 use core::any::TypeId;
 
+pub use shape::{Kind, NodeShape, Pin, Shape, Under};
 use trading_data_expr::Ast;
 /// The algebra a body is written in, re-exported so a crate declaring nodes needs only this one.
 pub use trading_data_expr::{Ex, Expr, Slots, Vars, abs, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum};
