@@ -7,7 +7,7 @@
 //! the two stages compose — a half-warm [`Rsi`] is wholly absent.
 
 use trading_data_core::Ts;
-use trading_data_dag::{Buffering, Cell, Elems, Folding, Rows, Unbounded, graph, slice_nudge};
+use trading_data_dag::{Cell, Elems, Present, graph, slice_nudge};
 #[allow(
 	unused_imports,
 	reason = "rust#52234: `graph!` reaches a node's shim textually, so the import is the only thing that puts it in scope"
@@ -78,10 +78,12 @@ fn drive(bars: &[Bar]) -> Runs {
 	let mut r = Runs::default();
 	for b in bars {
 		let o = g.tick(0, Batches { bars: core::slice::from_ref(b) });
-		r.delta.extend(o.delta.iter().copied());
-		r.gain.extend(o.gain.iter().copied());
-		r.loss.extend(o.loss.iter().copied());
-		r.rsi.extend(o.rsi.iter().map(|v| v.map(|x| x.actual)));
+		r.delta.extend(o.delta.iter().map(|v| v.present()));
+		r.gain.extend(o.gain.iter().map(|v| v.present()));
+		r.loss.extend(o.loss.iter().map(|v| v.present()));
+		// through `Present` rather than off `actual`: what is pinned is when the *element* has a value,
+		// and a half-warm one has an `actual` that is already a number.
+		r.rsi.extend(o.rsi.iter().map(|v| v.present().and_then(|x| x.actual.get())));
 	}
 	r
 }

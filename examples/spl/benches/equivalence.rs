@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 
 use trading_data::{
 	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Close, Elems, Episode, Exact, ExchangeName, Feed as _, Fold, Horizon, Latch as _, LatencyConfig,
-	Level as _, Mc, McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, Past, Predicate, ReadClock, Replay, Rewound, Run as _, Runs as _, Scan, Side, Step, TradeCols, Volume, Volumes, bench::ring::Ring,
-	required_lanes,
+	Level as _, Mc, McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, Past, Predicate, ReadClock, Reading, Replay, Rewound, Run as _, Runs as _, Scan, Side, Step, TradeCols, Volume, Volumes,
+	bench::ring::Ring, required_lanes,
 };
 use trading_data_spl::{
 	config::Config,
@@ -199,14 +199,14 @@ struct Direct {
 	b_vol: [Vec<Volume>; 3],
 	b_bars: [Vec<Bar>; 3],
 	b_top: Vec<Option<BookTopSnap>>,
-	b_atr: Vec<Option<f64>>,
+	b_atr: Vec<Reading>,
 	b_mom: Vec<Option<f64>>,
-	b_c1d: Vec<Option<f64>>,
-	b_c3m: Vec<Option<f64>>,
+	b_c1d: Vec<Reading>,
+	b_c3m: Vec<Reading>,
 	b_vol_usd_1m: Vec<f64>,
 	b_vol_usd_1h: Vec<f64>,
-	b_imb: Vec<Option<f64>>,
-	b_spr: Vec<Option<f64>>,
+	b_imb: Vec<Reading>,
+	b_spr: Vec<Reading>,
 	b_dep: Vec<Option<Intent>>,
 
 	/// The frame's carries over `Atr` / `Momentum`. Engine storage, so a replica of the graph owns
@@ -267,7 +267,7 @@ impl Direct {
 		Fold::emit(&mut self.atr, (&self.b_bars[0],), &mut self.b_atr);
 		self.b_mom.clear();
 		self.momentum.emit((self.m5.hist::<Buffering<trading_data::Bars<{ TF_5MIN }>, Elems<181>>>(),), &mut self.b_mom);
-		if let Some(v) = self.b_atr.iter().rev().find_map(|x| *x) {
+		if let Some(v) = self.b_atr.iter().rev().find_map(|x| x.get()) {
 			self.l_atr = Some(v);
 		}
 		if let Some(v) = self.b_mom.iter().rev().find_map(|x| *x) {

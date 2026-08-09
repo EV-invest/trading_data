@@ -52,6 +52,7 @@ trading_data_dag::Predicate
 trading_data_dag::Present
 trading_data_dag::ProbabilisticDistribution
 trading_data_dag::Reach
+trading_data_dag::Reading
 trading_data_dag::Rewound
 trading_data_dag::Roots
 trading_data_dag::Rows
@@ -105,6 +106,7 @@ trading_data_expr::Expr
 trading_data_expr::Slots
 trading_data_expr::Vars
 trading_data_expr::abs
+trading_data_expr::absent
 trading_data_expr::constant
 trading_data_expr::exp
 trading_data_expr::gt

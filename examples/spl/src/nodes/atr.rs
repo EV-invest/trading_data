@@ -1,5 +1,6 @@
 use trading_data::{
-	Carried, Cell, Env, FoldOuts, Folding, Folds, Lagged, Slots, Stamped, Tag, Timeframe, Unbounded, Vars, Witness, abs, constant, lt, max, node, select, slice_nudge, wilder,
+	Carried, Cell, Env, FoldOuts, Folding, Folds, Lagged, Reading, Slots, Stamped, Tag, Timeframe, Unbounded, Vars, Witness, abs, absent, constant, lt, max, node, select, slice_nudge,
+	wilder,
 };
 
 use crate::config::strategy;
@@ -13,7 +14,7 @@ impl<const TF: Timeframe> Atr<TF> {
 	const TAG: Tag = Tag::new("Atr:", TF);
 }
 impl<const TF: Timeframe> Cell for Atr<TF> {
-	type Out<'t> = &'t [Option<f64>];
+	type Out<'t> = &'t [Reading];
 
 	const NAME: &'static str = Self::TAG.as_str();
 }
@@ -47,7 +48,7 @@ impl<const TF: Timeframe> Folds for Atr<TF> {
 
 	fn value(&self, v: Vars) -> impl Slots {
 		let n = strategy().indies.atr.period as f64;
-		select(lt(v.get::<7>(), constant(n)), constant(f64::NAN), v.get::<6>())
+		select(lt(v.get::<7>(), constant(n)), absent(), v.get::<6>())
 	}
 
 	fn carried(&self) -> &Carried {
@@ -58,4 +59,4 @@ impl<const TF: Timeframe> Folds for Atr<TF> {
 		&mut self.0
 	}
 }
-slice_nudge!([const TF: Timeframe] Atr<TF>, Option<f64>);
+slice_nudge!([const TF: Timeframe] Atr<TF>, Reading);

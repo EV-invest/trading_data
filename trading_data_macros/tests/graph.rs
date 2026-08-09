@@ -246,7 +246,7 @@ impl Blind for Last {
 	const WHY: &'static str = "a graph fixture";
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		hist.all().last().map_or(f64::NAN, |t| t.v)
+		hist.all().last().expect("every tick of this fixture feeds the root").v
 	}
 }
 value_nudge!(Last);
@@ -323,7 +323,7 @@ impl<const K: usize> Blind for Scaled<K> {
 	const WHY: &'static str = "a keying fixture";
 
 	fn advance<'t>(&'t mut self, (hist,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		hist.all().last().map_or(f64::NAN, |t| t.v) * K as f64
+		hist.all().last().expect("every tick of this fixture feeds the root").v * K as f64
 	}
 }
 value_nudge!([const K: usize] Scaled<K>);

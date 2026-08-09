@@ -287,32 +287,33 @@ impl<E: Expr, const N: i32> Expr for Powi<E, N> {
 	}
 }
 
-/// A NaN operand makes the branch a `Min`/`Max` takes ambiguous: `f64::min`/`f64::max` *ignore* one
-/// and hand back the other operand, where every derivative reading here branches on a `<` that is
-/// false against a NaN and so takes the opposite side. The value and the slope then come off
+/// A NaN operand has no agreed branch, and each comparing operator disagrees differently:
+/// `f64::min`/`f64::max` *ignore* one and hand back the other operand where every derivative reading
+/// here branches on a `<` that is false against a NaN and so takes the opposite side, `Cmp` reads it
+/// as false, and `Select`'s condition reads it as *taken*. The value and the slope then come off
 /// different branches, and nothing in the array says so.
+///
+/// So a body declines by *producing* a NaN — a `Reading` is exactly that, and says so in its type —
+/// and nothing may compare one (`r[impl outs.absence.typed]`). `Select`'s two branches stay
+/// permissive: that is the sanctioned way a body declines.
 ///
 /// Debug-only because `r[kernels.pure.zero-cost]` is an equality in retired instructions: a release
 /// build of a `Pure` node costs what the same arithmetic written by hand costs, and a branch here
 /// would be a branch the hand-written version does not have.
 macro_rules! defined_over {
-	($l:expr, $r:expr, $op:literal) => {
+	($op:literal, $($v:expr),+ $(,)?) => {$(
 		debug_assert!(
-			!$l.is_nan() && !$r.is_nan(),
-			concat!(
-				$op,
-				" over a NaN operand ({}, {}): NaN is a declination and belongs at the element boundary, where `Unflat for Option` reads it as absence — inside a tree it has no agreed branch"
-			),
-			$l,
-			$r
-		)
-	};
+			!$v.is_nan(),
+			concat!($op, " over a NaN operand ({}): an absent reading is a declination and belongs at the element boundary, where it is the out — inside a tree it has no agreed branch"),
+			$v
+		);
+	)+};
 }
 
 impl<L: Expr, R: Expr> Expr for Min<L, R> {
 	fn eval(&self, env: &[f64]) -> f64 {
 		let (lv, rv) = (self.0.eval(env), self.1.eval(env));
-		defined_over!(lv, rv, "min");
+		defined_over!("min", lv, rv);
 		lv.min(rv)
 	}
 
@@ -320,6 +321,7 @@ impl<L: Expr, R: Expr> Expr for Min<L, R> {
 		// strict, and the tie goes right — the same branch `diff`'s `Select(Cmp(l, r), .., ..)` takes,
 		// so the two readings do not part company at the kink.
 		let (lv, rv) = (self.0.eval(env), self.1.eval(env));
+		defined_over!("min", lv, rv);
 		match lv < rv {
 			true => self.0.grad(env, seed, grad),
 			false => self.1.grad(env, seed, grad),
@@ -334,12 +336,13 @@ impl<L: Expr, R: Expr> Expr for Min<L, R> {
 impl<L: Expr, R: Expr> Expr for Max<L, R> {
 	fn eval(&self, env: &[f64]) -> f64 {
 		let (lv, rv) = (self.0.eval(env), self.1.eval(env));
-		defined_over!(lv, rv, "max");
+		defined_over!("max", lv, rv);
 		lv.max(rv)
 	}
 
 	fn grad(&self, env: &[f64], seed: f64, grad: &mut [f64]) -> f64 {
 		let (lv, rv) = (self.0.eval(env), self.1.eval(env));
+		defined_over!("max", lv, rv);
 		match rv < lv {
 			true => self.0.grad(env, seed, grad),
 			false => self.1.grad(env, seed, grad),
@@ -353,7 +356,9 @@ impl<L: Expr, R: Expr> Expr for Max<L, R> {
 
 impl<L: Expr, R: Expr> Expr for Cmp<L, R> {
 	fn eval(&self, env: &[f64]) -> f64 {
-		f64::from(self.0.eval(env) < self.1.eval(env))
+		let (lv, rv) = (self.0.eval(env), self.1.eval(env));
+		defined_over!("cmp", lv, rv);
+		f64::from(lv < rv)
 	}
 
 	fn grad(&self, env: &[f64], _: f64, _: &mut [f64]) -> f64 {
@@ -369,14 +374,18 @@ impl<L: Expr, R: Expr> Expr for Cmp<L, R> {
 
 impl<C: Expr, A: Expr, B: Expr> Expr for Select<C, A, B> {
 	fn eval(&self, env: &[f64]) -> f64 {
-		match self.0.eval(env) != 0.0 {
+		let c = self.0.eval(env);
+		defined_over!("select's condition", c);
+		match c != 0.0 {
 			true => self.1.eval(env),
 			false => self.2.eval(env),
 		}
 	}
 
 	fn grad(&self, env: &[f64], seed: f64, grad: &mut [f64]) -> f64 {
-		match self.0.eval(env) != 0.0 {
+		let c = self.0.eval(env);
+		defined_over!("select's condition", c);
+		match c != 0.0 {
 			true => self.1.grad(env, seed, grad),
 			false => self.2.grad(env, seed, grad),
 		}
@@ -490,6 +499,13 @@ impl Vars {
 
 pub fn constant(c: f64) -> Ex<Const> {
 	Ex(Const(c))
+}
+/// How a body inside the algebra declines — a `Select` branch that is no number, which the out plane
+/// reads back as absence (`r[impl outs.absence.typed]`). Named rather than spelled `constant(NAN)`
+/// per site, because `Select`'s branches are the *one* place a NaN is licensed here and the rest of
+/// the algebra refuses to compare one.
+pub fn absent() -> Ex<Const> {
+	Ex(Const(f64::NAN))
 }
 pub fn square<T: Expr>(x: Ex<T>) -> Ex<Square<T>> {
 	Ex(Square(x.0))
@@ -608,19 +624,27 @@ impl Ast {
 			Ast::Powi(e, n) => powi(e.eval(env), *n),
 			Ast::Min(l, r) => {
 				let (lv, rv) = (l.eval(env), r.eval(env));
-				defined_over!(lv, rv, "min");
+				defined_over!("min", lv, rv);
 				lv.min(rv)
 			}
 			Ast::Max(l, r) => {
 				let (lv, rv) = (l.eval(env), r.eval(env));
-				defined_over!(lv, rv, "max");
+				defined_over!("max", lv, rv);
 				lv.max(rv)
 			}
-			Ast::Cmp(l, r) => f64::from(l.eval(env) < r.eval(env)),
-			Ast::Select(c, a, b) => match c.eval(env) != 0.0 {
-				true => a.eval(env),
-				false => b.eval(env),
-			},
+			Ast::Cmp(l, r) => {
+				let (lv, rv) = (l.eval(env), r.eval(env));
+				defined_over!("cmp", lv, rv);
+				f64::from(lv < rv)
+			}
+			Ast::Select(c, a, b) => {
+				let c = c.eval(env);
+				defined_over!("select's condition", c);
+				match c != 0.0 {
+					true => a.eval(env),
+					false => b.eval(env),
+				}
+			}
 			Ast::Sum(xs) => xs.iter().map(|e| e.eval(env)).sum(),
 		}
 	}

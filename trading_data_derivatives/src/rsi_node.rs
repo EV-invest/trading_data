@@ -1,8 +1,8 @@
 use core::{fmt, marker::PhantomData};
 
 use trading_data_dag::{
-	Buffering, Bump, Carried, Cell, Elems, Env, Ex, Expr, Flat, FoldOuts, Folding, Folds, Glance, Lagged, Plot, Rows, ScanOuts, Scans, Series, Slots, Stamped, Tag, Unbounded, Unflat, Vars,
-	Witness, constant, gt, lt, max, min, node, select, slice_nudge,
+	Buffering, Bump, Carried, Cell, Elems, Env, Ex, Expr, Flat, FoldOuts, Folding, Folds, Glance, Lagged, Plot, Present, Reading, Rows, ScanOuts, Scans, Series, Slots, Stamped, Tag,
+	Unbounded, Unflat, Vars, Witness, absent, constant, gt, lt, max, min, node, select, slice_nudge,
 };
 
 use crate::{bar::Bar, wilder};
@@ -42,7 +42,7 @@ impl<B: Series<Item = Bar>> RsiDelta<B> {
 	const TAG: Tag = Tag::of("RsiDelta", &[B::NAME]);
 }
 impl<B: Series<Item = Bar>> Cell for RsiDelta<B> {
-	type Out<'t> = &'t [Option<f64>];
+	type Out<'t> = &'t [Reading];
 
 	const NAME: &'static str = Self::TAG.as_str();
 }
@@ -56,14 +56,13 @@ impl<B: Series<Item = Bar, Batch = Rows<Bar>>> Scans for RsiDelta<B> {
 
 	fn read<W: Witness>((bars,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let (b, lag) = bars.lagged_at(i, 0).expect("element i of this tick's own fresh run");
+		// the first bar of a run has nothing behind it, and an absence is declined rather than put:
+		// a NaN in the env is an operand, where a decline is an out.
+		let (p, p_lag) = bars.lagged_at(i, 1)?;
 		env.dep(0).lag(lag).put(b);
-		match bars.lagged_at(i, 1) {
-			// `close` is slot 3 of a bar, and saying so is what puts this partial in the lagged
-			// element's own column rather than in a column of its own.
-			Some((p, lag)) => env.dep(0).lag(lag).slot(3).put(&p.close),
-			// the first bar of a run has nothing behind it, and NaN is how that declines.
-			None => env.opaque().put(&f64::NAN),
-		}
+		// `close` is slot 3 of a bar, and saying so is what puts this partial in the lagged element's
+		// own column rather than in a column of its own.
+		env.dep(0).lag(p_lag).slot(3).put(&p.close);
 		Some(b.ts_ns())
 	}
 
@@ -71,7 +70,7 @@ impl<B: Series<Item = Bar, Batch = Rows<Bar>>> Scans for RsiDelta<B> {
 		v.get::<3>() - v.get::<5>()
 	}
 }
-slice_nudge!([B: Series<Item = Bar>] RsiDelta<B>, Option<f64>);
+slice_nudge!([B: Series<Item = Bar>] RsiDelta<B>, Reading);
 
 /// The two halves of RSI's ratio: the Wilder average of the up moves, and of the down moves as a
 /// positive magnitude. Both are warm after `S::base_len()` deltas, and both are the same fold over
@@ -103,7 +102,7 @@ macro_rules! wilder_half {
 			const TAG: Tag = Tag::of(stringify!($ty), &[B::NAME, S::NAME]);
 		}
 		impl<B: Series<Item = Bar>, S: RsiSpec> Cell for $ty<B, S> {
-			type Out<'t> = &'t [Option<f64>];
+			type Out<'t> = &'t [Reading];
 
 			const NAME: &'static str = Self::TAG.as_str();
 		}
@@ -119,7 +118,7 @@ macro_rules! wilder_half {
 			/// exactly what declining leaves the state doing.
 			fn read<W: Witness>((deltas,): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 				let (d, lag) = deltas.at(i)?;
-				env.dep(0).lag(lag).put(&(*d)?);
+				env.dep(0).lag(lag).put(&d.present()?);
 				Some(0)
 			}
 
@@ -129,7 +128,7 @@ macro_rules! wilder_half {
 			}
 
 			fn value(&self, v: Vars) -> impl Slots {
-				select(lt(v.get::<2>(), constant(S::base_len() as f64)), constant(f64::NAN), v.get::<1>())
+				select(lt(v.get::<2>(), constant(S::base_len() as f64)), absent(), v.get::<1>())
 			}
 
 			fn carried(&self) -> &Carried {
@@ -140,42 +139,69 @@ macro_rules! wilder_half {
 				&mut self.avg
 			}
 		}
-		slice_nudge!([B: Series<Item = Bar>, S: RsiSpec] $ty<B, S>, Option<f64>);
+		slice_nudge!([B: Series<Item = Bar>, S: RsiSpec] $ty<B, S>, Reading);
 	};
 }
 wilder_half!(AvgGain, 1.0, "RSI's numerator.");
 wilder_half!(AvgLoss, -1.0, "RSI's denominator.");
 
-#[derive(Clone, Copy, Debug)]
+/// Two readings on one element, and one presence over the pair: the RSI proper is a number from the
+/// bar the averages warm on, where the EMA over it needs `smooth_len` of those — so an element is
+/// half-warm for a stretch, and publishes nothing until it is whole.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RsiValues {
-	pub actual: f64,
-	pub smooth: f64,
+	pub actual: Reading,
+	pub smooth: Reading,
 }
 
 impl Flat for RsiValues {
 	const DIMS: &'static [usize] = &[2];
 
 	fn flat(&self, out: &mut [f64]) -> bool {
-		out.copy_from_slice(&[self.actual, self.smooth]);
-		true
+		let (a, s) = out.split_at_mut(1);
+		// `&`, not `&&`: both slots are written either way, and only the answer is the conjunction.
+		self.actual.flat(a) & self.smooth.flat(s)
+	}
+
+	fn fires(&self) -> usize {
+		self.present().is_some() as usize
 	}
 }
 impl Bump for RsiValues {
 	fn bump(mut self, slot: usize, h: f64) -> (Self, f64) {
-		*[&mut self.actual, &mut self.smooth][slot] += h;
-		(self, h)
+		let leg: &mut Reading = [&mut self.actual, &mut self.smooth][slot];
+		let (bumped, dh) = leg.bump(0, h);
+		*leg = bumped;
+		(self, dh)
 	}
 }
 
 impl Unflat for RsiValues {
-	fn unflat(_: i64, slots: &[f64]) -> Self {
-		Self { actual: slots[0], smooth: slots[1] }
+	fn unflat(ts_ns: i64, slots: &[f64]) -> Self {
+		Self {
+			actual: Reading::unflat(ts_ns, &slots[..1]),
+			smooth: Reading::unflat(ts_ns, &slots[1..]),
+		}
+	}
+}
+
+/// Any slot absent ⇒ the element is absent — the rule `Unflat for Option` used to apply on the way
+/// out of every per-element kernel, kept where it is actually about this item.
+// r[impl outs.absence.typed]
+impl Present for RsiValues {
+	type Val = Self;
+
+	fn present(self) -> Option<Self> {
+		self.actual.get().zip(self.smooth.get()).map(|_| self)
 	}
 }
 
 impl Glance for RsiValues {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{:.1}", self.actual)
+		match self.actual.get() {
+			Some(v) => write!(f, "{v:.1}"),
+			None => f.write_str("None"),
+		}
 	}
 }
 
@@ -209,7 +235,7 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Rsi<B, S> {
 	const TAG: Tag = Tag::of("Rsi", &[B::NAME, S::NAME]);
 }
 impl<B: Series<Item = Bar>, S: RsiSpec> Cell for Rsi<B, S> {
-	type Out<'t> = &'t [Option<RsiValues>];
+	type Out<'t> = &'t [RsiValues];
 
 	const NAME: &'static str = Self::TAG.as_str();
 }
@@ -231,8 +257,9 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Folds for Rsi<B, S> {
 	fn read<W: Witness>((gain, loss): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		assert_eq!(gain.len(), loss.len(), "AvgGain/AvgLoss rate mismatch");
 		let ((g, g_lag), (l, l_lag)) = (gain.at(i)?, loss.at(i)?);
-		env.dep(0).lag(g_lag).put(&(*g)?);
-		env.dep(1).lag(l_lag).put(&(*l)?);
+		let (g, l) = (g.present()?, l.present()?);
+		env.dep(0).lag(g_lag).put(&g);
+		env.dep(1).lag(l_lag).put(&l);
 		Some(0)
 	}
 
@@ -246,7 +273,7 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Folds for Rsi<B, S> {
 	}
 
 	fn value(&self, v: Vars) -> impl Slots {
-		(actual(v), select(lt(v.get::<3>(), constant(S::smooth_len() as f64)), constant(f64::NAN), v.get::<2>()))
+		(actual(v), select(lt(v.get::<3>(), constant(S::smooth_len() as f64)), absent(), v.get::<2>()))
 	}
 
 	fn carried(&self) -> &Carried {
@@ -264,4 +291,4 @@ fn actual(v: Vars) -> Ex<impl Expr> {
 	let (gain, loss) = (v.get::<0>(), v.get::<1>());
 	select(gt(loss, constant(0.0)), constant(100.0) - constant(100.0) / (constant(1.0) + gain / loss), constant(100.0))
 }
-slice_nudge!([B: Series<Item = Bar>, S: RsiSpec] Rsi<B, S>, Option<RsiValues>);
+slice_nudge!([B: Series<Item = Bar>, S: RsiSpec] Rsi<B, S>, RsiValues);

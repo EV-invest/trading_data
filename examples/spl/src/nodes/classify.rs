@@ -310,12 +310,12 @@ impl Blind for Classify {
 			// the freshest close there is: the ratio against a USD market cap is the reading, and a
 			// stale leg of it would move the threshold rather than the measurement.
 			oi_value: oi.all().last().zip(m1.last()).map(|(o, b)| o.oi * b.close),
-			change_1d: c1d.last().copied().flatten(),
-			change_3m: c3m.last().copied().flatten(),
+			change_1d: c1d.last().and_then(|r| r.get()),
+			change_3m: c3m.last().and_then(|r| r.get()),
 			vol_usd_1m: vol_usd_1m.last().copied(),
 			vol_usd_1h,
-			imbalance: imb.last().copied().flatten(),
-			spread: spr.last().copied().flatten(),
+			imbalance: imb.last().and_then(|r| r.get()),
+			spread: spr.last().and_then(|r| r.get()),
 		}))
 	}
 }

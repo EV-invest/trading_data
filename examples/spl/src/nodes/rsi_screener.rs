@@ -29,7 +29,7 @@ impl Blind for RsiScreener {
 			panic!("the graph is wired for RsiScreener; config.nix names {:?}", strategy().screen)
 		};
 		let Some(rsi) = rsi else { return false };
-		rsi.actual > c.rsi_threshold && change_1d.iter().flatten().any(|change| *change > *c.price_percent)
+		rsi.actual.get().expect("`Present` says both legs are warm") > c.rsi_threshold && change_1d.iter().filter_map(|r| r.get()).any(|change| change > *c.price_percent)
 	}
 }
 impl Gate for RsiScreener {}

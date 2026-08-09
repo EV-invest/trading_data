@@ -103,7 +103,7 @@ use core::any::TypeId;
 pub use shape::{Kind, NodeShape, Pin, Shape, Under};
 use trading_data_expr::Ast;
 /// The algebra a body is written in, re-exported so a crate declaring nodes needs only this one.
-pub use trading_data_expr::{Ex, Expr, Slots, Vars, abs, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum};
+pub use trading_data_expr::{Ex, Expr, Slots, Vars, abs, absent, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum};
 use v_utils::Timeframe;
 
 /// How far back a dep position reaches: nothing at all (a bare dep), the engine's retention
@@ -508,11 +508,98 @@ impl<const N: usize> Unflat for [f64; N] {
 	}
 }
 
-/// NaN is how a per-element body declines, which the out plane already reads as absence
-/// (`r[impl outs.absence.one-reading]`) — so the two spellings of "nothing here" are one.
-impl<T: Unflat> Unflat for Option<T> {
-	fn unflat(ts_ns: i64, slots: &[f64]) -> Self {
-		slots.iter().all(|v| !v.is_nan()).then(|| T::unflat(ts_ns, slots))
+/// A number a body may not have: absent exactly where its payload is NaN, which is the
+/// representation and not a sentinel a reader has to know about
+/// (`r[impl outs.absence.typed]`). Eight bytes where `Option<f64>` is sixteen — every bit pattern
+/// of an `f64` is a valid one, so the discriminant can never be packed into the payload and a
+/// retained series of them was paying twice for what the payload already said.
+///
+/// The payload stays behind [`get`](Reading::get) deliberately. A [`Blind`] body computes in plain
+/// Rust, outside every assert the algebra carries, and being made to unwrap is the whole of what
+/// stands between it and summing a run of absences into a NaN.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Reading(f64);
+
+impl Reading {
+	/// How a body outside an [`Expr`] declines — the named idiom, so a decline is not spelled
+	/// `f64::NAN` at each site that has one.
+	pub const ABSENT: Self = Self(f64::NAN);
+
+	pub fn get(self) -> Option<f64> {
+		(!self.0.is_nan()).then_some(self.0)
+	}
+}
+
+impl From<f64> for Reading {
+	fn from(v: f64) -> Self {
+		Self(v)
+	}
+}
+
+/// Hand-written, and this is the reason the type exists rather than a convention on a bare `f64`:
+/// `NaN != NaN`, so a derived impl would make absent differ from absent and every `assert_eq!` over
+/// a run of outs would go quietly wrong.
+impl PartialEq for Reading {
+	fn eq(&self, other: &Self) -> bool {
+		self.get() == other.get()
+	}
+}
+
+impl core::fmt::Debug for Reading {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		match self.get() {
+			Some(v) => write!(f, "{v:?}"),
+			None => f.write_str("absent"),
+		}
+	}
+}
+
+impl Flat for Reading {
+	const DIMS: &'static [usize] = &[];
+
+	fn flat(&self, out: &mut [f64]) -> bool {
+		out[0] = self.0;
+		!self.0.is_nan()
+	}
+
+	fn fires(&self) -> usize {
+		self.get().is_some() as usize
+	}
+}
+
+/// The identity, which is the point: a per-element kernel writes the slot a body computed and there
+/// is nothing to decide on the way back out.
+impl Unflat for Reading {
+	fn unflat(_: i64, slots: &[f64]) -> Self {
+		Self(slots[0])
+	}
+}
+
+impl Bump for Reading {
+	fn bump(self, slot: usize, h: f64) -> (Self, f64) {
+		debug_assert_eq!(slot, 0);
+		match self.get() {
+			Some(v) => (Self(v + h), h),
+			None => (self, 0.0),
+		}
+	}
+}
+
+impl Glance for Reading {
+	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		match self.get() {
+			Some(v) => write!(f, "{v}"),
+			None => f.write_str("None"),
+		}
+	}
+}
+
+impl Present for Reading {
+	type Val = f64;
+
+	fn present(self) -> Option<f64> {
+		self.get()
 	}
 }
 
@@ -1363,10 +1450,14 @@ impl<W: Witness> Put<'_, '_, W> {
 	}
 
 	/// Appends `v`'s slots, provenance and all.
+	// r[impl outs.absence.typed]
 	pub fn put<T: Flat>(self, v: &T) {
 		let Put { env, src } = self;
 		let (at, n) = (env.at, T::LEN);
-		v.flat(&mut env.slots[at..at + n]);
+		let fired = v.flat(&mut env.slots[at..at + n]);
+		// the one route by which an absent *dep* becomes a NaN *operand*. A `read` holding an absent
+		// element declines — `Some(x?)` — rather than NaN-filling the env behind the body's back.
+		debug_assert!(fired, "an absent reading is a decline, not an operand: return `None` from `read` instead of putting one");
 		for k in 0..n {
 			env.witness.see(
 				at + k,

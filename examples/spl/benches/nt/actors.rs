@@ -27,7 +27,7 @@ use nautilus_model::{
 };
 use serde::{Deserialize, Serialize};
 use trading_data::{
-	Armed, Bar, Blind as _, Buffering, Direction, Elems, Episode, Fold, Latch as _, Level as _, Local, Mc, McRoot, Oi, OiRoot, Over, Predicate, Run as _, Runs as _, Scan, Ts, Usd,
+	Armed, Bar, Blind as _, Buffering, Direction, Elems, Episode, Fold, Latch as _, Level as _, Local, Mc, McRoot, Oi, OiRoot, Over, Predicate, Reading, Run as _, Runs as _, Scan, Ts, Usd,
 	bench::{COUNTERS, Digest, ring::Ring},
 };
 use trading_data_spl::{
@@ -175,6 +175,16 @@ fn decode<T: for<'de> Deserialize<'de>>(s: &Signal) -> T {
 	serde_json::from_str(&s.value).unwrap_or_else(|e| panic!("signal `{}` carried {}: {e}", s.name, s.value))
 }
 
+/// A `Reading` is the graph's absence and `Option` is the wire's, so a run of them crosses the bus
+/// the way every other out here does — through a DTO. Peer to `BarDto`/`TopDto` above.
+fn wire(run: &[Reading]) -> Vec<Option<f64>> {
+	run.iter().map(|r| r.get()).collect()
+}
+
+fn unwire(s: &Signal) -> Vec<Reading> {
+	decode::<Vec<Option<f64>>>(s).into_iter().map(|v| v.map_or(Reading::ABSENT, Reading::from)).collect()
+}
+
 /// Struct, native-core wiring, `Debug` and a constructor. Fields in the optional paren group are
 /// constructor arguments; the braced ones are state and start at `Default`.
 macro_rules! actor {
@@ -311,7 +321,7 @@ impl DataActor for Book {
 
 // --- ungated derivations -----------------------------------------------------------------------
 
-actor!(Atrs { node: Atr<{ TF_1MIN }>, out: Vec<Option<f64>> });
+actor!(Atrs { node: Atr<{ TF_1MIN }>, out: Vec<Reading> });
 
 impl DataActor for Atrs {
 	fn on_start(&mut self) -> anyhow::Result<()> {
@@ -323,7 +333,7 @@ impl DataActor for Atrs {
 		let bar = [Bar::from(decode::<BarDto>(signal))];
 		self.out.clear();
 		Fold::emit(&mut self.node, (&bar,), &mut self.out);
-		self.publish_signal(ATR, encode(&self.out), signal.ts_event);
+		self.publish_signal(ATR, encode(&wire(&self.out)), signal.ts_event);
 		Ok(())
 	}
 }
@@ -378,7 +388,7 @@ impl DataActor for Screen {
 // actor graph has no gate to propagate, so the work is done and then thrown away on a miss. That is
 // the cost the tiering in `optimized_nt` claws back, and the only reason it exists.
 
-actor!(C1d { node: ChangeBack<{ TF_1MIN }, { TF_1H }, { TF_1D }, { Timeframe(TF_1D.0 + TF_1H.0) }>, h1: Ring<Bar>, pending: Vec<Bar>, out: Vec<Option<f64>> });
+actor!(C1d { node: ChangeBack<{ TF_1MIN }, { TF_1H }, { TF_1D }, { Timeframe(TF_1D.0 + TF_1H.0) }>, h1: Ring<Bar>, pending: Vec<Bar>, out: Vec<Reading> });
 
 impl DataActor for C1d {
 	fn on_start(&mut self) -> anyhow::Result<()> {
@@ -401,12 +411,12 @@ impl DataActor for C1d {
 			(&bar, self.h1.hist::<Buffering<trading_data::Bars<{ TF_1H }>, Over<{ Timeframe(TF_1D.0 + TF_1H.0) }>>>()),
 			&mut self.out,
 		);
-		self.publish_signal(CHANGE1D, encode(&self.out), signal.ts_event);
+		self.publish_signal(CHANGE1D, encode(&wire(&self.out)), signal.ts_event);
 		Ok(())
 	}
 }
 
-actor!(C3m { node: Change<{ TF_1MIN }, { TF_3MIN }>, m1: Ring<Bar>, out: Vec<Option<f64>> });
+actor!(C3m { node: Change<{ TF_1MIN }, { TF_3MIN }>, m1: Ring<Bar>, out: Vec<Reading> });
 
 impl DataActor for C3m {
 	fn on_start(&mut self) -> anyhow::Result<()> {
@@ -418,7 +428,7 @@ impl DataActor for C3m {
 		self.m1.push(&[Bar::from(decode::<BarDto>(signal))]);
 		self.out.clear();
 		Scan::emit(&mut self.node, (self.m1.hist::<Buffering<trading_data::Bars<{ TF_1MIN }>, Over<{ TF_3MIN }>>>(),), &mut self.out);
-		self.publish_signal(CHANGE3M, encode(&self.out), signal.ts_event);
+		self.publish_signal(CHANGE3M, encode(&wire(&self.out)), signal.ts_event);
 		Ok(())
 	}
 }
@@ -457,7 +467,7 @@ impl DataActor for VolUsd1h {
 	}
 }
 
-actor!(Imb { node: Imbalance, top: Vec<Option<BookTopSnap>>, out: Vec<Option<f64>> });
+actor!(Imb { node: Imbalance, top: Vec<Option<BookTopSnap>>, out: Vec<Reading> });
 
 impl DataActor for Imb {
 	fn on_start(&mut self) -> anyhow::Result<()> {
@@ -470,12 +480,12 @@ impl DataActor for Imb {
 		self.top.push(decode::<Option<TopDto>>(signal).map(BookTopSnap::from));
 		self.out.clear();
 		Scan::emit(&mut self.node, (&self.top,), &mut self.out);
-		self.publish_signal(IMBALANCE, encode(&self.out), signal.ts_event);
+		self.publish_signal(IMBALANCE, encode(&wire(&self.out)), signal.ts_event);
 		Ok(())
 	}
 }
 
-actor!(Spr { node: Spread, top: Vec<Option<BookTopSnap>>, out: Vec<Option<f64>> });
+actor!(Spr { node: Spread, top: Vec<Option<BookTopSnap>>, out: Vec<Reading> });
 
 impl DataActor for Spr {
 	fn on_start(&mut self) -> anyhow::Result<()> {
@@ -488,7 +498,7 @@ impl DataActor for Spr {
 		self.top.push(decode::<Option<TopDto>>(signal).map(BookTopSnap::from));
 		self.out.clear();
 		Scan::emit(&mut self.node, (&self.top,), &mut self.out);
-		self.publish_signal(SPREAD, encode(&self.out), signal.ts_event);
+		self.publish_signal(SPREAD, encode(&wire(&self.out)), signal.ts_event);
 		Ok(())
 	}
 }
@@ -502,12 +512,12 @@ actor!(Classifier {
 	mom: Option<f64>,
 	pending_oi: Vec<Oi>,
 	pending_mc: Vec<Mc>,
-	c1d: Vec<Option<f64>>,
-	c3m: Vec<Option<f64>>,
+	c1d: Vec<Reading>,
+	c3m: Vec<Reading>,
 	vol_usd_1m: Vec<f64>,
 	vol_usd_1h: Option<f64>,
-	imb: Vec<Option<f64>>,
-	spr: Vec<Option<f64>>,
+	imb: Vec<Reading>,
+	spr: Vec<Reading>,
 });
 
 impl DataActor for Classifier {
@@ -547,8 +557,8 @@ impl DataActor for Classifier {
 				}
 				return Ok(());
 			}
-			CHANGE1D => return Ok(self.c1d = decode(signal)),
-			CHANGE3M => return Ok(self.c3m = decode(signal)),
+			CHANGE1D => return Ok(self.c1d = unwire(signal)),
+			CHANGE3M => return Ok(self.c3m = unwire(signal)),
 			VOLUSD1M => return Ok(self.vol_usd_1m = decode(signal)),
 			// the frame's carry over `VolUsd<1h>`: a level, so it is never cleared after a read.
 			VOLUSD1H => {
@@ -557,8 +567,8 @@ impl DataActor for Classifier {
 				}
 				return Ok(());
 			}
-			IMBALANCE => return Ok(self.imb = decode(signal)),
-			SPREAD => return Ok(self.spr = decode(signal)),
+			IMBALANCE => return Ok(self.imb = unwire(signal)),
+			SPREAD => return Ok(self.spr = unwire(signal)),
 			_ => (),
 		}
 		let (hit, bar) = decode::<Gate>(signal);
@@ -635,7 +645,7 @@ impl DataActor for Deprecate {
 			// the frame's carry over `Atr`: a level, and ungated, so neither a read nor the commutation
 			// below clears it.
 			ATR => {
-				if let Some(v) = decode::<Vec<Option<f64>>>(signal).iter().rev().find_map(|x| *x) {
+				if let Some(v) = unwire(signal).iter().rev().find_map(|x| x.get()) {
 					self.atr = Some(v);
 				}
 				return Ok(());

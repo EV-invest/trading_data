@@ -4,8 +4,8 @@
 //! the point of engine-owned retention.
 
 use trading_data_dag::{
-	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Env, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Over, RunOuts, Runs, ScanOuts, Scans, Slots, Stamped,
-	Vars, Want, Witness, graph, node, slice_nudge,
+	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Env, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Over, Reading, RunOuts, Runs, ScanOuts, Scans, Slots,
+	Stamped, Vars, Want, Witness, graph, node, slice_nudge,
 };
 use v_utils::{Timeframe, TimeframeDesignator};
 
@@ -74,7 +74,7 @@ fn a_buffer_names_itself_from_its_source_and_its_reach() {
 #[derive(Clone, Default)]
 struct Sum3;
 impl Cell for Sum3 {
-	type Out<'t> = &'t [Option<f64>];
+	type Out<'t> = &'t [Reading];
 }
 #[node]
 impl Scans for Sum3 {
@@ -92,7 +92,7 @@ impl Scans for Sum3 {
 		v.get::<0>() + v.get::<1>() + v.get::<2>()
 	}
 }
-slice_nudge!(Sum3, Option<f64>);
+slice_nudge!(Sum3, Reading);
 
 /// Reports the past/fresh split it saw, so the test can assert on the *shape* of the dep out and
 /// not merely on a derived number: one element per batch, `ts` the past count and `v` the fresh one.
@@ -175,7 +175,7 @@ fn past_fresh_split_and_trailing() {
 
 	// cold: one element, no window yet.
 	let o = g.tick(0, Batches { src: &one });
-	assert_eq!(o.sum3, &[None]);
+	assert_eq!(o.sum3, &[Reading::ABSENT]);
 	assert_eq!(o.hist.past(), &[] as &[Tick]);
 	assert_eq!(o.hist.fresh(), &one);
 	assert_eq!(o.split, &[split(0, 1.0)]);
@@ -185,13 +185,13 @@ fn past_fresh_split_and_trailing() {
 	let o = g.tick(0, Batches { src: &three });
 	assert_eq!(o.hist.past(), &one);
 	assert_eq!(o.hist.fresh(), &three);
-	assert_eq!(o.sum3, &[None, Some(6.0), Some(9.0)]);
+	assert_eq!(o.sum3, &[Reading::ABSENT, 6.0.into(), 9.0.into()]);
 	assert_eq!(o.split, &[split(1, 3.0)]);
 
 	// trim happens before the append, and keeps 3 elements behind.
 	let o = g.tick(0, Batches { src: &five });
 	assert_eq!(o.hist.past(), &three);
-	assert_eq!(o.sum3, &[Some(12.0)]);
+	assert_eq!(o.sum3, &[Reading::from(12.0)]);
 	assert_eq!(o.split, &[split(3, 1.0)]);
 
 	// an empty batch still advances the buffer, and a whole window survives it — that is what a
@@ -199,7 +199,7 @@ fn past_fresh_split_and_trailing() {
 	let o = g.tick(0, Batches { src: &empty });
 	assert_eq!(o.hist.all(), &[t(3.0), t(4.0), t(5.0)]);
 	assert_eq!(o.hist.fresh(), &[] as &[Tick]);
-	assert_eq!(o.sum3, &[] as &[Option<f64>]);
+	assert_eq!(o.sum3, &[] as &[Reading]);
 	assert_eq!(o.split, &[split(3, 0.0)]);
 }
 

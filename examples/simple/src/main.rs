@@ -11,7 +11,7 @@ use std::{path::PathBuf, time::Duration};
 
 use clap::Parser;
 use exec_viz::{Backpressure, Rec, Recorder, Tape, Viz};
-use trading_data::{Cell, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, ReadClock, Replay, RsiValues, Want, required_lanes};
+use trading_data::{Cell, Exact, ExchangeName, Feed, Fire, LatencyConfig, Observer, Present, ReadClock, Replay, RsiValues, Want, required_lanes};
 use trading_data_simple::{day_bounds, ensure_catalog, nodes::Graph, symbol};
 use v_utils::*;
 
@@ -147,7 +147,7 @@ fn run(feed: &mut Replay, graph: &mut Graph, obs: &mut impl Observed) -> Tally {
 		let out = graph.tick_obs(ts_ns, lanes.into(), &mut obs.at(ts_ns));
 
 		t.bars += out.bar.len() as u64;
-		t.rsi_snaps += out.rsi.iter().flatten().count() as u64;
+		t.rsi_snaps += out.rsi.iter().filter_map(|r| r.present()).count() as u64;
 		t.lambda_fires += out.lambda.iter().flatten().count() as u64;
 		for l in out.lambda.iter().flatten() {
 			assert!(l.is_finite(), "lambda went non-finite: {l}");
@@ -159,7 +159,7 @@ fn run(feed: &mut Replay, graph: &mut Graph, obs: &mut impl Observed) -> Tally {
 		if let Some(&Some(v)) = out.vol_usd.last() {
 			t.vol1h = v;
 		}
-		if let Some(&Some(r)) = out.rsi.last() {
+		if let Some(r) = out.rsi.last().copied().and_then(Present::present) {
 			t.rsi_end = Some(r);
 		}
 		if let Some(&l) = out.lambda.last() {
