@@ -19,12 +19,13 @@ proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn.workspace = true
 
-# Version-less on purpose: `trading_data_dag` depends on this crate, so a versioned dev-dep would be
-# a publish-order cycle. Cargo drops version-less dev-deps from the packaged manifest.
+# Named by path rather than inherited: the workspace entries carry a `version`, and `trading_data_dag`
+# depends on this crate, so a versioned dev-dep here would be a publish-order cycle. Cargo drops
+# version-less dev-deps from the packaged manifest.
 [dev-dependencies]
 insta.workspace = true
-trading_data_dag = { workspace = true }
-trading_data_expr = { workspace = true }
+trading_data_dag = { path = "../trading_data_dag" }
+trading_data_expr = { path = "../trading_data_expr" }
 ui_test = { workspace = true }
 
 [[test]]
