@@ -27,6 +27,10 @@ mod frng;
 mod minimize;
 mod stream;
 
+mod fixture;
+mod gates;
+mod outs;
+mod schedule;
 mod weaver;
 
 use std::cell::RefCell;
@@ -56,6 +60,31 @@ const TARGETS: &[Target] = &[
 		name: "round_trip",
 		version: weaver::VERSION,
 		run: weaver::run_round_trip,
+	},
+	Target {
+		name: "schedule",
+		version: schedule::VERSION,
+		run: schedule::run,
+	},
+	Target {
+		name: "rewarm",
+		version: gates::VERSION,
+		run: gates::run_rewarm,
+	},
+	Target {
+		name: "shape_sweep",
+		version: gates::VERSION,
+		run: gates::run_shape_sweep,
+	},
+	Target {
+		name: "noninvasive",
+		version: outs::VERSION,
+		run: outs::run_noninvasive,
+	},
+	Target {
+		name: "absence",
+		version: outs::VERSION,
+		run: outs::run_absence,
 	},
 ];
 

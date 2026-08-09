@@ -21,3 +21,17 @@ weave 0 9 1841168572  # PANIC: panicked at trading_data_core/src/batch.rs:31:9: 
 # back swallows the checkpoint sharing this step's stamp, and is emitted ahead of it on its head.
 # The §1.5 tie-break is only observable under `ReadClock::EVENT`, and that is where it is now checked.
 weave 256541034804199029 41 1762018250  # live: at arrival 121000000003 lane deltas follows lane anchors — the tie-break must order ["trades", "deltas", "anchors", "oi", "mc"]
+# A PRODUCT FINDING, reported and not fixed (a fuzzer that finds a bug in logic it does not own says
+# so and keeps going). The shape reports a `Latest` dark once the only consumer reading it through
+# `Sampling` is gated shut, while the sweep advances it exactly like the `Buffer` beside it — the
+# macro pins a retention cell it finds in `st.bufs` and a level is not in `st.bufs`. `Under::live`
+# calls itself "a reading of the emitted code rather than a second model of it", and here it is the
+# second model. The sweep is the correct side; see `LEVEL_DIVERGES` in gates.rs for the quarantine,
+# which fails the moment the pin lands so nobody has to remember to remove it.
+shape_sweep 0 4 1742470698  # under Hot=false Warm=false, the shape says `Latest<fuzz::fixture::Src>` is dark and the sweep advanced it
+# Two more oracle errors of mine, not findings. An all-`Want::Nothing` tick observes nothing, so a
+# short trace compared an unobserved run against an unobserved run; and a batch out flattens to its
+# *last* element, so a run of three whose last one declines is `fires=3` with no slots — a reading of
+# the last element rather than a fourth state of the out.
+noninvasive 15490212636682683044 8 1429616719  # the observer was never called, so the comparison is vacuous
+absence 0 4 1429616719  # tick 0, `fuzz::fixture::Total`: fires=3 says fired, the flattening says unfired — that is a third state
