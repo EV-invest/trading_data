@@ -1,15 +1,15 @@
 [package]
 name = "trading_data"
-version = "0.5.0"
-edition = "2024"
-authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
 description = "Trading data collection and processing"
-license = "BlueOak-1.0.0"
-repository = "https://github.com/EV-invest/trading_data"
 documentation = "https://docs.rs/trading_data"
-readme = "../README.md"
-keywords = ["trading", "finance", "market-data"]
-categories = ["finance"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 # Forwarded, not re-invented: an example depends on this facade only, and the switch it needs is the
 # engine's. Off by default here too — an implementor who never asks cannot acquire it by accident.
