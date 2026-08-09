@@ -2,9 +2,7 @@
 
 r[outs.absence.one-reading]
 
-Not firing and carrying nothing are the same fact, and every reading of an out MUST treat them as one. `None`, the empty batch, and an all-NaN flattening MUST all report unfired; nothing downstream of the observer may give an absent out a meaning of its own — no "fired, but empty" distinct from "did not fire", and no state a node is understood to be in only while it is silent.
-
-Absence is the multi-rate channel: a node reading a faster one sees `None` on most ticks purely because the two rates differ, and any meaning attached to that is a reading of the cadence rather than of the market. So an absent out says one thing, always, and a node with something to say about its silence MUST say it as a value — a slot, a level, an enum — where a consumer can read it without inferring.
+not that haven't had yet fired, and node that decided to stop producing a value, are the same thing. And `None` is the exact primitive to express both. Consumer nodes shouldn't try to reason about which cause the `None` value had, - it's all the same for them. Equally, it means that meaning of `None` is taken, and no Node should try to attach their own meaning to it.
 
 r[outs.flat.nonempty]
 
