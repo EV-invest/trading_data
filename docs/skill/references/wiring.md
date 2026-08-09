@@ -139,7 +139,9 @@ Step order **is** topo order, so the observed sequence doubles as the static top
 seen as a stepped node is a root.
 
 `Fire` carries `ran` · `fires` · `vals` · `jac` · `exact` · `formula` · `deriv` · `trace` · `glance` ·
-`dims` · `plots` · `clock`. Two observers compose as a tuple — an app's own assertions next to a viz
+`dims` · `plots` · `clock`. A **level publishes only where its value moved** — same value as last tick
+⇒ `fires: 0`, `vals: None`, no Jacobian (`r[outs.fired.on-change]`). `ran` is what separates that from
+a skip. A run is untouched: `fires` is its element count, identical elements and all. Two observers compose as a tuple — an app's own assertions next to a viz
 recorder are two readings of one sweep.
 
 ## Cost and parallelism

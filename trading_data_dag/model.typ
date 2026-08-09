@@ -58,7 +58,10 @@ SWEEP ── `tick(ts, Batches)`, one straight-line monomorphized fn; no dispatc
 OBSERVATION ── the same sweep, read. `()` observer ⇒ `want() = Nothing` ⇒ erased entirely.
    Observer::on(name, dep NAMEs, dep gate flags, Fire { vals, jac, exact, formula, … })
    Step order IS topo order, so the observed sequence doubles as the static topology; a dep
-   name never seen as a stepped node is a root.
+   name never seen as a stepped node is a root — which is also what makes a node's position
+   in the walk its identity, and so what `Sweep::prev` is indexed by.
+   A LEVEL FIRES ONLY WHERE ITS VALUE MOVED (`r[outs.fired.on-change]`). Here and nowhere
+   else: the out a consumer reads stands either way, and no dep read reaches the fired bit.
 ```
 
 #align(center, diagram(

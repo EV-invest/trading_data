@@ -689,6 +689,7 @@ fn emit(st: State) -> Result<TokenStream> {
 
 				let #batches { #(#rfields,)* } = b;
 				let Self { #(#fields,)* #(#held_fields,)* __pending, __sweep } = self;
+				__sweep.restart();
 
 				#(#dag::observe_root::<#root_tys, _>(#rfields, __sweep, obs);)*
 				let f = #dag::Nil;

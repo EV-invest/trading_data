@@ -3510,12 +3510,13 @@ pub struct Fire<'a> {
 	/// to draw a slower series at its own width instead of the chart's.
 	pub clock: Option<Timeframe>,
 	/// Whether the sweep advanced the node at all. What [`fires`](Self::fires) cannot say: a clocked
-	/// node between publications and one the sweep skipped are both `fires: 0`, and only this
-	/// separates them.
+	/// node between publications, one whose value stood still, and one the sweep skipped are all
+	/// `fires: 0`, and only this separates the last from the other two.
 	pub ran: bool,
-	/// Elements the node fired this tick: slice len, or 0/1 for scalar/`Option` outs.
+	/// Elements the node *published* this tick: slice len for a run, and for a level 1 where its value
+	/// moved and 0 where it stood (`r[outs.fired.on-change]`).
 	pub fires: usize,
-	/// Flattened *last* element; `None` = didn't fire.
+	/// Flattened *last* element; `None` = didn't publish.
 	pub vals: Option<&'a [f64]>,
 	pub dep_dims: &'a [&'static [usize]],
 	/// Row-major `out_len × sum(dep lens)`, deps concatenated in `Deps` order (each batch dep as
@@ -3566,7 +3567,10 @@ impl<'a> Fire<'a> {
 			clock,
 			fidelity,
 			ran,
-			fires: out.fires(),
+			fires: match flat {
+				Some(f) if f.unchanged => 0,
+				_ => out.fires(),
+			},
 			vals: flat.and_then(|f| f.fired.then_some(f.vals)),
 			dep_dims,
 			jac: flat.and_then(|f| f.jac),
@@ -3593,6 +3597,36 @@ pub struct Sweep {
 	/// [`Exact::out`] is — but reused across nodes and ticks like every buffer beside it.
 	block: alloc::vec::Vec<f64>,
 	widths: alloc::vec::Vec<usize>,
+	/// Per level node, in sweep order, the flattening it last published — what "only when it changes"
+	/// is measured against. Grown lazily and never freed, like every buffer above it.
+	prev: alloc::vec::Vec<alloc::vec::Vec<f64>>,
+	at: usize,
+}
+
+impl Sweep {
+	/// Back to the top of `prev`, once per tick. The sweep steps every level node exactly once and in
+	/// static topo order, so a node's position in that walk is its identity and needs no key.
+	#[doc(hidden)]
+	pub fn restart(&mut self) {
+		self.at = 0;
+	}
+
+	/// Claimed on every level step whatever the observer wanted, so a node nobody reads cannot shift
+	/// the seat of one that is read.
+	fn seat(&mut self) -> usize {
+		let i = self.at;
+		self.at += 1;
+		if self.prev.len() <= i {
+			self.prev.resize_with(i + 1, Default::default);
+		}
+		i
+	}
+}
+
+/// Bitwise, so the NaN a declined slot carries reads equal to the NaN it carried last tick — `==`
+/// would call every partial out a change forever.
+fn same(a: &[f64], b: &[f64]) -> bool {
+	a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
 /// The un-bumped flattenings of one node's out and deps, plus the Jacobian read off them — the
@@ -3601,6 +3635,10 @@ pub struct Sweep {
 #[derive(Clone, Copy)]
 struct Flats<'s> {
 	fired: bool,
+	/// The node published, and published what it had published before. Apart from [`fired`](Flats::fired)
+	/// because a run's `fires()` is its length whatever the last element was, and only the change
+	/// reading may zero it.
+	unchanged: bool,
 	vals: &'s [f64],
 	deps: &'s [f64],
 	jac: Option<&'s [f64]>,
@@ -3623,8 +3661,11 @@ impl<'s> Flats<'s> {
 	/// `fill` writes the node's derivative readings and reports `(the Jacobian is differentiated,
 	/// the exact block was filled)`; `None` is an observer that reads no further than
 	/// [`Want::Vals`], and it is asked for only where there is an out to differentiate.
+	///
+	/// `seat` is the level node's position in [`Sweep::prev`] — `None` for a run, whose publication is
+	/// its elements and for which "unchanged" is not defined.
 	#[inline]
-	fn of<'d, O: Flat, D: DepFlat>(sweep: &'s mut Sweep, out: &O, deps: &D::Outs<'d>, fill: Option<impl FnOnce(Reads<'_>) -> (bool, bool)>) -> Self {
+	fn of<'d, O: Flat, D: DepFlat>(sweep: &'s mut Sweep, seat: Option<usize>, out: &O, deps: &D::Outs<'d>, fill: Option<impl FnOnce(Reads<'_>) -> (bool, bool)>) -> Self {
 		// r[impl outs.flat.nonempty]
 		const {
 			assert!(
@@ -3639,10 +3680,26 @@ impl<'s> Flats<'s> {
 			bumped,
 			block,
 			widths,
+			prev,
+			at: _,
 		} = sweep;
 		vals.clear();
 		vals.resize(O::LEN, f64::NAN);
-		let fired = out.flat(vals);
+		let mut fired = out.flat(vals);
+		// r[impl outs.fired.on-change]
+		// The value a consumer reads is unaffected: this is the observation plane's own axis, and
+		// `r[rates.deps.tick-opaque]` is what keeps it there. A level that stood still published nothing,
+		// so there is nothing to flatten, nothing to differentiate and nothing for a tape to store.
+		let unchanged = match seat.filter(|_| fired) {
+			None => false,
+			Some(i) if same(&prev[i], vals) => true,
+			Some(i) => {
+				prev[i].clear();
+				prev[i].extend_from_slice(vals);
+				false
+			}
+		};
+		fired &= !unchanged;
 		dep_buf.clear();
 		dep_buf.resize(D::LEN, f64::NAN);
 		D::flat(deps, dep_buf);
@@ -3668,6 +3725,7 @@ impl<'s> Flats<'s> {
 		};
 		Flats {
 			fired,
+			unchanged,
 			vals,
 			deps: dep_buf,
 			jac,
@@ -3910,6 +3968,9 @@ where
 	}
 
 	let want = obs.want(N::NAME);
+	// before every early return: the seat is the node's position in the walk, and a node that skipped
+	// taking one would hand its seat to whoever stepped next.
+	let seat = sweep.seat();
 
 	// gate closed or nobody reading: no advance, no dep flatten, no derivative — an unfired `Fire` is
 	// the honest view.
@@ -3935,6 +3996,7 @@ where
 	let out = <N::Kernel as Level<N>>::advance(node, deps);
 	let flat = Flats::of::<_, N::Deps>(
 		sweep,
+		Some(seat),
 		&out,
 		&deps,
 		(want >= Want::Jac).then_some(|r: Reads<'_>| {
@@ -4070,6 +4132,7 @@ where
 	let out: &'t [E::Item] = &e.buf;
 	let flat = Flats::of::<_, E::Deps>(
 		sweep,
+		None,
 		&out,
 		&deps,
 		(want >= Want::Jac).then_some(|r: Reads<'_>| {
@@ -4288,6 +4351,7 @@ where
 	sweep.deps.clear();
 	let flat = Flats {
 		fired,
+		unchanged: false,
 		vals: &sweep.vals,
 		deps: &sweep.deps,
 		jac: None,

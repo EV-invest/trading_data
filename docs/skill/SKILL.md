@@ -79,6 +79,9 @@ Each is enforced, but knowing it before you write saves a rewrite.
 - **Absence is one thing.** `None`, the empty batch and an all-NaN flattening are one reading, and
   the meaning is taken: never attach a second one to it. Whether a node fired is a different axis
   entirely, the engine's own, and no dep read exposes it (`r[outs.absence.one-reading]`).
+- **A level publishes only when it changes.** Observation only: same flattening as last tick ⇒
+  `fires: 0` and `vals: None`, while the out a consumer reads off the frame stands as it always did
+  (`r[outs.fired.on-change]`).
 - **A node owns its rate.** `Cell::CLOCK` is declared on the cell, never derived from or overridable
   through `Deps`, and a clocked node sees only *closed* elements (`r[rates.node.declared]`,
   `r[rates.node.whole-elements]`).
