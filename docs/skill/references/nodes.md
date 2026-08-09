@@ -237,7 +237,7 @@ What your out type owes, by what you want out of it.
 | `Bump` | same | return the step *actually* taken; a discrete slot returns `0.0` and leaves its column NaN rather than fabricating a zero. An item no slot of which can move is a two-line macro of your own — `structural_bump!` in `examples/spl/src/nodes.rs` is the pattern, not a facade export |
 | `Unflat` | the item comes out of `Scans`/`Closes`/`Folds` | rebuilt from computed slots + the event time. Blanket for `f64`, `[f64; N]`, `Option<T>` |
 | `Stamped` | the series is ever `Buffering`-ed | a history you cannot index by time is one you can only read at an assumed cadence |
-| `Present` | the series is ever `Sampling`-ed | `always_present!(Item)` where every element carries something. Blanket for `Option<T>`. `Val` also owes `PartialEq`, because the level publishes on change |
+| `Present` | the series is ever `Sampling`-ed | `always_present!(Item)` where every element carries something. Blanket for `Option<T>` |
 | `Episode` | the item is a latch's `Cut` out | `&[T]` is terminal if **any** element is — the boundary was crossed somewhere in the run |
 | `Glance` | you want it on a card | the one compact line; display-dual of `Flat` |
 | `Plot` | you want it drawn | `const PLOTS` on the node. Slot groups with their own scale and guides — axes partition by **unit** |

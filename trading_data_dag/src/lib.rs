@@ -382,16 +382,6 @@ pub trait Cell {
 	/// compiler's way and the rest of the graph spells the same cells its own.
 	const NAME: &'static str = core::any::type_name::<Self>();
 
-	/// The frame cell a consumer naming this in dep position is wired to, which is the graph
-	/// [`Observer::on`] reports. [`Sampling`] is the one dep spelling that answers something other
-	/// than itself — it resolves against the [`Latest`] beside its source, and an observer told the
-	/// source's name would draw an edge the sweep does not have and leave the level read by nobody.
-	///
-	/// [`Buffering`] keeps the default: its [`Buffer`] is keyed on a horizon joined over every read of
-	/// the series in the graph, so no one dep site holds the name it would have to state — which is
-	/// what [`REACH`](Cell::REACH) is there to say instead.
-	const FRAME: &'static str = Self::NAME;
-
 	/// How far back a consumer naming this in dep position reads. A bare cell is this tick's batch
 	/// and nothing more; the wrappers ([`Buffering`], [`Folding`]) are what state anything else. This
 	/// lives on [`Cell`] rather than a `Dep` trait because [`DepSet`] is implemented over tuples of
@@ -402,9 +392,9 @@ pub trait Cell {
 	/// gate pulls no deps, so a folded reach is the one thing gating cannot re-warm.
 	const FOLDED: bool = false;
 
-	/// Whether reading this in dep position reads something the *engine* keeps — [`Buffering`] and
-	/// [`Sampling`], against the [`Buffer`]/[`Latest`] beside the source. Everything else is this
-	/// tick's batch and nothing more: a bare cell, a [`Folding`] reach the node holds, a
+	/// Whether reading this in dep position reads something the *engine* keeps — [`Buffering`] against
+	/// the [`Buffer`] beside the source, [`Sampling`] against the carry beside it. Everything else is
+	/// this tick's batch and nothing more: a bare cell, a [`Folding`] reach the node holds, a
 	/// [`Gating`] permission.
 	///
 	/// This is what says whether a tick may be *withheld* from a consumer. A retained dep is there
@@ -820,8 +810,6 @@ impl Plot {
 pub trait DepSet {
 	type Outs<'t>;
 	const NAMES: &'static [&'static str];
-	/// Per-dep [`Cell::FRAME`], positionally — the wiring, where `NAMES` is the spelling.
-	const FRAMES: &'static [&'static str];
 	/// Per-dep [`Cell::REACH`], positionally — how far back a revived node must look, input by input.
 	const REACH: &'static [Horizon];
 	/// Per-dep [`Cell::FOLDED`], positionally. With `NAMES` and `REACH` this is what picks the frame
@@ -2764,7 +2752,7 @@ impl<T: Copy + Stamped> Batch<T> for Rows<T> {
 	}
 }
 
-/// A [`Series`] item read as "did this element carry anything" — what [`Latest`] must ask before it
+/// A [`Series`] item read as "did this element carry anything" — what [`carry`] must ask before it
 /// keeps one as a level. The dominant item in this codebase is `Option<f64>`, a rate-preserving
 /// decline; retaining one of those as the standing value would hold an absence forever.
 pub trait Present: Copy {
@@ -3147,144 +3135,28 @@ where
 	}
 }
 
-/// Engine-owned point-level over a [`Series`] — [`Buffer`]'s sibling, an ordinary node (ungated,
-/// `Deps = (C,)`) sitting *next to* its source in the frame. It retains nothing: one item, not a
-/// window, so what it reads is this tick's run and no more.
+/// The carry a [`Sampling`] dep reads: the last *present* element of `run`, or what already stood
+/// where it carried none. A free function rather than a cell — `graph!` fills one slot per sampled
+/// series in the same sweep line as the series itself, so there is nothing here to gate, demand or
+/// name.
 ///
 /// The invariant is monotone — once it holds a value it holds one forever. That is what a consumer
 /// clocked by *another* series needs: on its own ticks this one has emitted nothing, and reading the
 /// empty run there would read absence where a standing level is the truth.
-///
-/// A level as the frame carries it: the value that stands, and whether this tick set it. Reading it
-/// takes the value; *observing* it takes the change.
-///
-/// The two are separate because availability and publication are separate facts about a level, and
-/// an `Option` carries one bit for both: a value that stands forever is `Some` forever, so an
-/// observer told only that would read a change on every tick the level was merely still there.
-#[derive(Clone, Copy)]
 #[doc(hidden)]
-pub struct Held<V> {
-	val: Option<V>,
-	fresh: bool,
-}
-
-// r[impl outs.absence.one-reading]
-impl<V: Flat> Flat for Held<V> {
-	const DIMS: &'static [usize] = V::DIMS;
-
-	fn flat(&self, out: &mut [f64]) -> bool {
-		match self.val {
-			Some(v) if self.fresh => v.flat(out),
-			_ => {
-				out.fill(f64::NAN);
-				false
-			}
-		}
-	}
-
-	fn fires(&self) -> usize {
-		(self.val.is_some() && self.fresh) as usize
-	}
-}
-
-impl<V: Glance> Glance for Held<V> {
-	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		self.val.glance(f)
-	}
-}
-
-impl<V: Copy> Latent for Held<V> {
-	fn latent() -> Self {
-		Self { val: None, fresh: false }
-	}
-}
-
-/// The perturbation is of the value; whether the tick set it is structural and does not move.
-impl<V: Bump> Bump for Held<V> {
-	fn bump(self, slot: usize, h: f64) -> (Self, f64) {
-		let (val, dh) = self.val.bump(slot, h);
-		(Self { val, fresh: self.fresh }, dh)
-	}
-}
-
-/// A tick skipped is therefore a value lost and not a reach lost — recoverable by one lookup, which
-/// is what [`Rewound`] is asked for where the level is `#[node(anchored)]`.
-#[doc(hidden)]
-pub struct Latest<C: Series>
+#[cfg_attr(feature = "profile", inline(always))]
+pub fn carry<C: Series>(held: &mut Option<<C::Item as Present>::Val>, run: &[C::Item]) -> Option<<C::Item as Present>::Val>
 where
 	C::Item: Present, {
-	/// A rewind's whole job: the level as of the start of this tick. Public for the feed that
-	/// replays it, which is no crate of this one's.
-	pub held: Option<<C::Item as Present>::Val>,
-}
-
-// hand-written for the same reason [`Buffer`]'s are: `derive` would demand them of the source node.
-impl<C: Series> Default for Latest<C>
-where
-	C::Item: Present,
-{
-	fn default() -> Self {
-		Self { held: None }
+	if let Some(v) = run.iter().rev().find_map(|x| x.present()) {
+		*held = Some(v);
 	}
-}
-impl<C: Series> Clone for Latest<C>
-where
-	C::Item: Present,
-{
-	fn clone(&self) -> Self {
-		Self { held: self.held }
-	}
+	*held
 }
 
-impl<C: Series> Latest<C>
-where
-	C::Item: Present,
-{
-	const TAG: Tag = Tag::of("Latest", &[C::NAME]);
-}
-
-impl<C: Series> Cell for Latest<C>
-where
-	C::Item: Present,
-{
-	type Out<'t> = Held<<C::Item as Present>::Val>;
-
-	/// Unlike its [`Sampling`] dep this is a frame cell of its own, so it takes a name of its own.
-	const NAME: &'static str = Self::TAG.as_str();
-}
-
-impl<C: Series> Node for Latest<C>
-where
-	C::Item: Present,
-	<C::Item as Present>::Val: PartialEq,
-{
-	type Deps = <Self as Blind>::Deps;
-	type Kernel = Opaque;
-}
-
-impl<C: Series> Blind for Latest<C>
-where
-	C::Item: Present,
-	<C::Item as Present>::Val: PartialEq,
-{
-	type Deps = (C,);
-
-	const WHY: &'static str = "holding the last value across a silence is a carry, and a carry has no slope of its own";
-
-	fn advance<'t>(&'t mut self, (run,): DepOuts<'t, Self>) -> Self::Out<'t> {
-		let fresh = match run.iter().rev().find_map(|x| x.present()) {
-			Some(v) if self.held.as_ref() != Some(&v) => {
-				self.held = Some(v);
-				true
-			}
-			_ => false,
-		};
-		Held { val: self.held, fresh }
-	}
-}
-
-/// Dep position only, never a frame field: "the last value `C` produced, whenever that was".
-/// Resolves against the frame's [`Latest<C>`] through the [`Has`] impl below.
+/// Dep position only: "the last value `C` produced, whenever that was". Its slot in the frame is
+/// keyed on this type itself — the [`carry`] behind it is storage, not a cell, the same way an
+/// [`Emitter`] is.
 ///
 /// [`Buffering`]'s third sibling, and the point where the other two have a window: that one is a
 /// reach the engine retains, [`Folding`] a reach the node retains, this one a single level the
@@ -3298,24 +3170,11 @@ where
 	type Out<'t> = Option<<C::Item as Present>::Val>;
 
 	/// Forwarded, for the same reason [`Buffering`]'s is: the graph predicates match dep names against
-	/// frame cell names, and a wrapper that renamed its dep would drop out of every one of them. What
-	/// this is actually wired to is [`FRAME`](Cell::FRAME) below.
+	/// frame cell names, and a wrapper that renamed its dep would drop out of every one of them. The
+	/// carry advances in its source's own sweep line, so the source is also the edge an observer draws.
 	const CLOCK: Option<Timeframe> = C::CLOCK;
-	const FRAME: &'static str = <Latest<C> as Cell>::NAME;
 	const NAME: &'static str = C::NAME;
 	const RETAINED: bool = true;
-}
-
-/// The projection that keeps the change bit off the dep side: the frame cell carries whether this
-/// tick set the level, a consumer reads only what stands.
-impl<'t, C: Series, T> Has<'t, Sampling<C>, Here> for Cons<'t, Latest<C>, T>
-where
-	C::Item: Present,
-	<C::Item as Present>::Val: PartialEq,
-{
-	fn get(&self) -> Option<<C::Item as Present>::Val> {
-		self.out.val
-	}
 }
 
 impl<C: Series> Nudge for Sampling<C>
@@ -3444,7 +3303,6 @@ impl DepSet for () {
 
 	const CLOCKS: &'static [Option<Timeframe>] = &[];
 	const FOLDS: &'static [bool] = &[];
-	const FRAMES: &'static [&'static str] = &[];
 	const GATES: &'static [bool] = &[];
 	const NAMES: &'static [&'static str] = &[];
 	const REACH: &'static [Horizon] = &[];
@@ -3495,7 +3353,6 @@ macro_rules! impl_arity {
 
 			const CLOCKS: &'static [Option<Timeframe>] = &[$Th::CLOCK $(, $T::CLOCK)*];
 			const FOLDS: &'static [bool] = &[$Th::FOLDED $(, $T::FOLDED)*];
-			const FRAMES: &'static [&'static str] = &[$Th::FRAME $(, $T::FRAME)*];
 			const GATES: &'static [bool] = &[<$Th::Gates as Bit>::VALUE $(, <$T::Gates as Bit>::VALUE)*];
 			const NAMES: &'static [&'static str] = &[$Th::NAME $(, $T::NAME)*];
 			const REACH: &'static [Horizon] = &[$Th::REACH $(, $T::REACH)*];
@@ -3847,10 +3704,9 @@ pub trait Observer {
 	/// (`r[observe.noninvasive]`) — which is what lets a consumer schedule the expensive reading
 	/// instead of amortizing it.
 	fn want(&self, node: &'static str) -> Want;
-	/// `deps` is [`DepSet::FRAMES`] — what the node is wired to rather than how it spelled it, so a
-	/// [`Sampling`] dep names the [`Latest`] it reads. `gates` is [`DepSet::GATES`]: positional with
-	/// `deps`, marking the ones that are control edges rather than data. All-`false` for ungated
-	/// nodes, empty for roots.
+	/// `deps` is [`DepSet::NAMES`] — the cell each dep names, wrapper stripped, which is also the frame
+	/// slot it is wired to. `gates` is [`DepSet::GATES`]: positional with `deps`, marking the ones that
+	/// are control edges rather than data. All-`false` for ungated nodes, empty for roots.
 	fn on(&mut self, node: &'static str, deps: &'static [&'static str], gates: &'static [bool], fire: Fire<'_>);
 }
 
@@ -4061,7 +3917,7 @@ where
 		let out: N::Out<'t> = unrun();
 		if want != Want::Nothing {
 			let fire = Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Kernel as Level<N>>::FIDELITY, <N::Deps as DepFlat>::DIMS, false, None);
-			obs.on(N::NAME, <N::Deps as DepSet>::FRAMES, <N::Deps as DepSet>::GATES, fire);
+			obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
 	}
@@ -4130,7 +3986,7 @@ where
 			Some(flat),
 		)
 	};
-	obs.on(N::NAME, <N::Deps as DepSet>::FRAMES, <N::Deps as DepSet>::GATES, fire);
+	obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
 }
 
@@ -4196,7 +4052,7 @@ where
 				ran,
 				None,
 			);
-			obs.on(E::NAME, <E::Deps as DepSet>::FRAMES, <E::Deps as DepSet>::GATES, fire);
+			obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
 	}
@@ -4251,7 +4107,7 @@ where
 		true,
 		Some(flat),
 	);
-	obs.on(E::NAME, <E::Deps as DepSet>::FRAMES, <E::Deps as DepSet>::GATES, fire);
+	obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }
 }
 

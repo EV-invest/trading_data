@@ -15,7 +15,7 @@ pub enum Wrap {
 	Buf {
 		reach: TokenStream,
 	},
-	/// The point-level read. No reach to carry: a `Latest` field holds one item, whatever was asked.
+	/// The point-level read. No reach to carry: the carry holds one item, whatever was asked.
 	Sample,
 	Gate,
 }
@@ -28,22 +28,16 @@ pub fn parse_type(ts: &TokenStream) -> Result<Type> {
 /// was. Matched on the last path segment, so a wrapper named through any path spelling still reads
 /// as one.
 ///
-/// `Buffer<C, H>` and `Latest<C>` are the frame cells those two resolve *against*, and are rejected
-/// here rather than aliased onto the field they name — the same seal `#[node]` puts on `impl Node`.
+/// `Buffer<C, H>` is the frame cell `Buffering` resolves *against*, and is rejected here rather than
+/// aliased onto the field it names — the same seal `#[node]` puts on `impl Node`.
 pub fn unwrap_dep(ty: &Type) -> Result<(Type, Wrap)> {
 	let bare = || Ok((ty.clone(), Wrap::Bare));
 	let Type::Path(p) = ty else { return bare() };
 	let Some(seg) = p.path.segments.last() else { return bare() };
-	match seg.ident.to_string().as_str() {
-		"Buffer" =>
-			return Err(Diag::spanned(ty, "`Buffer<C, H>` is the frame cell `graph!` grows for you, not a dep spelling")
-				.help("write `Buffering<C, R>`, naming the reach *this* node reads")
-				.note("the frame's `Buffer` is sized on the join of every read of `C` in the graph, so no one dep site is in a position to state its reach")),
-		"Latest" =>
-			return Err(Diag::spanned(ty, "`Latest<C>` is the frame cell `graph!` grows for you, not a dep spelling")
-				.help("write `Sampling<C>`")
-				.note("every reader of a level asks for the same one item, so the dep says which cell and the frame says the rest")),
-		_ => {}
+	if seg.ident == "Buffer" {
+		return Err(Diag::spanned(ty, "`Buffer<C, H>` is the frame cell `graph!` grows for you, not a dep spelling")
+			.help("write `Buffering<C, R>`, naming the reach *this* node reads")
+			.note("the frame's `Buffer` is sized on the join of every read of `C` in the graph, so no one dep site is in a position to state its reach"));
 	}
 	let PathArguments::AngleBracketed(args) = &seg.arguments else { return bare() };
 	let mut it = args.args.iter().filter(|a| !matches!(a, GenericArgument::Lifetime(_)));

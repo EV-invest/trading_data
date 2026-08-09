@@ -12,7 +12,7 @@ the fix; this table adds *why* it exists, so you don't work around it.
 |---|---|---|
 | `cannot find macro __td_node_Foo` | `graph!` reads `type Deps` off the shim `#[node]` writes; the type system cannot be asked | put `#[node]` on `Foo`'s body impl, and export the cell and its shim together |
 | ``impl Node`/`impl Emit` is written by `#[node]`, not by hand`` | the kernel set is sealed — there must be no body the engine cannot also read | write a body trait: `Symbolic` `Decides` `Blind` / `Scans` `Closes` `Folds` `Runs` |
-| ``Buffer<C, H>`/`Latest<C>` is the frame cell `graph!` grows for you, not a dep spelling`` | `K` is the join over every read of `C` in the graph — no one dep site holds it | write `Buffering<C, R>` / `Sampling<C>` |
+| ``Buffer<C, H>` is the frame cell `graph!` grows for you, not a dep spelling`` | `K` is the join over every read of `C` in the graph — no one dep site holds it | write `Buffering<C, R>` |
 | ``a `Buffering` dep names the reach the engine retains for it`` | | `Over<TF>` · `Elems<N>` — the reach **this** node reads |
 | ``an associated type names no cell `graph!` can ask about`` | expansion is textual: it walks tokens, not the type system | write the concrete cell |
 | ``a `node_alias!` names a cell, not a dep-position wrapper`` | | alias the cell; each `type Deps` says how far back *it* reads |
@@ -36,7 +36,6 @@ the fix; this table adds *why* it exists, so you don't work around it.
 | ``{Self}` cannot be perturbed`` | `impl Bump`. A slot that cannot move returns `(self, 0.0)` — its column stays NaN, never a fabricated zero |
 | ``{Self}` cannot be rebuilt from the slots a kernel computed`` | `impl Unflat` — a per-element kernel writes `f64` slots and the run is made of items |
 | ``{Self}` carries no event time`` | `impl Stamped`: the default `Rows` retention trims by `ts_ns` every tick |
-| ``can't compare `X` with `X` ``, required by a bound in `Latest<C>` | derive `PartialEq` on the sampled item's `Val` — a level publishes on change, so it has to compare |
 | ``{Self}` has no one-line reading`` | `impl Glance` — every stepped node is drawable |
 | ``{Self}` is not a gate`` | `impl Gate for {Self} {}` — and its out must be `bool` |
 | ``{Self}` says nothing about an episode ending`` | `impl Episode` — a latch commutates on its `Cut`'s terminal out |

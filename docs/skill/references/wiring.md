@@ -132,9 +132,8 @@ impl Observer for MyObs {
 the node being inspected pays, and there is no default. `()` is the erasing observer: `want()` returns
 `Nothing` and the whole thing compiles away, so `tick_obs` over `()` *is* `tick`.
 
-`deps` is `DepSet::FRAMES` — what the node is wired to rather than how it spelled it, so a `Sampling`
-dep names the `Latest` it reads. `gates` is positional with it, marking control edges. Roots report
-empty.
+`deps` is `DepSet::NAMES` — the cell each dep names, wrapper stripped, which is also the frame slot it
+is wired to. `gates` is positional with it, marking control edges. Roots report empty.
 
 Step order **is** topo order, so the observed sequence doubles as the static topology: a dep name never
 seen as a stepped node is a root.

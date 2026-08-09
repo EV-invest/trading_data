@@ -26,7 +26,7 @@ use std::sync::{
 use trading_data_core::{
 	Arrival, BatchTrades, Book, BookDelta, BookShape, BookUpdate, Exact, ExchangeName, Local, PrecisionPriceQty, ReadClock, ShadowBook, Symbol, TradeBuf, TradeCols, Ts, Venue,
 };
-use trading_data_dag::{Latest, Rewound};
+use trading_data_dag::Rewound;
 use v_utils::distributions::LatencyConfig;
 
 use crate::{
@@ -34,7 +34,7 @@ use crate::{
 	clock::Clock,
 	feather::{Feather, RotationPolicy},
 	read::{lane_prec, pick_anchor, read_book_deltas, read_book_snapshots, read_mc, read_oi, read_trades, snapshot_shape},
-	row::{BookSnapshot, Mc, McRoot, Oi, Row as _, Trade},
+	row::{BookSnapshot, Mc, Oi, Row as _, Trade},
 };
 
 /// How often we write a book checkpoint of our own. Bounds how far back a replay must read; drift
@@ -78,7 +78,6 @@ pub struct Step<'a> {
 pub struct Past<'a> {
 	deltas: &'a [BookDelta],
 	anchors: &'a [BookShape],
-	mc: &'a [Mc],
 }
 
 /// A source of woven lanes. `None` = exhausted (end-of-range for [`Replay`]; all senders dropped
@@ -244,7 +243,7 @@ impl Weaver {
 	/// would hand a rewind this tick's own batch to fold a second time, and a book fold being
 	/// idempotent is precisely what would make that silent.
 	fn step(&mut self) -> Option<Step<'_>> {
-		let (past_d, past_a, past_m) = (self.deltas.cur, self.anchors.cur, self.mc.cur);
+		let (past_d, past_a) = (self.deltas.cur, self.anchors.cur);
 		let heads = [self.trades.head(), self.deltas.head(), self.anchors.head(), self.oi.head(), self.mc.head()];
 		let winner = (0..heads.len()).filter(|&i| heads[i].is_some()).min_by_key(|&i| heads[i].expect("filtered to Some"))?;
 		let win_ts = heads[winner].expect("winner has a head");
@@ -302,7 +301,6 @@ impl Weaver {
 			past: Past {
 				deltas: &self.deltas.buf[..past_d],
 				anchors: &self.anchors.buf[..past_a],
-				mc: &self.mc.buf[..past_m],
 			},
 		})
 	}
@@ -460,17 +458,6 @@ impl Rewound<Book> for Past<'_> {
 		// the next `Book::step` read `Reach::Gone`, and a `Gone` in a rewound backtest means the past
 		// lied about where it ended.
 		debug_assert_eq!(b.seq(), Some(need.monotonic_seq), "a rewind must stand the book on the last row the past holds");
-	}
-}
-
-/// A level costs a lookup rather than a replay: there is no order to restore, only the one value the
-/// lane last carried. An empty past is a lane that has published nothing yet, and a level that has
-/// never held is what already says so.
-impl Rewound<Latest<McRoot>> for Past<'_> {
-	fn rewind(&mut self, n: &mut Latest<McRoot>) {
-		if let Some(m) = self.mc.last() {
-			n.held = Some(*m);
-		}
 	}
 }
 

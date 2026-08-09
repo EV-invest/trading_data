@@ -7,14 +7,5 @@ LL |     type Deps = (Buffer<Src, { Horizon::Elems(3) }>,);
   = help: write `Buffering<C, R>`, naming the reach *this* node reads
   = note: the frame's `Buffer` is sized on the join of every read of `C` in the graph, so no one dep site is in a position to state its reach
 
-error: `Latest<C>` is the frame cell `graph!` grows for you, not a dep spelling
-  --> $DIR/trading_data_macros/tests/compile_fail/engine_cell_named.rs:LL:CC
-  |
-LL |     type Deps = (Latest<Src>,);
-  |                  ^^^^^^^^^^^
-  |
-  = help: write `Sampling<C>`
-  = note: every reader of a level asks for the same one item, so the dep says which cell and the frame says the rest
-
-error: aborting due to 2 previous errors
+error: aborting due to 1 previous error
 

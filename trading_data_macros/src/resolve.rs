@@ -7,7 +7,7 @@ use syn::Type;
 
 use crate::{
 	diag::{Diag, Result},
-	state::{Awaiting, Buf, Dep, NodeInfo, Reader, State},
+	state::{Awaiting, Buf, Dep, NodeInfo, Reader, Sample, State},
 	ty::{self, Wrap},
 };
 
@@ -216,35 +216,24 @@ fn visit(st: &mut State, dep: Dep) -> Result<Option<TokenStream>> {
 	}
 
 	if let Wrap::Sample = wrap {
-		let dag = &st.cfg.dag;
-		// no reach to join: unlike a buffer, every reader of a level asks for the same one thing, so
-		// the frame type is settled here rather than in `emit`.
-		//
-		// What a level reads is this tick's run of `C`, of which it keeps the last present element —
-		// a `Unit` reach, never the node's own to hold. So where the level can be replayed it says so
-		// as the bare cell and `anchoring` below is satisfied by the same `is_root` that picked it.
-		//
-		// Where it cannot, the reach is overstated on purpose: a level that slept through a
-		// publication holds a stale value, and until a dormant *derived* producer can be replayed
-		// (`anchoring`'s note says what that needs), the fold claim is what keeps it awake.
-		let root = is_root(st, &key);
-		let dep_ty = match root {
-			true => cell.to_token_stream(),
-			false => quote!(#dag::Folding<#cell, #dag::Unbounded>),
+		// keyed on the cell's own answer, for the reason a `Buffer` is: two spellings of one series
+		// would put two carries in the frame, which makes every `Sampling` of it ambiguous.
+		let settled = is_root(st, &key) || st.known.iter().any(|n| n.key == key);
+		let key = match st.aliases.iter().find(|(a, _)| *a == key) {
+			Some((_, answered)) => answered.clone(),
+			None if !settled => {
+				re_walk(st, &dep);
+				st.awaiting = Awaiting::Node(key, cell.to_token_stream());
+				return Ok(Some(ask(st, &dep.shim, &cell)));
+			}
+			None => key,
 		};
-		return record(
-			st,
-			NodeInfo {
-				key: format!("Latest<{key}>"),
-				ty: quote!(#dag::Latest<#cell>),
-				emit: false,
-				generated: true,
-				latch: false,
-				anchored: root,
-				deps: vec![Dep { shim: dep.shim, ty: dep_ty }],
-			},
-		)
-		.map(|()| None);
+		// no node, and so no demand formula, no pin and no card: the carry is filled in the same
+		// generated line as the series it follows, which is what leaves it nothing to sleep through.
+		if !st.samples.iter().any(|s| s.key == key) {
+			st.samples.push(Sample { key, ty: cell.to_token_stream() });
+		}
+		return Ok(None);
 	}
 
 	if is_root(st, &key) {
@@ -307,6 +296,13 @@ pub fn resolve(input: TokenStream) -> Result<TokenStream> {
 fn field_of(key: &str) -> Ident {
 	let s: String = key.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
 	Ident::new(&format!("__n_{s}"), Span::call_site())
+}
+
+/// Where the carry over a sampled series stands. Not a node field: nothing steps it, nothing
+/// resets it, and `Sampling<C>` is what the frame slot beside it is keyed on.
+fn held_of(key: &str) -> Ident {
+	let s: String = key.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+	Ident::new(&format!("__held_{s}"), Span::call_site())
 }
 
 /// What `#[node(anchored)]` may be written on. Here rather than in a `const` assert because the
@@ -391,6 +387,40 @@ fn emit(st: State) -> Result<TokenStream> {
 		.collect();
 
 	let decls: Vec<TokenStream> = nodes.iter().map(|n| if n.emit { quote!(#dag::Emit) } else { quote!(#dag::Node) }).collect();
+
+	// one carry per sampled series: a graph field for the value that stands, and a frame slot pushed
+	// in the series' own line, so a `Sampling` read is a plain `Has` off `Sampling<C>`.
+	let held_fields: Vec<Ident> = st.samples.iter().map(|s| held_of(&s.key)).collect();
+	let held_decls: Vec<TokenStream> = st
+		.samples
+		.iter()
+		.zip(&held_fields)
+		.map(|(s, f)| {
+			let cell = &s.ty;
+			quote!(#f: ::core::option::Option<<<#cell as #dag::Series>::Item as #dag::Present>::Val>)
+		})
+		.collect();
+	let carries = |key: &str| -> TokenStream {
+		st.samples
+			.iter()
+			.filter(|s| s.key == key)
+			.map(|s| {
+				let (cell, f) = (&s.ty, held_of(&s.key));
+				quote!(let f = #dag::Cons::<#dag::Sampling<#cell>, _> { out: #dag::carry::<#cell>(#f, #dag::Has::<#cell, _>::get(&f)), tail: f };)
+			})
+			.collect()
+	};
+	// a carry over a root is filled the same way a carry over a node is, in the line that puts its
+	// source on the frame — which for a root is the seeding, not a step.
+	let root_pushes: Vec<TokenStream> = c
+		.roots
+		.iter()
+		.map(|r| {
+			let (ty, field) = (&r.ty, &r.field);
+			let carry = carries(&key_of(&r.ty)?.0);
+			Ok(quote!(let f = #dag::Cons::<#ty, _> { out: #field, tail: f }; #carry))
+		})
+		.collect::<Result<_>>()?;
 
 	// the fidelity census. Both sides read it off the kernel the node named, so neither is tracked
 	// through the driver and neither can drift from what actually computes.
@@ -479,12 +509,14 @@ fn emit(st: State) -> Result<TokenStream> {
 				}
 			}
 		});
-		match (n.emit, uncond) {
+		let step = match (n.emit, uncond) {
 			(true, true) => quote!(let f = #dag::step_emit_obs(f, #f, true, ts, __sweep, obs);),
 			(true, false) => quote!(#demand let f = #dag::step_emit_obs(f, #f, d, ts, __sweep, obs);),
 			(false, true) => quote!(#rewind let f = #dag::step_obs(f, #f, __sweep, obs);),
 			(false, false) => quote!(#demand #rewind let f = #dag::step_when_obs(f, #f, d, __sweep, obs);),
-		}
+		};
+		let carry = carries(&n.key);
+		quote!(#step #carry)
 	});
 
 	// an `Emitter` resets through its own method: `Default::default()` on the wrapper would drop the
@@ -542,6 +574,7 @@ fn emit(st: State) -> Result<TokenStream> {
 		#[derive(Default)]
 		#vis struct #graph {
 			#(#node_fields,)*
+			#(#held_decls,)*
 			__pending: #pending,
 			__sweep: #dag::Sweep,
 		}
@@ -620,7 +653,7 @@ fn emit(st: State) -> Result<TokenStream> {
 			#vis const SHAPE: #dag::Shape = #shape;
 
 			/// Every node this graph *declares*, and how much of what it read its Jacobian covers
-			/// (`r[kernels.fidelity.stated]`). The engine's own `Buffer`/`Latest` fields are left out: nobody
+			/// (`r[kernels.fidelity.stated]`). The engine's own `Buffer` fields are left out: nobody
 			/// wrote them, so nobody owes a reason for them.
 			///
 			/// Count `Partial` and `Opaque` separately and pin both — they are different admissions. Either
@@ -655,11 +688,11 @@ fn emit(st: State) -> Result<TokenStream> {
 				#(#standing_decls)*
 
 				let #batches { #(#rfields,)* } = b;
-				let Self { #(#fields,)* __pending, __sweep } = self;
+				let Self { #(#fields,)* #(#held_fields,)* __pending, __sweep } = self;
 
 				#(#dag::observe_root::<#root_tys, _>(#rfields, __sweep, obs);)*
 				let f = #dag::Nil;
-				#(let f = #dag::Cons::<#root_tys, _> { out: #rfields, tail: f };)*
+				#(#root_pushes)*
 				#(#steps)*
 
 				#(

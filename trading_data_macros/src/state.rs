@@ -125,8 +125,8 @@ pub struct NodeInfo {
 	pub key: String,
 	pub ty: TokenStream,
 	pub emit: bool,
-	/// Written by the driver rather than declared: a `Buffer`/`Latest` the frame needs is the engine's
-	/// own node, so it is left out of the hatch census a graph pins.
+	/// Written by the driver rather than declared: a `Buffer` the frame needs is the engine's own
+	/// node, so it is left out of the hatch census a graph pins.
 	pub generated: bool,
 	pub latch: bool,
 	/// Whether a sleep of this node is one a replay undoes — see [`Rewound`](trading_data_dag::Rewound).
@@ -139,6 +139,13 @@ pub struct Buf {
 	pub key: String,
 	pub ty: TokenStream,
 	pub reaches: Vec<TokenStream>,
+}
+
+/// One series some consumer reads through `Sampling`. No reach to join and no node to record: the
+/// carry is a graph field and a frame slot filled in the series' own sweep line.
+pub struct Sample {
+	pub key: String,
+	pub ty: TokenStream,
 }
 
 /// Which shim's answer the next driver round is reading.
@@ -168,6 +175,7 @@ pub struct State {
 	/// Post-order — the topological order the sweep is emitted in.
 	pub order: Vec<String>,
 	pub bufs: Vec<Buf>,
+	pub samples: Vec<Sample>,
 	/// Asked spelling → the key the shim answered under, for every dep named through a
 	/// `node_alias!`. Consumer edges are built from spellings, and a spelling need not be a key.
 	pub aliases: Vec<(String, String)>,
@@ -256,6 +264,12 @@ impl State {
 			bufs.push(Buf { key, ty, reaches });
 		}
 
+		let mut smr = r.list();
+		let mut samples = Vec::new();
+		while !smr.eof() {
+			samples.push(Sample { key: smr.text(), ty: smr.brace() });
+		}
+
 		let mut alr = r.list();
 		let mut aliases = Vec::new();
 		while !alr.eof() {
@@ -283,6 +297,7 @@ impl State {
 			stack,
 			order,
 			bufs,
+			samples,
 			aliases,
 			queue,
 		}
@@ -334,6 +349,10 @@ impl ToTokens for State {
 			let (k, t) = (text(&b.key), brace(&b.ty));
 			let hs = list(&b.reaches, |h| brace(h).into_token_stream());
 			quote!(#k #t #hs)
+		}));
+		ts.append(list(&self.samples, |s| {
+			let (k, t) = (text(&s.key), brace(&s.ty));
+			quote!(#k #t)
 		}));
 		ts.append(list(&self.aliases, |(a, k)| {
 			let (a, k) = (text(a), text(k));

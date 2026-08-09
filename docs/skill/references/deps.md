@@ -14,17 +14,16 @@ type Deps = (Gating<Screener>, Buffering<Bars<TF>, Over<OVER>>, Sampling<Momentu
 | `C` | `C::Out<'t>` — this tick's batch, nothing more | `C` | `Unit` | the producer, for one tick | no |
 | `Gating<G: Gate>` | `bool` — permission, not data | `G` | `Unit` | — | **yes** |
 | `Buffering<C: Series, R: Reach>` | `Hist<'t, Item>` (the series' own `Batch::View`) | `Buffer<C, K>` | `R::HORIZON` | **the engine** | no |
-| `Sampling<C: Series>` | `Option<Item::Val>` — the last value whenever it came | `Latest<C>` | `Unit` | **the engine** (one) | no |
+| `Sampling<C: Series>` | `Option<Item::Val>` — the last value whenever it came | `C` | `Unit` | **the engine** (one) | no |
 | `Folding<C, R: Reach>` | `C::Out<'t>` — plus a *claim* to fold the reach yourself | `C` | `R::HORIZON` | **the node** | no |
 
-`Buffer<C, H>` and `Latest<C>` are off the facade — naming one in dep position is a `#[node]` error
-telling you the wrapper to write instead. `Armed<E>` is the one engine-owned node you do name, because
-it is the gate.
+`Buffer<C, H>` is off the facade — naming it in dep position is a `#[node]` error telling you to write
+`Buffering` instead. `Armed<E>` is the one engine-owned node you do name, because it is the gate.
 
 `Sampling` hands you what *stands*, on every tick, and says nothing about when it was set — that is
-`r[rates.deps.tick-opaque]` on the dep side. The frame cell behind it carries both: `Latest<C>` takes a
-new value only where the sampled item differs, so an observer sees a level fire on the publications
-rather than on every tick it merely still stood. The item's `Val` owes `PartialEq` for it.
+`r[rates.deps.tick-opaque]` on the dep side. The carry behind it is no node: `graph!` fills one slot
+per sampled series in that series' own sweep line, so there is nothing there to gate, demand or draw,
+and the edge an observer sees is the one to the series itself.
 
 ### Reach is a type in dep position, a value everywhere else
 

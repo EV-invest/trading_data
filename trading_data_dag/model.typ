@@ -56,7 +56,7 @@ SWEEP ── `tick(ts, Batches)`, one straight-line monomorphized fn; no dispatc
         │
         ▼
 OBSERVATION ── the same sweep, read. `()` observer ⇒ `want() = Nothing` ⇒ erased entirely.
-   Observer::on(name, dep FRAMEs, dep gate flags, Fire { vals, jac, exact, formula, … })
+   Observer::on(name, dep NAMEs, dep gate flags, Fire { vals, jac, exact, formula, … })
    Step order IS topo order, so the observed sequence doubles as the static topology; a dep
    name never seen as a stepped node is a root.
 ```
@@ -130,7 +130,7 @@ Five spellings, no sixth. Every structural fact about an edge is one of these.
  C                         C::Out<'t>               C                  Unit         false   false     No
  Gating<G: Gate>           bool  — permission       G                  Unit         false   false     YES
  Buffering<C: Series, R>   C::Batch's own view      Buffer<C, K≥R>     R::HORIZON   false   TRUE      No
- Sampling<C: Series>       Option<Item::Val>        Latest<C>          Unit         false   TRUE      No
+ Sampling<C: Series>       Option<Item::Val>        C (+ its carry)    Unit         false   TRUE      No
  Folding<C, R>             C::Out<'t>  (a claim)    C                  R::HORIZON   TRUE    false     No
 
  A reach in DEP position is a TYPE — `Over<TF>` / `Elems<N>` / `Unbounded`, each an impl of `Reach`
@@ -142,18 +142,18 @@ Five spellings, no sixth. Every structural fact about an edge is one of these.
  cannot take a `Reach`, since no type names a join over reads the macro has not seen yet. `At<H>` is
  the identity lift, and the only place the two meet: `Buffer`'s own dep on the series it retains.
 
- Which is why the "resolves against" column is not a second spelling: `Buffer<C,H>`/`Latest<C>` in
- dep position are a `#[node]` error naming the wrapper to write instead. `K` is the join over every
- read of `C` in the graph, so no one dep site holds what it would have to state.
+ Which is why the "resolves against" column is not a second spelling: `Buffer<C,H>` in dep position
+ is a `#[node]` error naming the wrapper to write instead. `K` is the join over every read of `C` in
+ the graph, so no one dep site holds what it would have to state.
 
  Every wrapper forwards `Cell::NAME = C::NAME` and `Cell::CLOCK = C::CLOCK` — the graph predicates
  match dep names against frame cell names, and a wrapper that renamed or re-rated its dep would drop
  out of all of them. REACH / FOLDED / RETAINED / Gates are what then say WHICH reading of C is being
  asked for.
 
- `Cell::FRAME` is the "resolves against" column itself, and the one place it is not the spelling is
- `Sampling` — `Latest<C>` is a node with a name of its own, so a dep on one can state it. That is
- what `Observer::on` reports, since an observer is reading the wiring rather than the source.
+ `Sampling` keys its frame slot on ITSELF: the carry behind it is storage, not a cell, filled by
+ `carry::<C>` in `C`'s own sweep line. So `Cell::NAME` is the whole wiring story, and the edge
+ `Observer::on` reports is the one to `C` — which is the edge the sweep actually has.
 
  WHAT a `Buffering` reads is the series' own to say: `Series::Batch` is how the engine ACCUMULATES
  the reach, and its `View` is the out. `Rows<Item>` — every row, handed out as a `Hist` — is the
@@ -180,7 +180,8 @@ _Who holds the history_ is the axis the wrappers actually partition:
 ```
         ┌── engine holds it ──────────┬── node holds it ────────┬── engine holds ONE ──┐
         │   Buffering<C, R>           │   Folding<C, R>         │   Sampling<C>        │
-        │   → Buffer<C, K>  (a node)  │   → nothing retained    │   → Latest<C> (node) │
+        │   → Buffer<C, K>  (a node)  │   → nothing retained    │   → a carry slot in  │
+        │                             │                         │     `C`'s own line   │
         │   re-warms through a skip   │   CANNOT re-warm ⇒      │   monotone: once it  │
         │   ⇒ darkening a consumer    │   `Gating` + `Folding`  │   holds a level, it  │
         │     is cheap                │   is a COMPILE ERROR    │   holds one forever  │
@@ -245,7 +246,7 @@ Demand reads these edges backwards, and what it derives is a FORMULA, not a set:
   node((-1.5, 2.7), [`C` in frame], name: <cellc>),
   node((-0.5, 2.7), [`G: Gate` in frame], name: <cellg>),
   node((0.6, 2.7), [`Buffer<C, K>`], name: <cellb>),
-  node((1.8, 2.7), [`Latest<C>`], name: <celll>),
+  node((1.8, 2.7), [carry beside `C`], name: <celll>),
   node((3.0, 2.7), [`C` in frame], name: <cellf>),
 
   edge(<bare>, <cellc>, "->"),
@@ -447,14 +448,16 @@ gateable the moment the lane became a run of rows the engine could retain for it
                element index threaded through `Nudge::stage`, and `Opaque` already says these
                have no algebra.
 
-  ENGINE-OWNED NODES — real frame cells nobody writes:  Buffer<C,H>   Latest<C>   Armed<N>
+  ENGINE-OWNED NODES — real frame cells nobody writes:  Buffer<C,H>   Armed<N>
       each: ungated, historic, exactly one per series/episode, advances EVERY tick.
       Being warm is their whole job — that is what makes darkening a consumer cheap.
       Two `Buffer<C, _>` in one frame make every `Buffering<C, _>` ambiguous: same failure
       as two instances of any node type.
-      "Nobody writes" is now checked, not asked: `Buffer`/`Latest` are off the facade and a
-      dep naming either is a `#[node]` error (§1.3). `Armed<N>` stays nameable, and is the
-      one of the three an author does name — `Gating<Armed<E>>`, because it is the gate.
+      "Nobody writes" is now checked, not asked: `Buffer` is off the facade and a dep naming
+      it is a `#[node]` error (§1.3). `Armed<N>` stays nameable, and is the one of the two
+      an author does name — `Gating<Armed<E>>`, because it is the gate.
+      A `Sampling` carry is NOT one of these: it is a graph field and a frame slot, filled in
+      its source's own sweep line, so it has no name, no card and no demand to speak of.
 ```
 
 #align(center, diagram(
@@ -485,7 +488,7 @@ gateable the moment the lane became a run of rows the engine could retain for it
   edge(<lv>, <nd>, "->", label: [`type Kernel`], label-size: 7pt),
   edge(<nd>, <ga>, "->"),
 
-  node((-1.1, 4.1), align(center)[engine-owned nodes \ #text(7pt)[`Buffer<C,H>` · `Latest<C>`] \ #text(7pt)[ungated · historic · every tick]], fill: rgb("#e4edf5"), name: <eng2>),
+  node((-1.1, 4.1), align(center)[engine-owned nodes \ #text(7pt)[`Buffer<C,H>` · `Armed<N>`] \ #text(7pt)[ungated · historic · every tick]], fill: rgb("#e4edf5"), name: <eng2>),
   node((1.1, 4.1), align(center)[`Latch` \ #text(7pt)[`Cut` · `commutate` · `standing`]], name: <la>),
   node((2.4, 4.1), align(center)[`Armed<N>` \ #text(7pt)[`Cut = N` by construction]], fill: rgb("#f6e6e6"), name: <ar>),
 
@@ -534,7 +537,7 @@ gateable the moment the lane became a run of rows the engine could retain for it
               POINTS, not shares, and is normalised against `POINTS.sqrt()` rather than against
               itself — so one read out of a hundred declared stays a whisper. What nothing argued
               for lands in `Outcome::default()`'s slot, which is why the space has to own one.
-  Present     "did this element carry anything" — what `Latest` must ask before it keeps a
+  Present     "did this element carry anything" — what `carry` must ask before it keeps a
               level. The dominant item is `Option<f64>`, a rate-preserving decline, and
               retaining one of those would hold an absence forever.
   Stamped     ts_ns() — required of every buffered item; a history you cannot index by time

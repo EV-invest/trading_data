@@ -26,8 +26,6 @@ pub enum Kind {
 	Latch,
 	/// The retention `graph!` writes beside a series some consumer reads through [`Buffering`](crate::Buffering).
 	Buffer,
-	/// The level it writes beside one read through [`Sampling`](crate::Sampling).
-	Latest,
 }
 
 impl Kind {
@@ -39,7 +37,6 @@ impl Kind {
 			Kind::Gate => "gate",
 			Kind::Latch => "latch",
 			Kind::Buffer => "buffer",
-			Kind::Latest => "latest",
 		}
 	}
 }
