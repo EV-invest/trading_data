@@ -57,7 +57,7 @@ This is deliberate: a skip costs a **type**, checked at compile time, rather tha
 | `gating_leads(GATES)` | every `Gating` dep must **precede** every plain one in the tuple — `open` reads left to right, so a closed gate short-circuits before a plain dep is pulled |
 | `!any(GATES) \|\| !any(FOLDS)` | a gated node cannot hold its own reach: a closed gate pulls no deps, so a `Folding` dep never re-warms. Retain it in the frame instead |
 | `K.serves(H)` | the buffer's joined reach must cover this read, and `H` must be neither `Unit` nor `Unbounded` |
-| `O::LEN > 0` | a zero-slot out would fire and leave the buffer byte-identical to an unfired one — the one way absence could mean two things |
+| `O::LEN > 0` | a tape stores values, not flags, so a zero-slot out would fire and leave the buffer byte-identical to an unfired one — a publication nothing could record |
 | `Plot::coherent` | a multi-plot node must name each plot's slots |
 | `MAX_VARS` / scalar deps | `Symbolic` takes ≤16 deps and every one must be scalar — a vector dep desyncs `Var<I>` |
 | `no frame cell answers for {N}` | the frame holds what the walk derived from `outputs`; a cell nothing reaches is never stepped |

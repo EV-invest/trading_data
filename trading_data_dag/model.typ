@@ -506,11 +506,12 @@ gateable the moment the lane became a run of rows the engine could retain for it
               empty slot back to a real `None`.
               &[T] flattens to its LAST element (the observer's end-of-batch view);
               fires() = len — rate is slice length, firing is element Option-ness.
-              ABSENCE IS ONE THING. `None` — and the empty batch — IS not firing, not a
-              fire carrying nothing: `Option<T>` fills NaN and returns false, so no reading
-              downstream may give an absent out a meaning of its own. That makes the fired
-              bit redundant with the slots being there, which every consumer is free to rely
-              on, and LEN ≥ 1 (§1.7) is what keeps the two inseparable.
+              ABSENCE IS ONE THING. `None` — and the empty batch — is a VALUE, and the
+              value means "nothing stands", whatever the cause: never published, stopped,
+              gate shut. No reading downstream may give it a second meaning. WHETHER THE
+              NODE FIRED is a different axis, the engine's own, which no dep read exposes
+              (`r[rates.deps.tick-opaque]`) — which is what leaves a level free to publish
+              only on the ticks its value actually moves.
   Bump        bump(self, slot, h) -> (Self, dh)       dh = the step ACTUALLY taken. A raw
               column moves in whole ticks; a discrete slot returns 0.0 and its Jacobian
               column stays NaN rather than a fabricated zero.
@@ -558,9 +559,9 @@ gateable the moment the lane became a run of rows the engine could retain for it
                to exist; everything else is bookkeeping around it.
   Has          `Buffering<C,H>` against `Buffer<C,K>` const-asserts `K.serves(H)`, and that
                H is neither Unit nor Unbounded.
-  Flats::of    `O::LEN > 0`, per out type, at every observed node — a zero-slot out would fire
-               and leave the buffer indistinguishable from an unfired one, which is the one way
-               absence could come to mean two things (§1.6).
+  Flats::of    `O::LEN > 0`, per out type, at every observed node — a tape stores values, not
+               flags, so a zero-slot out would fire and leave the buffer byte-identical to an
+               unfired one: a publication nothing could record.
   Plot         `Plot::coherent` — a multi-plot node must name each plot's slots.
   Run          `Level`'s run-shaped sibling, sealed by the same supertrait: `Scan` · `Close` ·
                `Fold` · `Raw`. An `Emit` names one exactly as a `Node` names a `Level` one.

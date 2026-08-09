@@ -73,12 +73,12 @@ instantiated, and neither is the source lane that would have fed it.
 
 Each is enforced, but knowing it before you write saves a rewrite.
 
-- **A dep read never says whether that dep produced this tick.** `None` means *no value has ever been
-  produced* and carries nothing else — a shut gate and a never-published node are the same state,
-  permanently (`r[rates.deps.tick-opaque]`).
-- **Absence is one thing.** `None`, the empty batch and an all-NaN flattening all mean *did not
-  fire*. Never give an absent out a meaning of its own; a node with something to say about its
-  silence says it as a value (`r[outs.absence.one-reading]`).
+- **A dep read never says whether that dep produced this tick.** `None` means *nothing stands* and
+  carries nothing else — never published, stopped publishing, and a shut gate are the same state,
+  deliberately and permanently (`r[rates.deps.tick-opaque]`).
+- **Absence is one thing.** `None`, the empty batch and an all-NaN flattening are one reading, and
+  the meaning is taken: never attach a second one to it. Whether a node fired is a different axis
+  entirely, the engine's own, and no dep read exposes it (`r[outs.absence.one-reading]`).
 - **A node owns its rate.** `Cell::CLOCK` is declared on the cell, never derived from or overridable
   through `Deps`, and a clocked node sees only *closed* elements (`r[rates.node.declared]`,
   `r[rates.node.whole-elements]`).
