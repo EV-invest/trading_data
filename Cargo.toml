@@ -28,7 +28,7 @@ default-members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
 license = "BlueOak-1.0.0"
@@ -57,12 +57,12 @@ unused_features = "allow"
 [workspace.dependencies]
 # The `version` is what a published manifest carries once cargo strips the `path`; without it the
 # crate cannot be published at all. One shared version across the seven, so a release is one bump.
-trading_data_core = { path = "trading_data_core", version = "0.5.0" }
-trading_data_dag = { path = "trading_data_dag", version = "0.5.0" }
-trading_data_derivatives = { path = "trading_data_derivatives", version = "0.5.0" }
-trading_data_expr = { path = "trading_data_expr", version = "0.5.0" }
-trading_data_macros = { path = "trading_data_macros", version = "0.5.0" }
-trading_data_persistence = { path = "trading_data_persistence", version = "0.5.0" }
+trading_data_core = { path = "trading_data_core", version = "0.5.1" }
+trading_data_dag = { path = "trading_data_dag", version = "0.5.1" }
+trading_data_derivatives = { path = "trading_data_derivatives", version = "0.5.1" }
+trading_data_expr = { path = "trading_data_expr", version = "0.5.1" }
+trading_data_macros = { path = "trading_data_macros", version = "0.5.1" }
+trading_data_persistence = { path = "trading_data_persistence", version = "0.5.1" }
 
 anyhow = "1"
 arrayvec = "0.7"
