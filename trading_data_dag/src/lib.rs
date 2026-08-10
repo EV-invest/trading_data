@@ -3814,6 +3814,9 @@ fn same(a: &[f64], b: &[f64]) -> bool {
 #[derive(Clone, Copy)]
 struct Flats<'s> {
 	fired: bool,
+	/// Whether every dep stood — the same guard the kernels read a body behind, which the algebra's
+	/// trace reading owes too (`r[impl outs.absence.typed]`).
+	deps_fired: bool,
 	/// The node published, and published what it had published before. Apart from [`fired`](Flats::fired)
 	/// because a run's `fires()` is its length whatever the last element was, and only the change
 	/// reading may zero it.
@@ -3881,7 +3884,7 @@ impl<'s> Flats<'s> {
 		fired &= !unchanged;
 		dep_buf.clear();
 		dep_buf.resize(D::LEN, f64::NAN);
-		D::flat(deps, dep_buf);
+		let deps_fired = D::flat(deps, dep_buf);
 		let (jac, exact, block) = match fill.filter(|_| fired) {
 			// NaN, not zero: a column the kernel leaves alone is one it has no signal for, and the
 			// absorbing element is what says so (§1.6).
@@ -3904,6 +3907,7 @@ impl<'s> Flats<'s> {
 		};
 		Flats {
 			fired,
+			deps_fired,
 			unchanged,
 			vals,
 			deps: dep_buf,
@@ -4211,7 +4215,9 @@ where
 		names: <N::Deps as DepSet>::NAMES,
 		parts: (0..<N::Deps as DepFlat>::LEN).map(|i| f.diff(i).simplify()).collect(),
 	});
-	let trace = formula.map(|f| f.trace(flat.deps));
+	// the value reading is taken behind `every dep stood`, and a trace of a body over an operand the
+	// kernel refused to read would be a fifth answer none of the other three gave.
+	let trace = formula.filter(|_| flat.deps_fired).map(|f| f.trace(flat.deps));
 
 	let fire = Fire {
 		formula: formula.map(|f| f as &dyn core::fmt::Display),
@@ -4530,6 +4536,7 @@ where
 	sweep.deps.clear();
 	let flat = Flats {
 		fired,
+		deps_fired: true,
 		unchanged: false,
 		vals: &sweep.vals,
 		deps: &sweep.deps,
