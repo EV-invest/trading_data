@@ -258,7 +258,7 @@ is evidence of anything: `Live` and `Replay` differ only in how a `Lane` gets fi
     (0, 3.9),
     align(
       center,
-    )[`run = buf[cur .. run_end(bound)]` \ #text(7pt)[deltas also break on `FrameKind`]],
+    )[`run = buf[cur .. run_end(bound)]` \ #text(7pt)[every lane cuts on the same bound]],
     fill: luma(235),
     name: <run>,
   ),

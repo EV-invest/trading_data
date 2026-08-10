@@ -25,9 +25,9 @@ Two sentences hold up everything below, and each sub-crate is one of them made m
 ## Crates
 
 ```
-trading_data_expr           #![no_std], zero deps — the primitive algebra: one expression, four readings
+trading_data_expr           #![no_std], one dep (libm) — the primitive algebra: one expression, four readings
                             (eval / exact grad / LaTeX / value-annotated trace)
-trading_data_dag            #![no_std], zero deps — domain-free derivation engine
+trading_data_dag            core + alloc in its own source — domain-free derivation engine
 trading_data_derivatives    the fundamental primitives: indicator state machines, and the bar/RSI nodes that are
                             nothing but those machines wired to a series — every strategy names these
 trading_data_core           the shared parse boundary both exchange_interactions and persistence see: BatchTrades, the raw
@@ -56,8 +56,10 @@ leaves by review.
 a live ws `BatchTrades` extends the lane columns and the parquet writer in one pass — no exchange
 type leaks into the store, no store type leaks into the exchange layer.
 
-`trading_data_dag`'s `no_std` **is** the enforced boundary: the engine can never grow domain or I/O
-knowledge. Persistence knows nothing of derivations; core depends on the dag only because orphan
+`trading_data_dag` reaches for `core` and `alloc` and for nothing else — no `std::` path appears in
+its source, so the engine has no route to I/O. What it no longer carries is the `#![no_std]` that
+made that a *check* rather than a habit: `Horizon::Over` is a `v_utils::Timeframe`, and that crate
+links std. Persistence knows nothing of derivations; core depends on the dag only because orphan
 rules put a type's impls in the type's crate, and nothing flows back.
 
 ### Where the detail lives
