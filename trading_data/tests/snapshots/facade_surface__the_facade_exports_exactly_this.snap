@@ -113,7 +113,9 @@ trading_data_expr::gt
 trading_data_expr::lt
 trading_data_expr::max
 trading_data_expr::min
+trading_data_expr::or
 trading_data_expr::powi_of
+trading_data_expr::present
 trading_data_expr::select
 trading_data_expr::sqrt
 trading_data_expr::square

@@ -1,0 +1,34 @@
+error[E0080]: evaluation panicked: a Symbolic node reads levels: a run's last element is a function of how the feed grouped its messages, so name the dep through `Sampling<C>` (the level the engine carries) or `Buffering<C, R>`
+  --> <sysroot>/library/core/src/panic.rs:LL:CC
+  |
+  = note: evaluation of `trading_data_dag::env_of::<Blend>::{constant#1}` failed here
+  |
+  ::: $DIR/trading_data_dag/src/lib.rs:LL:CC
+  |
+LL | / ...   assert!(
+LL | | ...       !any(<<S as Symbolic>::Deps as DepFlat>::RUNS),
+LL | | ...       "a Symbolic node reads levels: a run's last element is a function of how the feed grouped its messages, so name the de...
+LL | | ...   );
+  | |_______- in this macro invocation
+
+note: erroneous constant encountered
+  --> $DIR/trading_data_dag/src/lib.rs:LL:CC
+  |
+LL | /     const {
+LL | |         let n = <<S as Symbolic>::Deps as DepSet>::NAMES.len();
+LL | |         assert!(
+LL | |             <<S as Symbolic>::Deps as DepFlat>::LEN == n,
+...    |
+LL | |         );
+LL | |     }
+  | |_____^
+
+note: the above error was encountered while instantiating `fn trading_data_dag::env_of::<Blend>`
+  --> $DIR/trading_data_dag/src/lib.rs:LL:CC
+  |
+LL |         let (env, fired) = env_of::<N>(&deps);
+  |                            ^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0080`.

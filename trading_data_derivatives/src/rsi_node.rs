@@ -155,6 +155,8 @@ pub struct RsiValues {
 }
 
 impl Flat for RsiValues {
+	/// Both slots are [`Reading`]s, and the `value` body declines into each on its own schedule.
+	const ABSENTABLE: bool = true;
 	const DIMS: &'static [usize] = &[2];
 
 	fn flat(&self, out: &mut [f64]) -> bool {

@@ -1,0 +1,36 @@
+error[E0080]: evaluation panicked: a `Select` condition that may not be there decides nothing: `present(x)` is the test over an absence, and the branches are where one is written
+  --> <sysroot>/library/core/src/panic.rs:LL:CC
+  |
+  = note: evaluation of `trading_data_dag::select::<trading_data_expr::Absent, trading_data_expr::Const, trading_data_expr::Const>::{constant#0}` failed here
+  |
+  ::: $DIR/trading_data_expr/src/lib.rs:LL:CC
+  |
+LL | / ...   assert!(
+LL | | ...       !C::MAYBE,
+LL | | ...       "a `Select` condition that may not be there decides nothing: `present(x)` is the test over an absence, and the branches...
+LL | | ...   )
+  | |_______- in this macro invocation
+
+note: erroneous constant encountered
+  --> $DIR/trading_data_expr/src/lib.rs:LL:CC
+  |
+LL | /     const {
+LL | |         assert!(
+LL | |             !C::MAYBE,
+LL | |             "a `Select` condition that may not be there decides nothing: `present(x)` is the test over an absence, and the branch...
+LL | |         )
+LL | |     }
+  | |_____^
+
+note: the above error was encountered while instantiating `fn select::<Absent, Const, Const>`
+  --> $DIR/trading_data_macros/tests/compile_fail/selects_on_a_declination.rs:LL:CC
+  |
+LL |     select(absent(), constant(1.0), constant(2.0))
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: the full name for the type has been written to '$DIR/trading_data_macros/target/ui/0/tests/compile_fail/selects_on_a_declination.long-type.txt'
+  = note: consider using `--verbose` to print the full type name to the console
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0080`.

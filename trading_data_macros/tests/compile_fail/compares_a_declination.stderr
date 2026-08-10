@@ -1,0 +1,66 @@
+error[E0080]: evaluation panicked: nothing compares a reading that may not be there: `or(x, d)` it against a number, or drop the comparison and let the absence propagate
+  --> <sysroot>/library/core/src/panic.rs:LL:CC
+  |
+  = note: evaluation of `trading_data_dag::lt::<trading_data_expr::Absent, trading_data_expr::Const>::{constant#0}` failed here
+  |
+  ::: $DIR/trading_data_expr/src/lib.rs:LL:CC
+  |
+LL | / ...   assert!(
+LL | | ...       !L::MAYBE && !R::MAYBE,
+LL | | ...       "nothing compares a reading that may not be there: `or(x, d)` it against a number, or drop the comparison and let the a...
+LL | | ...   )
+  | |_______- in this macro invocation
+
+note: erroneous constant encountered
+  --> $DIR/trading_data_expr/src/lib.rs:LL:CC
+  |
+LL | /     const {
+LL | |         assert!(
+LL | |             !L::MAYBE && !R::MAYBE,
+LL | |             "nothing compares a reading that may not be there: `or(x, d)` it against a number, or drop the comparison and let the...
+LL | |         )
+LL | |     }
+  | |_____^
+
+note: the above error was encountered while instantiating `fn trading_data_dag::lt::<trading_data_expr::Absent, trading_data_expr::Const>`
+  --> $DIR/trading_data_macros/tests/compile_fail/compares_a_declination.rs:LL:CC
+  |
+LL |     lt(absent(), constant(1.0))
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0080]: evaluation panicked: nothing compares a reading that may not be there: `or(x, d)` it against a number, or drop the comparison and let the absence propagate
+  --> <sysroot>/library/core/src/panic.rs:LL:CC
+  |
+  = note: evaluation of `trading_data_dag::gt::<trading_data_expr::Add<trading_data_expr::Var<0>, trading_data_expr::Absent>, trading_data_expr::Const>::{constant#0}` failed here
+  |
+  ::: $DIR/trading_data_expr/src/lib.rs:LL:CC
+  |
+LL | / ...   assert!(
+LL | | ...       !L::MAYBE && !R::MAYBE,
+LL | | ...       "nothing compares a reading that may not be there: `or(x, d)` it against a number, or drop the comparison and let the a...
+LL | | ...   )
+  | |_______- in this macro invocation
+
+note: erroneous constant encountered
+  --> $DIR/trading_data_expr/src/lib.rs:LL:CC
+  |
+LL | /     const {
+LL | |         assert!(
+LL | |             !L::MAYBE && !R::MAYBE,
+LL | |             "nothing compares a reading that may not be there: `or(x, d)` it against a number, or drop the comparison and let the...
+LL | |         )
+LL | |     }
+  | |_____^
+
+note: the above error was encountered while instantiating `fn gt::<Add<Var<0>, Absent>, Const>`
+  --> $DIR/trading_data_macros/tests/compile_fail/compares_a_declination.rs:LL:CC
+  |
+LL |     gt(v.get::<0>() + absent(), constant(1.0))
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: the full name for the type has been written to '$DIR/trading_data_macros/target/ui/0/tests/compile_fail/compares_a_declination.long-type.txt'
+  = note: consider using `--verbose` to print the full type name to the console
+
+error: aborting due to 2 previous errors
+
+For more information about this error, try `rustc --explain E0080`.

@@ -42,7 +42,7 @@ pub use trading_data_derivatives::{
 	rsi,
 	wilder,
 };
-pub use trading_data_expr::{Ex, Expr, Slots, Vars, abs, absent, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum};
+pub use trading_data_expr::{Ex, Expr, Slots, Vars, abs, absent, constant, exp, gt, lt, max, min, or, powi_of, present, select, sqrt, square, sum};
 pub use trading_data_persistence::{
 	__td_node_Book, Aggregate, Arrival, BatchTrades, Book, BookAnchors, BookChunk, BookDelta, BookDeltas, BookShape, BookUpdate, Catalog, CatalogError, Clock, Direction, Exact, Feather,
 	Feed, FrameKind, InnerTrade, LaneKind, LaneReader, Lanes, LatencyConfig, Live, LiveClock, Local, Mc, McRoot, Oi, OiRoot, Past, Precision, PrecisionPriceQty, ReadClock, Replay,

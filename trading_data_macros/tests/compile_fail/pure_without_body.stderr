@@ -15,7 +15,7 @@ help: the trait `Level<N>` is implemented for `Pure`
 LL | / impl<N> Level<N> for Pure
 LL | | where
 LL | |     N: Symbolic + Node<Deps = <N as Symbolic>::Deps>,
-LL | |     for<'t> N: Cell<Out<'t> = f64>,
+LL | |     for<'t> N::Out<'t>: Unflat,
 LL | |     <N as Symbolic>::Deps: DepFlat,
   | |___________________________________^
   = note: required for `Pure` to implement `Level<NoAlgebra>`

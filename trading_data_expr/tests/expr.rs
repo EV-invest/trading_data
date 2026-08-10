@@ -1,7 +1,7 @@
 //! One kernel, `(x0 + x1)² + |x0 − 1|`, read four ways: value, exact gradient (vs central FD),
 //! symbolic derivative (vs the gradient), and the LaTeX/trace renderings.
 
-use trading_data_expr::{Expr, Vars, abs, absent, constant, max, square};
+use trading_data_expr::{Expr, Vars, abs, absent, constant, lt, max, present, square};
 
 /// The shared kernel; returns the typed `impl Expr` so every test reads the same source of truth.
 fn kernel() -> impl Expr {
@@ -102,7 +102,7 @@ fn simplify_clears_derivative_litter() {
 /// a slope, and neither reading claims one.
 #[test]
 fn every_operator_agrees_with_a_numeric_difference() {
-	use trading_data_expr::{exp, gt, lt, max, min, powi_of, select, sqrt, sum};
+	use trading_data_expr::{exp, gt, lt, max, min, or, powi_of, select, sqrt, sum};
 
 	/// `(kernel, env)` pairs; the kernel is boxed through `lower` so one loop covers all of them.
 	macro_rules! check {
@@ -144,36 +144,36 @@ fn every_operator_agrees_with_a_numeric_difference() {
 		"cmp":    |v| lt(v.get::<0>(), v.get::<1>()),                     at [1.5, 2.5];
 		"cmp-gt": |v| gt(v.get::<0>(), v.get::<1>()),                     at [1.5, 2.5];
 		"select": |v| select(lt(v.get::<0>(), v.get::<1>()), square(v.get::<0>()), v.get::<1>()), at [1.5, 2.5];
+		"present":|v| present(v.get::<0>()) + v.get::<1>(),               at [1.5, 2.5];
+		"or":     |v| or(v.get::<0>(), v.get::<1>()),                     at [1.5, 2.5];
 	}
 }
 
 // r[verify outs.absence.typed]
-/// Every comparing operator refuses a NaN operand, and a `Select` *branch* does not — which is how a
-/// body declines. Each site is checked because the disagreement is per-operator: `min`/`max` ignore
-/// a NaN and hand back the other side, `Cmp` reads it as false, and a `Select` condition reads it as
-/// taken, so a rule closed at one of them buys nothing.
+/// A NaN that arithmetic produced — `0/0` inside a tree, which no type predicts — still reaches
+/// `Cmp` and a `Select` condition, and both refuse it. `min`/`max` are not here: they are *defined*
+/// over an absence, which the test below is about.
 #[test]
 fn nothing_compares_a_declination() {
-	use trading_data_expr::{Ast, lt, min, select};
+	use trading_data_expr::{Ast, lt, select};
 
 	// the refusals are `debug_assert` — a release build of a `Pure` node costs what the hand-written
 	// arithmetic costs (`r[kernels.pure.zero-cost]`), so there is nothing to catch there.
 	if !cfg!(debug_assertions) {
 		return;
 	}
-	let nan = || constant(f64::NAN);
+	// `0.0 / 0.0` rather than `absent()`: a declination cannot reach a comparison at all any more
+	// (`lt`/`gt`/`select`'s condition const-assert it away), so what is left to catch is the NaN the
+	// reals themselves produce.
+	let nan = || constant(0.0) / constant(0.0);
 	let b = |a: Ast| Box::new(a);
 	let quiet = std::panic::take_hook();
 	std::panic::set_hook(Box::new(|_| {}));
 	let refused = |label: &str, f: &(dyn Fn() -> f64 + std::panic::RefUnwindSafe)| {
 		assert!(std::panic::catch_unwind(f).is_err(), "{label} compared a NaN operand instead of refusing it");
 	};
-	refused("min", &|| min(nan(), constant(1.0)).0.eval(&[]));
-	refused("max", &|| max(nan(), constant(1.0)).0.eval(&[]));
 	refused("cmp", &|| lt(nan(), constant(1.0)).0.eval(&[]));
 	refused("select's condition", &|| select(nan(), constant(1.0), constant(2.0)).0.eval(&[]));
-	refused("ast min", &|| Ast::Min(b(Ast::Const(f64::NAN)), b(Ast::Const(1.0))).eval(&[]));
-	refused("ast max", &|| Ast::Max(b(Ast::Const(f64::NAN)), b(Ast::Const(1.0))).eval(&[]));
 	refused("ast cmp", &|| Ast::Cmp(b(Ast::Const(f64::NAN)), b(Ast::Const(1.0))).eval(&[]));
 	refused("ast select's condition", &|| {
 		Ast::Select(b(Ast::Const(f64::NAN)), b(Ast::Const(1.0)), b(Ast::Const(2.0))).eval(&[])
@@ -184,6 +184,61 @@ fn nothing_compares_a_declination() {
 	let declined = select(lt(constant(0.0), constant(1.0)), absent(), constant(2.0));
 	assert!(declined.0.eval(&[]).is_nan(), "a `Select` branch is where a body declines");
 	assert!(declined.0.lower().eval(&[]).is_nan());
+}
+
+// r[verify outs.absence.typed]
+/// `min`/`max` skip an absent operand, and all three readings say the same thing about which side
+/// came out — the value, the chain rule, and the symbolic derivative. This is what the type states:
+/// `Min`/`Max` are absent only where *both* operands are, so a body may compare their result.
+#[test]
+fn min_and_max_skip_an_absence() {
+	use trading_data_expr::min;
+
+	macro_rules! skips {
+		($label:literal : $e:expr,at $env:expr => $want:expr,seed_on $i:expr) => {{
+			let e = $e;
+			let env: [f64; 2] = $env;
+			assert_eq!(e.eval(&env), $want, "{}: eval", $label);
+			assert_eq!(e.lower().eval(&env), $want, "{}: the lowered reading", $label);
+			let mut g = [0.0; 2];
+			assert_eq!(e.grad(&env, 1.0, &mut g), $want, "{}: grad's value", $label);
+			assert_eq!(g[$i], 1.0, "{}: the seed lands on the operand that came out, {g:?}", $label);
+			let ast = e.lower();
+			for i in 0..2 {
+				assert_eq!(ast.diff(i).simplify().eval(&env), g[i], "{} ∂{i}", $label);
+			}
+		}};
+	}
+
+	let v = Vars;
+	skips!("max, absent left":  max(v.get::<0>(), v.get::<1>()), at [f64::NAN, 2.0] => 2.0, seed_on 1);
+	skips!("max, absent right": max(v.get::<0>(), v.get::<1>()), at [2.0, f64::NAN] => 2.0, seed_on 0);
+	skips!("min, absent left":  min(v.get::<0>(), v.get::<1>()), at [f64::NAN, 2.0] => 2.0, seed_on 1);
+	skips!("min, absent right": min(v.get::<0>(), v.get::<1>()), at [2.0, f64::NAN] => 2.0, seed_on 0);
+
+	// and the type agrees with the values: absent only where both operands are
+	assert!(!<trading_data_expr::Max<trading_data_expr::Absent, trading_data_expr::Const> as Expr>::MAYBE);
+	assert!(<trading_data_expr::Max<trading_data_expr::Absent, trading_data_expr::Absent> as Expr>::MAYBE);
+	assert!(max(absent(), constant(2.0)).0.eval(&[]) == 2.0);
+}
+
+// r[verify outs.absence.typed]
+/// The two doors a body reasons about absence through, and the asymmetry that makes `or` a node of
+/// its own: what comes back is a number exactly as often as the fallback is one, where a `Select`
+/// written by hand would be absent as often as *either* branch.
+#[test]
+fn present_and_or_read_an_absence() {
+	use trading_data_expr::or;
+
+	assert_eq!(present(absent()).0.eval(&[]), 0.0);
+	assert_eq!(present(constant(3.0)).0.eval(&[]), 1.0);
+	assert_eq!(or(absent(), constant(7.0)).0.eval(&[]), 7.0);
+	assert_eq!(or(constant(3.0), constant(7.0)).0.eval(&[]), 3.0);
+	// the lowered reading is the same expression, so it answers the same
+	assert_eq!(or(absent(), constant(7.0)).0.lower().eval(&[]), 7.0);
+	assert_eq!(present(absent()).0.lower().eval(&[]), 0.0);
+	// and what it hands back is comparable, which is the whole of what it is for
+	assert_eq!(lt(or(absent(), constant(7.0)), constant(9.0)).0.eval(&[]), 1.0);
 }
 
 /// `min`/`max` are branches, and both readings must take the *same* branch — otherwise the exact
@@ -268,7 +323,7 @@ mod fuzz {
 		fn sub(r: &mut Lcg, depth: u32) -> Box<Ast> {
 			Box::new(tree(r, depth - 1))
 		}
-		match r.below(16) {
+		match r.below(17) {
 			0 => Ast::Add(sub(r, depth), sub(r, depth)),
 			1 => Ast::Sub(sub(r, depth), sub(r, depth)),
 			2 => Ast::Mul(sub(r, depth), sub(r, depth)),
@@ -285,6 +340,7 @@ mod fuzz {
 			12 => Ast::Cmp(sub(r, depth), sub(r, depth)),
 			13 => Ast::Select(sub(r, depth), sub(r, depth), sub(r, depth)),
 			14 => Ast::Sum((0..2 + r.below(2)).map(|_| tree(r, depth - 1)).collect()),
+			15 => Ast::IsNan(sub(r, depth)),
 			_ => leaf(r),
 		}
 	}
@@ -297,7 +353,7 @@ mod fuzz {
 		}
 		let kids: Vec<&Ast> = match e {
 			Ast::Const(_) | Ast::Var(_) => vec![],
-			Ast::Neg(a) | Ast::Square(a) | Ast::Abs(a) | Ast::Sqrt(a) | Ast::Exp(a) | Ast::Powi(a, _) => vec![&**a],
+			Ast::Neg(a) | Ast::Square(a) | Ast::Abs(a) | Ast::Sqrt(a) | Ast::Exp(a) | Ast::Powi(a, _) | Ast::IsNan(a) => vec![&**a],
 			Ast::Add(a, b) | Ast::Sub(a, b) | Ast::Mul(a, b) | Ast::Div(a, b) | Ast::Min(a, b) | Ast::Max(a, b) | Ast::Cmp(a, b) => vec![&**a, &**b],
 			Ast::Select(a, b, c) => vec![&**a, &**b, &**c],
 			Ast::Sum(xs) => xs.iter().collect(),

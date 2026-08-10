@@ -6,8 +6,8 @@
 use core::fmt;
 
 use trading_data::{
-	Buffering, Bump, Carried, Cell, Elems, Env, Exact, Expr, Flat, FoldOuts, Folding, Folds, Glance, Horizon, Lagged, Lanes, Over, RsiSpec, RunOuts, Runs, Side, Slots, Stamped, Symbolic,
-	Tag, Timeframe, TradeCols, Trades, Vars, Witness, always_present, constant, node, slice_nudge,
+	Buffering, Bump, Carried, Cell, Elems, Env, Exact, Expr, Flat, FoldOuts, Folding, Folds, Glance, Horizon, Lagged, Lanes, Over, Reading, RsiSpec, RunOuts, Runs, Sampling, Side, Slots,
+	Stamped, Symbolic, Tag, Timeframe, TradeCols, Trades, Vars, Witness, always_present, constant, node, slice_nudge,
 };
 use v_utils::*;
 
@@ -63,9 +63,9 @@ impl<const TF: Timeframe, const WIN: usize> RollingVolUsd<TF, WIN> {
 }
 
 /// A pure blend of the current levels — the one genuinely differentiable node here (every other
-/// kernel is stateful or batch). Its value *is* an [`Expr`] of the scalar (`.last()`) views of its
-/// deps, so it differentiates and documents itself exactly; `main` asserts the exact Jacobian
-/// against the retained finite-difference one, tick for tick.
+/// kernel is stateful or batch). Its value *is* an [`Expr`] of its deps' standing levels, so it
+/// differentiates and documents itself exactly; `main` asserts the exact Jacobian against the
+/// retained finite-difference one, tick for tick.
 #[derive(Clone, Copy, Default)]
 pub struct Signal;
 fn signed(side: Side, notional: f64) -> f64 {
@@ -219,11 +219,18 @@ impl<const TF: Timeframe, const WIN: usize> Runs for RollingVolUsd<TF, WIN> {
 slice_nudge!([const TF: Timeframe, const WIN: usize] RollingVolUsd<TF, WIN>, Option<f64>);
 
 impl Cell for Signal {
-	type Out<'t> = f64;
+	/// Its three deps warm on three different schedules, and the blend is a number only once all of
+	/// them stand — which is what the kernel publishes through, and what a bare `f64` had no channel
+	/// for.
+	type Out<'t> = Reading;
 }
 #[node]
 impl Symbolic for Signal {
-	type Deps = (Lambda<{ TF_1MIN }, 61>, RollingVolUsd<{ TF_1MIN }, 60>, Cvd);
+	/// [`Sampling`] on all three: a level node reads levels, and the last element of a run is a
+	/// reading of how the feed grouped its messages rather than of the market
+	/// (`r[rates.deps.tick-opaque]`). The carry is monotone, so what this blends is the standing value
+	/// of each series however many ticks ago it published.
+	type Deps = (Sampling<Lambda<{ TF_1MIN }, 61>>, Sampling<RollingVolUsd<{ TF_1MIN }, 60>>, Sampling<Cvd>);
 
 	fn body(&self, v: Vars) -> impl Expr {
 		let (lambda, vol, cvd) = (v.get::<0>(), v.get::<1>(), v.get::<2>());

@@ -103,7 +103,7 @@ use core::any::TypeId;
 pub use shape::{Kind, NodeShape, Pin, Shape, Under};
 use trading_data_expr::Ast;
 /// The algebra a body is written in, re-exported so a crate declaring nodes needs only this one.
-pub use trading_data_expr::{Ex, Expr, Slots, Vars, abs, absent, constant, exp, gt, lt, max, min, powi_of, select, sqrt, square, sum};
+pub use trading_data_expr::{Ex, Expr, Slots, Vars, abs, absent, constant, exp, gt, lt, max, min, or, powi_of, present, select, sqrt, square, sum};
 use v_utils::Timeframe;
 
 /// How far back a dep position reaches: nothing at all (a bare dep), the engine's retention
@@ -462,6 +462,14 @@ pub trait Flat: Copy {
 		}
 		p
 	};
+	/// Whether this out has an absence channel — whether "no reading" is a state it can be in
+	/// (`r[impl outs.absence.typed]`). A body that may decline owes one, which is what the kernels
+	/// check its [`Expr::MAYBE`] against.
+	const ABSENTABLE: bool = false;
+	/// Whether this out is a *run* — several elements, of which the flattening is only the last. A
+	/// [`Level`] node reading one would be reading how the feed grouped its messages
+	/// (`r[rates.deps.tick-opaque]`), which is why [`env_of`]/[`verdict_env`] const-assert against it.
+	const RUN: bool = false;
 	/// Writes all `LEN` slots of `out`; returns fired. `!fired` ⇒ NaN-filled.
 	fn flat(&self, out: &mut [f64]) -> bool;
 	/// How many elements this out fired: scalars/arrays 1, `Option` 0/1, `&[T]` its len.
@@ -556,6 +564,7 @@ impl core::fmt::Debug for Reading {
 }
 
 impl Flat for Reading {
+	const ABSENTABLE: bool = true;
 	const DIMS: &'static [usize] = &[];
 
 	fn flat(&self, out: &mut [f64]) -> bool {
@@ -686,6 +695,7 @@ impl<const N: usize> Bump for [f64; N] {
 /// `Option` stays the multi-rate channel: `None` flattens to NaN + unfired.
 // r[impl outs.absence.one-reading]
 impl<T: Flat> Flat for Option<T> {
+	const ABSENTABLE: bool = true;
 	const DIMS: &'static [usize] = T::DIMS;
 
 	fn flat(&self, out: &mut [f64]) -> bool {
@@ -719,6 +729,7 @@ impl<T: Bump> Bump for Option<T> {
 // r[impl outs.absence.one-reading]
 impl<T: Flat> Flat for &[T] {
 	const DIMS: &'static [usize] = T::DIMS;
+	const RUN: bool = true;
 
 	fn flat(&self, out: &mut [f64]) -> bool {
 		match self.last() {
@@ -959,9 +970,15 @@ const fn gating_leads(gates: &[bool]) -> bool {
 pub trait DepFlat: DepSet {
 	const DIMS: &'static [&'static [usize]];
 	const LEN: usize;
+	/// Per-dep [`Flat::RUN`], positionally — which of these inputs are runs rather than levels. Here
+	/// rather than on [`DepSet`] because only this trait bounds the deps' outs by [`Flat`].
+	const RUNS: &'static [bool];
 	/// Per-dep scratch for the finite-difference re-advance (slice deps copy their batch here).
 	type Scratch: Default;
-	fn flat(outs: &Self::Outs<'_>, dst: &mut [f64]);
+	/// Writes every dep's slots and returns whether *all* of them fired. A [`Level`] kernel reads that
+	/// answer rather than the slots' NaN-ness, because the deps of one are levels
+	/// (`r[impl rates.deps.tick-opaque]`) and "has never stood" is invariant under grouping.
+	fn flat(outs: &Self::Outs<'_>, dst: &mut [f64]) -> bool;
 	/// Materializes the pulled outs into owned `scratch`, bumping the element owning `slot` by `h`
 	/// and returning the perturbation that dep actually applied (see [`Bump`]).
 	/// Consumes the pulled outs at their lifetime; the scratch owns copies, so [`DepFlat::view`]
@@ -1280,16 +1297,17 @@ where
 	}
 }
 
-/// A scalar-out node whose per-tick value is a pure [`Expr`] of its (scalar / last-element) deps —
-/// each dep read at its [`Flat`] scalar, a batch dep as its last element, matching the observer's
-/// end-of-batch view. Earns the [`Pure`] kernel, which is the whole of how it computes: there is no
-/// second way to state the value, so the algebra is load-bearing.
+/// A scalar-out node whose per-tick value is a pure [`Expr`] of its deps, each read at its [`Flat`]
+/// scalar. Earns the [`Pure`] kernel, which is the whole of how it computes: there is no second way
+/// to state the value, so the algebra is load-bearing.
 ///
-/// `Out = f64` has no `None` channel: reading historic (warmup) deps emits `NaN` yet still reports
-/// `fired = true`, so don't route a warmup-sensitive consumer off a Symbolic node unguarded.
+/// Its deps are **levels** — [`env_of`] const-asserts it — so the body's env is either wholly there
+/// or wholly not, and the kernel answers the second case rather than the body. `Out = f64` is
+/// therefore legal only for a node whose deps always stand; anything that can be cold owes a
+/// [`Reading`], which is the same `unflat` one slot wide.
 pub trait Symbolic: Cell
 where
-	for<'t> Self: Cell<Out<'t> = f64>, {
+	for<'t> Self::Out<'t>: Unflat, {
 	type Deps: DepSet;
 	/// `&[]` draws nothing at all — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
@@ -1634,11 +1652,13 @@ pub struct Algebra {
 	grad: [f64; MAX_VARS],
 }
 
-/// The env a [`Symbolic`] body is read over: one scalar slot per dep, in `Deps` order.
-fn env_of<S>(deps: &<<S as Symbolic>::Deps as DepSet>::Outs<'_>) -> [f64; MAX_VARS]
+/// The env a [`Symbolic`] body is read over: one scalar slot per dep, in `Deps` order — and whether
+/// every one of them fired, which is what stands between the body and an operand that is not there.
+fn env_of<S>(deps: &<<S as Symbolic>::Deps as DepSet>::Outs<'_>) -> ([f64; MAX_VARS], bool)
 where
 	S: Symbolic,
-	for<'t> S: Cell<Out<'t> = f64>,
+	// [`Symbolic`]'s own where-clause, repeated: a trait's is an obligation at each use of the bound.
+	for<'t> S::Out<'t>: Unflat,
 	<S as Symbolic>::Deps: DepFlat, {
 	const {
 		let n = <<S as Symbolic>::Deps as DepSet>::NAMES.len();
@@ -1647,16 +1667,21 @@ where
 			"Symbolic deps must be scalar (one env slot each): a vector-valued dep desyncs Var<I> from dep I"
 		);
 		assert!(n <= MAX_VARS, "Symbolic arity exceeds the env buffer (MAX_VARS)");
+		// r[impl rates.deps.tick-opaque]
+		assert!(
+			!any(<<S as Symbolic>::Deps as DepFlat>::RUNS),
+			"a Symbolic node reads levels: a run's last element is a function of how the feed grouped its messages, so name the dep through `Sampling<C>` (the level the engine carries) or `Buffering<C, R>`"
+		);
 	}
 	let mut env = [0.0f64; MAX_VARS];
-	<<S as Symbolic>::Deps as DepFlat>::flat(deps, &mut env[..<<S as Symbolic>::Deps as DepFlat>::LEN]);
-	env
+	let fired = <<S as Symbolic>::Deps as DepFlat>::flat(deps, &mut env[..<<S as Symbolic>::Deps as DepFlat>::LEN]);
+	(env, fired)
 }
 
 impl<N> Level<N> for Pure
 where
 	N: Symbolic + Node<Deps = <N as Symbolic>::Deps>,
-	for<'t> N: Cell<Out<'t> = f64>,
+	for<'t> N::Out<'t>: Unflat,
 	<N as Symbolic>::Deps: DepFlat,
 {
 	type Pre = Option<Algebra>;
@@ -1666,15 +1691,38 @@ where
 	const FIDELITY: Fidelity = Fidelity::Exact;
 
 	fn advance<'t>(n: &'t mut N, deps: DepOuts<'t, N>) -> N::Out<'t> {
-		let env = env_of::<N>(&deps);
-		n.body(Vars).eval(&env[..<<N as Symbolic>::Deps as DepFlat>::LEN])
+		const {
+			assert!(
+				<N::Out<'static> as Flat>::LEN == 1,
+				"a Symbolic body is one expression, so its out is one slot: `f64` where the deps always stand, `Reading` where they may not"
+			)
+		}
+		let body = n.body(Vars);
+		// r[impl outs.absence.typed]
+		debug_assert!(
+			!body.maybe() || <N::Out<'static> as Flat>::ABSENTABLE,
+			"this body declines, and its out has nowhere to say so: give it a `Reading`"
+		);
+		let (env, fired) = env_of::<N>(&deps);
+		// r[impl rates.deps.tick-opaque]
+		// a dep of a level node is a level, so `!fired` is "has never stood" and not a reading of this
+		// tick's batching — which is what makes declining here the same statement under every grouping.
+		if !fired {
+			debug_assert!(
+				<N::Out<'static> as Flat>::ABSENTABLE,
+				"a dep of this node has not stood yet, and its out has nowhere to say so: give it a `Reading`"
+			);
+			return <N::Out<'t> as Unflat>::unflat(0, &[f64::NAN]);
+		}
+		<N::Out<'t> as Unflat>::unflat(0, &[body.eval(&env[..<<N as Symbolic>::Deps as DepFlat>::LEN])])
 	}
 
 	fn pre<'d>(n: &N, want: Want, deps: DepOuts<'d, N>) -> Self::Pre {
 		if want < Want::Jac {
 			return None;
 		}
-		let env = env_of::<N>(&deps);
+		// the node declined, so there is no value this tick and nothing it was the derivative of.
+		let (env, true) = env_of::<N>(&deps) else { return None };
 		// zeroed, not NaN-filled: `grad` accumulates (`+=`), and a var the body never reads has a
 		// partial of 0 rather than no partial.
 		let mut grad = [0.0f64; MAX_VARS];
@@ -1763,17 +1811,27 @@ where
 pub struct Predicate;
 impl sealed::Kernel for Predicate {}
 
-/// The deps' last elements, as the env a [`Decides`] body is read over.
-fn verdict_env<N>(deps: &DepOuts<'_, N>) -> [f64; MAX_VARS]
+/// The env a [`Decides`] body is read over, and whether every dep stood — the leading one at its
+/// last element, the rest at their levels.
+fn verdict_env<N>(deps: &DepOuts<'_, N>) -> ([f64; MAX_VARS], bool)
 where
 	N: Node,
 	<N as Node>::Deps: DepFlat, {
 	const {
 		assert!(<<N as Node>::Deps as DepFlat>::LEN <= MAX_VARS, "a Decides env outgrew MAX_VARS: raise it in trading_data_dag");
+		// r[impl rates.deps.tick-opaque]
+		// the *lead* is exempt: it is the driver whose having fired is half the verdict, which is how a
+		// gate stays a pulse instead of a level. Everything past it is read as a level, and a run there
+		// would make the verdict a reading of the feed's batching.
+		let runs = <<N as Node>::Deps as DepFlat>::RUNS;
+		assert!(
+			runs.is_empty() || !any(runs.split_at(1).1),
+			"only a Decides node's *leading* dep is a run — the clock it screens per element of. Name the rest through `Sampling<C>` or `Buffering<C, R>`"
+		);
 	}
 	let mut env = [f64::NAN; MAX_VARS];
-	<<N as Node>::Deps as DepFlat>::flat(deps, &mut env[..<<N as Node>::Deps as DepFlat>::LEN]);
-	env
+	let fired = <<N as Node>::Deps as DepFlat>::flat(deps, &mut env[..<<N as Node>::Deps as DepFlat>::LEN]);
+	(env, fired)
 }
 
 impl<N> Level<N> for Predicate
@@ -1789,9 +1847,13 @@ where
 	const FIDELITY: Fidelity = Fidelity::Exact;
 
 	fn advance<'t>(n: &'t mut N, deps: DepOuts<'t, N>) -> N::Out<'t> {
-		let len = <<N as Node>::Deps as DepFlat>::lead_fires(&deps);
-		let env = verdict_env::<N>(&deps);
-		len > 0 && n.body(Vars).eval(&env[..<<N as Node>::Deps as DepFlat>::LEN]) != 0.0
+		let body = n.body(Vars);
+		// r[impl outs.absence.typed]
+		debug_assert!(!body.maybe(), "a verdict has no absence channel: a `Decides` body answers, or its node is not a gate");
+		let (env, fired) = verdict_env::<N>(&deps);
+		// a dep that has not stood is nothing to screen — which is what `lead_fires > 0` said of the
+		// driver, widened to the rest now that the rest are levels.
+		fired && body.eval(&env[..<<N as Node>::Deps as DepFlat>::LEN]) != 0.0
 	}
 
 	fn pre<'d>(n: &N, want: Want, _: DepOuts<'d, N>) -> Self::Pre {
@@ -1982,6 +2044,11 @@ where
 		let slots_w = const { scan_slots::<E>() };
 		let body = e.body(Vars);
 		debug_assert_eq!(body.len(), slots_w, "a Scans body states one expression per slot of its item");
+		// r[impl outs.absence.typed]
+		debug_assert!(
+			!body.maybe() || <E::Item as Flat>::ABSENTABLE,
+			"this body declines, and the item it fills has nowhere to say so: give it a `Reading`"
+		);
 		let (mut buf, mut slots) = ([f64::NAN; MAX_VARS], [f64::NAN; MAX_SLOTS]);
 		let mut env = Env::<Blindfold>::new(&mut buf);
 		for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
@@ -2153,6 +2220,11 @@ where
 			let (open, fold) = (e.open(Vars), e.fold(Vars));
 			debug_assert_eq!(open.len(), slots_w, "a Closes body states one expression per slot of its item");
 			debug_assert_eq!(fold.len(), slots_w, "a Closes body states one expression per slot of its item");
+			// r[impl outs.absence.typed]
+			debug_assert!(
+				!(open.maybe() || fold.maybe()) || <E::Item as Flat>::ABSENTABLE,
+				"this body declines, and the item it fills has nowhere to say so: give it a `Reading`"
+			);
 			for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
 				env.rewind();
 				let Some(ts) = <E as Closes>::read(&deps, i, &mut env) else { continue };
@@ -2355,6 +2427,14 @@ where
 			let (step, value) = (e.step(Vars), e.value(Vars));
 			debug_assert_eq!(step.len(), carry, "a Folds `step` states one expression per state slot");
 			debug_assert_eq!(value.len(), slots_w, "a Folds `value` states one expression per slot of its item");
+			// r[impl outs.absence.typed]
+			// the state has no absence channel at all — a `Carried` slot is a bare `f64`, and a
+			// declination reaching one poisons every element after it.
+			debug_assert!(!step.maybe(), "a recurrence's state cannot be absent: decline in `value`, which the item can say");
+			debug_assert!(
+				!value.maybe() || <E::Item as Flat>::ABSENTABLE,
+				"this body declines, and the item it fills has nowhere to say so: give it a `Reading`"
+			);
 			for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
 				env.rewind();
 				let Some(ts) = <E as Folds>::read(&deps, i, &mut env) else {
@@ -3067,6 +3147,7 @@ impl<'t, T: Stamped> Hist<'t, T> {
 /// series it retains.
 impl<T: Flat> Flat for Hist<'_, T> {
 	const DIMS: &'static [usize] = T::DIMS;
+	const RUN: bool = true;
 
 	fn flat(&self, out: &mut [f64]) -> bool {
 		self.fresh().flat(out)
@@ -3411,9 +3492,11 @@ impl DepFlat for () {
 
 	const DIMS: &'static [&'static [usize]] = &[];
 	const LEN: usize = 0;
+	const RUNS: &'static [bool] = &[];
 
-	fn flat(_: &Self::Outs<'_>, dst: &mut [f64]) {
+	fn flat(_: &Self::Outs<'_>, dst: &mut [f64]) -> bool {
 		debug_assert!(dst.is_empty());
+		true
 	}
 
 	fn stage<'t>(_: Self::Outs<'t>, _: &mut Self::Scratch, _: usize, _: f64) -> f64 {
@@ -3474,20 +3557,25 @@ macro_rules! impl_arity {
 		where for<'x> <$Th as Cell>::Out<'x>: Flat $(, for<'x> <$T as Cell>::Out<'x>: Flat)* {
 			const DIMS: &'static [&'static [usize]] = &[<<$Th as Cell>::Out<'static> as Flat>::DIMS $(, <<$T as Cell>::Out<'static> as Flat>::DIMS)*];
 			const LEN: usize = <<$Th as Cell>::Out<'static> as Flat>::LEN $(+ <<$T as Cell>::Out<'static> as Flat>::LEN)*;
+			const RUNS: &'static [bool] = &[<<$Th as Cell>::Out<'static> as Flat>::RUN $(, <<$T as Cell>::Out<'static> as Flat>::RUN)*];
 
 			type Scratch = ($Th::Scratch, $($T::Scratch,)*);
 
-			fn flat(outs: &Self::Outs<'_>, dst: &mut [f64]) {
+			fn flat(outs: &Self::Outs<'_>, dst: &mut [f64]) -> bool {
 				assert_eq!(dst.len(), Self::LEN);
 				let ($vh, $($v,)*) = outs;
 				let mut off = 0;
-				$vh.flat(&mut dst[off..off + <<$Th as Cell>::Out<'static> as Flat>::LEN]);
+				// `&=`, not `&&`: every dep's slots are written either way, and only the answer is the
+				// conjunction.
+				let mut fired = true;
+				fired &= $vh.flat(&mut dst[off..off + <<$Th as Cell>::Out<'static> as Flat>::LEN]);
 				off += <<$Th as Cell>::Out<'static> as Flat>::LEN;
 				$(
-					$v.flat(&mut dst[off..off + <<$T as Cell>::Out<'static> as Flat>::LEN]);
+					fired &= $v.flat(&mut dst[off..off + <<$T as Cell>::Out<'static> as Flat>::LEN]);
 					off += <<$T as Cell>::Out<'static> as Flat>::LEN;
 				)*
 				debug_assert_eq!(off, Self::LEN);
+				fired
 			}
 
 			fn stage<'t>(outs: Self::Outs<'t>, scratch: &mut Self::Scratch, slot: usize, h: f64) -> f64 {

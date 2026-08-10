@@ -18,6 +18,16 @@ use core::{fmt, ops};
 
 /// One expression node: evaluate, accumulate exact partials, or project to [`Ast`].
 pub trait Expr: Copy {
+	/// Whether this expression may evaluate to no number at all — a declination the out plane reads
+	/// back as absence (`r[impl outs.absence.typed]`). [`Absent`] is the only leaf that sets it; every
+	/// operator derives it, by `|` where absence propagates and by `&` where it is skipped.
+	const MAYBE: bool = false;
+	/// So a kernel holding an opaque `impl Expr` can ask, as it asks [`Slots::len`]: RPITIT leaves
+	/// `<Body as Expr>::MAYBE` unnameable in a bound at the site that would state it.
+	fn maybe(&self) -> bool {
+		Self::MAYBE
+	}
+
 	fn eval(&self, env: &[f64]) -> f64;
 	/// Chain-rule pass: returns `self`'s value and adds `seed · ∂self/∂env[i]` into `grad[i]`
 	/// (`grad.len() == env.len()`). `seed` is `∂output/∂self` — 1.0 at the root.
@@ -36,6 +46,11 @@ pub struct Var<const I: usize>;
 /// The only `f64` entry point into the algebra.
 #[derive(Clone, Copy)]
 pub struct Const(pub f64);
+/// No number — how a body inside the algebra declines. A leaf of its own rather than
+/// `Const(f64::NAN)` because [`Expr::MAYBE`] is what the comparing operators refuse, and a `Const`
+/// carrying a NaN would say nothing about which trees can reach one.
+#[derive(Clone, Copy)]
+pub struct Absent;
 #[derive(Clone, Copy)]
 pub struct Add<L, R>(pub L, pub R);
 #[derive(Clone, Copy)]
@@ -66,10 +81,21 @@ pub struct Max<L, R>(pub L, pub R);
 /// `gt`/`ge` are this with the arguments swapped, so there is one comparison to differentiate.
 #[derive(Clone, Copy)]
 pub struct Cmp<L, R>(pub L, pub R);
+/// `e.is_nan() as f64` — [`Cmp`]'s sibling over the one thing `Cmp` may not read. Flat for the same
+/// reason: presence is not a quantity with a slope. This is what lets the algebra *reason* about a
+/// declination instead of only carrying one — [`present`], [`or`], and the branch [`Ast::diff`] takes
+/// through a skipping [`Min`] are all it.
+#[derive(Clone, Copy)]
+pub struct IsNan<E>(pub E);
 /// `if c != 0 { a } else { b }`. The seed reaches the taken branch only, so a `Select` over a `Cmp`
 /// is a piecewise expression whose derivative is the taken piece's.
 #[derive(Clone, Copy)]
 pub struct Select<C, A, B>(pub C, pub A, pub B);
+/// `x` where it is a number, `fallback` where it declines — the door out of absence, and the reason
+/// it is a node rather than a `Select` written out: `Select`'s definedness is the union of its
+/// branches, where this one's is the fallback's alone.
+#[derive(Clone, Copy)]
+pub struct Or<X, F>(pub X, pub F);
 /// Homogeneous fold; heterogeneous sums chain via `+`.
 #[derive(Clone, Copy)]
 pub struct Sum<E, const N: usize>(pub [E; N]);
@@ -126,7 +152,25 @@ impl Expr for Const {
 	}
 }
 
+impl Expr for Absent {
+	const MAYBE: bool = true;
+
+	fn eval(&self, _: &[f64]) -> f64 {
+		f64::NAN
+	}
+
+	fn grad(&self, _: &[f64], _: f64, _: &mut [f64]) -> f64 {
+		f64::NAN
+	}
+
+	fn lower(&self) -> Ast {
+		Ast::Const(f64::NAN)
+	}
+}
+
 impl<L: Expr, R: Expr> Expr for Add<L, R> {
+	const MAYBE: bool = L::MAYBE | R::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		self.0.eval(env) + self.1.eval(env)
 	}
@@ -141,6 +185,8 @@ impl<L: Expr, R: Expr> Expr for Add<L, R> {
 }
 
 impl<L: Expr, R: Expr> Expr for Sub<L, R> {
+	const MAYBE: bool = L::MAYBE | R::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		self.0.eval(env) - self.1.eval(env)
 	}
@@ -155,6 +201,8 @@ impl<L: Expr, R: Expr> Expr for Sub<L, R> {
 }
 
 impl<L: Expr, R: Expr> Expr for Mul<L, R> {
+	const MAYBE: bool = L::MAYBE | R::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		self.0.eval(env) * self.1.eval(env)
 	}
@@ -172,6 +220,8 @@ impl<L: Expr, R: Expr> Expr for Mul<L, R> {
 }
 
 impl<L: Expr, R: Expr> Expr for Div<L, R> {
+	const MAYBE: bool = L::MAYBE | R::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		self.0.eval(env) / self.1.eval(env)
 	}
@@ -189,6 +239,8 @@ impl<L: Expr, R: Expr> Expr for Div<L, R> {
 }
 
 impl<E: Expr> Expr for Neg<E> {
+	const MAYBE: bool = E::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		-self.0.eval(env)
 	}
@@ -203,6 +255,8 @@ impl<E: Expr> Expr for Neg<E> {
 }
 
 impl<E: Expr> Expr for Square<E> {
+	const MAYBE: bool = E::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		let v = self.0.eval(env);
 		v * v
@@ -220,6 +274,8 @@ impl<E: Expr> Expr for Square<E> {
 }
 
 impl<E: Expr> Expr for Abs<E> {
+	const MAYBE: bool = E::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		self.0.eval(env).abs()
 	}
@@ -238,6 +294,8 @@ impl<E: Expr> Expr for Abs<E> {
 }
 
 impl<E: Expr> Expr for Sqrt<E> {
+	const MAYBE: bool = E::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		libm::sqrt(self.0.eval(env))
 	}
@@ -256,6 +314,8 @@ impl<E: Expr> Expr for Sqrt<E> {
 }
 
 impl<E: Expr> Expr for Exp<E> {
+	const MAYBE: bool = E::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		libm::exp(self.0.eval(env))
 	}
@@ -272,6 +332,8 @@ impl<E: Expr> Expr for Exp<E> {
 }
 
 impl<E: Expr, const N: i32> Expr for Powi<E, N> {
+	const MAYBE: bool = E::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		powi(self.0.eval(env), N)
 	}
@@ -287,15 +349,14 @@ impl<E: Expr, const N: i32> Expr for Powi<E, N> {
 	}
 }
 
-/// A NaN operand has no agreed branch, and each comparing operator disagrees differently:
-/// `f64::min`/`f64::max` *ignore* one and hand back the other operand where every derivative reading
-/// here branches on a `<` that is false against a NaN and so takes the opposite side, `Cmp` reads it
-/// as false, and `Select`'s condition reads it as *taken*. The value and the slope then come off
-/// different branches, and nothing in the array says so.
+/// A NaN operand has no agreed branch under `Cmp` and under a `Select` *condition*: one reads it as
+/// false and the other as *taken*, so the value and the slope come off different branches and
+/// nothing in the array says so. [`Expr::MAYBE`] is what keeps a declination out of both at compile
+/// time; this is the backstop for the NaN no type can predict — the one arithmetic produces, `0/0`
+/// inside a tree.
 ///
-/// So a body declines by *producing* a NaN — a `Reading` is exactly that, and says so in its type —
-/// and nothing may compare one (`r[impl outs.absence.typed]`). `Select`'s two branches stay
-/// permissive: that is the sanctioned way a body declines.
+/// [`Min`]/[`Max`] are *not* here: they are defined over an absent operand, they skip it, and
+/// `MAYBE` says which side comes out (`r[impl outs.absence.typed]`).
 ///
 /// Debug-only because `r[kernels.pure.zero-cost]` is an equality in retired instructions: a release
 /// build of a `Pure` node costs what the same arithmetic written by hand costs, and a branch here
@@ -310,19 +371,27 @@ macro_rules! defined_over {
 	)+};
 }
 
+/// Whether a `Min`/`Max` takes its **left** operand, given the strict comparison that decides it
+/// where both are numbers. The tie goes right; an absent right is skipped, and an absent left is
+/// skipped by the comparison already being false. One function, so the value, the gradient and
+/// [`Ast::diff`] cannot drift apart at the branch.
+fn takes_left(strictly: bool, rv: f64) -> bool {
+	strictly || rv.is_nan()
+}
+
 impl<L: Expr, R: Expr> Expr for Min<L, R> {
+	/// Skipped, not propagated: `min(absent, x)` is `x`, so the result is absent only where both
+	/// operands are.
+	const MAYBE: bool = L::MAYBE & R::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
-		let (lv, rv) = (self.0.eval(env), self.1.eval(env));
-		defined_over!("min", lv, rv);
-		lv.min(rv)
+		// `f64::min` already skips a NaN operand, which is the semantics `MAYBE` states.
+		self.0.eval(env).min(self.1.eval(env))
 	}
 
 	fn grad(&self, env: &[f64], seed: f64, grad: &mut [f64]) -> f64 {
-		// strict, and the tie goes right — the same branch `diff`'s `Select(Cmp(l, r), .., ..)` takes,
-		// so the two readings do not part company at the kink.
 		let (lv, rv) = (self.0.eval(env), self.1.eval(env));
-		defined_over!("min", lv, rv);
-		match lv < rv {
+		match takes_left(lv < rv, rv) {
 			true => self.0.grad(env, seed, grad),
 			false => self.1.grad(env, seed, grad),
 		}
@@ -334,16 +403,15 @@ impl<L: Expr, R: Expr> Expr for Min<L, R> {
 }
 
 impl<L: Expr, R: Expr> Expr for Max<L, R> {
+	const MAYBE: bool = L::MAYBE & R::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
-		let (lv, rv) = (self.0.eval(env), self.1.eval(env));
-		defined_over!("max", lv, rv);
-		lv.max(rv)
+		self.0.eval(env).max(self.1.eval(env))
 	}
 
 	fn grad(&self, env: &[f64], seed: f64, grad: &mut [f64]) -> f64 {
 		let (lv, rv) = (self.0.eval(env), self.1.eval(env));
-		defined_over!("max", lv, rv);
-		match rv < lv {
+		match takes_left(rv < lv, rv) {
 			true => self.0.grad(env, seed, grad),
 			false => self.1.grad(env, seed, grad),
 		}
@@ -351,6 +419,48 @@ impl<L: Expr, R: Expr> Expr for Max<L, R> {
 
 	fn lower(&self) -> Ast {
 		Ast::Max(Box::new(self.0.lower()), Box::new(self.1.lower()))
+	}
+}
+
+impl<E: Expr> Expr for IsNan<E> {
+	fn eval(&self, env: &[f64]) -> f64 {
+		f64::from(self.0.eval(env).is_nan())
+	}
+
+	fn grad(&self, env: &[f64], _: f64, _: &mut [f64]) -> f64 {
+		// flat, exactly as `Cmp` is: presence is piecewise constant, and the step where it changes is
+		// not a slope any reading may claim.
+		self.eval(env)
+	}
+
+	fn lower(&self) -> Ast {
+		Ast::IsNan(Box::new(self.0.lower()))
+	}
+}
+
+impl<X: Expr, F: Expr> Expr for Or<X, F> {
+	const MAYBE: bool = F::MAYBE;
+
+	fn eval(&self, env: &[f64]) -> f64 {
+		let x = self.0.eval(env);
+		match x.is_nan() {
+			true => self.1.eval(env),
+			false => x,
+		}
+	}
+
+	fn grad(&self, env: &[f64], seed: f64, grad: &mut [f64]) -> f64 {
+		match self.0.eval(env).is_nan() {
+			true => self.1.grad(env, seed, grad),
+			false => self.0.grad(env, seed, grad),
+		}
+	}
+
+	/// As the `Select` a reader would have written: the presence test is the condition, and the
+	/// fallback is the branch it takes.
+	fn lower(&self) -> Ast {
+		let x = self.0.lower();
+		Ast::Select(Box::new(Ast::IsNan(Box::new(x.clone()))), Box::new(self.1.lower()), Box::new(x))
 	}
 }
 
@@ -373,6 +483,10 @@ impl<L: Expr, R: Expr> Expr for Cmp<L, R> {
 }
 
 impl<C: Expr, A: Expr, B: Expr> Expr for Select<C, A, B> {
+	/// The branches, and not the condition: a `Select` is where a body *writes* a declination, and
+	/// which branch is live is not a thing the type knows.
+	const MAYBE: bool = A::MAYBE | B::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		let c = self.0.eval(env);
 		defined_over!("select's condition", c);
@@ -397,6 +511,8 @@ impl<C: Expr, A: Expr, B: Expr> Expr for Select<C, A, B> {
 }
 
 impl<E: Expr, const N: usize> Expr for Sum<E, N> {
+	const MAYBE: bool = E::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		self.0.iter().map(|e| e.eval(env)).sum()
 	}
@@ -415,10 +531,18 @@ impl<E: Expr, const N: usize> Expr for Sum<E, N> {
 /// different functions of one env, and a single-slot out is the one-tuple spelled without brackets.
 pub trait Slots: Copy {
 	const LEN: usize;
+	/// Whether *any* slot may decline — [`Expr::MAYBE`] over the tuple, which is what the item being
+	/// filled owes an absence channel for.
+	const MAYBE: bool = false;
 	/// So a kernel holding an opaque `impl Slots` can check its width against the item it fills.
 	fn len(&self) -> usize {
 		Self::LEN
 	}
+
+	fn maybe(&self) -> bool {
+		Self::MAYBE
+	}
+
 	fn eval_slots(&self, env: &[f64], out: &mut [f64]);
 	/// Row-major `LEN × env.len()`, accumulated — the caller zeroes.
 	fn grad_slots(&self, env: &[f64], jac: &mut [f64]);
@@ -429,6 +553,7 @@ pub trait Slots: Copy {
 /// for a tuple, which would make the blanket overlap the tuple impls below.
 impl<T: Expr> Slots for Ex<T> {
 	const LEN: usize = 1;
+	const MAYBE: bool = T::MAYBE;
 
 	fn eval_slots(&self, env: &[f64], out: &mut [f64]) {
 		out[0] = self.eval(env);
@@ -447,6 +572,7 @@ macro_rules! slots_tuple {
 	($n:expr; $($T:ident $i:tt),+) => {
 		impl<$($T: Expr),+> Slots for ($(Ex<$T>,)+) {
 			const LEN: usize = $n;
+			const MAYBE: bool = $($T::MAYBE)|+;
 
 			fn eval_slots(&self, env: &[f64], out: &mut [f64]) {
 				$(out[$i] = self.$i.eval(env);)+
@@ -474,6 +600,8 @@ slots_tuple!(5; A 0, B 1, C 2, D 3, E 4);
 pub struct Ex<T: Expr>(pub T);
 
 impl<T: Expr> Expr for Ex<T> {
+	const MAYBE: bool = T::MAYBE;
+
 	fn eval(&self, env: &[f64]) -> f64 {
 		self.0.eval(env)
 	}
@@ -500,12 +628,22 @@ impl Vars {
 pub fn constant(c: f64) -> Ex<Const> {
 	Ex(Const(c))
 }
-/// How a body inside the algebra declines — a `Select` branch that is no number, which the out plane
-/// reads back as absence (`r[impl outs.absence.typed]`). Named rather than spelled `constant(NAN)`
-/// per site, because `Select`'s branches are the *one* place a NaN is licensed here and the rest of
-/// the algebra refuses to compare one.
-pub fn absent() -> Ex<Const> {
-	Ex(Const(f64::NAN))
+/// How a body inside the algebra declines, which the out plane reads back as absence
+/// (`r[impl outs.absence.typed]`). Every tree reaching one carries [`Expr::MAYBE`], so the operators
+/// that cannot answer over one refuse it where it is written rather than where it lands.
+pub fn absent() -> Ex<Absent> {
+	Ex(Absent)
+}
+/// `1.0` where `x` is a number, `0.0` where it declines — how a body *reads* an absence instead of
+/// merely carrying one. Flat, and never absent itself, so it is a condition the comparing operators
+/// accept.
+pub fn present<T: Expr>(x: Ex<T>) -> Ex<Sub<Const, IsNan<T>>> {
+	Ex(Sub(Const(1.0), IsNan(x.0)))
+}
+/// `x` where it stands, `fallback` where it declines. The way out of absence: what comes back is a
+/// number exactly as often as `fallback` is one, which is what lets a body compare it.
+pub fn or<T: Expr, F: Expr>(x: Ex<T>, fallback: Ex<F>) -> Ex<Or<T, F>> {
+	Ex(Or(x.0, fallback.0))
 }
 pub fn square<T: Expr>(x: Ex<T>) -> Ex<Square<T>> {
 	Ex(Square(x.0))
@@ -531,14 +669,37 @@ pub fn min<L: Expr, R: Expr>(l: Ex<L>, r: Ex<R>) -> Ex<Min<L, R>> {
 pub fn max<L: Expr, R: Expr>(l: Ex<L>, r: Ex<R>) -> Ex<Max<L, R>> {
 	Ex(Max(l.0, r.0))
 }
+/// A comparison is the one thing an absence has no answer for, so a tree that can carry one may not
+/// reach here: `or` it against a number first, or leave the comparison out and let the absence
+/// propagate (`r[impl outs.absence.typed]`).
 pub fn lt<L: Expr, R: Expr>(l: Ex<L>, r: Ex<R>) -> Ex<Cmp<L, R>> {
+	const {
+		assert!(
+			!L::MAYBE && !R::MAYBE,
+			"nothing compares a reading that may not be there: `or(x, d)` it against a number, or drop the comparison and let the absence propagate"
+		)
+	}
 	Ex(Cmp(l.0, r.0))
 }
 /// `l > r` is `r < l`: one comparison in the algebra, read from the other side.
 pub fn gt<L: Expr, R: Expr>(l: Ex<L>, r: Ex<R>) -> Ex<Cmp<R, L>> {
+	const {
+		assert!(
+			!L::MAYBE && !R::MAYBE,
+			"nothing compares a reading that may not be there: `or(x, d)` it against a number, or drop the comparison and let the absence propagate"
+		)
+	}
 	Ex(Cmp(r.0, l.0))
 }
+/// The **condition** may not decline — a `Select` is where a body writes an absence, and a branch
+/// that cannot be chosen is no branch. The two branches stay permissive, which is the whole point.
 pub fn select<C: Expr, A: Expr, B: Expr>(c: Ex<C>, a: Ex<A>, b: Ex<B>) -> Ex<Select<C, A, B>> {
+	const {
+		assert!(
+			!C::MAYBE,
+			"a `Select` condition that may not be there decides nothing: `present(x)` is the test over an absence, and the branches are where one is written"
+		)
+	}
 	Ex(Select(c.0, a.0, b.0))
 }
 
@@ -599,9 +760,25 @@ pub enum Ast {
 	Max(Box<Ast>, Box<Ast>),
 	/// `(l < r) as f64`
 	Cmp(Box<Ast>, Box<Ast>),
+	/// `e.is_nan() as f64` — the presence reading, and the one predicate defined over an absence.
+	IsNan(Box<Ast>),
 	/// `if c != 0 { a } else { b }`
 	Select(Box<Ast>, Box<Ast>, Box<Ast>),
 	Sum(Vec<Ast>),
+}
+
+/// [`takes_left`] as a tree: the right operand absent takes the left, the left absent then takes the
+/// right, and only where both are numbers does `strictly` decide. Nested rather than one disjunction
+/// because `Select` evaluates the taken branch alone, which is what keeps the comparison off an
+/// operand it refuses.
+fn skipping(l: &Ast, r: &Ast, strictly: Ast, var: usize) -> Ast {
+	let b = |a: Ast| Box::new(a);
+	let (dl, dr) = (l.diff(var), r.diff(var));
+	Ast::Select(
+		b(Ast::IsNan(b(r.clone()))),
+		b(dl.clone()),
+		b(Ast::Select(b(Ast::IsNan(b(l.clone()))), b(dr.clone()), b(Ast::Select(b(strictly), b(dl), b(dr))))),
+	)
 }
 
 impl Ast {
@@ -622,16 +799,9 @@ impl Ast {
 			Ast::Sqrt(e) => libm::sqrt(e.eval(env)),
 			Ast::Exp(e) => libm::exp(e.eval(env)),
 			Ast::Powi(e, n) => powi(e.eval(env), *n),
-			Ast::Min(l, r) => {
-				let (lv, rv) = (l.eval(env), r.eval(env));
-				defined_over!("min", lv, rv);
-				lv.min(rv)
-			}
-			Ast::Max(l, r) => {
-				let (lv, rv) = (l.eval(env), r.eval(env));
-				defined_over!("max", lv, rv);
-				lv.max(rv)
-			}
+			Ast::Min(l, r) => l.eval(env).min(r.eval(env)),
+			Ast::Max(l, r) => l.eval(env).max(r.eval(env)),
+			Ast::IsNan(e) => f64::from(e.eval(env).is_nan()),
 			Ast::Cmp(l, r) => {
 				let (lv, rv) = (l.eval(env), r.eval(env));
 				defined_over!("cmp", lv, rv);
@@ -672,10 +842,12 @@ impl Ast {
 			Ast::Exp(e) => Ast::Mul(b(Ast::Exp(e.clone())), b(e.diff(var))),
 			Ast::Powi(e, n) => Ast::Mul(b(Ast::Mul(b(Ast::Const(f64::from(*n))), b(Ast::Powi(e.clone(), n - 1)))), b(e.diff(var))),
 			// the kink is a branch, not a slope: which piece is live is what `Cmp` says, and the
-			// derivative is that piece's. Strict `<` with the tie going right, matching `Expr::grad`.
-			Ast::Min(l, r) => Ast::Select(b(Ast::Cmp(l.clone(), r.clone())), b(l.diff(var)), b(r.diff(var))),
-			Ast::Max(l, r) => Ast::Select(b(Ast::Cmp(r.clone(), l.clone())), b(l.diff(var)), b(r.diff(var))),
-			Ast::Cmp(_, _) => Ast::Const(0.0),
+			// derivative is that piece's. Strict `<` with the tie going right, matching `Expr::grad` —
+			// and the two presence tests ahead of it are `takes_left`'s skip, spelled so that the `Cmp`
+			// is never reached over an operand it may not read.
+			Ast::Min(l, r) => skipping(l, r, Ast::Cmp(l.clone(), r.clone()), var),
+			Ast::Max(l, r) => skipping(l, r, Ast::Cmp(r.clone(), l.clone()), var),
+			Ast::Cmp(_, _) | Ast::IsNan(_) => Ast::Const(0.0),
 			Ast::Select(c, a, b_) => Ast::Select(c.clone(), b(a.diff(var)), b(b_.diff(var))),
 			Ast::Sum(xs) => Ast::Sum(xs.iter().map(|e| e.diff(var)).collect()),
 		}
@@ -792,6 +964,16 @@ impl Ast {
 					_ => Ast::Cmp(Box::new(l), Box::new(r)),
 				}
 			}
+			// the fold that matters: a `Min`/`Max` against a literal threshold differentiates through
+			// this, and folding it away is what leaves the derivative reading the one branch it had
+			// before absence was expressible.
+			Ast::IsNan(e) => {
+				let e = e.simplify();
+				match konst(&e) {
+					Some(c) => Ast::Const(f64::from(c.is_nan())),
+					None => Ast::IsNan(Box::new(e)),
+				}
+			}
 			Ast::Select(c, a, b) => {
 				let (c, a, b) = (c.simplify(), a.simplify(), b.simplify());
 				match konst(&c) {
@@ -836,6 +1018,7 @@ impl Ast {
 			Ast::Min(l, r) => format!("\\min\\left({}, {}\\right)", l.latex(names), r.latex(names)),
 			Ast::Max(l, r) => format!("\\max\\left({}, {}\\right)", l.latex(names), r.latex(names)),
 			Ast::Cmp(l, r) => format!("\\left[{} < {}\\right]", l.latex(names), r.latex(names)),
+			Ast::IsNan(e) => format!("\\left[{} = \\varnothing\\right]", e.latex(names)),
 			Ast::Select(c, a, b) => format!(
 				"\\begin{{cases}}{} & {} \\\\ {} & \\text{{otherwise}}\\end{{cases}}",
 				a.latex(names),
@@ -869,6 +1052,7 @@ impl Ast {
 			Ast::Min(l, r) => ("min", alloc::vec![l.trace(env), r.trace(env)]),
 			Ast::Max(l, r) => ("max", alloc::vec![l.trace(env), r.trace(env)]),
 			Ast::Cmp(l, r) => ("<", alloc::vec![l.trace(env), r.trace(env)]),
+			Ast::IsNan(e) => ("absent?", alloc::vec![e.trace(env)]),
 			// only the taken branch: a trace shows what the value came from, and the other arm did not
 			// contribute to it.
 			Ast::Select(c, a, b) => (
@@ -904,6 +1088,7 @@ impl fmt::Display for Ast {
 			Ast::Min(l, r) => write!(f, "min({l}, {r})"),
 			Ast::Max(l, r) => write!(f, "max({l}, {r})"),
 			Ast::Cmp(l, r) => write!(f, "[{l} < {r}]"),
+			Ast::IsNan(e) => write!(f, "[{e} absent]"),
 			Ast::Select(c, a, b) => write!(f, "({a} if {c} else {b})"),
 			Ast::Sum(xs) => {
 				f.write_str("(")?;
