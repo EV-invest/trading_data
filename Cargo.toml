@@ -13,7 +13,18 @@ members = [
     "trading_data_macros",
     "trading_data_persistence",
 ]
-default-members = ["trading_data"]
+# the published set: `cargo release` selects these, and a release of the facade alone would name
+# path deps at a version crates.io does not have. The examples stay out — they reach for sibling
+# repos by path.
+default-members = [
+    "trading_data",
+    "trading_data_core",
+    "trading_data_dag",
+    "trading_data_derivatives",
+    "trading_data_expr",
+    "trading_data_macros",
+    "trading_data_persistence",
+]
 resolver = "3"
 
 [workspace.package]
