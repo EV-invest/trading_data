@@ -51,7 +51,17 @@ fn main() -> ExitCode {
 	let rest: Vec<String> = args.collect();
 
 	match verb.as_str() {
-		"bench" => reserved(argv(["cargo", "bench", "--manifest-path", &manifest], rest), &[]),
+		"bench" => {
+			let table = format!("{repo}/tmp/bench/table.txt");
+			match fs::remove_file(&table) {
+				Ok(()) => (),
+				Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+				Err(e) => panic!("{table}: {e}"),
+			}
+			let code = reserved(argv(["cargo", "bench", "--manifest-path", &manifest], rest), &[]);
+			splice(&repo);
+			code
+		}
 		"stat" => {
 			let (pkg, rest) = unit(rest, "stat");
 			// Built outside the reservation: a compile is not the thing being timed, and holding the
@@ -240,6 +250,25 @@ fn pid1_affinity() -> String {
 
 fn join<'a>(cpus: impl Iterator<Item = &'a u32>) -> String {
 	cpus.map(u32::to_string).collect::<Vec<_>>().join(",")
+}
+
+/// Splice the wall-clock rows the spl benches just wrote into the README source. Only the run that
+/// produced `table.txt` may rewrite the section — the file is removed first, so a `bench -p` that
+/// narrows to some other crate leaves the committed numbers alone rather than re-blessing yesterday's.
+fn splice(repo: &str) {
+	const BEGIN: &str = "<!-- bench:begin -->";
+	const END: &str = "<!-- bench:end -->";
+
+	let table = format!("{repo}/tmp/bench/table.txt");
+	let Ok(out) = fs::read_to_string(&table) else {
+		return;
+	};
+	let at = format!("{repo}/docs/.readme_assets/other.md");
+	let md = fs::read_to_string(&at).expect("other.md is checked in");
+	let (head, rest) = md.split_once(BEGIN).expect("other.md carries the bench markers");
+	let (_, tail) = rest.split_once(END).expect("a bench:begin is always closed");
+	fs::write(&at, format!("{head}{BEGIN}\n```\n{}\n```\n{END}{tail}", out.trim_end())).expect("the repo is writable");
+	eprintln!("measure: spliced {table} into docs/.readme_assets/other.md — `nix develop` to regenerate README.md");
 }
 
 fn argv<'a>(head: impl IntoIterator<Item = &'a str>, tail: Vec<String>) -> Vec<String> {

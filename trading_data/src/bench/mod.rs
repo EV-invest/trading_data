@@ -178,9 +178,15 @@ impl Row {
 	}
 }
 
-/// Persist this run's row, then print every row on disk. Rows outlive their run so the last bench
-/// to finish prints the whole comparison without the three having to share a process.
+/// Persist this run's row, then render every row on disk. Rows outlive their run so the last bench
+/// to finish renders the whole comparison without the three having to share a process.
+///
+/// The table goes to stdout and to `tmp/bench/table.txt`, which is what `measure bench` splices into
+/// the README — so a number that reaches a committed document came off a reserved run, not off
+/// whichever `cargo bench` happened to share a core with a compile.
 pub fn publish(row: Row) {
+	use core::fmt::Write as _;
+
 	let dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../tmp/bench"));
 	fs::create_dir_all(&dir).expect("tmp/ is writable");
 	fs::write(dir.join(format!("{}.json", row.name)), serde_json::to_vec_pretty(&row).expect("a Row serialises")).expect("tmp/bench is writable");
@@ -193,12 +199,16 @@ pub fn publish(row: Row) {
 		.collect();
 	rows.sort_by(|a, b| a.name.cmp(&b.name));
 
-	println!(
-		"\n{:<14} {:>9} {:>9} {:>9} {:>9} {:>7} {:>11} {:>11} {:>9} {:>18}",
+	let mut t = String::new();
+	writeln!(
+		t,
+		"{:<14} {:>9} {:>9} {:>9} {:>9} {:>7} {:>11} {:>11} {:>9} {:>18}",
 		"bench", "total s", "feed s", "compute", "cpu s", "cores", "rss p68 MB", "rss p95 MB", "intents", "digest"
-	);
+	)
+	.expect("a String never fails to grow");
 	for r in &rows {
-		println!(
+		writeln!(
+			t,
 			"{:<14} {:>9.2} {:>9.2} {:>9.2} {:>9.2} {:>7.2} {:>11.0} {:>11.0} {:>9} {:>18x}",
 			r.name,
 			r.total_s,
@@ -210,38 +220,42 @@ pub fn publish(row: Row) {
 			r.rss_mb[1],
 			r.intents,
 			r.digest
-		);
+		)
+		.expect("a String never fails to grow");
 	}
 	for r in &rows {
-		println!("{}: cpus {} ({} of them)", r.name, r.cpus, r.cores_avail);
+		writeln!(t, "{}: cpus {} ({} of them)", r.name, r.cpus, r.cores_avail).expect("a String never fails to grow");
 	}
 
 	let keys: Vec<&String> = rows.first().map(|r| r.counters.keys().collect()).unwrap_or_default();
 	if !keys.is_empty() {
-		print!("\n{:<14}", "passes");
+		write!(t, "\n{:<14}", "passes").expect("a String never fails to grow");
 		for k in &keys {
-			print!(" {k:>12}");
+			write!(t, " {k:>12}").expect("a String never fails to grow");
 		}
-		println!();
+		t.push('\n');
 		for r in &rows {
-			print!("{:<14}", r.name);
+			write!(t, "{:<14}", r.name).expect("a String never fails to grow");
 			for k in &keys {
-				print!(" {:>12}", r.counters[*k]);
+				write!(t, " {:>12}", r.counters[*k]).expect("a String never fails to grow");
 			}
-			println!();
+			t.push('\n');
 		}
 	}
 
 	match rows.windows(2).all(|w| w[0].digest == w[1].digest) {
-		true if rows.len() > 1 => println!("\nintent streams identical across all {} rows", rows.len()),
+		true if rows.len() > 1 => writeln!(t, "\nintent streams identical across all {} rows", rows.len()).expect("a String never fails to grow"),
 		true => (),
-		false => println!("\nDIGESTS DIFFER — the rows above are timing different work, see each row's notes"),
+		false => writeln!(t, "\nDIGESTS DIFFER — the rows above are timing different work, see each row's notes").expect("a String never fails to grow"),
 	}
 	for r in &rows {
 		for n in &r.notes {
-			println!("  {}: {n}", r.name);
+			writeln!(t, "  {}: {n}", r.name).expect("a String never fails to grow");
 		}
 	}
+
+	println!("\n{t}");
+	fs::write(dir.join("table.txt"), &t).expect("tmp/bench is writable");
 }
 /// Fires and skips per node, in step order — which `trading_data_dag/model.typ` states *is* topo
 /// order, so the row order doubles as the observed topology and a dep name never seen as a stepped
