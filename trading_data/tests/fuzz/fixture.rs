@@ -18,8 +18,8 @@
 //! `trading_data_dag/tests/gate.rs` does, so every state reached here is production-reachable.
 
 use trading_data::{
-	Blind, Buffering, Bump, Carried, Cell, DepOuts, Elems, Env, Flat, Folding, Folds, Gate, Gating, Glance, Lagged, Over, Reading, Runs, Sampling, Slots, Stamped,
-	Unbounded, Vars, Witness, absent, always_present, constant, graph, lt, min, node, select, slice_nudge, value_nudge,
+	Blind, Buffering, Bump, Carried, Cell, DepOuts, Elems, Env, Flat, Folding, Folds, Gate, Gating, Glance, Lagged, Over, Reading, Runs, Sampling, Slots, Stamped, Unbounded, Vars, Witness,
+	absent, always_present, constant, graph, lt, min, node, select, slice_nudge, value_nudge,
 };
 use v_utils::TF_1MIN;
 

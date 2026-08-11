@@ -10,7 +10,7 @@
 //! failure, and records its minimal `(target, seed, size)` to `CORPUS.txt`; `regressions` replays
 //! every recorded case at the current generator fingerprint. Env-var replay:
 //! `FUZZ_SEED=… FUZZ_SIZE=… FUZZ_TARGET=… cargo t -p trading_data --test fuzz -- --nocapture`
-//! verbose-replays one case.
+//! verbose-replays one case, and `FUZZ_FILM=<path>` draws one as an animated SVG — see [`film`].
 
 /// An oracle violation, as the value a target returns rather than a panic — a panic is reserved for
 /// production code blowing up under the trace, and the two want telling apart in the report.
@@ -23,6 +23,8 @@ macro_rules! check {
 }
 
 mod corpus;
+#[cfg(feature = "bench")]
+mod film;
 mod frng;
 mod minimize;
 mod stream;
@@ -129,6 +131,19 @@ fn fails(t: &'static Target, seed: u64, size: usize) -> bool {
 
 #[test]
 fn fuzz() {
+	// Before the quiet hook, and instead of a fuzz run: the film is an artifact this binary writes,
+	// like `CORPUS.txt`, not a case it is checking — so what it panics with is a message for whoever
+	// asked for it, and the hook below exists to swallow exactly such messages.
+	if let Ok(out) = std::env::var("FUZZ_FILM") {
+		#[cfg(not(feature = "bench"))]
+		panic!("FUZZ_FILM draws the `Census`, which is the facade's `bench` tier: `cargo t -p trading_data --features bench --test fuzz`");
+		#[cfg(feature = "bench")]
+		{
+			film::film(std::path::Path::new(&out));
+			return;
+		}
+	}
+
 	install_quiet_hook();
 	let size = env_usize("FUZZ_SIZE", DEFAULT_SIZE);
 	let only = std::env::var("FUZZ_TARGET").ok();

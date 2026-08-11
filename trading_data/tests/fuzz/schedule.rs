@@ -23,11 +23,11 @@ pub const VERSION: u32 = crate::corpus::fnv(&[include_str!("frng.rs"), include_s
 
 /// Groupings per run. Two is enough for the claim; the third is what makes a *pair* of coarse
 /// groupings comparable rather than only each against the degenerate one.
-const K: usize = 4;
+pub const K: usize = 4;
 
 /// The element sequence, before anything has decided how it arrives. Timestamps advance by seconds,
 /// so a run of a few dozen elements straddles the `Bucket` period boundary several times.
-fn elements(f: &mut Frng) -> Vec<Tick> {
+pub fn elements(f: &mut Frng) -> Vec<Tick> {
 	let mut ts = 0i64;
 	let mut out = Vec::new();
 	while f.remaining() > 2 {
@@ -47,7 +47,7 @@ fn elements(f: &mut Frng) -> Vec<Tick> {
 /// One grouping of `els` into ticks, with the gates held open throughout. Empty batches are in the
 /// draw: a tick carrying no element is the commonest tick there is, and a fold must be unmoved by
 /// one.
-fn grouping(f: &mut Frng, els: &[Tick], which: usize) -> Vec<Step> {
+pub fn grouping(f: &mut Frng, els: &[Tick], which: usize) -> Vec<Step> {
 	let open = vec![fixture::t(0, 1.0)];
 	let batch = |src: Vec<Tick>| Step {
 		src,
@@ -79,13 +79,13 @@ fn grouping(f: &mut Frng, els: &[Tick], which: usize) -> Vec<Step> {
 /// What `rates.folds.exactly-once` makes invariant: the *element* streams, concatenated across
 /// however many ticks the grouping happened to use. Not the per-tick shape, which is the grouping's.
 #[derive(Debug, PartialEq)]
-struct Folded {
+pub struct Folded {
 	total: Vec<Option<f64>>,
 	bucket: Vec<f64>,
 	warm: Vec<Reading>,
 }
 
-fn fold(outs: &[Outs]) -> Folded {
+pub fn fold(outs: &[Outs]) -> Folded {
 	Folded {
 		total: outs.iter().flat_map(|o| o.total.iter().copied()).collect(),
 		bucket: outs.iter().flat_map(|o| o.bucket.iter().copied()).collect(),
