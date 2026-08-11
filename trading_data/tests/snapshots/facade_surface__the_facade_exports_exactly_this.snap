@@ -40,6 +40,7 @@ trading_data_dag::Guide
 trading_data_dag::Hist
 trading_data_dag::Horizon
 trading_data_dag::Ink
+trading_data_dag::Item
 trading_data_dag::Lagged
 trading_data_dag::Latch
 trading_data_dag::Level

@@ -10,6 +10,8 @@ use proc_macro::TokenStream;
 mod demand;
 mod diag;
 mod graph;
+mod item;
+mod lane;
 mod node;
 mod resolve;
 mod shape;
@@ -65,6 +67,64 @@ pub fn graph(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn node(attr: TokenStream, item: TokenStream) -> TokenStream {
 	out(node::node(attr.into(), item.into()))
+}
+
+/// The out plane's four mechanical readings of one field list: `Flat`, `Bump`, `Stamped`, and
+/// `Unflat` where the slots carry the whole item.
+///
+/// ```ignore
+/// #[derive(Clone, Copy, Debug, trading_data::Item)]
+/// pub struct Bar {
+///     #[stamp] pub ts_close: Ts<Venue>,
+///     #[slot] pub open: f64,
+///     #[slot] pub close: f64,
+/// }
+/// ```
+///
+/// `#[slot]` fields are the flattening, in declaration order — which is also `DIMS`, the `Bump`
+/// index and the `unflat` read, so the four cannot drift apart. `#[stamp]` names the event time;
+/// its type owes `as_nanos`/`from_nanos`.
+///
+/// Two things a slot's `f64` cannot say about itself, so the attribute does. `#[slot(discrete)]`
+/// marks one that cannot be perturbed: its `Bump` returns `0.0` and its Jacobian column stays NaN
+/// rather than a fabricated zero. `#[slot(absent)]` marks one whose NaN is a *decline* rather than
+/// arithmetic, and one of them raises `Flat::ABSENTABLE` for the whole out
+/// (`r[outs.absence.typed]`) — the const the kernels check a body's `Expr::MAYBE` against.
+///
+/// A field that is neither is *carried*: it withholds `Unflat` alone, since a kernel writing slots
+/// has nothing to rebuild it from. `Glance` is not here — it is a human-facing line, and no two of
+/// the items in this workspace write the same one.
+#[proc_macro_derive(Item, attributes(stamp, slot))]
+pub fn item(input: TokenStream) -> TokenStream {
+	out(item::item(input.into()))
+}
+
+/// A stored lane's whole encoding from its column list: the builders struct, `schema`, `append`,
+/// `finish` and `decode`.
+///
+/// ```ignore
+/// #[derive(Clone, Copy, Debug, PartialEq, trading_data::Lane)]
+/// #[lane(per_row_min = 48, prec)]
+/// pub struct Trade {
+///     #[col(ts)] pub ts_venue_exec: Ts<Venue>,
+///     #[col(ts, null)] pub ts_venue_send: Option<Ts<Venue>>,
+///     #[col(u8, enc = side_u8, dec = side_from)] pub side: Side,
+///     #[col(i32, name = "price_raw")] pub price: i32,
+/// }
+/// ```
+///
+/// The column order is the field order, which is what `finish` and `schema` used to state
+/// separately — one positional and one not, so a column added to either alone round-tripped green.
+/// `ts` is `Int64` plus the `Ts` codec; the rest are stored as they stand unless `enc`/`dec` name
+/// the pair that reads them. `prec` makes the lane's `Meta` its `PrecisionPriceQty`, which is what
+/// scales its raw columns — carried in the file metadata, never in a column of its own.
+///
+/// Expands where the row is declared and reaches for that module's `col`, `schema_with`,
+/// `prec_pairs`, `prec_sig` and `sealed::Sealed` — the encoding is the storage tier's alone, and a
+/// lane declared anywhere else has no disk to be a contract with.
+#[proc_macro_derive(Lane, attributes(lane, col))]
+pub fn lane(input: TokenStream) -> TokenStream {
+	out(lane::lane(input.into()))
 }
 
 /// A `type` alias to a cell, declared so [`macro@graph`] can follow it.

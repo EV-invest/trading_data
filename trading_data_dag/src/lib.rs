@@ -4538,7 +4538,7 @@ pub const fn deadlocked(latch: &'static str, arms: &'static [&'static str], node
 	false
 }
 
-pub use trading_data_macros::{__graph_resolve, graph, node, node_alias};
+pub use trading_data_macros::{__graph_resolve, Item, graph, node, node_alias};
 
 /// The root half of the observation choke point: flatten a seeded root value and emit its
 /// [`Fire`] (no deps, no jac). No-op under an inactive observer.

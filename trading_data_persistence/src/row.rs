@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use arrow::{
-	array::{Array, ArrayRef, Float64Array, Float64Builder, Int32Array, Int64Array, ListArray, RecordBatch, UInt8Array, UInt32Array, UInt64Array},
+	array::{Array, ArrayRef, Float64Array, Int32Array, Int64Array, ListArray, RecordBatch, UInt8Array, UInt32Array, UInt64Array},
 	datatypes::{DataType, Field, Schema, SchemaRef},
 };
 use trading_data_core::{BookDelta, FrameKind, Local, Precision, PrecisionPriceQty, Side, TradeCols, Ts, Venue};
-use trading_data_dag::{Bump, Cell, Flat, Glance, Stamped, always_present, slice_nudge};
+use trading_data_dag::{Bump, Cell, Flat, Glance, Item, Stamped, always_present, slice_nudge};
+use trading_data_macros::Lane;
 
 use crate::feather::RotationPolicy;
 
@@ -28,36 +29,55 @@ pub trait Row: sealed::Sealed {
 
 /// One stored trade, raw as the venue sent it: `price`/`qty` are meaningless without the lane's
 /// precision. It is the *disk* row, never a graph view — nodes read [`TradeCols`].
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Lane, PartialEq)]
+#[lane(per_row_min = 48, prec)]
 pub struct Trade {
+	#[col(ts)]
 	pub ts_venue_exec: Ts<Venue>,
 	/// `Some` once the adapter reports an envelope time distinct from the execution time.
+	#[col(ts, null)]
 	pub ts_venue_send: Option<Ts<Venue>>,
 	/// `Some` ⇔ we were there when it arrived (live-recorded); historic ingest writes `None`.
+	#[col(ts, null)]
 	pub ts_local_recv: Option<Ts<Local>>,
+	#[col(u64)]
 	pub monotonic_seq: u64,
+	#[col(u8, enc = side_u8, dec = side_from)]
 	pub side: Side,
+	#[col(i32, name = "price_raw")]
 	pub price: i32,
+	#[col(u32, name = "qty_raw")]
 	pub qty: u32,
 }
 
 /// Open interest, base units.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Item, Lane, PartialEq)]
+#[lane(per_row_min = 32)]
 pub struct Oi {
+	#[stamp]
+	#[col(ts)]
 	pub ts_venue_exec: Ts<Venue>,
+	#[col(ts, null)]
 	pub ts_venue_send: Option<Ts<Venue>>,
 	/// `Some` ⇔ we were there when it arrived (live-recorded); historic ingest writes `None`.
+	#[col(ts, null)]
 	pub ts_local_recv: Option<Ts<Local>>,
+	#[slot]
+	#[col(f64)]
 	pub oi: f64,
 }
 
 /// Market cap. The source reports no event time, so the only reading is **ours** — this lane's
 /// axis is `Local`, and venue-named columns would be a lie about whose clock produced it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Lane, PartialEq)]
+#[lane(per_row_min = 20)]
 pub struct Mc {
+	#[col(ts)]
 	pub ts_local_exec: Ts<Local>,
+	#[col(f64)]
 	pub market_cap: f64,
 	/// Honest-None when the source lacks it.
+	#[col(u32, null)]
 	pub rank: Option<u32>,
 }
 
@@ -235,15 +255,6 @@ fn book_ts_fields() -> [Field; 2] {
 	[Field::new("ts_venue_exec", DataType::Int64, false), Field::new("ts_local_recv", DataType::Int64, false)]
 }
 
-/// The wire columns a point-event venue lane carries, in schema order.
-fn venue_ts_fields() -> [Field; 3] {
-	[
-		Field::new("ts_venue_exec", DataType::Int64, false),
-		Field::new("ts_venue_send", DataType::Int64, true),
-		Field::new("ts_local_recv", DataType::Int64, true),
-	]
-}
-
 // Named lookup, not positional: inserting a column would otherwise shift every index in every
 // decoder at once, and round-trip tests still pass when both sides shift together.
 fn col<'a, T: 'static>(b: &'a RecordBatch, name: &str) -> &'a T {
@@ -252,20 +263,6 @@ fn col<'a, T: 'static>(b: &'a RecordBatch, name: &str) -> &'a T {
 		.as_any()
 		.downcast_ref::<T>()
 		.unwrap_or_else(|| panic!("column {name} has unexpected arrow type"))
-}
-
-fn opt_ts<A>(a: &Int64Array, i: usize) -> Option<Ts<A>> {
-	(!a.is_null(i)).then(|| Ts::from_nanos(a.value(i)))
-}
-
-pub struct TradeBuilders {
-	ts_venue_exec: arrow::array::Int64Builder,
-	ts_venue_send: arrow::array::Int64Builder,
-	ts_local_recv: arrow::array::Int64Builder,
-	monotonic_seq: arrow::array::UInt64Builder,
-	side: arrow::array::UInt8Builder,
-	price_raw: arrow::array::Int32Builder,
-	qty_raw: arrow::array::UInt32Builder,
 }
 
 impl TradeBuilders {
@@ -296,87 +293,6 @@ impl TradeBuilders {
 		for &s in cols.side {
 			self.side.append_value(side_u8(s));
 		}
-	}
-}
-
-impl Sealed for Trade {
-	type Builders = TradeBuilders;
-	type Meta = PrecisionPriceQty;
-
-	const PER_ROW_MIN: usize = 48;
-
-	fn builders(rows: usize) -> TradeBuilders {
-		TradeBuilders {
-			ts_venue_exec: arrow::array::Int64Builder::with_capacity(rows),
-			ts_venue_send: arrow::array::Int64Builder::with_capacity(rows),
-			ts_local_recv: arrow::array::Int64Builder::with_capacity(rows),
-			monotonic_seq: arrow::array::UInt64Builder::with_capacity(rows),
-			side: arrow::array::UInt8Builder::with_capacity(rows),
-			price_raw: arrow::array::Int32Builder::with_capacity(rows),
-			qty_raw: arrow::array::UInt32Builder::with_capacity(rows),
-		}
-	}
-
-	fn schema(meta: PrecisionPriceQty) -> SchemaRef {
-		let mut fields = venue_ts_fields().to_vec();
-		fields.extend([
-			Field::new("monotonic_seq", DataType::UInt64, false),
-			Field::new("side", DataType::UInt8, false),
-			Field::new("price_raw", DataType::Int32, false),
-			Field::new("qty_raw", DataType::UInt32, false),
-		]);
-		schema_with(fields, &prec_pairs(meta))
-	}
-
-	fn append(&self, b: &mut TradeBuilders, _meta: PrecisionPriceQty) {
-		b.ts_venue_exec.append_value(self.ts_venue_exec.as_nanos());
-		b.ts_venue_send.append_option(self.ts_venue_send.map(Ts::as_nanos));
-		b.ts_local_recv.append_option(self.ts_local_recv.map(Ts::as_nanos));
-		b.monotonic_seq.append_value(self.monotonic_seq);
-		b.side.append_value(side_u8(self.side));
-		b.price_raw.append_value(self.price);
-		b.qty_raw.append_value(self.qty);
-	}
-
-	fn finish(b: &mut TradeBuilders) -> Vec<ArrayRef> {
-		vec![
-			Arc::new(b.ts_venue_exec.finish()),
-			Arc::new(b.ts_venue_send.finish()),
-			Arc::new(b.ts_local_recv.finish()),
-			Arc::new(b.monotonic_seq.finish()),
-			Arc::new(b.side.finish()),
-			Arc::new(b.price_raw.finish()),
-			Arc::new(b.qty_raw.finish()),
-		]
-	}
-
-	fn decode(batch: &RecordBatch, _file_schema: &Schema) -> Vec<Self> {
-		let exec = col::<Int64Array>(batch, "ts_venue_exec");
-		let send = col::<Int64Array>(batch, "ts_venue_send");
-		let recv = col::<Int64Array>(batch, "ts_local_recv");
-		let monotonic = col::<UInt64Array>(batch, "monotonic_seq");
-		let side = col::<UInt8Array>(batch, "side");
-		let price = col::<Int32Array>(batch, "price_raw");
-		let qty = col::<UInt32Array>(batch, "qty_raw");
-		(0..batch.num_rows())
-			.map(|i| Trade {
-				ts_venue_exec: Ts::from_nanos(exec.value(i)),
-				ts_venue_send: opt_ts(send, i),
-				ts_local_recv: opt_ts(recv, i),
-				monotonic_seq: monotonic.value(i),
-				side: side_from(side.value(i)),
-				price: price.value(i),
-				qty: qty.value(i),
-			})
-			.collect()
-	}
-
-	fn file_sig(schema: &Schema) -> Option<FileSig> {
-		prec_sig(schema)
-	}
-
-	fn approx_bytes(&self) -> usize {
-		48
 	}
 }
 
@@ -583,137 +499,6 @@ impl Sealed for BookSnapshot {
 	}
 }
 
-pub struct OiBuilders {
-	ts_venue_exec: arrow::array::Int64Builder,
-	ts_venue_send: arrow::array::Int64Builder,
-	ts_local_recv: arrow::array::Int64Builder,
-	oi: Float64Builder,
-}
-
-impl Sealed for Oi {
-	type Builders = OiBuilders;
-	type Meta = ();
-
-	const PER_ROW_MIN: usize = 32;
-
-	fn builders(rows: usize) -> OiBuilders {
-		OiBuilders {
-			ts_venue_exec: arrow::array::Int64Builder::with_capacity(rows),
-			ts_venue_send: arrow::array::Int64Builder::with_capacity(rows),
-			ts_local_recv: arrow::array::Int64Builder::with_capacity(rows),
-			oi: Float64Builder::with_capacity(rows),
-		}
-	}
-
-	fn schema(_meta: ()) -> SchemaRef {
-		let mut fields = venue_ts_fields().to_vec();
-		fields.push(Field::new("oi", DataType::Float64, false));
-		schema_with(fields, &[])
-	}
-
-	fn append(&self, b: &mut OiBuilders, _meta: ()) {
-		b.ts_venue_exec.append_value(self.ts_venue_exec.as_nanos());
-		b.ts_venue_send.append_option(self.ts_venue_send.map(Ts::as_nanos));
-		b.ts_local_recv.append_option(self.ts_local_recv.map(Ts::as_nanos));
-		b.oi.append_value(self.oi);
-	}
-
-	fn finish(b: &mut OiBuilders) -> Vec<ArrayRef> {
-		vec![
-			Arc::new(b.ts_venue_exec.finish()),
-			Arc::new(b.ts_venue_send.finish()),
-			Arc::new(b.ts_local_recv.finish()),
-			Arc::new(b.oi.finish()),
-		]
-	}
-
-	fn decode(batch: &RecordBatch, _file_schema: &Schema) -> Vec<Self> {
-		let exec = col::<Int64Array>(batch, "ts_venue_exec");
-		let send = col::<Int64Array>(batch, "ts_venue_send");
-		let recv = col::<Int64Array>(batch, "ts_local_recv");
-		let oi = col::<Float64Array>(batch, "oi");
-		(0..batch.num_rows())
-			.map(|i| Oi {
-				ts_venue_exec: Ts::from_nanos(exec.value(i)),
-				ts_venue_send: opt_ts(send, i),
-				ts_local_recv: opt_ts(recv, i),
-				oi: oi.value(i),
-			})
-			.collect()
-	}
-
-	fn file_sig(_schema: &Schema) -> Option<FileSig> {
-		None
-	}
-
-	fn approx_bytes(&self) -> usize {
-		32
-	}
-}
-
-pub struct McBuilders {
-	ts_local_exec: arrow::array::Int64Builder,
-	market_cap: Float64Builder,
-	rank: arrow::array::UInt32Builder,
-}
-
-impl Sealed for Mc {
-	type Builders = McBuilders;
-	type Meta = ();
-
-	const PER_ROW_MIN: usize = 20;
-
-	fn builders(rows: usize) -> McBuilders {
-		McBuilders {
-			ts_local_exec: arrow::array::Int64Builder::with_capacity(rows),
-			market_cap: Float64Builder::with_capacity(rows),
-			rank: arrow::array::UInt32Builder::with_capacity(rows),
-		}
-	}
-
-	fn schema(_meta: ()) -> SchemaRef {
-		schema_with(
-			vec![
-				Field::new("ts_local_exec", DataType::Int64, false),
-				Field::new("market_cap", DataType::Float64, false),
-				Field::new("rank", DataType::UInt32, true),
-			],
-			&[],
-		)
-	}
-
-	fn append(&self, b: &mut McBuilders, _meta: ()) {
-		b.ts_local_exec.append_value(self.ts_local_exec.as_nanos());
-		b.market_cap.append_value(self.market_cap);
-		b.rank.append_option(self.rank);
-	}
-
-	fn finish(b: &mut McBuilders) -> Vec<ArrayRef> {
-		vec![Arc::new(b.ts_local_exec.finish()), Arc::new(b.market_cap.finish()), Arc::new(b.rank.finish())]
-	}
-
-	fn decode(batch: &RecordBatch, _file_schema: &Schema) -> Vec<Self> {
-		let exec = col::<Int64Array>(batch, "ts_local_exec");
-		let market_cap = col::<Float64Array>(batch, "market_cap");
-		let rank = col::<UInt32Array>(batch, "rank");
-		(0..batch.num_rows())
-			.map(|i| Mc {
-				ts_local_exec: Ts::from_nanos(exec.value(i)),
-				market_cap: market_cap.value(i),
-				rank: (!rank.is_null(i)).then(|| rank.value(i)),
-			})
-			.collect()
-	}
-
-	fn file_sig(_schema: &Schema) -> Option<FileSig> {
-		None
-	}
-
-	fn approx_bytes(&self) -> usize {
-		20
-	}
-}
-
 fn col_i32_list(b: &RecordBatch, name: &str) -> Vec<Vec<i32>> {
 	let list = col::<ListArray>(b, name);
 	let values = list.values().as_any().downcast_ref::<Int32Array>().expect("i32 inner");
@@ -742,21 +527,6 @@ fn col_u32_list(b: &RecordBatch, name: &str) -> Vec<Vec<u32>> {
 
 // DAG impls for this crate's own row types; the core out-types carry theirs in `trading_data_core`,
 // where orphan rules put them.
-
-impl Flat for Oi {
-	const DIMS: &'static [usize] = &[1];
-
-	fn flat(&self, out: &mut [f64]) -> bool {
-		out[0] = self.oi;
-		true
-	}
-}
-
-impl Bump for Oi {
-	fn bump(self, _slot: usize, h: f64) -> (Self, f64) {
-		(Self { oi: self.oi + h, ..self }, h)
-	}
-}
 
 impl Glance for Oi {
 	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -795,12 +565,6 @@ impl Bump for Mc {
 impl Glance for Mc {
 	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		write!(f, "mc {}", v_utils::LargeNumber::new(self.market_cap))
-	}
-}
-
-impl Stamped for Oi {
-	fn ts_ns(&self) -> i64 {
-		self.ts_venue_exec.as_nanos()
 	}
 }
 

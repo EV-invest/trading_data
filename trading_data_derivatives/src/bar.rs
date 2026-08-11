@@ -2,72 +2,55 @@ use core::fmt;
 
 use trading_data_core::{Timestamped, Timestamps, TradeCols, Trades, Ts, Venue};
 use trading_data_dag::{
-	Bump, Cell, CloseOuts, Closes, Env, Flat, Folding, Glance, Ink, Lagged, Over, Pending, Plot, ScanOuts, Scans, Slots, Stamped, Tag, Tail, Unflat, Vars, Witness, always_present, max, min,
-	node, slice_nudge,
+	Cell, CloseOuts, Closes, Env, Folding, Glance, Ink, Item, Lagged, Over, Pending, Plot, ScanOuts, Scans, Slots, Stamped, Tag, Tail, Vars, Witness, always_present, max, min, node,
+	slice_nudge,
 };
 use v_utils::Timeframe;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Item)]
 pub struct Ohlc {
+	#[stamp]
 	pub ts_close: Ts<Venue>,
+	#[slot]
 	pub open: f64,
+	#[slot]
 	pub high: f64,
+	#[slot]
 	pub low: f64,
+	#[slot]
 	pub close: f64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Item)]
 pub struct Volume {
+	#[stamp]
 	pub ts_close: Ts<Venue>,
 	/// Base-denominated: a quote-denominated reader multiplies by a price of its choosing.
+	#[slot]
 	pub base: f64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Item)]
 pub struct Bar {
+	#[stamp]
 	pub ts_close: Ts<Venue>,
+	#[slot]
 	pub open: f64,
+	#[slot]
 	pub high: f64,
+	#[slot]
 	pub low: f64,
+	#[slot]
 	pub close: f64,
 	/// Base-denominated: a volume indie wanting quote reads `vol_base * close`, the close standing in
 	/// for vwap.
+	#[slot]
 	pub vol_base: f64,
 }
 
-impl Flat for Ohlc {
-	const DIMS: &'static [usize] = &[4];
-
-	fn flat(&self, out: &mut [f64]) -> bool {
-		out.copy_from_slice(&[self.open, self.high, self.low, self.close]);
-		true
-	}
-}
-impl Bump for Ohlc {
-	fn bump(mut self, slot: usize, h: f64) -> (Self, f64) {
-		*[&mut self.open, &mut self.high, &mut self.low, &mut self.close][slot] += h;
-		(self, h)
-	}
-}
-impl Unflat for Ohlc {
-	fn unflat(ts_ns: i64, slots: &[f64]) -> Self {
-		Self {
-			ts_close: Ts::from_nanos(ts_ns),
-			open: slots[0],
-			high: slots[1],
-			low: slots[2],
-			close: slots[3],
-		}
-	}
-}
 impl Glance for Ohlc {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "close {}", self.close)
-	}
-}
-impl Stamped for Ohlc {
-	fn ts_ns(&self) -> i64 {
-		self.ts_close.as_nanos()
 	}
 }
 impl Timestamped for Ohlc {
@@ -76,37 +59,9 @@ impl Timestamped for Ohlc {
 	}
 }
 
-impl Flat for Volume {
-	const DIMS: &'static [usize] = &[];
-
-	fn flat(&self, out: &mut [f64]) -> bool {
-		out[0] = self.base;
-		true
-	}
-}
-impl Bump for Volume {
-	fn bump(mut self, slot: usize, h: f64) -> (Self, f64) {
-		debug_assert_eq!(slot, 0);
-		self.base += h;
-		(self, h)
-	}
-}
-impl Unflat for Volume {
-	fn unflat(ts_ns: i64, slots: &[f64]) -> Self {
-		Self {
-			ts_close: Ts::from_nanos(ts_ns),
-			base: slots[0],
-		}
-	}
-}
 impl Glance for Volume {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "{}", self.base)
-	}
-}
-impl Stamped for Volume {
-	fn ts_ns(&self) -> i64 {
-		self.ts_close.as_nanos()
 	}
 }
 impl Timestamped for Volume {
@@ -115,43 +70,9 @@ impl Timestamped for Volume {
 	}
 }
 
-impl Flat for Bar {
-	const DIMS: &'static [usize] = &[5];
-
-	fn flat(&self, out: &mut [f64]) -> bool {
-		out.copy_from_slice(&[self.open, self.high, self.low, self.close, self.vol_base]);
-		true
-	}
-}
-impl Bump for Bar {
-	fn bump(mut self, slot: usize, h: f64) -> (Self, f64) {
-		*[&mut self.open, &mut self.high, &mut self.low, &mut self.close, &mut self.vol_base][slot] += h;
-		(self, h)
-	}
-}
-
-impl Unflat for Bar {
-	fn unflat(ts_ns: i64, slots: &[f64]) -> Self {
-		Self {
-			ts_close: Ts::from_nanos(ts_ns),
-			open: slots[0],
-			high: slots[1],
-			low: slots[2],
-			close: slots[3],
-			vol_base: slots[4],
-		}
-	}
-}
-
 impl Glance for Bar {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "close {}", self.close)
-	}
-}
-
-impl Stamped for Bar {
-	fn ts_ns(&self) -> i64 {
-		self.ts_close.as_nanos()
 	}
 }
 impl Timestamped for Bar {

@@ -12,7 +12,7 @@ pub use trading_data_core::{Asset, ExchangeName, Instrument, Pair, RelayCols, Sy
 pub use trading_data_dag as __dag;
 pub use trading_data_dag::{
 	Armed, Awake, Batch, Blind, Buffering, Bump, Carried, Cell, Close, CloseOuts, Closes, Decides, DepOuts, Elems, EmitOuts, Env, Episode, Episodic, Fidelity, Fire, Flat, Fold, FoldOuts,
-	Folding, Folds, Gate, Gating, Glance, Guide, Hist, Horizon, Ink, Lagged, Latch, Level, Nudge, Observer, Over, Pending, Plot, Predicate, Present, ProbabilisticDistribution, Reach,
+	Folding, Folds, Gate, Gating, Glance, Guide, Hist, Horizon, Ink, Item, Lagged, Latch, Level, Nudge, Observer, Over, Pending, Plot, Predicate, Present, ProbabilisticDistribution, Reach,
 	Reading, Rewound, Roots, Rows, Run, RunOuts, Runs, Sampling, Scan, ScanOuts, Scans, Series, Stamped, Symbolic, Tag, TriggerOut, Unbounded, Unflat, Want, Witness, always_present, graph,
 	node, node_alias, slice_nudge, value_nudge,
 };

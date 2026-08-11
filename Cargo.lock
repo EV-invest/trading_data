@@ -5476,6 +5476,7 @@ dependencies = [
  "tracing",
  "trading_data_core",
  "trading_data_dag",
+ "trading_data_macros",
  "v_utils",
 ]
 

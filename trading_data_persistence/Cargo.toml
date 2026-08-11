@@ -19,6 +19,9 @@ thiserror.workspace = true
 tracing.workspace = true
 trading_data_core.workspace = true
 trading_data_dag.workspace = true
+# `Lane` writes this crate's disk encoding and the dag is storage-free, so it is named here rather
+# than through the dag's macro re-export.
+trading_data_macros.workspace = true
 v_utils.workspace = true
 
 [dev-dependencies]
