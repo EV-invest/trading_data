@@ -11,18 +11,11 @@
 //! The last test here is the contrast: the *same* graph driven through `tick`, where the past is
 //! `Awake` and the old behaviour is what survives.
 
-use trading_data::{
-	Blind, Book, BookAnchors, BookDelta, BookDeltas, BookShape, Buffering, Cell, DepOuts, FrameKind, Gate, Gating, Nudge, Over, Precision, PrecisionPriceQty, Rewound, Side, TradeBuf,
-	TradeCols, Trades, Ts, node,
-};
+use book_fixture::{PERIOD, PREC, Read, anchor, read, run};
+use trading_data::{Blind, Book, BookAnchors, BookDelta, BookDeltas, BookShape, Buffering, Cell, DepOuts, Gate, Gating, Nudge, Over, Rewound, Side, TradeBuf, TradeCols, Trades, Ts, node};
 use v_utils::TF_15MIN;
 
-const PREC: PrecisionPriceQty = PrecisionPriceQty {
-	price: Precision(2),
-	qty: Precision(4),
-};
-/// One tumble of the retained net, in nanoseconds.
-const PERIOD: i64 = 900_000_000_000;
+mod book_fixture;
 
 /// `book_gating.rs`'s fixture, anchored: the shipped `Book` node is ungated, so gating it is this
 /// wrapper over the same public fold, and both resolve against the *same* `Buffer<BookDeltas, 15m>`
@@ -151,39 +144,6 @@ impl Rewound<Book> for Tape {
 	}
 }
 
-/// Both sides as raw levels, which is the whole of what "the same book" means here.
-type Shape = (Vec<(i32, u32)>, Vec<(i32, u32)>);
-type Read = Option<(u64, Shape)>;
-
-fn anchor(bids: &[(i32, u32)], asks: &[(i32, u32)]) -> BookShape {
-	BookShape {
-		prec: PREC,
-		bids: bids.iter().copied().collect(),
-		asks: asks.iter().copied().collect(),
-		..Default::default()
-	}
-}
-
-fn run(ts_ns: i64, levels: &[(u64, Side, i32, u32)]) -> Vec<BookDelta> {
-	levels
-		.iter()
-		.map(|&(seq, side, price, qty)| BookDelta {
-			prec: PREC,
-			ts_venue_exec: Ts::from_nanos(ts_ns),
-			ts_local_recv: Ts::from_nanos(ts_ns),
-			monotonic_seq: seq,
-			kind: FrameKind::Update,
-			side,
-			price,
-			qty,
-		})
-		.collect()
-}
-
-fn read(b: Option<&Book>) -> Read {
-	b.map(|b| (b.epoch(), (b.bids().to_vec(), b.asks().to_vec())))
-}
-
 fn batch<'t>(trades: &'t mut TradeBuf, hot: bool, a: Option<&'t BookShape>, d: &'t [BookDelta]) -> Batches<'t> {
 	trades.clear();
 	trades.prec = PREC;
@@ -201,7 +161,7 @@ fn batch<'t>(trades: &'t mut TradeBuf, hot: bool, a: Option<&'t BookShape>, d: &
 /// what earlier ticks delivered, and this tick's own batch is the sweep's to fold.
 fn tick(g: &mut G, tape: &mut Tape, trades: &mut TradeBuf, hot: bool, a: Option<&BookShape>, d: &[BookDelta]) -> (Read, Read, Option<f64>) {
 	let out = g.tick_rewind(0, batch(trades, hot, a, d), tape);
-	let seen = (read(out.book), read(out.twin), out.mid);
+	let seen = (read(*out.book), read(*out.twin), *out.mid);
 	tape.deltas.extend_from_slice(d);
 	if let Some(a) = a {
 		tape.anchor = Some(a.clone());
@@ -270,5 +230,5 @@ fn under_awake_the_node_is_pinned_and_folds_every_row() {
 	// nets, so the book declines rather than fold onto stale state.
 	let woke = run(3 * PERIOD + 200, &[(6, Side::Sell, 10_003, 8)]);
 	let out = g.tick(0, batch(&mut trades, true, None, &woke));
-	assert_eq!((read(out.book), out.mid), (None, None), "without a past, a sleep past the nets' reach is still a dark book");
+	assert_eq!((read(*out.book), *out.mid), (None, None), "without a past, a sleep past the nets' reach is still a dark book");
 }

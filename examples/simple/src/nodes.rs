@@ -6,8 +6,8 @@
 use core::fmt;
 
 use trading_data::{
-	Buffering, Bump, Carried, Cell, Elems, Env, Exact, Expr, Flat, FoldOuts, Folding, Folds, Glance, Horizon, Lagged, Lanes, Over, Reading, RsiSpec, RunOuts, Runs, Sampling, Side, Slots,
-	Stamped, Symbolic, Tag, Timeframe, TradeCols, Trades, Vars, Witness, always_present, constant, node, slice_nudge,
+	Buffering, Bump, Carried, Cell, CloseOuts, Closes, Elems, Env, Expr, Flat, FoldOuts, Folding, Folds, Glance, Horizon, Lagged, Lanes, Over, Pending, Reading, RsiSpec, RunOuts, Runs,
+	Sampling, Side, Slots, Stamped, Symbolic, Tag, Timeframe, TradeCols, Trades, Unflat, Vars, Witness, always_present, constant, node, slice_nudge,
 };
 use v_utils::*;
 
@@ -41,7 +41,7 @@ pub struct Flow {
 }
 /// [`Flow`] per closed `TF`, as [`trading_data::Bars`] is [`trading_data::Bar`] per closed period.
 #[derive(Clone, Default)]
-pub struct Flows<const TF: Timeframe>(Option<Flow>);
+pub struct Flows<const TF: Timeframe>(Pending);
 impl<const TF: Timeframe> Flows<TF> {
 	const TAG: Tag = Tag::new("Flow:", TF);
 }
@@ -128,6 +128,15 @@ impl Bump for Flow {
 		(self, h)
 	}
 }
+impl Unflat for Flow {
+	fn unflat(ts_ns: i64, slots: &[f64]) -> Self {
+		Self {
+			ts_close: ts_ns,
+			close: slots[0],
+			quote: slots[1],
+		}
+	}
+}
 impl Glance for Flow {
 	fn glance(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "flow {:.0}", self.quote)
@@ -142,39 +151,44 @@ always_present!(Flow);
 impl<const TF: Timeframe> Cell for Flows<TF> {
 	type Out<'t> = &'t [Flow];
 
+	const CLOCK: Option<Timeframe> = Some(TF);
 	const NAME: &'static str = Self::TAG.as_str();
 }
 #[node]
-impl<const TF: Timeframe> Runs for Flows<TF> {
+impl<const TF: Timeframe> Closes for Flows<TF> {
 	/// The partial period is the whole of the state, so the trades it holds reach back exactly one.
 	type Deps = (Folding<Trades, Over<TF>>,);
 
-	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
+	const PERIOD: Timeframe = TF;
 
-	fn emit(&mut self, (trades,): RunOuts<'_, Self>, out: &mut Vec<Flow>) {
-		let (ps, qs) = (trades.prec.price.scale(), trades.prec.qty.scale());
-		let step = Exact::from_nanos(TF.duration().as_nanos() as i64);
-		for (i, exec) in trades.exec().iter().enumerate() {
-			let (price, qty) = (trades.price[i] as f64 / ps, trades.qty[i] as f64 / qs);
-			let ts_close = exec.floor(step).as_nanos() + step.as_nanos();
-			let flow = signed(trades.side[i], price * qty);
-			match &mut self.0 {
-				Some(f) if f.ts_close == ts_close => {
-					f.close = price;
-					f.quote += flow;
-				}
-				acc => {
-					if let Some(done) = acc.take() {
-						out.push(done);
-					}
-					*acc = Some(Flow {
-						ts_close,
-						close: price,
-						quote: flow,
-					});
-				}
-			}
-		}
+	/// The side signs the *quantity* rather than riding beside it: a `Closes` reading is the driving
+	/// element's own slots and nothing else, so unlike [`Cvd`] there is no `EXTRA` slot a discrete
+	/// attribute could be put in. The column for slot 1 is therefore a derivative in signed qty.
+	fn read<W: Witness>((trades,): &CloseOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let (exec, lag) = trades.exec().at(i)?;
+		env.dep(0).lag(lag).put(&[
+			trades.price[i] as f64 / trades.prec.price.scale(),
+			signed(trades.side[i], trades.qty[i] as f64 / trades.prec.qty.scale()),
+		]);
+		Some(exec.as_nanos())
+	}
+
+	fn open(&self, v: Vars) -> impl Slots {
+		let (price, qty) = (v.get::<0>(), v.get::<1>());
+		(price, price * qty)
+	}
+
+	fn fold(&self, v: Vars) -> impl Slots {
+		let (price, qty, quote) = (v.get::<0>(), v.get::<1>(), v.get::<3>());
+		(price, quote + price * qty)
+	}
+
+	fn pending(&self) -> &Pending {
+		&self.0
+	}
+
+	fn pending_mut(&mut self) -> &mut Pending {
+		&mut self.0
 	}
 }
 slice_nudge!([const TF: Timeframe] Flows<TF>, Flow);
@@ -187,7 +201,8 @@ impl<const TF: Timeframe, const WIN: usize> Cell for Lambda<TF, WIN> {
 impl<const TF: Timeframe, const WIN: usize> Runs for Lambda<TF, WIN> {
 	type Deps = (Buffering<Flows<TF>, Elems<WIN>>,);
 
-	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
+	const WHY: &'static str = "a through-origin fit over a whole retained window, and no kernel indexes a window: `Scan` reads a point, `Close` a period, `Fold` all history through \
+	                          state. A window body would also want one `Var` per retained element, against a `MAX_VARS` of 16";
 
 	fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(hist.narrowed(Horizon::Elems(WIN)).trailing().map(|w| w.map(kyle_lambda)));
@@ -210,7 +225,8 @@ impl<const TF: Timeframe, const WIN: usize> Cell for RollingVolUsd<TF, WIN> {
 impl<const TF: Timeframe, const WIN: usize> Runs for RollingVolUsd<TF, WIN> {
 	type Deps = (Buffering<trading_data::Bars<TF>, Elems<WIN>>,);
 
-	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
+	const WHY: &'static str = "a sum over a whole retained window, and no kernel indexes a window: `Scan` reads a point, `Close` a period, `Fold` all history through state. A window \
+	                          body would also want one `Var` per retained element, against a `MAX_VARS` of 16";
 
 	fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(hist.narrowed(Horizon::Elems(WIN)).trailing().map(|w| w.map(|w| w.iter().map(|b| b.vol_base * b.close).sum())));

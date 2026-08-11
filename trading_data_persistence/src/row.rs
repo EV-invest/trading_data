@@ -765,6 +765,8 @@ impl Glance for Oi {
 }
 
 impl Flat for Mc {
+	/// The rank slot: a coin the provider left unranked has a market cap all the same.
+	const ABSENTABLE: bool = true;
 	const DIMS: &'static [usize] = &[2];
 
 	fn flat(&self, out: &mut [f64]) -> bool {

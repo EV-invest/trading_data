@@ -142,10 +142,6 @@ impl<C: LaneBuf> Lane<C> {
 		self.ts.get(self.cur).copied()
 	}
 
-	fn is_empty(&self) -> bool {
-		self.cur >= self.ts.len()
-	}
-
 	/// Claim `n` weave slots at `ts`; the caller has already appended `n` elements to `buf`.
 	fn key(&mut self, ts: Arrival, n: usize) {
 		debug_assert!(self.ts.last().is_none_or(|&last| ts >= last), "lane arrivals must be non-decreasing");
@@ -153,13 +149,18 @@ impl<C: LaneBuf> Lane<C> {
 		debug_assert_eq!(self.ts.len(), self.buf.len(), "lane keys and lane data must stay in step");
 	}
 
-	/// End index (exclusive) of the maximal run from `cur` whose keys stay `<= bound`.
-	fn run_end(&self, bound: Arrival) -> usize {
-		let mut e = self.cur + 1;
-		while e < self.ts.len() && self.ts[e] <= bound {
-			e += 1;
+	/// Consume the maximal run from `cur` whose keys stay `<= bound`, leaving `prev_emit` on its last
+	/// key. Everything a step does to the winning lane that is not the lane's own — so a `step` arm
+	/// states only how that lane's row reports venue time, which is the whole of what varies.
+	fn take_run(&mut self, bound: Arrival, prev_emit: &mut Arrival) -> (usize, usize) {
+		let mut end = self.cur + 1;
+		while end < self.ts.len() && self.ts[end] <= bound {
+			end += 1;
 		}
-		e
+		let run = (self.cur, end);
+		self.cur = end;
+		*prev_emit = self.ts[end - 1];
+		run
 	}
 
 	/// Reclaim the emitted prefix so a streaming lane stays bounded to its un-emitted window.
@@ -173,22 +174,8 @@ impl<C: LaneBuf> Lane<C> {
 	}
 }
 
-impl Lane<Vec<Oi>> {
-	fn push(&mut self, ts: Arrival, row: Oi) {
-		self.buf.push(row);
-		self.key(ts, 1);
-	}
-}
-
-impl Lane<Vec<Mc>> {
-	fn push(&mut self, ts: Arrival, row: Mc) {
-		self.buf.push(row);
-		self.key(ts, 1);
-	}
-}
-
-impl Lane<Vec<BookShape>> {
-	fn push(&mut self, ts: Arrival, row: BookShape) {
+impl<T> Lane<Vec<T>> {
+	fn push(&mut self, ts: Arrival, row: T) {
 		self.buf.push(row);
 		self.key(ts, 1);
 	}
@@ -227,8 +214,15 @@ impl Weaver {
 		Self { clock, ..Self::default() }
 	}
 
+	/// Lane order is the tie-break, so this list is the one the weave is defined by.
+	fn heads(&self) -> [Option<Arrival>; 5] {
+		[self.trades.head(), self.deltas.head(), self.anchors.head(), self.oi.head(), self.mc.head()]
+	}
+
+	/// Read off [`Self::heads`] rather than restating the lanes: a lane with no head has nothing left
+	/// to weave, and a sixth lane cannot then be added to one list and forgotten in the other.
 	fn is_empty(&self) -> bool {
-		self.trades.is_empty() && self.deltas.is_empty() && self.anchors.is_empty() && self.oi.is_empty() && self.mc.is_empty()
+		self.heads().iter().all(Option::is_none)
 	}
 
 	fn compact(&mut self) {
@@ -244,7 +238,7 @@ impl Weaver {
 	/// idempotent is precisely what would make that silent.
 	fn step(&mut self) -> Option<Step<'_>> {
 		let (past_d, past_a) = (self.deltas.cur, self.anchors.cur);
-		let heads = [self.trades.head(), self.deltas.head(), self.anchors.head(), self.oi.head(), self.mc.head()];
+		let heads = self.heads();
 		let winner = (0..heads.len()).filter(|&i| heads[i].is_some()).min_by_key(|&i| heads[i].expect("filtered to Some"))?;
 		let win_ts = heads[winner].expect("winner has a head");
 		let bound = (0..heads.len()).filter(|&i| i != winner).filter_map(|i| heads[i]).min().unwrap_or(Arrival::from_nanos(i64::MAX));
@@ -257,33 +251,23 @@ impl Weaver {
 		let (mut t, mut d, mut a, mut o, mut m) = ((0, 0), (0, 0), (0, 0), (0, 0), (0, 0));
 		let ts_venue = match winner {
 			0 => {
-				t = (self.trades.cur, self.trades.run_end(bound));
-				self.trades.cur = t.1;
-				self.prev_emit = self.trades.ts[t.1 - 1];
+				t = self.trades.take_run(bound, &mut self.prev_emit);
 				self.trades.buf.exec_at(t.1 - 1)
 			}
 			1 => {
-				d = (self.deltas.cur, self.deltas.run_end(bound));
-				self.deltas.cur = d.1;
-				self.prev_emit = self.deltas.ts[d.1 - 1];
+				d = self.deltas.take_run(bound, &mut self.prev_emit);
 				self.deltas.buf[d.1 - 1].ts_venue_exec
 			}
 			2 => {
-				a = (self.anchors.cur, self.anchors.run_end(bound));
-				self.anchors.cur = a.1;
-				self.prev_emit = self.anchors.ts[a.1 - 1];
+				a = self.anchors.take_run(bound, &mut self.prev_emit);
 				self.anchors.buf[a.1 - 1].ts.venue_exec.last
 			}
 			3 => {
-				o = (self.oi.cur, self.oi.run_end(bound));
-				self.oi.cur = o.1;
-				self.prev_emit = self.oi.ts[o.1 - 1];
+				o = self.oi.take_run(bound, &mut self.prev_emit);
 				self.oi.buf[o.1 - 1].ts_venue_exec
 			}
 			_ => {
-				m = (self.mc.cur, self.mc.run_end(bound));
-				self.mc.cur = m.1;
-				self.prev_emit = self.mc.ts[m.1 - 1];
+				m = self.mc.take_run(bound, &mut self.prev_emit);
 				mc_axis(self.mc.buf[m.1 - 1].ts_local_exec)
 			}
 		};
@@ -391,8 +375,7 @@ impl Replay {
 					let mut s = sampler(lane);
 					for d in read_book_deltas(catalog, exchange, symbol, start, end).expect("open delta lane") {
 						let ts = effective(Some(d.ts_local_recv), d.ts_venue_exec, &mut s);
-						weaver.deltas.buf.push(d);
-						weaver.deltas.key(ts, 1);
+						weaver.deltas.push(ts, d);
 					}
 				}
 				LaneKind::BookAnchors => {

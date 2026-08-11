@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Armed, Cell, Direction, Episode, Episodic, Flat, Gating, Glance, Plot, RunOuts, Runs, Sampling, Side, TriggerOut, node, slice_nudge};
+use trading_data::{Armed, Cell, Direction, Episode, Episodic, Flat, Gating, Glance, Plot, Reading, RunOuts, Runs, Sampling, Side, TriggerOut, node, slice_nudge};
 use v_utils::*;
 
 use super::{
@@ -39,9 +39,9 @@ impl TrailingStop {
 
 	/// Ratchet on `price` and read the tick off in one act: the `1 - severity * certainty` multiplier
 	/// the degrader applies, the surviving fraction `1 - certainty`, and the price level where the
-	/// trail fires. The stop is `None` once fully retraced — at full certainty the term has deprecated
+	/// trail fires. The stop is absent once fully retraced — at full certainty the term has deprecated
 	/// all the size it controls, so it stops drawing.
-	pub fn step(&mut self, price: f64) -> (f64, f64, Option<f64>) {
+	pub fn step(&mut self, price: f64) -> (f64, f64, Reading) {
 		let extreme = self.extreme.get_or_insert(price);
 		let retrace = match self.side {
 			Side::Buy => {
@@ -55,15 +55,18 @@ impl TrailingStop {
 		};
 		self.certainty = self.certainty.max((retrace / self.distance).clamp(0.0, 1.0));
 		let stop = match (self.certainty >= 1.0, self.side) {
-			(true, _) => None,
-			(false, Side::Buy) => Some(*extreme - self.distance),
-			(false, Side::Sell) => Some(*extreme + self.distance),
+			(true, _) => Reading::ABSENT,
+			(false, Side::Buy) => Reading::from(*extreme - self.distance),
+			(false, Side::Sell) => Reading::from(*extreme + self.distance),
 		};
 		(1.0 - self.severity * self.certainty, 1.0 - self.certainty, stop)
 	}
 }
 
-/// One book tick of an open episode — the persisted intent stream, minus the execution fields.
+/// A change in the standing intent of an open episode — the persisted intent stream, minus the
+/// execution fields. A book tick that would republish the last value publishes nothing: the out is
+/// read as what stands (`Sampling`-shaped), so an element is a *move*, and absence of elements
+/// means the last one still holds.
 #[derive(Clone, Copy, Debug)]
 pub struct Intent {
 	pub ts_ns: i64,
@@ -75,8 +78,8 @@ pub struct Intent {
 	pub trail_fraction: f64,
 	pub sl: f64,
 	pub tp: f64,
-	/// The level where the trail fires; `None` once fully retraced, when it stops drawing.
-	pub trail_stop: Option<f64>,
+	/// The level where the trail fires; absent once fully retraced, when it stops drawing.
+	pub trail_stop: Reading,
 	pub draining: bool,
 	/// The episode's last intent: the drain deadline passed on this book tick, so this one is
 	/// published and `Active` closes. A reader has no other way to tell a spent episode from a book
@@ -94,26 +97,32 @@ impl core::hash::Hash for Intent {
 		for b in [self.base_q, self.target_q, self.eval, self.lambda_atr, self.trail_fraction, self.sl, self.tp] {
 			h.write_u64(b.to_bits());
 		}
-		h.write_u64(self.trail_stop.map_or(0, f64::to_bits));
+		h.write_u64(self.trail_stop.get().map_or(0, f64::to_bits));
 		h.write_u8(self.draining as u8 | (self.terminal as u8) << 1);
 	}
 }
 
+impl Intent {
+	/// Value-plane equality: the `flat` slots plus the booleans beside them. `ts_ns` is when, not
+	/// what, which is the whole difference between this and the digest's bit-identity above.
+	pub fn same_value(&self, other: &Self) -> bool {
+		let (mut a, mut b) = ([0.0; 8], [0.0; 8]);
+		self.flat(&mut a);
+		other.flat(&mut b);
+		// bitwise, so an absent trail_stop reads equal to an absent trail_stop
+		a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()) && self.side == other.side && self.draining == other.draining && self.terminal == other.terminal
+	}
+}
+
 impl Flat for Intent {
+	/// The trail's level alone: an intent stands whether or not the trail still draws one.
+	const ABSENTABLE: bool = true;
 	const DIMS: &'static [usize] = &[8];
 
 	fn flat(&self, out: &mut [f64]) -> bool {
-		// A fully-retraced trail has no level, which is the empty slot the flattening already spells.
-		out.copy_from_slice(&[
-			self.target_q,
-			self.base_q,
-			self.eval,
-			self.lambda_atr,
-			self.trail_fraction,
-			self.sl,
-			self.tp,
-			self.trail_stop.unwrap_or(f64::NAN),
-		]);
+		let (fields, trail) = out.split_at_mut(7);
+		fields.copy_from_slice(&[self.target_q, self.base_q, self.eval, self.lambda_atr, self.trail_fraction, self.sl, self.tp]);
+		self.trail_stop.flat(trail);
 		true
 	}
 }
@@ -138,6 +147,9 @@ impl Glance for Intent {
 pub struct Deprecator {
 	state: State,
 	last_decision: Option<Decided>,
+	/// What the stream last said, so a book tick that moves nothing publishes nothing. Dropped by
+	/// the commutation reset with everything else, so an episode's first intent always publishes.
+	last_published: Option<Intent>,
 }
 #[derive(Clone)]
 struct Active {
@@ -157,7 +169,7 @@ enum State {
 }
 
 impl Cell for Deprecator {
-	type Out<'t> = &'t [Option<Intent>];
+	type Out<'t> = &'t [Intent];
 }
 #[node]
 impl Runs for Deprecator {
@@ -181,7 +193,7 @@ impl Runs for Deprecator {
 	];
 	const WHY: &'static str = "an episode walk driven by control flow rather than arithmetic";
 
-	fn emit(&mut self, (armed, decision, atr, top): RunOuts<'_, Self>, out: &mut Vec<Option<Intent>>) {
+	fn emit(&mut self, (armed, decision, atr, top): RunOuts<'_, Self>, out: &mut Vec<Intent>) {
 		assert!(armed, "a gating dep reads true inside `emit`");
 		let liq = &strategy().classification.liquidations;
 		// The arming tick and the ticks that act on it are different lanes: `Decision` is trade-clocked,
@@ -193,10 +205,8 @@ impl Runs for Deprecator {
 		}
 
 		for d in top {
-			let Some(d) = d else {
-				out.push(None);
-				continue;
-			};
+			// nothing to read is nothing to move: the last published intent still stands.
+			let Some(d) = d else { continue };
 			if let (State::Idle, Some(dec)) = (&self.state, self.last_decision) {
 				let entry_price = d.mid();
 				let side = Side::try_from(dec.direction).expect("the latch arms on a non-flat direction");
@@ -209,10 +219,7 @@ impl Runs for Deprecator {
 				});
 			}
 			// Management needs `target_q` off the ATR envelope; skip until the first ATR lands.
-			let (State::Active(a), Some(atr)) = (&mut self.state, atr) else {
-				out.push(None);
-				continue;
-			};
+			let (State::Active(a), Some(atr)) = (&mut self.state, atr) else { continue };
 			let mid = d.mid();
 			let (trail_mult, trail_fraction, trail_stop) = a.trail.step(mid);
 			let (sl, tp) = match a.side {
@@ -234,7 +241,7 @@ impl Runs for Deprecator {
 			}
 			let draining = a.drain_deadline_ns.is_some();
 			let terminal = a.drain_deadline_ns.is_some_and(|dl| d.ts_ns >= dl);
-			out.push(Some(Intent {
+			let intent = Intent {
 				ts_ns: d.ts_ns,
 				side: a.side,
 				base_q: a.base_q,
@@ -247,14 +254,18 @@ impl Runs for Deprecator {
 				trail_stop,
 				draining,
 				terminal,
-			}));
+			};
+			if !self.last_published.is_some_and(|l| l.same_value(&intent)) {
+				self.last_published = Some(intent);
+				out.push(intent);
+			}
 			if terminal {
 				self.state = State::Idle;
 			}
 		}
 	}
 }
-slice_nudge!(Deprecator, Option<Intent>);
+slice_nudge!(Deprecator, Intent);
 
 #[node]
 impl Episodic for Deprecator {

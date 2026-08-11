@@ -16,18 +16,11 @@
 //! (3)–(5) are why gating a book is sound where gating a recurrence is not: the engine retains the
 //! deltas as a *net*, so a wake costs depth rather than the length of the sleep.
 
-use trading_data::{
-	Blind, Book, BookAnchors, BookDelta, BookDeltas, BookShape, Buffering, Cell, DepOuts, FrameKind, Gate, Gating, Nudge, Over, Precision, PrecisionPriceQty, Side, TradeBuf, TradeCols,
-	Trades, Ts, node,
-};
+use book_fixture::{PERIOD, PREC, Read, anchor, read, run};
+use trading_data::{Blind, Book, BookAnchors, BookDelta, BookDeltas, BookShape, Buffering, Cell, DepOuts, Gate, Gating, Nudge, Over, Side, TradeBuf, TradeCols, Trades, Ts, node};
 use v_utils::TF_15MIN;
 
-const PREC: PrecisionPriceQty = PrecisionPriceQty {
-	price: Precision(2),
-	qty: Precision(4),
-};
-/// One tumble of the retained net, in nanoseconds — the same grid the checkpoint is written on.
-const PERIOD: i64 = 900_000_000_000;
+mod book_fixture;
 
 /// `Node::Deps` is fixed on the impl, so the shipped `Book` node is the ungated one; gating it is
 /// this wrapper over the same public `Book::step` fold. The two cannot drift — and both resolve
@@ -109,39 +102,8 @@ trading_data::graph! {
 	outputs { mid: Mid, book: GatedBook, twin: trading_data::Book }
 }
 
-/// Both sides as raw levels, which is the whole of what "the same book" means here.
-type Shape = (Vec<(i32, u32)>, Vec<(i32, u32)>);
-
-fn anchor(bids: &[(i32, u32)], asks: &[(i32, u32)]) -> BookShape {
-	BookShape {
-		prec: PREC,
-		bids: bids.iter().copied().collect(),
-		asks: asks.iter().copied().collect(),
-		..Default::default()
-	}
-}
-
-/// One run of levels at the given sequence numbers — the gapless chain the shadow book writes.
-fn run(ts_ns: i64, levels: &[(u64, Side, i32, u32)]) -> Vec<BookDelta> {
-	levels
-		.iter()
-		.map(|&(seq, side, price, qty)| BookDelta {
-			prec: PREC,
-			ts_venue_exec: Ts::from_nanos(ts_ns),
-			ts_local_recv: Ts::from_nanos(ts_ns),
-			monotonic_seq: seq,
-			kind: FrameKind::Update,
-			side,
-			price,
-			qty,
-		})
-		.collect()
-}
-
 /// One tick, the gate driven by whether a trade is present. Returns what the gated book and its
 /// ungated twin each read, and the consumer's own out.
-type Read = Option<(u64, Shape)>;
-
 fn tick(g: &mut G, trades: &mut TradeBuf, hot: bool, a: Option<&BookShape>, d: &[BookDelta]) -> (Read, Read, Option<f64>) {
 	trades.clear();
 	trades.prec = PREC;
@@ -156,8 +118,7 @@ fn tick(g: &mut G, trades: &mut TradeBuf, hot: bool, a: Option<&BookShape>, d: &
 			anchors: a,
 		},
 	);
-	let read = |b: Option<&Book>| b.map(|b| (b.epoch(), (b.bids().to_vec(), b.asks().to_vec())));
-	(read(out.book), read(out.twin), out.mid)
+	(read(*out.book), read(*out.twin), *out.mid)
 }
 
 #[test]

@@ -478,6 +478,25 @@ pub trait Flat: Copy {
 	}
 }
 
+/// [`Flat::flat`] read against the type's own declaration: a fired slot that came back NaN where
+/// [`Flat::ABSENTABLE`] says absence is not a state this out can be in is a declination nothing
+/// published — the convention `Reading` exists to replace (`r[impl outs.absence.typed]`). Every
+/// flattening the engine takes goes through here, so such an out is caught at its own boundary
+/// rather than inside some downstream body's `Cmp`.
+///
+/// `debug_assert` for the reason the algebra's own are: a `Level` kernel flattens its deps on the
+/// live path, and `r[kernels.pure.zero-cost]` is an equality in retired instructions.
+#[inline]
+fn flatten<T: Flat>(v: &T, out: &mut [f64]) -> bool {
+	let fired = v.flat(out);
+	debug_assert!(
+		!fired || T::ABSENTABLE || !out.iter().any(|s| s.is_nan()),
+		"`{}` published a NaN slot with no absence channel: hold the reading in a `Reading` and state `Flat::ABSENTABLE`, or do not publish where it is not there",
+		core::any::type_name::<T>()
+	);
+	fired
+}
+
 /// Typed-space perturbation of one flattened element, for the finite-difference witness. Returns
 /// the perturbation **actually applied**, in the element's own units — a quantized column can only
 /// move in whole ticks, and pretending otherwise divides the difference by a step never taken.
@@ -700,7 +719,7 @@ impl<T: Flat> Flat for Option<T> {
 
 	fn flat(&self, out: &mut [f64]) -> bool {
 		match self {
-			Some(t) => t.flat(out),
+			Some(t) => flatten(t, out),
 			None => {
 				out.fill(f64::NAN);
 				false
@@ -728,12 +747,13 @@ impl<T: Bump> Bump for Option<T> {
 /// A batch out flattens to its *last* element (empty ⇒ NaN + unfired); its rate is its len.
 // r[impl outs.absence.one-reading]
 impl<T: Flat> Flat for &[T] {
+	const ABSENTABLE: bool = T::ABSENTABLE;
 	const DIMS: &'static [usize] = T::DIMS;
 	const RUN: bool = true;
 
 	fn flat(&self, out: &mut [f64]) -> bool {
 		match self.last() {
-			Some(t) => t.flat(out),
+			Some(t) => flatten(t, out),
 			None => {
 				out.fill(f64::NAN);
 				false
@@ -1472,7 +1492,7 @@ impl<W: Witness> Put<'_, '_, W> {
 	pub fn put<T: Flat>(self, v: &T) {
 		let Put { env, src } = self;
 		let (at, n) = (env.at, T::LEN);
-		let fired = v.flat(&mut env.slots[at..at + n]);
+		let fired = flatten(v, &mut env.slots[at..at + n]);
 		// the one route by which an absent *dep* becomes a NaN *operand*. A `read` holding an absent
 		// element declines — `Some(x?)` — rather than NaN-filling the env behind the body's back.
 		debug_assert!(fired, "an absent reading is a decline, not an operand: return `None` from `read` instead of putting one");
@@ -3146,11 +3166,12 @@ impl<'t, T: Stamped> Hist<'t, T> {
 /// Reads `fresh` only: a buffer adds no signal, so its [`Fire`] is indistinguishable from the
 /// series it retains.
 impl<T: Flat> Flat for Hist<'_, T> {
+	const ABSENTABLE: bool = T::ABSENTABLE;
 	const DIMS: &'static [usize] = T::DIMS;
 	const RUN: bool = true;
 
 	fn flat(&self, out: &mut [f64]) -> bool {
-		self.fresh().flat(out)
+		flatten(&self.fresh(), out)
 	}
 
 	fn fires(&self) -> usize {
@@ -3568,10 +3589,10 @@ macro_rules! impl_arity {
 				// `&=`, not `&&`: every dep's slots are written either way, and only the answer is the
 				// conjunction.
 				let mut fired = true;
-				fired &= $vh.flat(&mut dst[off..off + <<$Th as Cell>::Out<'static> as Flat>::LEN]);
+				fired &= flatten($vh, &mut dst[off..off + <<$Th as Cell>::Out<'static> as Flat>::LEN]);
 				off += <<$Th as Cell>::Out<'static> as Flat>::LEN;
 				$(
-					fired &= $v.flat(&mut dst[off..off + <<$T as Cell>::Out<'static> as Flat>::LEN]);
+					fired &= flatten($v, &mut dst[off..off + <<$T as Cell>::Out<'static> as Flat>::LEN]);
 					off += <<$T as Cell>::Out<'static> as Flat>::LEN;
 				)*
 				debug_assert_eq!(off, Self::LEN);
@@ -3808,12 +3829,78 @@ fn same(a: &[f64], b: &[f64]) -> bool {
 	a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
+/// A level output as the tick hands it over: the out that stands, and whether this tick moved it.
+///
+/// r[impl outs.moved.outputs-plane]
+/// The value-plane edge, not the observation plane's publication edge: a level whose out went
+/// *absent* moved — `None` is a value (`r[outs.absence.one-reading]`), and a consumer acting on
+/// changes has to see it change to nothing. What "moved" compares is the [`Flat`] slots, so what the
+/// flattening leaves out (spl's `Intent` omits its timestamp) is what a change is not.
+#[derive(Clone, Copy, Debug)]
+pub struct Moved<T> {
+	pub out: T,
+	pub moved: bool,
+}
+impl<T> core::ops::Deref for Moved<T> {
+	type Target = T;
+
+	fn deref(&self) -> &T {
+		&self.out
+	}
+}
+/// Against the bare value only — two `Moved` are not comparable, because equating the bits would
+/// bury the one axis this type exists to carry.
+impl<T: PartialEq<U>, U> PartialEq<U> for Moved<T> {
+	fn eq(&self, other: &U) -> bool {
+		self.out == *other
+	}
+}
+impl core::ops::Not for Moved<bool> {
+	type Output = bool;
+
+	fn not(self) -> bool {
+		!self.out
+	}
+}
+
+/// Per level output, what it last flattened to — the outputs-plane sibling of [`Sweep::prev`], kept
+/// apart because an observer is optional and `prev` is only maintained where one asked
+/// ([`Want::Nothing`] skips the flatten entirely).
+#[doc(hidden)]
+#[derive(Default)]
+pub struct PrevOut {
+	prev: alloc::vec::Vec<f64>,
+	cur: alloc::vec::Vec<f64>,
+}
+impl PrevOut {
+	#[doc(hidden)]
+	pub fn moved<O: Flat>(&mut self, out: &O) -> bool {
+		// r[impl outs.flat.nonempty]
+		const {
+			assert!(O::LEN > 0, "an out flattens to at least one slot: a zero-slot out could never be seen to move");
+		}
+		self.cur.clear();
+		self.cur.resize(O::LEN, f64::NAN);
+		flatten(out, &mut self.cur);
+		// before the first tick nothing stood, which is what an absent flattening spells.
+		if self.prev.is_empty() {
+			self.prev.resize(O::LEN, f64::NAN);
+		}
+		let moved = !same(&self.prev, &self.cur);
+		core::mem::swap(&mut self.prev, &mut self.cur);
+		moved
+	}
+}
+
 /// The un-bumped flattenings of one node's out and deps, plus the Jacobian read off them — the
 /// observed leg every stepped node shares, whatever kind of node it is. A view into the [`Sweep`]
 /// rather than an owner: the next node overwrites all of it.
 #[derive(Clone, Copy)]
 struct Flats<'s> {
 	fired: bool,
+	/// Whether every dep stood — the same guard the kernels read a body behind, which the algebra's
+	/// trace reading owes too (`r[impl outs.absence.typed]`).
+	deps_fired: bool,
 	/// The node published, and published what it had published before. Apart from [`fired`](Flats::fired)
 	/// because a run's `fires()` is its length whatever the last element was, and only the change
 	/// reading may zero it.
@@ -3864,7 +3951,7 @@ impl<'s> Flats<'s> {
 		} = sweep;
 		vals.clear();
 		vals.resize(O::LEN, f64::NAN);
-		let mut fired = out.flat(vals);
+		let mut fired = flatten(out, vals);
 		// r[impl outs.fired.on-change]
 		// The value a consumer reads is unaffected: this is the observation plane's own axis, and
 		// `r[rates.deps.tick-opaque]` is what keeps it there. A level that stood still published nothing,
@@ -3881,7 +3968,7 @@ impl<'s> Flats<'s> {
 		fired &= !unchanged;
 		dep_buf.clear();
 		dep_buf.resize(D::LEN, f64::NAN);
-		D::flat(deps, dep_buf);
+		let deps_fired = D::flat(deps, dep_buf);
 		let (jac, exact, block) = match fill.filter(|_| fired) {
 			// NaN, not zero: a column the kernel leaves alone is one it has no signal for, and the
 			// absorbing element is what says so (§1.6).
@@ -3904,6 +3991,7 @@ impl<'s> Flats<'s> {
 		};
 		Flats {
 			fired,
+			deps_fired,
 			unchanged,
 			vals,
 			deps: dep_buf,
@@ -4211,7 +4299,9 @@ where
 		names: <N::Deps as DepSet>::NAMES,
 		parts: (0..<N::Deps as DepFlat>::LEN).map(|i| f.diff(i).simplify()).collect(),
 	});
-	let trace = formula.map(|f| f.trace(flat.deps));
+	// the value reading is taken behind `every dep stood`, and a trace of a body over an operand the
+	// kernel refused to read would be a fifth answer none of the other three gave.
+	let trace = formula.filter(|_| flat.deps_fired).map(|f| f.trace(flat.deps));
 
 	let fire = Fire {
 		formula: formula.map(|f| f as &dyn core::fmt::Display),
@@ -4526,10 +4616,11 @@ where
 	sweep.vals.clear();
 	sweep.vals.resize(<C::Out<'t> as Flat>::LEN, f64::NAN);
 	// a root is pulled from nothing, so there are no deps to flatten and nothing to differentiate.
-	let fired = out.flat(&mut sweep.vals);
+	let fired = flatten(&out, &mut sweep.vals);
 	sweep.deps.clear();
 	let flat = Flats {
 		fired,
+		deps_fired: true,
 		unchanged: false,
 		vals: &sweep.vals,
 		deps: &sweep.deps,

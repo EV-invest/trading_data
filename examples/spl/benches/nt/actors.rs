@@ -627,7 +627,7 @@ actor!(
 	armed: Armed<Deprecator>,
 	decision: Option<Decided>,
 	atr: Option<f64>,
-	out: Vec<Option<Intent>>,
+	out: Vec<Intent>,
 	pending: bool,
 	live: bool,
 });
@@ -668,13 +668,14 @@ impl DataActor for Deprecate {
 		if Episode::terminal(&self.out.as_slice()) {
 			self.pending = true;
 		}
-		let live = self.out.iter().flatten().next().is_some_and(|i| !i.terminal);
+		// a tick that moved nothing published nothing, so liveness holds where the stream is silent.
+		let live = self.out.last().map_or(self.live, |i| !i.terminal);
 		if live != self.live {
 			self.live = live;
 			self.publish_signal(SITUATION, encode(&live), signal.ts_event);
 		}
 		let mut digest = self.digest.borrow_mut();
-		for intent in self.out.iter().flatten() {
+		for intent in &self.out {
 			digest.feed(intent);
 		}
 		Ok(())

@@ -556,7 +556,54 @@ fn emit(st: State) -> Result<TokenStream> {
 		}
 	});
 
-	let (ofields, otys): (Vec<&Ident>, Vec<&TokenStream>) = c.named.iter().map(|n| (&n.field, &n.ty)).unzip();
+	// r[impl outs.moved.outputs-plane]
+	// a level output carries the outputs-plane `Moved` reading; a run's edge is its element count,
+	// and a root is a run by nature.
+	let olevel: Vec<bool> = c
+		.named
+		.iter()
+		.map(|n| {
+			let key = key_of(&n.ty)?.0;
+			let key = st.aliases.iter().find(|(a, _)| *a == key).map(|(_, k)| k.clone()).unwrap_or(key);
+			Ok(st.known.iter().find(|kn| kn.key == key).is_some_and(|kn| !kn.emit))
+		})
+		.collect::<Result<_>>()?;
+	let moved_fields: Vec<Ident> = c
+		.named
+		.iter()
+		.zip(&olevel)
+		.filter(|(_, l)| **l)
+		.map(|(n, _)| Ident::new(&format!("__moved_{}", n.field), Span::call_site()))
+		.collect();
+	let odecls: Vec<TokenStream> = c
+		.named
+		.iter()
+		.zip(&olevel)
+		.map(|(n, l)| {
+			let (f, t) = (&n.field, &n.ty);
+			match l {
+				true => quote!(pub #f: #dag::Moved<<#t as #dag::Cell>::Out<'t>>),
+				false => quote!(pub #f: <#t as #dag::Cell>::Out<'t>),
+			}
+		})
+		.collect();
+	let oinits: Vec<TokenStream> = {
+		let mut moved = moved_fields.iter();
+		c.named
+			.iter()
+			.zip(&olevel)
+			.map(|(n, l)| {
+				let (f, t) = (&n.field, &n.ty);
+				match l {
+					true => {
+						let mf = moved.next().expect("one storage field per level output");
+						quote!(#f: { let __o = #dag::Has::<#t, _>::get(&f); #dag::Moved { moved: #mf.moved(&__o), out: __o } })
+					}
+					false => quote!(#f: #dag::Has::<#t, _>::get(&f)),
+				}
+			})
+			.collect()
+	};
 
 	let shape = crate::shape::shape_const(&st, &demand, &node_tys);
 
@@ -575,6 +622,7 @@ fn emit(st: State) -> Result<TokenStream> {
 		#vis struct #graph {
 			#(#node_fields,)*
 			#(#held_decls,)*
+			#(#moved_fields: #dag::PrevOut,)*
 			__pending: #pending,
 			__sweep: #dag::Sweep,
 		}
@@ -623,7 +671,7 @@ fn emit(st: State) -> Result<TokenStream> {
 
 		#[derive(Clone, Copy, Debug)]
 		#vis struct #out<'t> {
-			#(pub #ofields: <#otys as #dag::Cell>::Out<'t>,)*
+			#(#odecls,)*
 			#[doc(hidden)]
 			pub __lt: ::core::marker::PhantomData<&'t ()>,
 		}
@@ -688,7 +736,7 @@ fn emit(st: State) -> Result<TokenStream> {
 				#(#standing_decls)*
 
 				let #batches { #(#rfields,)* } = b;
-				let Self { #(#fields,)* #(#held_fields,)* __pending, __sweep } = self;
+				let Self { #(#fields,)* #(#held_fields,)* #(#moved_fields,)* __pending, __sweep } = self;
 				__sweep.restart();
 
 				#(#dag::observe_root::<#root_tys, _>(#rfields, __sweep, obs);)*
@@ -703,7 +751,7 @@ fn emit(st: State) -> Result<TokenStream> {
 				)*
 
 				#out {
-					#(#ofields: #dag::Has::<#otys, _>::get(&f),)*
+					#(#oinits,)*
 					__lt: ::core::marker::PhantomData,
 				}
 			}

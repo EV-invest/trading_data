@@ -272,29 +272,29 @@ pub fn run(f: &mut Frng, verbose: bool) -> Result<(), String> {
 				"  [{i:>3}] pulse={} data={} → armed={} run={:?} recall={:?} ticks={}",
 				b.pulse,
 				b.data.len(),
-				out.armed,
+				*out.armed,
 				out.run,
 				out.recall,
-				out.ticks
+				*out.ticks
 			);
 		}
 
-		check!(out.armed == armed, "tick {i}: the latch stands {} where the model says {armed}", out.armed);
+		check!(*out.armed == armed, "tick {i}: the latch stands {} where the model says {armed}", *out.armed);
 		check!(out.run == phase, "tick {i}: the episode reads {:?} where the model says {phase:?}", out.run);
 		// the latch is what decides demand, so the episode is readable exactly while it stands.
-		check!(out.run.is_some() == out.armed, "tick {i}: the episode read {:?} with the latch {}", out.run, out.armed);
+		check!(out.run.is_some() == *out.armed, "tick {i}: the episode read {:?} with the latch {}", out.run, *out.armed);
 		// nothing but the `Cut` is reset: the bystander counts every tick there has been.
-		check!(out.ticks == (i + 1) as f64, "tick {i}: a commutation reset an ungated bystander to {}", out.ticks);
+		check!(out.ticks == (i + 1) as f64, "tick {i}: a commutation reset an ungated bystander to {}", *out.ticks);
 
 		// retention behind the latch is pinned, so a woken reader sees the window every element went
 		// into — including the ones that arrived while nobody was reading.
-		if out.armed && !window.is_empty() {
+		if *out.armed && !window.is_empty() {
 			let want: f64 = window[window.len().saturating_sub(reach)..].iter().map(|x| x.v).sum();
 			let got = out
 				.recall
 				.ok_or_else(|| format!("tick {i}: the latch stands, elements have arrived, and the retention reads nothing"))?;
 			check!((got - want).abs() < 1e-9, "tick {i}: a woken reader sees {got}, the last {reach} elements add to {want}");
-		} else if out.armed {
+		} else if *out.armed {
 			check!(out.recall.is_none(), "tick {i}: the retention read {:?} before any element arrived", out.recall);
 		} else {
 			check!(out.recall.is_none(), "tick {i}: a darkened reader left a reading behind: {:?}", out.recall);

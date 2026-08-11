@@ -25,8 +25,8 @@ impl Decides for StdScreener {
 		let Screen::Std(c) = strategy().screen else {
 			panic!("the graph is wired for StdScreener; config.nix names {:?}", strategy().screen)
 		};
-		// an unpublished momentum is NaN, which compares false either way — the same decline
-		// `is_some_and` was.
+		// an unpublished momentum is not screened at all: `Predicate` answers `false` before the body,
+		// which is why this compares a level rather than `or`-ing one.
 		gt(v.get::<5>(), constant(c.fast_overvalued))
 	}
 }

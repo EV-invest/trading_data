@@ -377,7 +377,7 @@ fn a_const_argument_keys_the_same_braced_or_bare() {
 	let mut g = KG::default();
 	let one = [t(3.0)];
 	let o = g.tick(0, KBatches { src: &one });
-	assert_eq!((o.braced, o.bare), (6.0, 6.0));
+	assert_eq!((*o.braced, *o.bare), (6.0, 6.0));
 }
 
 /// The same node library asked for one output, and a root nothing reaches.
