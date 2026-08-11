@@ -82,6 +82,11 @@ struct Cli {
 	/// cost. A trading day is 159 210 ticks. Ignored under `--headless`, which records nothing.
 	#[arg(short, long, default_value_t = SCROLLBACK)]
 	capacity: usize,
+	/// Write the tape here when the replay ends, then exit — what the hosted demo's asset is made
+	/// with. No server: `serve_on` never returns, so a run that also served would never reach the
+	/// save. `--capacity` is the size knob, since what lands on disk is what the tape held.
+	#[arg(long, conflicts_with = "headless")]
+	record: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -141,25 +146,34 @@ async fn main() {
 	let pb = ui::run("replay", days.len() as i64 * DAY_NS);
 	// What observes is chosen here, once: `tick_obs` over the unit observer monomorphizes to exactly
 	// `tick`, so the headless run pays nothing for the branch that selected it.
-	match cli.headless {
-		true => {
-			replay(&mut graph, &mut day, &days, feed, &pb, run_start.as_nanos(), &mut ()).await;
-			summary(&mut day, &pb, began, &cfg, &catalog);
+	if cli.headless {
+		replay(&mut graph, &mut day, &days, feed, &pb, run_start.as_nanos(), &mut ()).await;
+		summary(&mut day, &pb, began, &cfg, &catalog);
+		return;
+	}
+	// Blocking: a replay wants the whole tape, and its feed is a file that will wait.
+	let (tape, mut recorder) = Tape::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), cli.capacity, 60_000, Backpressure::Block);
+	let viz = tape.viz();
+	let run = async {
+		replay(&mut graph, &mut day, &days, feed, &pb, run_start.as_nanos(), &mut recorder).await;
+		summary(&mut day, &pb, began, &cfg, &catalog);
+		recorder.seal();
+	};
+	match cli.record {
+		Some(path) => {
+			run.await;
+			println!("tape: {} bytes in memory", viz.bytes());
+			tape.save(&path).unwrap_or_else(|e| panic!("save {}: {e}", path.display()));
+			let on_disk = std::fs::metadata(&path).expect("just written").len();
+			println!("wrote {} ({on_disk} bytes)", path.display());
 		}
-		false => {
-			// Blocking: a replay wants the whole tape, and its feed is a file that will wait.
-			let (tape, mut recorder) = Tape::new(Some(<trading_data::Bars<{ TF_1MIN }> as Cell>::NAME), cli.capacity, 60_000, Backpressure::Block);
-			let viz = tape.viz();
+		None => {
 			// Bound before a byte is read, and printed before the bar starts redrawing over it: the point
 			// of serving concurrently is that the URL works from the first second.
 			let port = std::env::var("PORT").map_or(PORT_BASE, |p| p.parse().expect("PORT is a u16")) + ORDINAL;
 			let server = viz.clone().serve_on(Viz::bind(port).await);
 			println!("serving on http://localhost:{port}");
-			tokio::join!(server, async {
-				replay(&mut graph, &mut day, &days, feed, &pb, run_start.as_nanos(), &mut recorder).await;
-				summary(&mut day, &pb, began, &cfg, &catalog);
-				recorder.seal();
-			});
+			tokio::join!(server, run);
 		}
 	}
 }

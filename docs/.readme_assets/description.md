@@ -5,3 +5,5 @@ The same graph runs live or over a recorded month; the only seam between the two
 ![spl replayed — chart panes left, the graph right](./overview.jpeg)
 
 `examples/spl`: a whole strategy over 32 days of Bybit TAO-USDT, scrubbed tick by tick in [exec_viz](https://github.com/EV-invest/exec_viz) — every node's standing value at the cursor, and the edges that fed it.
+
+🌐 **[Live demo](https://ev-invest.github.io/exec_viz/)** — no setup, runs in the browser. A recorded `examples/spl` run, the still above made scrubbable; `nix run .#spl -- --record demo.tape` is what writes one.
