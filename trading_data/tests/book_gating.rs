@@ -118,7 +118,7 @@ fn tick(g: &mut G, trades: &mut TradeBuf, hot: bool, a: Option<&BookShape>, d: &
 			anchors: a,
 		},
 	);
-	(read(out.book), read(out.twin), out.mid)
+	(read(*out.book), read(*out.twin), *out.mid)
 }
 
 #[test]

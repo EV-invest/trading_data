@@ -412,7 +412,7 @@ fn two_consumers_behind_different_gates_demand_their_disjunction() {
 	let mut tick = |v: f64| {
 		let b = [p(v)];
 		let o = g.tick(0, ForkedBatches { src: &b });
-		(o.left, o.right, SHARED.load(Ordering::Relaxed) - s0)
+		(*o.left, *o.right, SHARED.load(Ordering::Relaxed) - s0)
 	};
 
 	// neither gate open: nobody reads it, so it does not run.
@@ -517,7 +517,7 @@ fn a_latch_suppresses_what_reads_only_what_is_retained() {
 	let mut tick = |v: f64| {
 		let b = [p(v)];
 		let o = g.tick(0, LatchedBatches { src: &b });
-		(o.ep, REBUILT.load(Ordering::Relaxed) - r0)
+		(*o.ep, REBUILT.load(Ordering::Relaxed) - r0)
 	};
 
 	assert_eq!(tick(-1.0), (None, 0));

@@ -239,7 +239,7 @@ fn drive(seed: &BookShape, beats: &[Beat], seek: bool) -> (Vec<(Read, Read)>, us
 				},
 				&mut tape,
 			);
-			(read(o.book), read(o.twin))
+			(read(*o.book), read(*o.twin))
 		};
 		tape.deltas.extend_from_slice(&b.deltas);
 		if let Some(a) = pending.take() {

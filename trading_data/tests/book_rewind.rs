@@ -161,7 +161,7 @@ fn batch<'t>(trades: &'t mut TradeBuf, hot: bool, a: Option<&'t BookShape>, d: &
 /// what earlier ticks delivered, and this tick's own batch is the sweep's to fold.
 fn tick(g: &mut G, tape: &mut Tape, trades: &mut TradeBuf, hot: bool, a: Option<&BookShape>, d: &[BookDelta]) -> (Read, Read, Option<f64>) {
 	let out = g.tick_rewind(0, batch(trades, hot, a, d), tape);
-	let seen = (read(out.book), read(out.twin), out.mid);
+	let seen = (read(*out.book), read(*out.twin), *out.mid);
 	tape.deltas.extend_from_slice(d);
 	if let Some(a) = a {
 		tape.anchor = Some(a.clone());
@@ -230,5 +230,5 @@ fn under_awake_the_node_is_pinned_and_folds_every_row() {
 	// nets, so the book declines rather than fold onto stale state.
 	let woke = run(3 * PERIOD + 200, &[(6, Side::Sell, 10_003, 8)]);
 	let out = g.tick(0, batch(&mut trades, true, None, &woke));
-	assert_eq!((read(out.book), out.mid), (None, None), "without a past, a sleep past the nets' reach is still a dark book");
+	assert_eq!((read(*out.book), *out.mid), (None, None), "without a past, a sleep past the nets' reach is still a dark book");
 }

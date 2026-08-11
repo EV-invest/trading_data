@@ -356,11 +356,11 @@ impl From<GOut<'_>> for Outs {
 			total: o.total.to_vec(),
 			bucket: o.bucket.to_vec(),
 			warm: o.warm.to_vec(),
-			peak: o.peak,
-			win: o.win,
-			lvl: o.lvl,
-			ra: o.ra,
-			rb: o.rb,
+			peak: *o.peak,
+			win: *o.win,
+			lvl: *o.lvl,
+			ra: *o.ra,
+			rb: *o.rb,
 		}
 	}
 }
