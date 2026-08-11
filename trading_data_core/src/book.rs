@@ -213,7 +213,7 @@ impl Book {
 		for (side, price, qty) in chunk.net(prev) {
 			self.set(side, price, qty);
 		}
-		self.span = Span::new(self.span.first.min(chunk.span().first), chunk.span().last);
+		self.span = self.span.including(chunk.span());
 		self.seq = Some(seq.end);
 	}
 
@@ -239,7 +239,7 @@ impl Book {
 			assert_eq!(self.prec, d.prec, "book folded a level at a different precision");
 			self.set(d.side, d.price, d.qty);
 		}
-		self.span = Span::new(self.span.first.min(first.ts_venue_exec), last.ts_venue_exec);
+		self.span = self.span.including(Span::new(first.ts_venue_exec, last.ts_venue_exec));
 		self.seq = Some(last.monotonic_seq);
 	}
 

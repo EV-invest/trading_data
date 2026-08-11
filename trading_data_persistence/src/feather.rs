@@ -4,7 +4,7 @@ use std::{
 };
 
 use arrow::{array::RecordBatch, datatypes::SchemaRef};
-use trading_data_core::{Asset, BookDelta, ExchangeName, PrecisionPriceQty, Symbol, TradeCols, Ts};
+use trading_data_core::{Asset, BookDelta, ExchangeName, PrecisionPriceQty, Span, Symbol, TradeCols, Ts};
 
 use crate::{
 	catalog::{Catalog, CatalogError, LaneKey, Pending},
@@ -29,8 +29,7 @@ pub struct Feather<T: Row> {
 	builders: T::Builders,
 	rows: usize,
 	approx_bytes: usize,
-	oldest_ts: Option<Ts<T::Axis>>,
-	newest_ts: Option<Ts<T::Axis>>,
+	span: Option<Span<T::Axis>>,
 	age_deadline: Option<Instant>,
 	next_check_at_rows: Option<usize>,
 }
@@ -92,8 +91,7 @@ impl<T: Row> Feather<T> {
 			builders: T::builders(rows_per_batch.unwrap_or(0)),
 			rows: 0,
 			approx_bytes: 0,
-			oldest_ts: None,
-			newest_ts: None,
+			span: None,
 			age_deadline: None,
 			next_check_at_rows: rows_per_batch,
 		}
@@ -106,9 +104,8 @@ impl<T: Row> Feather<T> {
 		// Interval bounds must be on the axis readers filter and prune on. Reception is always >=
 		// execution, so bounding by reception prunes files that do hold matching rows.
 		let ts = row.ts_axis();
-		let was_empty = self.oldest_ts.is_none();
-		self.oldest_ts = Some(self.oldest_ts.map_or(ts, |o| o.min(ts)));
-		self.newest_ts = Some(self.newest_ts.map_or(ts, |n| n.max(ts)));
+		let was_empty = self.span.is_none();
+		self.span = Some(self.span.map_or(Span::at(ts), |s| s.including(ts)));
 		if was_empty && let Some(age) = self.policy.max_age {
 			self.age_deadline = Some(Instant::now() + age);
 		}
@@ -123,9 +120,9 @@ impl<T: Row> Feather<T> {
 		};
 		self.rows += axis.len();
 		self.approx_bytes += axis.len() * T::PER_ROW_MIN;
-		let was_empty = self.oldest_ts.is_none();
-		self.oldest_ts = Some(self.oldest_ts.map_or(lo, |o| o.min(lo)));
-		self.newest_ts = Some(self.newest_ts.map_or(hi, |n| n.max(hi)));
+		let was_empty = self.span.is_none();
+		let run = Span::new(lo, hi);
+		self.span = Some(self.span.map_or(run, |s| s.including(run)));
 		if was_empty && let Some(age) = self.policy.max_age {
 			self.age_deadline = Some(Instant::now() + age);
 		}
@@ -161,20 +158,18 @@ impl<T: Row> Feather<T> {
 		if self.rows == 0 {
 			return None;
 		}
-		let ts_min = self.oldest_ts.expect("set on first push");
-		let ts_max = self.newest_ts.expect("set on first push");
+		let span = self.span.expect("set on first push");
 		let arrays = T::finish(&mut self.builders);
 		let batch = RecordBatch::try_new(self.schema.clone(), arrays).expect("valid schema/array shape");
 		self.rows = 0;
 		self.approx_bytes = 0;
-		self.oldest_ts = None;
-		self.newest_ts = None;
+		self.span = None;
 		self.age_deadline = None;
 		Some(Pending {
 			key: self.key,
 			batch,
-			ts_min: ts_min.as_nanos(),
-			ts_max: ts_max.as_nanos(),
+			ts_min: span.first.as_nanos(),
+			ts_max: span.last.as_nanos(),
 			zstd_level: self.policy.zstd_level,
 		})
 	}

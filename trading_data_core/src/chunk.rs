@@ -131,7 +131,7 @@ impl BookChunk {
 		self.seq = match self.seq.take() {
 			Some(r) => {
 				self.contiguous &= d.monotonic_seq == r.end + 1;
-				self.span = Span::new(self.span.first, d.ts_venue_exec);
+				self.span = self.span.including(d.ts_venue_exec);
 				Some(r.start..d.monotonic_seq)
 			}
 			None => {

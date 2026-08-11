@@ -13,8 +13,6 @@ use std::{
 	ops::{Add, Sub},
 };
 
-use derive_more::{Deref, DerefMut};
-
 /// Our own process.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Local;
@@ -269,6 +267,22 @@ impl<A> Span<A> {
 	/// A single reading is the degenerate span.
 	pub fn at(t: Ts<A>) -> Self {
 		Self { first: t, last: t }
+	}
+
+	/// Grow to cover another reading of the same clock, or another window of them. Min/max on both
+	/// ends, so `first <= last` holds by construction and there is nothing left to re-assert.
+	pub fn including(self, other: impl Into<Self>) -> Self {
+		let o = other.into();
+		Self {
+			first: self.first.min(o.first),
+			last: self.last.max(o.last),
+		}
+	}
+}
+
+impl<A> From<Ts<A>> for Span<A> {
+	fn from(t: Ts<A>) -> Self {
+		Self::at(t)
 	}
 }
 
