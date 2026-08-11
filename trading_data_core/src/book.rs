@@ -425,6 +425,8 @@ impl ShadowBook {
 
 /// A checkpoint reads like the book it seeds.
 impl Flat for &BookShape {
+	/// A side can be empty while the book itself stands, and each price is its own slot.
+	const ABSENTABLE: bool = true;
 	const DIMS: &'static [usize] = &[2];
 
 	fn flat(&self, out: &mut [f64]) -> bool {
@@ -445,6 +447,8 @@ impl Glance for &BookShape {
 
 /// The two prices a book is read for. Unsynced is `None` upstream, which flattens to NaN + unfired.
 impl Flat for &Book {
+	/// One-sided is not unsynced: the book stands, and the side that is empty has no top.
+	const ABSENTABLE: bool = true;
 	const DIMS: &'static [usize] = &[2];
 
 	fn flat(&self, out: &mut [f64]) -> bool {

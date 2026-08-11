@@ -478,6 +478,25 @@ pub trait Flat: Copy {
 	}
 }
 
+/// [`Flat::flat`] read against the type's own declaration: a fired slot that came back NaN where
+/// [`Flat::ABSENTABLE`] says absence is not a state this out can be in is a declination nothing
+/// published — the convention `Reading` exists to replace (`r[impl outs.absence.typed]`). Every
+/// flattening the engine takes goes through here, so such an out is caught at its own boundary
+/// rather than inside some downstream body's `Cmp`.
+///
+/// `debug_assert` for the reason the algebra's own are: a `Level` kernel flattens its deps on the
+/// live path, and `r[kernels.pure.zero-cost]` is an equality in retired instructions.
+#[inline]
+fn flatten<T: Flat>(v: &T, out: &mut [f64]) -> bool {
+	let fired = v.flat(out);
+	debug_assert!(
+		!fired || T::ABSENTABLE || !out.iter().any(|s| s.is_nan()),
+		"`{}` published a NaN slot with no absence channel: hold the reading in a `Reading` and state `Flat::ABSENTABLE`, or do not publish where it is not there",
+		core::any::type_name::<T>()
+	);
+	fired
+}
+
 /// Typed-space perturbation of one flattened element, for the finite-difference witness. Returns
 /// the perturbation **actually applied**, in the element's own units — a quantized column can only
 /// move in whole ticks, and pretending otherwise divides the difference by a step never taken.
@@ -700,7 +719,7 @@ impl<T: Flat> Flat for Option<T> {
 
 	fn flat(&self, out: &mut [f64]) -> bool {
 		match self {
-			Some(t) => t.flat(out),
+			Some(t) => flatten(t, out),
 			None => {
 				out.fill(f64::NAN);
 				false
@@ -728,12 +747,13 @@ impl<T: Bump> Bump for Option<T> {
 /// A batch out flattens to its *last* element (empty ⇒ NaN + unfired); its rate is its len.
 // r[impl outs.absence.one-reading]
 impl<T: Flat> Flat for &[T] {
+	const ABSENTABLE: bool = T::ABSENTABLE;
 	const DIMS: &'static [usize] = T::DIMS;
 	const RUN: bool = true;
 
 	fn flat(&self, out: &mut [f64]) -> bool {
 		match self.last() {
-			Some(t) => t.flat(out),
+			Some(t) => flatten(t, out),
 			None => {
 				out.fill(f64::NAN);
 				false
@@ -1472,7 +1492,7 @@ impl<W: Witness> Put<'_, '_, W> {
 	pub fn put<T: Flat>(self, v: &T) {
 		let Put { env, src } = self;
 		let (at, n) = (env.at, T::LEN);
-		let fired = v.flat(&mut env.slots[at..at + n]);
+		let fired = flatten(v, &mut env.slots[at..at + n]);
 		// the one route by which an absent *dep* becomes a NaN *operand*. A `read` holding an absent
 		// element declines — `Some(x?)` — rather than NaN-filling the env behind the body's back.
 		debug_assert!(fired, "an absent reading is a decline, not an operand: return `None` from `read` instead of putting one");
@@ -3146,11 +3166,12 @@ impl<'t, T: Stamped> Hist<'t, T> {
 /// Reads `fresh` only: a buffer adds no signal, so its [`Fire`] is indistinguishable from the
 /// series it retains.
 impl<T: Flat> Flat for Hist<'_, T> {
+	const ABSENTABLE: bool = T::ABSENTABLE;
 	const DIMS: &'static [usize] = T::DIMS;
 	const RUN: bool = true;
 
 	fn flat(&self, out: &mut [f64]) -> bool {
-		self.fresh().flat(out)
+		flatten(&self.fresh(), out)
 	}
 
 	fn fires(&self) -> usize {
@@ -3568,10 +3589,10 @@ macro_rules! impl_arity {
 				// `&=`, not `&&`: every dep's slots are written either way, and only the answer is the
 				// conjunction.
 				let mut fired = true;
-				fired &= $vh.flat(&mut dst[off..off + <<$Th as Cell>::Out<'static> as Flat>::LEN]);
+				fired &= flatten($vh, &mut dst[off..off + <<$Th as Cell>::Out<'static> as Flat>::LEN]);
 				off += <<$Th as Cell>::Out<'static> as Flat>::LEN;
 				$(
-					fired &= $v.flat(&mut dst[off..off + <<$T as Cell>::Out<'static> as Flat>::LEN]);
+					fired &= flatten($v, &mut dst[off..off + <<$T as Cell>::Out<'static> as Flat>::LEN]);
 					off += <<$T as Cell>::Out<'static> as Flat>::LEN;
 				)*
 				debug_assert_eq!(off, Self::LEN);
@@ -3867,7 +3888,7 @@ impl<'s> Flats<'s> {
 		} = sweep;
 		vals.clear();
 		vals.resize(O::LEN, f64::NAN);
-		let mut fired = out.flat(vals);
+		let mut fired = flatten(out, vals);
 		// r[impl outs.fired.on-change]
 		// The value a consumer reads is unaffected: this is the observation plane's own axis, and
 		// `r[rates.deps.tick-opaque]` is what keeps it there. A level that stood still published nothing,
@@ -4532,7 +4553,7 @@ where
 	sweep.vals.clear();
 	sweep.vals.resize(<C::Out<'t> as Flat>::LEN, f64::NAN);
 	// a root is pulled from nothing, so there are no deps to flatten and nothing to differentiate.
-	let fired = out.flat(&mut sweep.vals);
+	let fired = flatten(&out, &mut sweep.vals);
 	sweep.deps.clear();
 	let flat = Flats {
 		fired,
