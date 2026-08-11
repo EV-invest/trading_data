@@ -3,7 +3,7 @@
 //! own absence. Neither may unseat what is held.
 
 use trading_data_dag::{
-	Blind, Buffering, Bump, Cell, DepOuts, Elems, Fire, Flat, Glance, Observer, RunOuts, Runs, Sampling, Stamped, Want, always_present, graph, node, slice_nudge, value_nudge,
+	Blind, Buffering, Bump, Cell, DepOuts, Elems, Fire, Flat, Glance, Observer, Runs, Sampling, Stamped, Want, always_present, graph, node, slice_nudge, value_nudge,
 };
 
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.
@@ -68,7 +68,7 @@ impl Runs for Sparse {
 
 	const WHY: &'static str = "a sampling fixture";
 
-	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+	fn emit(&mut self, (src,): DepOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(src.iter().map(|x| (x.v > 0.0).then_some(x.v)));
 	}
 }

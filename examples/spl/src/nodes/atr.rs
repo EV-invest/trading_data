@@ -1,5 +1,5 @@
 use trading_data::{
-	Carried, Cell, Env, FoldOuts, Folding, Folds, Lagged, Reading, Slots, Stamped, Tag, Timeframe, Unbounded, Vars, Witness, abs, absent, constant, lt, max, node, select, slice_nudge,
+	Carried, Cell, Env, DepOuts, Folding, Folds, Lagged, Reading, Slots, Stamped, Tag, Timeframe, Unbounded, Vars, Witness, abs, absent, constant, lt, max, node, select, slice_nudge,
 	wilder,
 };
 
@@ -28,7 +28,7 @@ impl<const TF: Timeframe> Folds for Atr<TF> {
 	/// zero that is not zero.
 	const STATE: usize = 3;
 
-	fn read<W: Witness>((bars,): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((bars,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let (b, lag) = bars.at(i)?;
 		env.dep(0).lag(lag).put(b);
 		Some(b.ts_ns())

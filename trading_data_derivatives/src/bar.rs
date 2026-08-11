@@ -2,8 +2,7 @@ use core::fmt;
 
 use trading_data_core::{Timestamped, Timestamps, TradeCols, Trades, Ts, Venue};
 use trading_data_dag::{
-	Cell, CloseOuts, Closes, Env, Folding, Glance, Ink, Item, Lagged, Over, Pending, Plot, ScanOuts, Scans, Slots, Stamped, Tag, Tail, Vars, Witness, always_present, max, min, node,
-	slice_nudge,
+	Cell, Closes, DepOuts, Env, Folding, Glance, Ink, Item, Lagged, Over, Pending, Plot, Scans, Slots, Stamped, Tag, Tail, Vars, Witness, always_present, max, min, node, slice_nudge,
 };
 use v_utils::Timeframe;
 
@@ -129,7 +128,7 @@ impl<const TF: Timeframe> Closes for Ohlcs<TF> {
 	/// [`Bars`] joins this with [`Volumes`] and draws for all three.
 	const PLOTS: &'static [Plot] = &[];
 
-	fn read<W: Witness>((trades,): &CloseOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		trade(*trades, i, env)
 	}
 
@@ -176,7 +175,7 @@ impl<const TF: Timeframe> Closes for Volumes<TF> {
 	/// [`Bars`] joins this with [`Ohlcs`] and draws for all three.
 	const PLOTS: &'static [Plot] = &[];
 
-	fn read<W: Witness>((trades,): &CloseOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		trade(*trades, i, env)
 	}
 
@@ -231,7 +230,7 @@ impl<const TF: Timeframe> Scans for Bars<TF> {
 		..Plot::DEFAULT
 	}];
 
-	fn read<W: Witness>((ohlc, vol): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((ohlc, vol): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		assert_eq!(ohlc.len(), vol.len(), "one Ohlc and one Volume per period closed");
 		let ((o, o_lag), (v, v_lag)) = (ohlc.at(i)?, vol.at(i)?);
 		assert_eq!(o.ts_close, v.ts_close, "the two accumulators walk one boundary");

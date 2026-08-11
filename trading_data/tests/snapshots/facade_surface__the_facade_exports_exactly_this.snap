@@ -17,12 +17,10 @@ trading_data_dag::Bump
 trading_data_dag::Carried
 trading_data_dag::Cell
 trading_data_dag::Close
-trading_data_dag::CloseOuts
 trading_data_dag::Closes
 trading_data_dag::Decides
 trading_data_dag::DepOuts
 trading_data_dag::Elems
-trading_data_dag::EmitOuts
 trading_data_dag::Env
 trading_data_dag::Episode
 trading_data_dag::Episodic
@@ -30,7 +28,6 @@ trading_data_dag::Fidelity
 trading_data_dag::Fire
 trading_data_dag::Flat
 trading_data_dag::Fold
-trading_data_dag::FoldOuts
 trading_data_dag::Folding
 trading_data_dag::Folds
 trading_data_dag::Gate
@@ -58,11 +55,9 @@ trading_data_dag::Rewound
 trading_data_dag::Roots
 trading_data_dag::Rows
 trading_data_dag::Run
-trading_data_dag::RunOuts
 trading_data_dag::Runs
 trading_data_dag::Sampling
 trading_data_dag::Scan
-trading_data_dag::ScanOuts
 trading_data_dag::Scans
 trading_data_dag::Series
 trading_data_dag::Stamped
@@ -72,6 +67,7 @@ trading_data_dag::TriggerOut
 trading_data_dag::Unbounded
 trading_data_dag::Unflat
 trading_data_dag::Want
+trading_data_dag::Wired
 trading_data_dag::Witness
 trading_data_dag::__dag
 trading_data_dag::always_present

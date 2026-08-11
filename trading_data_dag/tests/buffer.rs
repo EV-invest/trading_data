@@ -4,7 +4,7 @@
 //! the point of engine-owned retention.
 
 use trading_data_dag::{
-	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Env, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Over, Reading, RunOuts, Runs, ScanOuts, Scans, Slots,
+	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Env, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Over, Reading, Runs, Scans, Slots,
 	Stamped, Vars, Want, Witness, graph, node, slice_nudge,
 };
 use v_utils::{Timeframe, TimeframeDesignator};
@@ -80,7 +80,7 @@ impl Cell for Sum3 {
 impl Scans for Sum3 {
 	type Deps = (Buffering<Src, Elems<3>>,);
 
-	fn read<W: Witness>((hist,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((hist,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let (win, oldest) = hist.trailing_at(i)?;
 		for (k, x) in win.iter().enumerate() {
 			env.dep(0).lag(oldest - k).put(x);
@@ -107,7 +107,7 @@ impl Runs for Split {
 
 	const WHY: &'static str = "a buffer fixture";
 
-	fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Tick>) {
+	fn emit(&mut self, (hist,): DepOuts<'_, Self>, out: &mut Vec<Tick>) {
 		out.push(Tick {
 			ts: hist.past().len() as i64,
 			v: hist.fresh().len() as f64,

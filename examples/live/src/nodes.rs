@@ -3,7 +3,7 @@
 //! `Book`, and 1m bars off the same trades — the bars are what the chart draws price from.
 
 use trading_data::{
-	BookAnchors, BookDelta, BookDeltas, BookShape, Carried, Cell, Env, FoldOuts, Folding, Folds, FrameKind, Lagged, Lanes, Over, RunOuts, Runs, Side, Slots, TradeCols, Trades, Unbounded,
+	BookAnchors, BookDelta, BookDeltas, BookShape, Carried, Cell, DepOuts, Env, Folding, Folds, FrameKind, Lagged, Lanes, Over, Runs, Side, Slots, TradeCols, Trades, Unbounded,
 	Vars, Witness, node, slice_nudge,
 };
 use v_utils::*;
@@ -25,7 +25,7 @@ impl Folds for Cvd {
 	const EXTRA: usize = 1;
 	const STATE: usize = 1;
 
-	fn read<W: Witness>((t,): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((t,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let (exec, lag) = t.exec().at(i)?;
 		env.dep(0).lag(lag).put(&[t.price[i] as f64 / t.prec.price.scale(), t.qty[i] as f64 / t.prec.qty.scale()]);
 		env.opaque().put(&match t.side[i] {
@@ -70,7 +70,7 @@ impl Runs for BookFlow {
 
 	const WHY: &'static str = "a book fold read for flow, which is not a scalar function of its deltas";
 
-	fn emit(&mut self, (levels,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (levels,): DepOuts<'_, Self>, out: &mut Vec<f64>) {
 		// A correction is a dropped websocket packet, not market activity: folding one into flow
 		// fabricates signal out of it.
 		for l in levels.iter().filter(|l| l.kind == FrameKind::Update) {

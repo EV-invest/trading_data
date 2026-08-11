@@ -386,8 +386,6 @@ fn emit(st: State) -> Result<TokenStream> {
 		})
 		.collect();
 
-	let decls: Vec<TokenStream> = nodes.iter().map(|n| if n.emit { quote!(#dag::Emit) } else { quote!(#dag::Node) }).collect();
-
 	// one carry per sampled series: a graph field for the value that stands, and a frame slot pushed
 	// in the series' own line, so a `Sampling` read is a plain `Has` off `Sampling<C>`.
 	let held_fields: Vec<Ident> = st.samples.iter().map(|s| held_of(&s.key)).collect();
@@ -436,7 +434,7 @@ fn emit(st: State) -> Result<TokenStream> {
 			(&n.key, fid)
 		})
 		.unzip();
-	let node_deps: Vec<TokenStream> = node_tys.iter().zip(&decls).map(|(t, d)| quote!(<#t as #d>::Deps)).collect();
+	let node_deps: Vec<TokenStream> = node_tys.iter().map(|t| quote!(<#t as #dag::Wired>::Deps)).collect();
 	// an `emit` node's out is a run the engine buffers; the frame is still keyed on the node itself.
 	let node_fields: Vec<TokenStream> = nodes
 		.iter()
@@ -609,7 +607,7 @@ fn emit(st: State) -> Result<TokenStream> {
 
 			// an internal latch must not gate its own arm.
 			#(assert!(
-				!#dag::deadlocked(#dag::node_name::<#latch_tys>(), <<#latch_tys as #dag::Node>::Deps as #dag::DepSet>::NAMES, METAS),
+				!#dag::deadlocked(#dag::node_name::<#latch_tys>(), <<#latch_tys as #dag::Wired>::Deps as #dag::DepSet>::NAMES, METAS),
 				concat!(stringify!(#lfields), " gates its own arm: the arm is dark exactly while the latch is down, so it can never re-arm")
 			);)*
 

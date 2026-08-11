@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Env, Over, Reading, ScanOuts, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, absent, constant, gt, node, select, slice_nudge};
+use trading_data::{Buffering, Cell, Env, Over, Reading, DepOuts, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, absent, constant, gt, node, select, slice_nudge};
 
 /// Percent change over the trailing `OVER`, off the closed `TF` bars inside it. SPL's backtest mode:
 /// reading it off a live Trades window instead is a live-only fidelity choice.
@@ -16,7 +16,7 @@ impl<const TF: Timeframe, const OVER: Timeframe> Cell for Change<TF, OVER> {
 impl<const TF: Timeframe, const OVER: Timeframe> Scans for Change<TF, OVER> {
 	type Deps = (Buffering<trading_data::Bars<TF>, Over<OVER>>,);
 
-	fn read<W: Witness>((bars,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((bars,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let (b, lag) = bars.lagged_at(i, 0).expect("element i of this tick's own fresh run");
 		// an incomplete window has no base to measure against, and that declines rather than putting an
 		// absence the body would then have to compare.

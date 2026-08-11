@@ -115,7 +115,7 @@ const BODIES: &str =
 
 pub fn node(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
 	let flags: Flags = syn::parse2(attr)?;
-	let item: ItemImpl = syn::parse2(item)?;
+	let mut item: ItemImpl = syn::parse2(item)?;
 
 	let Some((path, _)) = &item.trait_ else {
 		return Err(Diag::spanned(&item, "`#[node]` goes on a trait impl")
@@ -185,8 +185,18 @@ pub fn node(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
 	let latch = Ident::new(&flags.latch.to_string(), Span::call_site());
 	let anchored = Ident::new(&flags.anchored.to_string(), Span::call_site());
 
-	// the `Node`/`Emit` impl nobody writes: `Deps` and `PLOTS` are forwarded off the body trait, so a
-	// node site states each exactly once.
+	let deps_ty = assoc(&item, "Deps")
+		.ok_or_else(|| {
+			Diag::spanned(&item, "`#[node]` needs `type Deps` in the impl")
+				.help("`type Deps = (Trades,);` — a tuple of cells, a one-dep set trailing-comma'd")
+				.note("types are not resolved at expansion time, so `graph!` cannot ask what this cell reads; `#[node]` is what publishes it")
+		})?
+		.clone();
+	// `Deps` is declared on `Wired` and nowhere else, so it is lifted out of the body impl rather than
+	// forwarded off it: one edge set per node, and no equality bound holding two spellings together.
+	item.items.retain(|i| !matches!(i, ImplItem::Type(t) if t.ident == "Deps"));
+
+	// the `Wired`/`Node`/`Emit` impls nobody writes. `PLOTS` stays forwarded — it *is* the body's.
 	// `#sty` is the impl's self type as written, arguments and all, so `ty_generics` would repeat them.
 	let (imp, _, wher) = item.generics.split_for_impl();
 	let node_impl = {
@@ -196,20 +206,18 @@ pub fn node(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
 			true => quote!(#dag::Emit),
 		};
 		quote! {
+			impl #imp #dag::Wired for #sty #wher {
+				type Deps = #deps_ty;
+			}
+
 			impl #imp #head for #sty #wher {
-				type Deps = <Self as #body>::Deps;
 				type Kernel = #kernel;
 				const PLOTS: &'static [#dag::Plot] = <Self as #body>::PLOTS;
 			}
 		}
 	};
 
-	let deps_ty = assoc(&item, "Deps").ok_or_else(|| {
-		Diag::spanned(&item, "`#[node]` needs `type Deps` in the impl")
-			.help("`type Deps = (Trades,);` — a tuple of cells, a one-dep set trailing-comma'd")
-			.note("types are not resolved at expansion time, so `graph!` cannot ask what this cell reads; `#[node]` is what publishes it")
-	})?;
-	let deps: Vec<&Type> = match deps_ty {
+	let deps: Vec<&Type> = match &deps_ty {
 		Type::Tuple(t) => t.elems.iter().collect(),
 		other => vec![other],
 	};

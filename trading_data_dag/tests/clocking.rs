@@ -2,7 +2,7 @@
 //! the boundary. The question the whole thing answers is which of two readings a consumer holds —
 //! the one taken when the period closed, or the one the last tick happened to revise.
 
-use trading_data_dag::{Bump, Cell, Flat, Folding, Glance, Horizon, Over, RunOuts, Runs, Sampling, Stamped, always_present, graph, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, Flat, Folding, Glance, Horizon, Over, DepOuts, Runs, Sampling, Stamped, always_present, graph, node, slice_nudge};
 use v_utils::Timeframe;
 
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.
@@ -61,7 +61,7 @@ impl Runs for Minutely {
 
 	const WHY: &'static str = "a clocking fixture";
 
-	fn emit(&mut self, (level,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (level,): DepOuts<'_, Self>, out: &mut Vec<f64>) {
 		out.extend(level.map(|x| x.v));
 	}
 }
@@ -80,7 +80,7 @@ impl Runs for Continuous {
 
 	const WHY: &'static str = "a clocking fixture";
 
-	fn emit(&mut self, (level,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (level,): DepOuts<'_, Self>, out: &mut Vec<f64>) {
 		out.extend(level.map(|x| x.v));
 	}
 }
@@ -102,7 +102,7 @@ impl Runs for Closes {
 
 	const WHY: &'static str = "a clocking fixture";
 
-	fn emit(&mut self, (items,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (items,): DepOuts<'_, Self>, out: &mut Vec<f64>) {
 		for x in items {
 			let period = x.ts / (Timeframe(60_000).0 * 1_000_000) as i64;
 			match &mut self.0 {
@@ -132,7 +132,7 @@ impl Runs for Joined {
 
 	const WHY: &'static str = "a clocking fixture";
 
-	fn emit(&mut self, (closes,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (closes,): DepOuts<'_, Self>, out: &mut Vec<f64>) {
 		out.extend(closes);
 	}
 }

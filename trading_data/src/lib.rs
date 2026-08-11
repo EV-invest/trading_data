@@ -11,10 +11,9 @@ pub use trading_data_core::{Asset, ExchangeName, Instrument, Pair, RelayCols, Sy
 #[doc(hidden)]
 pub use trading_data_dag as __dag;
 pub use trading_data_dag::{
-	Armed, Awake, Batch, Blind, Buffering, Bump, Carried, Cell, Close, CloseOuts, Closes, Decides, DepOuts, Elems, EmitOuts, Env, Episode, Episodic, Fidelity, Fire, Flat, Fold, FoldOuts,
-	Folding, Folds, Gate, Gating, Glance, Guide, Hist, Horizon, Ink, Item, Lagged, Latch, Level, Nudge, Observer, Over, Pending, Plot, Predicate, Present, ProbabilisticDistribution, Reach,
-	Reading, Rewound, Roots, Rows, Run, RunOuts, Runs, Sampling, Scan, ScanOuts, Scans, Series, Stamped, Symbolic, Tag, TriggerOut, Unbounded, Unflat, Want, Witness, always_present, graph,
-	node, node_alias, slice_nudge, value_nudge,
+	Armed, Awake, Batch, Blind, Buffering, Bump, Carried, Cell, Close, Closes, Decides, DepOuts, Elems, Env, Episode, Episodic, Fidelity, Fire, Flat, Fold, Folding, Folds, Gate, Gating,
+	Glance, Guide, Hist, Horizon, Ink, Item, Lagged, Latch, Level, Nudge, Observer, Over, Pending, Plot, Predicate, Present, ProbabilisticDistribution, Reach, Reading, Rewound, Roots, Rows,
+	Run, Runs, Sampling, Scan, Scans, Series, Stamped, Symbolic, Tag, TriggerOut, Unbounded, Unflat, Want, Wired, Witness, always_present, graph, node, node_alias, slice_nudge, value_nudge,
 };
 pub use trading_data_derivatives::{
 	// the dep shims: a `#[node]` writes one at its own crate's root, and a graph naming the cell

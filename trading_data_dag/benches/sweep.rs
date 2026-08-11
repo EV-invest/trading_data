@@ -17,7 +17,7 @@
 use std::hint::black_box;
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
-use trading_data_dag::{Blind, Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Opaque, Sweep, Want, step, step_obs, value_nudge};
+use trading_data_dag::{Blind, Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Opaque, Sweep, Want, Wired, step, step_obs, value_nudge};
 
 const TICKS: usize = 1_000;
 
@@ -38,8 +38,10 @@ macro_rules! chain {
 				type Out<'t> = Option<f64>;
 			}
 			value_nudge!($n);
-			impl Blind for $n {
+			impl Wired for $n {
 				type Deps = ($d,);
+			}
+			impl Blind for $n {
 				const WHY: &'static str = "a bench link: the sweep it measures is the shape, not the arithmetic";
 
 				fn advance<'t>(&'t mut self, (x,): DepOuts<'t, Self>) -> Self::Out<'t> {
@@ -49,7 +51,6 @@ macro_rules! chain {
 			// hand-written, not `#[node]`: the dep arrives as a `:ty` fragment, which the shim cannot
 			// take apart into the cell it names.
 			impl Node for $n {
-				type Deps = <Self as Blind>::Deps;
 				type Kernel = Opaque;
 			}
 		)+

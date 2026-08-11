@@ -6,7 +6,7 @@ error[E0080]: evaluation panicked: a Symbolic node reads levels: a run's last el
   ::: $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
 LL | / ...   assert!(
-LL | | ...       !any(<<S as Symbolic>::Deps as DepFlat>::RUNS),
+LL | | ...       !any(<S::Deps as DepFlat>::RUNS),
 LL | | ...       "a Symbolic node reads levels: a run's last element is a function of how the feed grouped its messages, so name the de...
 LL | | ...   );
   | |_______- in this macro invocation
@@ -15,9 +15,9 @@ note: erroneous constant encountered
   --> $DIR/trading_data_dag/src/lib.rs:LL:CC
   |
 LL | /     const {
-LL | |         let n = <<S as Symbolic>::Deps as DepSet>::NAMES.len();
+LL | |         let n = <S::Deps as DepSet>::NAMES.len();
 LL | |         assert!(
-LL | |             <<S as Symbolic>::Deps as DepFlat>::LEN == n,
+LL | |             <S::Deps as DepFlat>::LEN == n,
 ...    |
 LL | |         );
 LL | |     }

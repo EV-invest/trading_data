@@ -1,7 +1,7 @@
 //! Diamond over two multi-rate roots: `None` propagation through the DAG, plus an
 //! inference-stress graph (chain depth 10 + one arity-8 node, zero call-site annotations).
 
-use trading_data_dag::{Blind, Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Opaque, Sweep, Want, node, step, step_obs, value_nudge};
+use trading_data_dag::{Blind, Cell, Cons, DepOuts, Fire, Nil, Node, Observer, Opaque, Sweep, Want, Wired, node, step, step_obs, value_nudge};
 
 struct Trades;
 impl Cell for Trades {
@@ -183,9 +183,10 @@ macro_rules! chain {
 		impl Cell for $name {
 			type Out<'t> = f64;
 		}
-		impl Blind for $name {
+		impl Wired for $name {
 			type Deps = ($dep,);
-
+		}
+		impl Blind for $name {
 			const WHY: &'static str = "a fan-out fixture";
 
 			fn advance<'t>(&'t mut self, (x,): DepOuts<'t, Self>) -> Self::Out<'t> {
@@ -195,7 +196,6 @@ macro_rules! chain {
 		// hand-written, not `#[node]`: the dep arrives as a `:ty` fragment, which the shim cannot
 		// take apart into the cell it names.
 		impl Node for $name {
-			type Deps = <Self as Blind>::Deps;
 			type Kernel = Opaque;
 		}
 	};

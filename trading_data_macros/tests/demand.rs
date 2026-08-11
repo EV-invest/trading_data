@@ -6,7 +6,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Episode, Flat, Gate, Gating, Glance, Hist, Latch, RunOuts, Runs, Stamped, slice_nudge, value_nudge};
+use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Episode, Flat, Gate, Gating, Glance, Hist, Latch, Runs, Stamped, slice_nudge, value_nudge};
 use trading_data_macros::{graph, node};
 
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.
@@ -84,7 +84,7 @@ impl Runs for Counted {
 
 	const WHY: &'static str = "a demand fixture";
 
-	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<P>) {
+	fn emit(&mut self, (src,): DepOuts<'_, Self>, out: &mut Vec<P>) {
 		COUNTED.fetch_add(1, Ordering::Relaxed);
 		out.extend_from_slice(src);
 	}
@@ -103,7 +103,7 @@ impl Runs for Kept {
 
 	const WHY: &'static str = "a demand fixture";
 
-	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<P>) {
+	fn emit(&mut self, (src,): DepOuts<'_, Self>, out: &mut Vec<P>) {
 		KEPT.fetch_add(1, Ordering::Relaxed);
 		out.extend_from_slice(src);
 	}
@@ -249,7 +249,7 @@ impl Runs for Warm {
 
 	const WHY: &'static str = "a demand fixture";
 
-	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<P>) {
+	fn emit(&mut self, (src,): DepOuts<'_, Self>, out: &mut Vec<P>) {
 		WARM.fetch_add(1, Ordering::Relaxed);
 		out.extend_from_slice(src);
 	}
@@ -357,7 +357,7 @@ impl Runs for Shared {
 
 	const WHY: &'static str = "a pass-through of its dep's run";
 
-	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<P>) {
+	fn emit(&mut self, (src,): DepOuts<'_, Self>, out: &mut Vec<P>) {
 		SHARED.fetch_add(1, Ordering::Relaxed);
 		out.extend_from_slice(src);
 	}
@@ -476,7 +476,7 @@ impl Runs for Rebuilt {
 
 	const WHY: &'static str = "a pass-through of its dep's run";
 
-	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<P>) {
+	fn emit(&mut self, (src,): DepOuts<'_, Self>, out: &mut Vec<P>) {
 		REBUILT.fetch_add(1, Ordering::Relaxed);
 		out.extend(src.all().iter().copied());
 	}

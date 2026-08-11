@@ -6,8 +6,8 @@
 use core::fmt;
 
 use trading_data::{
-	Buffering, Bump, Carried, Cell, CloseOuts, Closes, Elems, Env, Expr, Flat, FoldOuts, Folding, Folds, Glance, Horizon, Lagged, Lanes, Over, Pending, Reading, RsiSpec, RunOuts, Runs,
-	Sampling, Side, Slots, Stamped, Symbolic, Tag, Timeframe, TradeCols, Trades, Unflat, Vars, Witness, always_present, constant, node, slice_nudge,
+	Buffering, Bump, Carried, Cell, Closes, DepOuts, Elems, Env, Expr, Flat, Folding, Folds, Glance, Horizon, Lagged, Lanes, Over, Pending, Reading, RsiSpec, Runs, Sampling, Side, Slots,
+	Stamped, Symbolic, Tag, Timeframe, TradeCols, Trades, Unflat, Vars, Witness, always_present, constant, node, slice_nudge,
 };
 use v_utils::*;
 
@@ -86,7 +86,7 @@ impl Folds for Cvd {
 	const EXTRA: usize = 1;
 	const STATE: usize = 1;
 
-	fn read<W: Witness>((trades,): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let (exec, lag) = trades.exec().at(i)?;
 		env.dep(0)
 			.lag(lag)
@@ -164,7 +164,7 @@ impl<const TF: Timeframe> Closes for Flows<TF> {
 	/// The side signs the *quantity* rather than riding beside it: a `Closes` reading is the driving
 	/// element's own slots and nothing else, so unlike [`Cvd`] there is no `EXTRA` slot a discrete
 	/// attribute could be put in. The column for slot 1 is therefore a derivative in signed qty.
-	fn read<W: Witness>((trades,): &CloseOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let (exec, lag) = trades.exec().at(i)?;
 		env.dep(0).lag(lag).put(&[
 			trades.price[i] as f64 / trades.prec.price.scale(),
@@ -204,7 +204,7 @@ impl<const TF: Timeframe, const WIN: usize> Runs for Lambda<TF, WIN> {
 	const WHY: &'static str = "a through-origin fit over a whole retained window, and no kernel indexes a window: `Scan` reads a point, `Close` a period, `Fold` all history through \
 	                          state. A window body would also want one `Var` per retained element, against a `MAX_VARS` of 16";
 
-	fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+	fn emit(&mut self, (hist,): DepOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(hist.narrowed(Horizon::Elems(WIN)).trailing().map(|w| w.map(kyle_lambda)));
 	}
 }
@@ -228,7 +228,7 @@ impl<const TF: Timeframe, const WIN: usize> Runs for RollingVolUsd<TF, WIN> {
 	const WHY: &'static str = "a sum over a whole retained window, and no kernel indexes a window: `Scan` reads a point, `Close` a period, `Fold` all history through state. A window \
 	                          body would also want one `Var` per retained element, against a `MAX_VARS` of 16";
 
-	fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+	fn emit(&mut self, (hist,): DepOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(hist.narrowed(Horizon::Elems(WIN)).trailing().map(|w| w.map(|w| w.iter().map(|b| b.vol_base * b.close).sum())));
 	}
 }

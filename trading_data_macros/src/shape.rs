@@ -64,11 +64,7 @@ pub fn shape_const(st: &State, d: &Demand, node_tys: &[TokenStream]) -> TokenStr
 	let info: Vec<&NodeInfo> = st.order.iter().map(|k| st.known.iter().find(|n| n.key == *k).expect("an ordered node is known")).collect();
 	let stepped = (0..info.len()).map(|i| {
 		let (n, ty) = (info[i], &node_tys[i]);
-		let decl = match n.emit {
-			true => quote!(#dag::Emit),
-			false => quote!(#dag::Node),
-		};
-		let deps_ty = quote!(<#ty as #decl>::Deps);
+		let deps_ty = quote!(<#ty as #dag::Wired>::Deps);
 		let fidelity = match n.emit {
 			true => quote!(<<#ty as #dag::Emit>::Kernel as #dag::Run<#ty>>::FIDELITY),
 			false => quote!(<<#ty as #dag::Node>::Kernel as #dag::Level<#ty>>::FIDELITY),

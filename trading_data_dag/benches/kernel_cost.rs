@@ -24,7 +24,7 @@ use std::hint::black_box;
 
 use iai_callgrind::{Callgrind, EventKind, LibraryBenchmarkConfig, library_benchmark, library_benchmark_group, main};
 use trading_data_dag::{
-	Blind, Cell, Cons, DepOuts, Emit, Emitter, Env, Lagged, Nil, Node, Opaque, Pure, Raw, RunOuts, Runs, Scan, ScanOuts, Scans, Slots, Symbolic, Witness, step, step_emit, value_nudge,
+	Blind, Cell, Cons, DepOuts, Emit, Emitter, Env, Lagged, Nil, Node, Opaque, Pure, Raw, Runs, Scan, Scans, Slots, Symbolic, Wired, Witness, step, step_emit, value_nudge,
 };
 use trading_data_expr::{Expr, Vars, constant};
 
@@ -50,9 +50,10 @@ impl Cell for Algebraic {
 	type Out<'t> = f64;
 }
 value_nudge!(Algebraic);
-impl Symbolic for Algebraic {
+impl Wired for Algebraic {
 	type Deps = (Lambda, Vol, Cvd);
-
+}
+impl Symbolic for Algebraic {
 	fn body(&self, v: Vars) -> impl Expr {
 		let (lambda, vol, cvd) = (v.get::<0>(), v.get::<1>(), v.get::<2>());
 		constant(1e6) * lambda + constant(1e-6) * (cvd - vol)
@@ -60,7 +61,6 @@ impl Symbolic for Algebraic {
 }
 // what `#[node]` writes; spelled out here so the two legs differ in the body trait and nothing else.
 impl Node for Algebraic {
-	type Deps = <Self as Symbolic>::Deps;
 	type Kernel = Pure;
 }
 
@@ -70,9 +70,10 @@ impl Cell for Handwritten {
 	type Out<'t> = f64;
 }
 value_nudge!(Handwritten);
-impl Blind for Handwritten {
+impl Wired for Handwritten {
 	type Deps = (Lambda, Vol, Cvd);
-
+}
+impl Blind for Handwritten {
 	const WHY: &'static str = "the hand-written leg of the zero-cost pair — being outside the algebra is its whole job";
 
 	fn advance<'t>(&'t mut self, (lambda, vol, cvd): DepOuts<'t, Self>) -> Self::Out<'t> {
@@ -80,7 +81,6 @@ impl Blind for Handwritten {
 	}
 }
 impl Node for Handwritten {
-	type Deps = <Self as Blind>::Deps;
 	type Kernel = Opaque;
 }
 
@@ -88,7 +88,7 @@ impl Node for Handwritten {
 /// node they instantiate — the frame cons, the `Pull` and the `step` are one body.
 fn tick<N>(node: &mut N, (lambda, vol, cvd): (f64, f64, f64)) -> f64
 where
-	N: Node<Deps = (Lambda, Vol, Cvd)>,
+	N: Node + Wired<Deps = (Lambda, Vol, Cvd)>,
 	for<'t> N: Cell<Out<'t> = f64>, {
 	let f = Cons::<Lambda, Nil> { out: lambda, tail: Nil };
 	let f = Cons::<Vol, _> { out: vol, tail: f };
@@ -132,10 +132,11 @@ impl Cell for Scanned {
 	type Out<'t> = &'t [f64];
 }
 trading_data_dag::slice_nudge!(Scanned, f64);
-impl Scans for Scanned {
+impl Wired for Scanned {
 	type Deps = (Src,);
-
-	fn read<W: Witness>((src,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+}
+impl Scans for Scanned {
+	fn read<W: Witness>((src,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let (e, lag) = src.at(i)?;
 		env.dep(0).lag(lag).put(e);
 		Some(0)
@@ -147,7 +148,6 @@ impl Scans for Scanned {
 	}
 }
 impl Emit for Scanned {
-	type Deps = <Self as Scans>::Deps;
 	type Kernel = Scan;
 }
 
@@ -157,26 +157,26 @@ impl Cell for Handrun {
 	type Out<'t> = &'t [f64];
 }
 trading_data_dag::slice_nudge!(Handrun, f64);
-impl Runs for Handrun {
+impl Wired for Handrun {
 	type Deps = (Src,);
-
+}
+impl Runs for Handrun {
 	const WHY: &'static str = "the hand-written leg of the zero-cost pair — being outside the algebra is its whole job";
 
-	fn emit(&mut self, (src,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (src,): DepOuts<'_, Self>, out: &mut Vec<f64>) {
 		for e in src {
 			out.push(1e6 * e[0] + 1e-6 * (e[2] - e[1]));
 		}
 	}
 }
 impl Emit for Handrun {
-	type Deps = <Self as Runs>::Deps;
 	type Kernel = Raw;
 }
 
 /// One tick of a one-node run graph, generic for the reason [`tick`] is.
 fn tick_run<E>(e: &mut Emitter<E>, src: &[[f64; 3]]) -> usize
 where
-	E: Emit<Deps = (Src,)>,
+	E: Emit + Wired<Deps = (Src,)>,
 	for<'t> E: Cell<Out<'t> = &'t [<E as trading_data_dag::Series>::Item]>, {
 	let f = Cons::<Src, Nil> { out: src, tail: Nil };
 	step_emit(f, e, true, 0).head().len()

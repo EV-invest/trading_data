@@ -423,7 +423,7 @@ gateable the moment the lane became a run of rows the engine could retain for it
    │                        reach to be indexed at, and a derivative carrying accumulated state
    │                        sensitivity is a different quantity.
    │
-   ├── Runs: Series+Clone   const WHY · fn emit(&mut self, RunOuts, out: &mut Vec<Item>)
+   ├── Runs: Series+Clone   const WHY · fn emit(&mut self, DepOuts, out: &mut Vec<Item>)
    │                        ⇒ kernel `Raw`, through the `Emit` impl `#[node]` writes.
    │                        Out<'t> = &'t [Item]. The ENGINE owns the run (`Emitter<E>`), so
    │                        the struct holds only what it remembers between ticks — and

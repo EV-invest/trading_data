@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Cell, Glance, Plot, RunOuts, Runs, node, slice_nudge};
+use trading_data::{Cell, Glance, Plot, DepOuts, Runs, node, slice_nudge};
 
 use crate::DEPTH;
 
@@ -49,7 +49,7 @@ impl Runs for BookTop {
 	}];
 	const WHY: &'static str = "reading the top of a book is a lookup into a fold, not an expression over it";
 
-	fn emit(&mut self, (book,): RunOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) {
+	fn emit(&mut self, (book,): DepOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) {
 		let Some(b) = book else { return };
 		let (ps, qs) = (b.prec().price.scale(), b.prec().qty.scale());
 		let usd = |&(p, q): &(i32, u32)| (p as f64 / ps) * (q as f64 / qs);

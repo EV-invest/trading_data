@@ -52,15 +52,16 @@
 //!   fields at end-of-tick, so the reset can't run in place).
 //!
 //! Impls that write concrete dep types hit E0195 (lifetime binder mismatch); use [`DepOuts`] so
-//! every impl is uniformly `fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>`,
-//! and [`EmitOuts`] so every [`Emit`] is `fn emit(&mut self, deps: EmitOuts<'_, Self>, out: ..)`.
+//! every impl is uniformly `fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>`
+//! and every [`Emit`] is `fn emit(&mut self, deps: DepOuts<'_, Self>, out: ..)`. One alias for both
+//! sides, because [`Wired`] is the one place a node's `Deps` is declared.
 //!
 //! A node does not carry its own compute method: it names the [`Level`] kernel that computes it, and
 //! `#[node]` writes the [`Node`] impl from whichever body trait was implemented. [`Symbolic`] (an
 //! [`Expr`] body) earns [`Pure`]; [`Blind`] — the stated hatch — earns [`Opaque`].
 //!
 //! ```
-//! use trading_data_dag::{Blind, Cell, Cons, DepOuts, Nil, Node, Opaque, step};
+//! use trading_data_dag::{Blind, Cell, Cons, DepOuts, Nil, Node, Opaque, Wired, step};
 //!
 //! struct Price;
 //! impl Cell for Price {
@@ -73,15 +74,17 @@
 //! 	type Out<'t> = f64;
 //! }
 //! impl Blind for Double {
-//! 	type Deps = (Price,);
 //! 	const WHY: &'static str = "the doc example predates the algebra it would be written in";
 //! 	fn advance<'t>(&'t mut self, (p,): DepOuts<'t, Self>) -> Self::Out<'t> {
 //! 		p * 2.0
 //! 	}
 //! }
-//! // `#[node]` writes this; spelled out here because the doctest has no graph to reach it from.
+//! // `#[node]` writes these two off the `type Deps` in the body impl; spelled out here because the
+//! // doctest has no graph to reach it from.
+//! impl Wired for Double {
+//! 	type Deps = (Price,);
+//! }
 //! impl Node for Double {
-//! 	type Deps = <Self as Blind>::Deps;
 //! 	type Kernel = Opaque;
 //! }
 //!
@@ -947,6 +950,28 @@ pub trait DepSet {
 	type Lead: Bit;
 }
 
+/// What a cell reads, stated once. Every trait a node is written through — the body traits, [`Node`]
+/// and [`Emit`] — names this as a supertrait rather than declaring a `Deps` of its own, because a
+/// node has *one* edge set however its body is spelled. Two declarations could disagree, and the
+/// `Node<Deps = N::Deps>` equality bound that used to hold them together was that same
+/// statement restated once per kernel.
+///
+/// `#[node]` writes this impl off the `type Deps` in the body impl, so a node site still states its
+/// deps exactly where it states everything else about them.
+#[diagnostic::on_unimplemented(
+	message = "`{Self}` names no deps",
+	label = "no `Wired` impl",
+	note = "`#[node]` writes this off the `type Deps` in the body impl — a cell that reads something and has no `#[node]` on its body has to write `impl Wired` by hand"
+)]
+pub trait Wired {
+	type Deps: DepSet;
+}
+
+/// Uniform binder-correct dep-tuple type wherever a signature hands a node its pulled deps
+/// (concrete types there hit E0195). One alias rather than one per trait: [`Wired`] is the only
+/// place a `Deps` is declared, so there is only one projection to name.
+pub type DepOuts<'t, N> = <<N as Wired>::Deps as DepSet>::Outs<'t>;
+
 const fn any(flags: &[bool]) -> bool {
 	let mut i = 0;
 	while i < flags.len() {
@@ -1171,8 +1196,7 @@ impl<T: Latent> Dark<Yes> for T {
 ///
 /// Nobody writes this impl by hand; `#[node]` writes it from the body trait ([`Symbolic`] ⇒ [`Pure`],
 /// [`Blind`] ⇒ [`Opaque`]), which is also where `Deps` and `PLOTS` are stated.
-pub trait Node: Cell {
-	type Deps: DepSet;
+pub trait Node: Cell + Wired {
 	type Kernel: Level<Self>;
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep, and
 	/// the viz can still be asked for it.
@@ -1188,10 +1212,9 @@ pub trait Node: Cell {
 ///
 /// [`Series`]' where-clause is an obligation at each use of the bound, not an implied one (see
 /// [`Episodic`]), so it is repeated wherever this bound is used.
-pub trait Emit: Series
+pub trait Emit: Series + Wired
 where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
-	type Deps: DepSet;
 	type Kernel: Run<Self>;
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep, and
 	/// the viz can still be asked for it.
@@ -1205,24 +1228,16 @@ where
 ///
 /// A gated one goes dark by emitting nothing, so it needs no [`Latent`] reading — not emitting *is*
 /// the latent reading.
-pub trait Runs: Series + Clone
+pub trait Runs: Series + Clone + Wired
 where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
-	type Deps: DepSet;
 	/// Why this node has no formula. Written for whoever asks why it is not a per-element kernel.
 	const WHY: &'static str;
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep, and
 	/// the viz can still be asked for it.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
-	fn emit<'t>(&mut self, deps: RunOuts<'t, Self>, out: &mut alloc::vec::Vec<Self::Item>);
+	fn emit<'t>(&mut self, deps: DepOuts<'t, Self>, out: &mut alloc::vec::Vec<Self::Item>);
 }
-
-/// Uniform binder-correct dep-tuple type for an [`Emit`]'s kernel, as [`DepOuts`] is for a `Node`'s.
-pub type EmitOuts<'t, E> = <<E as Emit>::Deps as DepSet>::Outs<'t>;
-
-/// The same, spelled through the body trait — [`BlindOuts`]' sibling, and the same type, so a
-/// [`Runs`] impl may write either.
-pub type RunOuts<'t, R> = <<R as Runs>::Deps as DepSet>::Outs<'t>;
 
 /// The engine-owned buffer an [`Emit`] fills, and the node itself. Never typed by a human —
 /// [`graph!`]'s `emit` keyword wraps the declared node type in one, and [`Deref`](core::ops::Deref)
@@ -1298,7 +1313,7 @@ where
 	/// declaration is all the engine takes from it.
 	fn opens(&mut self, ts: i64) -> bool {
 		let Some(tf) = <E as Cell>::CLOCK else { return true };
-		if !all(<<E as Emit>::Deps as DepSet>::RETAINS) {
+		if !all(<E::Deps as DepSet>::RETAINS) {
 			return true;
 		}
 		let period = ts / Horizon::ns(tf);
@@ -1325,10 +1340,9 @@ where
 /// or wholly not, and the kernel answers the second case rather than the body. `Out = f64` is
 /// therefore legal only for a node whose deps always stand; anything that can be cold owes a
 /// [`Reading`], which is the same `unflat` one slot wide.
-pub trait Symbolic: Cell
+pub trait Symbolic: Cell + Wired
 where
 	for<'t> Self::Out<'t>: Unflat, {
-	type Deps: DepSet;
 	/// `&[]` draws nothing at all — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	fn body(&self, vars: Vars) -> impl Expr;
@@ -1341,18 +1355,13 @@ where
 /// [`Clone`] because the finite-difference witness is what stands in for the missing derivative: it
 /// re-advances a clone restored from the pre-advance state, once per dep slot, which is exactly the
 /// price a [`Symbolic`] body does not pay.
-pub trait Blind: Cell + Clone {
-	type Deps: DepSet;
+pub trait Blind: Cell + Clone + Wired {
 	/// Why this node has no formula. Written for whoever asks why it is not `Symbolic`.
 	const WHY: &'static str;
 	/// `&[]` draws nothing at all — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
-	fn advance<'t>(&'t mut self, deps: BlindOuts<'t, Self>) -> Self::Out<'t>;
+	fn advance<'t>(&'t mut self, deps: DepOuts<'t, Self>) -> Self::Out<'t>;
 }
-
-/// Uniform binder-correct dep-tuple type for [`Blind::advance`] impls — [`DepOuts`] spelled through
-/// the body trait, and the same type, so an impl may write either.
-pub type BlindOuts<'t, B> = <<B as Blind>::Deps as DepSet>::Outs<'t>;
 
 /// scalar deps ⇒ one env slot each; the `impl_arity` tuple ceiling caps arity, so a fixed stack
 /// array holds the whole env — zero heap on the compute path. A per-element kernel reads whole
@@ -1558,7 +1567,7 @@ pub trait Level<N: Node + ?Sized>: sealed::Kernel {
 	/// for a derivative — carries none of them.
 	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, N>>) -> bool
 	where
-		<N as Node>::Deps: DepFlat,
+		N::Deps: DepFlat,
 		DepOuts<'d, N>: Copy,
 		for<'x> N::Out<'x>: Flat;
 
@@ -1567,7 +1576,7 @@ pub trait Level<N: Node + ?Sized>: sealed::Kernel {
 	/// fabricate a block.
 	fn exact<'d>(_: &Self::Pre, _: Exact<'_, DepOuts<'d, N>>) -> bool
 	where
-		<N as Node>::Deps: DepFlat,
+		N::Deps: DepFlat,
 		DepOuts<'d, N>: Copy,
 		for<'x> N::Out<'x>: Flat, {
 		false
@@ -1674,35 +1683,35 @@ pub struct Algebra {
 
 /// The env a [`Symbolic`] body is read over: one scalar slot per dep, in `Deps` order — and whether
 /// every one of them fired, which is what stands between the body and an operand that is not there.
-fn env_of<S>(deps: &<<S as Symbolic>::Deps as DepSet>::Outs<'_>) -> ([f64; MAX_VARS], bool)
+fn env_of<S>(deps: &<S::Deps as DepSet>::Outs<'_>) -> ([f64; MAX_VARS], bool)
 where
 	S: Symbolic,
 	// [`Symbolic`]'s own where-clause, repeated: a trait's is an obligation at each use of the bound.
 	for<'t> S::Out<'t>: Unflat,
-	<S as Symbolic>::Deps: DepFlat, {
+	S::Deps: DepFlat, {
 	const {
-		let n = <<S as Symbolic>::Deps as DepSet>::NAMES.len();
+		let n = <S::Deps as DepSet>::NAMES.len();
 		assert!(
-			<<S as Symbolic>::Deps as DepFlat>::LEN == n,
+			<S::Deps as DepFlat>::LEN == n,
 			"Symbolic deps must be scalar (one env slot each): a vector-valued dep desyncs Var<I> from dep I"
 		);
 		assert!(n <= MAX_VARS, "Symbolic arity exceeds the env buffer (MAX_VARS)");
 		// r[impl rates.deps.tick-opaque]
 		assert!(
-			!any(<<S as Symbolic>::Deps as DepFlat>::RUNS),
+			!any(<S::Deps as DepFlat>::RUNS),
 			"a Symbolic node reads levels: a run's last element is a function of how the feed grouped its messages, so name the dep through `Sampling<C>` (the level the engine carries) or `Buffering<C, R>`"
 		);
 	}
 	let mut env = [0.0f64; MAX_VARS];
-	let fired = <<S as Symbolic>::Deps as DepFlat>::flat(deps, &mut env[..<<S as Symbolic>::Deps as DepFlat>::LEN]);
+	let fired = <S::Deps as DepFlat>::flat(deps, &mut env[..<S::Deps as DepFlat>::LEN]);
 	(env, fired)
 }
 
 impl<N> Level<N> for Pure
 where
-	N: Symbolic + Node<Deps = <N as Symbolic>::Deps>,
+	N: Symbolic + Node,
 	for<'t> N::Out<'t>: Unflat,
-	<N as Symbolic>::Deps: DepFlat,
+	N::Deps: DepFlat,
 {
 	type Pre = Option<Algebra>;
 
@@ -1734,7 +1743,7 @@ where
 			);
 			return <N::Out<'t> as Unflat>::unflat(0, &[f64::NAN]);
 		}
-		<N::Out<'t> as Unflat>::unflat(0, &[body.eval(&env[..<<N as Symbolic>::Deps as DepFlat>::LEN])])
+		<N::Out<'t> as Unflat>::unflat(0, &[body.eval(&env[..<N::Deps as DepFlat>::LEN])])
 	}
 
 	fn pre<'d>(n: &N, want: Want, deps: DepOuts<'d, N>) -> Self::Pre {
@@ -1747,7 +1756,7 @@ where
 		// partial of 0 rather than no partial.
 		let mut grad = [0.0f64; MAX_VARS];
 		let body = n.body(Vars);
-		body.grad(&env[..<<N as Symbolic>::Deps as DepFlat>::LEN], 1.0, &mut grad);
+		body.grad(&env[..<N::Deps as DepFlat>::LEN], 1.0, &mut grad);
 		Some(Algebra { formula: body.lower(), grad })
 	}
 
@@ -1757,7 +1766,7 @@ where
 
 	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, N>>) -> bool
 	where
-		<N as Node>::Deps: DepFlat,
+		N::Deps: DepFlat,
 		DepOuts<'d, N>: Copy,
 		for<'x> N::Out<'x>: Flat, {
 		let Some(alg) = pre else { return false };
@@ -1770,18 +1779,18 @@ where
 	/// each, so the block is the Jacobian row and the widths are `DepFlat::DIMS`' products.
 	fn exact<'d>(pre: &Self::Pre, x: Exact<'_, DepOuts<'d, N>>) -> bool
 	where
-		<N as Node>::Deps: DepFlat,
+		N::Deps: DepFlat,
 		DepOuts<'d, N>: Copy,
 		for<'x> N::Out<'x>: Flat, {
 		let Some(alg) = pre else { return false };
-		point_block(&alg.grad, MAX_VARS, 1, <<N as Node>::Deps as DepFlat>::DIMS, x.out, x.widths);
+		point_block(&alg.grad, MAX_VARS, 1, <N::Deps as DepFlat>::DIMS, x.out, x.widths);
 		true
 	}
 }
 
 impl<N> Level<N> for Opaque
 where
-	N: Blind + Node<Deps = <N as Blind>::Deps>,
+	N: Blind + Node,
 {
 	type Pre = Option<N>;
 
@@ -1801,7 +1810,7 @@ where
 
 	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, N>>) -> bool
 	where
-		<N as Node>::Deps: DepFlat,
+		N::Deps: DepFlat,
 		DepOuts<'d, N>: Copy,
 		for<'x> N::Out<'x>: Flat, {
 		if let Some(pre) = pre {
@@ -1817,10 +1826,9 @@ where
 /// That split is [`Scans`]', one out element instead of a run: a screen over a series that closed
 /// nothing this tick has screened nothing, and saying so through the driver's rate rather than
 /// through an emptiness test inside the body is what keeps the gate a pulse instead of a level.
-pub trait Decides: Cell
+pub trait Decides: Cell + Wired
 where
 	for<'t> Self: Cell<Out<'t> = bool>, {
-	type Deps: DepSet;
 	/// `&[]` draws nothing at all — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	/// True is any non-zero. The deps are read at their [`Flat`] last elements, in `Deps` order.
@@ -1836,29 +1844,29 @@ impl sealed::Kernel for Predicate {}
 fn verdict_env<N>(deps: &DepOuts<'_, N>) -> ([f64; MAX_VARS], bool)
 where
 	N: Node,
-	<N as Node>::Deps: DepFlat, {
+	N::Deps: DepFlat, {
 	const {
-		assert!(<<N as Node>::Deps as DepFlat>::LEN <= MAX_VARS, "a Decides env outgrew MAX_VARS: raise it in trading_data_dag");
+		assert!(<N::Deps as DepFlat>::LEN <= MAX_VARS, "a Decides env outgrew MAX_VARS: raise it in trading_data_dag");
 		// r[impl rates.deps.tick-opaque]
 		// the *lead* is exempt: it is the driver whose having fired is half the verdict, which is how a
 		// gate stays a pulse instead of a level. Everything past it is read as a level, and a run there
 		// would make the verdict a reading of the feed's batching.
-		let runs = <<N as Node>::Deps as DepFlat>::RUNS;
+		let runs = <N::Deps as DepFlat>::RUNS;
 		assert!(
 			runs.is_empty() || !any(runs.split_at(1).1),
 			"only a Decides node's *leading* dep is a run — the clock it screens per element of. Name the rest through `Sampling<C>` or `Buffering<C, R>`"
 		);
 	}
 	let mut env = [f64::NAN; MAX_VARS];
-	let fired = <<N as Node>::Deps as DepFlat>::flat(deps, &mut env[..<<N as Node>::Deps as DepFlat>::LEN]);
+	let fired = <N::Deps as DepFlat>::flat(deps, &mut env[..<N::Deps as DepFlat>::LEN]);
 	(env, fired)
 }
 
 impl<N> Level<N> for Predicate
 where
-	N: Decides + Node<Deps = <N as Decides>::Deps>,
+	N: Decides + Node,
 	for<'t> N: Cell<Out<'t> = bool>,
-	<N as Decides>::Deps: DepFlat,
+	N::Deps: DepFlat,
 {
 	type Pre = Option<Ast>;
 
@@ -1873,7 +1881,7 @@ where
 		let (env, fired) = verdict_env::<N>(&deps);
 		// a dep that has not stood is nothing to screen — which is what `lead_fires > 0` said of the
 		// driver, widened to the rest now that the rest are levels.
-		fired && body.eval(&env[..<<N as Node>::Deps as DepFlat>::LEN]) != 0.0
+		fired && body.eval(&env[..<N::Deps as DepFlat>::LEN]) != 0.0
 	}
 
 	fn pre<'d>(n: &N, want: Want, _: DepOuts<'d, N>) -> Self::Pre {
@@ -1886,7 +1894,7 @@ where
 
 	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, N>>) -> bool
 	where
-		<N as Node>::Deps: DepFlat,
+		N::Deps: DepFlat,
 		DepOuts<'d, N>: Copy,
 		for<'x> N::Out<'x>: Flat, {
 		if pre.is_none() {
@@ -1901,13 +1909,13 @@ where
 	/// A slope of zero at every lag as much as at the point — same reading, more of it.
 	fn exact<'d>(pre: &Self::Pre, x: Exact<'_, DepOuts<'d, N>>) -> bool
 	where
-		<N as Node>::Deps: DepFlat,
+		N::Deps: DepFlat,
 		DepOuts<'d, N>: Copy,
 		for<'x> N::Out<'x>: Flat, {
 		if pre.is_none() {
 			return false;
 		}
-		point_block(&[0.0; MAX_VARS], MAX_VARS, 1, <<N as Node>::Deps as DepFlat>::DIMS, x.out, x.widths);
+		point_block(&[0.0; MAX_VARS], MAX_VARS, 1, <N::Deps as DepFlat>::DIMS, x.out, x.widths);
 		true
 	}
 }
@@ -1921,28 +1929,28 @@ where
 	/// How much of what the body read [`jac`](Run::jac) covers.
 	const FIDELITY: Fidelity;
 
-	fn emit<'t>(e: &mut E, deps: EmitOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>);
+	fn emit<'t>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>);
 
 	/// Whatever the derivative reading needs off the node *before* `emit` consumes it for the tick.
 	type Pre;
-	fn pre<'d>(e: &E, want: Want, deps: EmitOuts<'d, E>) -> Self::Pre;
+	fn pre<'d>(e: &E, want: Want, deps: DepOuts<'d, E>) -> Self::Pre;
 
 	/// The equation, where there is one — see [`Level::formula`].
 	fn formula(pre: &Self::Pre) -> Option<&Ast>;
 
 	/// Fills the Jacobian and reports whether it is exact — the *one-step* reading, exactly as
 	/// [`Level::jac`] is (`r[kernels.jac.two-quantities]`).
-	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, EmitOuts<'d, E>>) -> bool
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, E>>) -> bool
 	where
-		<E as Emit>::Deps: DepFlat,
-		EmitOuts<'d, E>: Copy,
+		E::Deps: DepFlat,
+		DepOuts<'d, E>: Copy,
 		E::Item: Flat;
 
 	/// The exact reading, exactly as [`Level::exact`] is — and defaulting to the same refusal.
-	fn exact<'d>(_: &Self::Pre, _: Exact<'_, EmitOuts<'d, E>>) -> bool
+	fn exact<'d>(_: &Self::Pre, _: Exact<'_, DepOuts<'d, E>>) -> bool
 	where
-		<E as Emit>::Deps: DepFlat,
-		EmitOuts<'d, E>: Copy,
+		E::Deps: DepFlat,
+		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		false
 	}
@@ -1955,18 +1963,18 @@ impl sealed::Kernel for Raw {}
 
 impl<E> Run<E> for Raw
 where
-	E: Runs + Emit<Deps = <E as Runs>::Deps>,
+	E: Runs + Emit,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 {
 	type Pre = Option<E>;
 
 	const FIDELITY: Fidelity = Fidelity::Opaque(<E as Runs>::WHY);
 
-	fn emit<'t>(e: &mut E, deps: EmitOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
+	fn emit<'t>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
 		<E as Runs>::emit(e, deps, out)
 	}
 
-	fn pre<'d>(e: &E, want: Want, _: EmitOuts<'d, E>) -> Self::Pre {
+	fn pre<'d>(e: &E, want: Want, _: DepOuts<'d, E>) -> Self::Pre {
 		(want >= Want::Jac).then(|| e.clone())
 	}
 
@@ -1974,10 +1982,10 @@ where
 		None
 	}
 
-	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, EmitOuts<'d, E>>) -> bool
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, E>>) -> bool
 	where
-		<E as Emit>::Deps: DepFlat,
-		EmitOuts<'d, E>: Copy,
+		E::Deps: DepFlat,
+		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		if let Some(pre) = pre {
 			fd_jac_emit::<E>(pre, j);
@@ -1994,10 +2002,9 @@ where
 ///
 /// Earns the [`Scan`] kernel, which is the whole of how it computes. Declining is `NaN`, which
 /// [`Unflat`] reads back as absence.
-pub trait Scans: Series + Clone
+pub trait Scans: Series + Clone + Wired
 where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
-	type Deps: DepSet;
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 
@@ -2009,15 +2016,11 @@ where
 	/// off ([`Env::dep`]) or standing for no element at all ([`Env::opaque`]). Leading with the deps'
 	/// own elements at lag 0, in `Deps` order, is what lines the body's gradient up with the
 	/// Jacobian's columns; naming the lag is what lets [`Run::exact`] cover the rest of the reach.
-	fn read<W: Witness>(deps: &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
+	fn read<W: Witness>(deps: &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
 
 	/// One expression per slot of [`Series::Item`], over the env [`read`](Scans::read) filled.
 	fn body(&self, vars: Vars) -> impl Slots;
 }
-
-/// Uniform binder-correct dep-tuple type for [`Scans`] impls — [`EmitOuts`] spelled through the body
-/// trait, and the same type.
-pub type ScanOuts<'t, S> = <<S as Scans>::Deps as DepSet>::Outs<'t>;
 
 /// The kernel of a [`Scans`] node: one out element per driving element, each slot `body().eval`, and
 /// the Jacobian `body().grad` at the last element — exact, and one pass rather than a clone and a
@@ -2038,6 +2041,7 @@ pub struct PerElem {
 	stride: usize,
 }
 
+
 /// The slot count a [`Scans`] body fills, checked once against the buffer that holds it.
 const fn scan_slots<E: Scans>() -> usize
 where
@@ -2049,10 +2053,10 @@ where
 
 impl<E> Run<E> for Scan
 where
-	E: Scans + Emit<Deps = <E as Scans>::Deps>,
+	E: Scans + Emit,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Item: Unflat,
-	<E as Emit>::Deps: DepFlat,
+	E::Deps: DepFlat,
 {
 	type Pre = Option<PerElem>;
 
@@ -2060,7 +2064,7 @@ where
 	/// whatever the body reached back over, [`exact`](Run::exact) covers it.
 	const FIDELITY: Fidelity = Fidelity::Exact;
 
-	fn emit<'t>(e: &mut E, deps: EmitOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
+	fn emit<'t>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
 		let slots_w = const { scan_slots::<E>() };
 		let body = e.body(Vars);
 		debug_assert_eq!(body.len(), slots_w, "a Scans body states one expression per slot of its item");
@@ -2071,7 +2075,7 @@ where
 		);
 		let (mut buf, mut slots) = ([f64::NAN; MAX_VARS], [f64::NAN; MAX_SLOTS]);
 		let mut env = Env::<Blindfold>::new(&mut buf);
-		for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
+		for i in 0..<E::Deps as DepFlat>::lead_fires(&deps) {
 			env.rewind();
 			match <E as Scans>::read(&deps, i, &mut env) {
 				Some(ts) => {
@@ -2084,13 +2088,13 @@ where
 		}
 	}
 
-	fn pre<'d>(e: &E, want: Want, deps: EmitOuts<'d, E>) -> Self::Pre {
+	fn pre<'d>(e: &E, want: Want, deps: DepOuts<'d, E>) -> Self::Pre {
 		if want < Want::Jac {
 			return None;
 		}
 		// the out flattens to its *last* element, so that is the one the derivative belongs to; an
 		// empty run has none, and there is nothing to differentiate.
-		let last = <<E as Emit>::Deps as DepFlat>::lead_fires(&deps).checked_sub(1)?;
+		let last = <E::Deps as DepFlat>::lead_fires(&deps).checked_sub(1)?;
 		// zeroed, not NaN-filled: `grad` accumulates, and a slot the body never reads has a partial of
 		// 0 rather than no partial.
 		let mut buf = [0.0f64; MAX_VARS];
@@ -2113,10 +2117,10 @@ where
 		pre.as_ref()?.formulas.first()
 	}
 
-	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, EmitOuts<'d, E>>) -> bool
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, E>>) -> bool
 	where
-		<E as Emit>::Deps: DepFlat,
-		EmitOuts<'d, E>: Copy,
+		E::Deps: DepFlat,
+		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		let Some(alg) = pre else { return false };
 		let dep_w = j.dep_buf.len();
@@ -2132,13 +2136,13 @@ where
 	/// gradient `pre` took over that env scatters into the block in one pass. `widths[d]` comes out
 	/// as `(deepest lag touched + 1) × slots(d)` — grown here rather than declared, because a
 	/// wall-clock window over an aperiodic series has no static element count.
-	fn exact<'d>(pre: &Self::Pre, x: Exact<'_, EmitOuts<'d, E>>) -> bool
+	fn exact<'d>(pre: &Self::Pre, x: Exact<'_, DepOuts<'d, E>>) -> bool
 	where
-		<E as Emit>::Deps: DepFlat,
-		EmitOuts<'d, E>: Copy,
+		E::Deps: DepFlat,
+		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		let Some(alg) = pre else { return false };
-		let Some(last) = <<E as Emit>::Deps as DepFlat>::lead_fires(&x.deps).checked_sub(1) else {
+		let Some(last) = <E::Deps as DepFlat>::lead_fires(&x.deps).checked_sub(1) else {
 			return false;
 		};
 		let mut buf = [0.0f64; MAX_VARS];
@@ -2147,7 +2151,7 @@ where
 			return false;
 		}
 		debug_assert_eq!(env.filled().len(), alg.stride, "the reading `pre` differentiated and the one scattered here are one");
-		lagged_block(&alg.grad, alg.stride, x.out_buf.len(), <<E as Emit>::Deps as DepFlat>::DIMS, env.seen(), x.out, x.widths);
+		lagged_block(&alg.grad, alg.stride, x.out_buf.len(), <E::Deps as DepFlat>::DIMS, env.seen(), x.out, x.widths);
 		true
 	}
 }
@@ -2170,10 +2174,9 @@ pub struct Pending {
 ///
 /// Rate-changing by construction: a batch spanning two boundaries emits two elements, one spanning
 /// none emits nothing, and the period still open stays in [`Pending`].
-pub trait Closes: Series + Clone
+pub trait Closes: Series + Clone + Wired
 where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
-	type Deps: DepSet;
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	/// The period the walk closes on, floored from the epoch.
@@ -2182,7 +2185,7 @@ where
 	/// Fills the driving element's own slots — `DepFlat::LEN` of them, the same prefix
 	/// [`Scans::read`] fills — and returns its event time, which is what the walk is keyed on and is
 	/// deliberately not a slot (`r[kernels.selection.index-is-not-a-variable]`).
-	fn read<W: Witness>(deps: &CloseOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
+	fn read<W: Witness>(deps: &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
 
 	/// What a period's first element opens the accumulator with, over the element's slots alone.
 	fn open(&self, vars: Vars) -> impl Slots;
@@ -2195,9 +2198,6 @@ where
 	fn pending_mut(&mut self) -> &mut Pending;
 }
 
-/// Uniform binder-correct dep-tuple type for [`Closes`] impls.
-pub type CloseOuts<'t, C> = <<C as Closes>::Deps as DepSet>::Outs<'t>;
-
 /// The kernel of a [`Closes`] node.
 pub struct Close;
 impl sealed::Kernel for Close {}
@@ -2206,9 +2206,9 @@ impl sealed::Kernel for Close {}
 const fn close_widths<E: Closes>() -> (usize, usize, usize)
 where
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
-	<E as Closes>::Deps: DepFlat,
+	E::Deps: DepFlat,
 	E::Item: Flat, {
-	let (elem, slots) = (<<E as Closes>::Deps as DepFlat>::LEN, <E::Item as Flat>::LEN);
+	let (elem, slots) = (<E::Deps as DepFlat>::LEN, <E::Item as Flat>::LEN);
 	assert!(elem + slots <= MAX_VARS, "a Closes env outgrew MAX_VARS: raise it in trading_data_dag");
 	assert!(slots <= MAX_SLOTS, "a Closes accumulator outgrew MAX_SLOTS: raise it in trading_data_dag");
 	(elem, slots, elem + slots)
@@ -2216,10 +2216,10 @@ where
 
 impl<E> Run<E> for Close
 where
-	E: Closes + Emit<Deps = <E as Closes>::Deps>,
+	E: Closes + Emit,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Item: Unflat,
-	<E as Emit>::Deps: DepFlat,
+	E::Deps: DepFlat,
 {
 	type Pre = Option<PerElem>;
 
@@ -2230,7 +2230,7 @@ where
 	/// the rule against calling it exact.
 	const FIDELITY: Fidelity = Fidelity::Partial("the elements earlier in the period, which the accumulator carries and no column stands for");
 
-	fn emit<'t>(e: &mut E, deps: EmitOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
+	fn emit<'t>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
 		let (elem_w, slots_w, env_w) = const { close_widths::<E>() };
 		let step = Horizon::ns(<E as Closes>::PERIOD);
 		let mut p = *e.pending();
@@ -2245,7 +2245,7 @@ where
 				!(open.maybe() || fold.maybe()) || <E::Item as Flat>::ABSENTABLE,
 				"this body declines, and the item it fills has nowhere to say so: give it a `Reading`"
 			);
-			for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
+			for i in 0..<E::Deps as DepFlat>::lead_fires(&deps) {
 				env.rewind();
 				let Some(ts) = <E as Closes>::read(&deps, i, &mut env) else { continue };
 				debug_assert_eq!(env.filled().len(), elem_w, "a Closes reading is the driving element and nothing else");
@@ -2274,7 +2274,7 @@ where
 	/// The walk again, for its indices alone: the out flattens to the last element this batch
 	/// *closed*, and the derivative belongs to the element that closed it — not to the batch's
 	/// newest, whose period nothing has emitted yet.
-	fn pre<'d>(e: &E, want: Want, deps: EmitOuts<'d, E>) -> Self::Pre {
+	fn pre<'d>(e: &E, want: Want, deps: DepOuts<'d, E>) -> Self::Pre {
 		if want < Want::Jac {
 			return None;
 		}
@@ -2287,7 +2287,7 @@ where
 		// the newest element to have touched the open period, and whether it folded or opened it —
 		// which is what the element closed by the *next* boundary was last computed from.
 		let (mut newest, mut closed) = (None, None);
-		for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
+		for i in 0..<E::Deps as DepFlat>::lead_fires(&deps) {
 			env.rewind();
 			let Some(ts) = <E as Closes>::read(&deps, i, &mut env) else { continue };
 			let ts_close = ts - ts.rem_euclid(step) + step;
@@ -2332,13 +2332,15 @@ where
 		pre.as_ref()?.formulas.first()
 	}
 
-	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, EmitOuts<'d, E>>) -> bool
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, E>>) -> bool
 	where
-		<E as Emit>::Deps: DepFlat,
-		EmitOuts<'d, E>: Copy,
+		E::Deps: DepFlat,
+		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		let Some(alg) = pre else { return false };
 		let dep_w = j.dep_buf.len();
+		// the body's rows are `stride` wide and the Jacobian's are `dep_w`; the prefix `read` filled
+		// from the deps' own elements is what makes the copy a truncation rather than a remap.
 		for (row, out) in j.out.chunks_exact_mut(dep_w).enumerate() {
 			out.copy_from_slice(&alg.grad[row * alg.stride..row * alg.stride + dep_w]);
 		}
@@ -2350,13 +2352,13 @@ where
 	/// dep, but in its **declaration** (`Folding<Trades, Over<TF>>`) rather than in its out: the
 	/// accumulator holds them, and an out that never carried them has no lag to index them at.
 	/// Writing the dep as a `Buffering` would put them in reach, at the price of retaining the tape.
-	fn exact<'d>(pre: &Self::Pre, x: Exact<'_, EmitOuts<'d, E>>) -> bool
+	fn exact<'d>(pre: &Self::Pre, x: Exact<'_, DepOuts<'d, E>>) -> bool
 	where
-		<E as Emit>::Deps: DepFlat,
-		EmitOuts<'d, E>: Copy,
+		E::Deps: DepFlat,
+		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		let Some(alg) = pre else { return false };
-		point_block(&alg.grad, alg.stride, x.out_buf.len(), <<E as Emit>::Deps as DepFlat>::DIMS, x.out, x.widths);
+		point_block(&alg.grad, alg.stride, x.out_buf.len(), <E::Deps as DepFlat>::DIMS, x.out, x.widths);
 		true
 	}
 }
@@ -2375,10 +2377,9 @@ pub struct Carried {
 /// The state is not a dep and has no column, so what the Jacobian omits is every earlier element's
 /// reach through it — permanently, by design (`r[kernels.fidelity.stated]`). A derivative carrying
 /// accumulated state sensitivity is a different quantity, and this kernel will never claim it.
-pub trait Folds: Series + Clone
+pub trait Folds: Series + Clone + Wired
 where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
-	type Deps: DepSet;
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 	/// Env slots past the deps' own flattenings — a lag, a window's edge, or a discrete attribute
@@ -2390,7 +2391,7 @@ where
 	/// Fills the driving element's own slots and then [`EXTRA`](Folds::EXTRA) more, exactly as
 	/// [`Scans::read`] does; the state follows at `DepFlat::LEN + EXTRA`. `None` declines the element
 	/// *and leaves the state where it stood* — an average is not advanced by an absence.
-	fn read<W: Witness>(deps: &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
+	fn read<W: Witness>(deps: &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
 
 	/// What the state becomes, over the env with the state as it stood.
 	fn step(&self, vars: Vars) -> impl Slots;
@@ -2402,9 +2403,6 @@ where
 	fn carried_mut(&mut self) -> &mut Carried;
 }
 
-/// Uniform binder-correct dep-tuple type for [`Folds`] impls.
-pub type FoldOuts<'t, F> = <<F as Folds>::Deps as DepSet>::Outs<'t>;
-
 /// The kernel of a [`Folds`] node.
 pub struct Fold;
 impl sealed::Kernel for Fold {}
@@ -2413,9 +2411,9 @@ impl sealed::Kernel for Fold {}
 const fn fold_widths<E: Folds>() -> (usize, usize, usize, usize)
 where
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
-	<E as Folds>::Deps: DepFlat,
+	E::Deps: DepFlat,
 	E::Item: Flat, {
-	let dep = <<E as Folds>::Deps as DepFlat>::LEN;
+	let dep = <E::Deps as DepFlat>::LEN;
 	let base = dep + <E as Folds>::EXTRA;
 	let (env, slots) = (base + <E as Folds>::STATE, <E::Item as Flat>::LEN);
 	assert!(env <= MAX_VARS, "a Folds env outgrew MAX_VARS: raise it in trading_data_dag");
@@ -2428,16 +2426,16 @@ where
 
 impl<E> Run<E> for Fold
 where
-	E: Folds + Emit<Deps = <E as Folds>::Deps>,
+	E: Folds + Emit,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Item: Unflat,
-	<E as Emit>::Deps: DepFlat,
+	E::Deps: DepFlat,
 {
 	type Pre = Option<PerElem>;
 
 	const FIDELITY: Fidelity = Fidelity::Partial("state history, by design");
 
-	fn emit<'t>(e: &mut E, deps: EmitOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
+	fn emit<'t>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
 		let (_, base, env_w, slots_w) = const { fold_widths::<E>() };
 		let carry = <E as Folds>::STATE;
 		let mut c = *e.carried();
@@ -2455,7 +2453,7 @@ where
 				!value.maybe() || <E::Item as Flat>::ABSENTABLE,
 				"this body declines, and the item it fills has nowhere to say so: give it a `Reading`"
 			);
-			for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
+			for i in 0..<E::Deps as DepFlat>::lead_fires(&deps) {
 				env.rewind();
 				let Some(ts) = <E as Folds>::read(&deps, i, &mut env) else {
 					// rate-preserving, and the state untouched: nothing arrived to advance it.
@@ -2475,7 +2473,7 @@ where
 		*e.carried_mut() = c;
 	}
 
-	fn pre<'d>(e: &E, want: Want, deps: EmitOuts<'d, E>) -> Self::Pre {
+	fn pre<'d>(e: &E, want: Want, deps: DepOuts<'d, E>) -> Self::Pre {
 		if want < Want::Jac {
 			return None;
 		}
@@ -2488,7 +2486,7 @@ where
 		// the walk again, for the last element's two envs: a recurrence's derivative is of the state
 		// the value was computed from, and that state is only reached by replaying the batch.
 		let mut last = None;
-		for i in 0..<<E as Emit>::Deps as DepFlat>::lead_fires(&deps) {
+		for i in 0..<E::Deps as DepFlat>::lead_fires(&deps) {
 			env.rewind();
 			if <E as Folds>::read(&deps, i, &mut env).is_none() {
 				continue;
@@ -2529,13 +2527,15 @@ where
 		pre.as_ref()?.formulas.first()
 	}
 
-	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, EmitOuts<'d, E>>) -> bool
+	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, E>>) -> bool
 	where
-		<E as Emit>::Deps: DepFlat,
-		EmitOuts<'d, E>: Copy,
+		E::Deps: DepFlat,
+		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		let Some(alg) = pre else { return false };
 		let dep_w = j.dep_buf.len();
+		// the body's rows are `stride` wide and the Jacobian's are `dep_w`; the prefix `read` filled
+		// from the deps' own elements is what makes the copy a truncation rather than a remap.
 		for (row, out) in j.out.chunks_exact_mut(dep_w).enumerate() {
 			out.copy_from_slice(&alg.grad[row * alg.stride..row * alg.stride + dep_w]);
 		}
@@ -2544,13 +2544,13 @@ where
 
 	/// Lag 0 and no further, which is the [`jac`](Run::jac) column re-laid: what this kernel omits is
 	/// the state, which is no dep and has no reach to index — by design, and permanently.
-	fn exact<'d>(pre: &Self::Pre, x: Exact<'_, EmitOuts<'d, E>>) -> bool
+	fn exact<'d>(pre: &Self::Pre, x: Exact<'_, DepOuts<'d, E>>) -> bool
 	where
-		<E as Emit>::Deps: DepFlat,
-		EmitOuts<'d, E>: Copy,
+		E::Deps: DepFlat,
+		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		let Some(alg) = pre else { return false };
-		point_block(&alg.grad, alg.stride, x.out_buf.len(), <<E as Emit>::Deps as DepFlat>::DIMS, x.out, x.widths);
+		point_block(&alg.grad, alg.stride, x.out_buf.len(), <E::Deps as DepFlat>::DIMS, x.out, x.widths);
 		true
 	}
 }
@@ -2678,12 +2678,17 @@ where
 	const NAME: &'static str = Self::TAG.as_str();
 }
 
-impl<N: Episodic> Blind for Armed<N>
+impl<N: Episodic> Wired for Armed<N>
 where
 	for<'t> N::Out<'t>: Episode,
 {
 	type Deps = (Folding<N::Trigger, Unbounded>,);
+}
 
+impl<N: Episodic> Blind for Armed<N>
+where
+	for<'t> N::Out<'t>: Episode,
+{
 	const WHY: &'static str = "a latch is a bit that stays set: `arms` is a predicate over an episode, not a value with a slope";
 
 	fn advance<'t>(&'t mut self, (trigger,): DepOuts<'t, Self>) -> Self::Out<'t> {
@@ -2696,7 +2701,6 @@ impl<N: Episodic> Node for Armed<N>
 where
 	for<'t> N::Out<'t>: Episode,
 {
-	type Deps = <Self as Blind>::Deps;
 	type Kernel = Opaque;
 }
 
@@ -2716,9 +2720,6 @@ where
 		self.0
 	}
 }
-
-/// Uniform binder-correct dep-tuple type for `advance` impls (concrete types there hit E0195).
-pub type DepOuts<'t, N> = <<N as Node>::Deps as DepSet>::Outs<'t>;
 
 pub struct Nil;
 
@@ -3248,16 +3249,17 @@ impl<C: Series, const H: Horizon> Node for Buffer<C, H>
 where
 	C::Batch: Batch<C::Item>,
 {
-	type Deps = <Self as Blind>::Deps;
 	type Kernel = Opaque;
+}
+
+impl<C: Series, const H: Horizon> Wired for Buffer<C, H> {
+	type Deps = (Folding<C, At<H>>,);
 }
 
 impl<C: Series, const H: Horizon> Blind for Buffer<C, H>
 where
 	C::Batch: Batch<C::Item>,
 {
-	type Deps = (Folding<C, At<H>>,);
-
 	const WHY: &'static str = "a retention window is the engine's bookkeeping over a run, not a function of its elements";
 
 	fn advance<'t>(&'t mut self, (fresh,): DepOuts<'t, Self>) -> Self::Out<'t> {
@@ -4010,15 +4012,15 @@ impl<A: Observer, B: Observer> Observer for (A, B) {
 /// `advance` from pinning them to the caller's tick lifetime.
 /// `clone` and `scratch` are both the caller's, each overwritten wholly per column, so allocating
 /// either per column would be dead work.
-fn fd_col<'d, N>(pre: &N, clone: &mut N, deps: BlindOuts<'d, N>, scratch: &mut <<N as Blind>::Deps as DepFlat>::Scratch, slot: usize, h: f64, bumped: &mut [f64]) -> (bool, f64)
+fn fd_col<'d, N>(pre: &N, clone: &mut N, deps: DepOuts<'d, N>, scratch: &mut <N::Deps as DepFlat>::Scratch, slot: usize, h: f64, bumped: &mut [f64]) -> (bool, f64)
 where
 	N: Blind,
-	<N as Blind>::Deps: DepFlat,
-	BlindOuts<'d, N>: Copy,
+	N::Deps: DepFlat,
+	DepOuts<'d, N>: Copy,
 	for<'x> N::Out<'x>: Flat, {
-	let dh = <<N as Blind>::Deps as DepFlat>::stage(deps, scratch, slot, h);
+	let dh = <N::Deps as DepFlat>::stage(deps, scratch, slot, h);
 	clone.clone_from(pre);
-	(clone.advance(<<N as Blind>::Deps as DepFlat>::view(scratch)).flat(bumped), dh)
+	(clone.advance(<N::Deps as DepFlat>::view(scratch)).flat(bumped), dh)
 }
 
 /// The full finite-difference Jacobian, one column per dep element: `col` re-steps the node with
@@ -4055,11 +4057,11 @@ fn fd_cols(dep_buf: &[f64], out_buf: &[f64], jac: &mut [f64], bumped: &mut alloc
 /// what [`Opaque`] has instead of a derivative.
 fn fd_jac<'d, N>(pre: &N, j: Jac<'_, DepOuts<'d, N>>)
 where
-	N: Blind + Node<Deps = <N as Blind>::Deps>,
-	<N as Blind>::Deps: DepFlat,
-	BlindOuts<'d, N>: Copy,
+	N: Blind + Node,
+	N::Deps: DepFlat,
+	DepOuts<'d, N>: Copy,
 	for<'x> N::Out<'x>: Flat, {
-	let mut scratch = <<N as Blind>::Deps as DepFlat>::Scratch::default();
+	let mut scratch = <N::Deps as DepFlat>::Scratch::default();
 	let mut clone = pre.clone();
 	let deps = j.deps;
 	fd_cols(j.dep_buf, j.out_buf, j.out, j.bumped, |slot, h, bumped| {
@@ -4263,22 +4265,22 @@ where
 /// leg cannot pay. The re-`emit` needs no [`fd_col`]-style lifetime isolation (`&mut self` never
 /// lends the node), so its column body is inline; everything a column overwrites wholly — the deps'
 /// scratch, the clone, its output run — is hoisted across the loop.
-fn fd_jac_emit<'d, E>(pre: &E, j: Jac<'_, EmitOuts<'d, E>>)
+fn fd_jac_emit<'d, E>(pre: &E, j: Jac<'_, DepOuts<'d, E>>)
 where
-	E: Runs + Emit<Deps = <E as Runs>::Deps>,
+	E: Runs + Emit,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Item: Flat,
-	<E as Emit>::Deps: DepFlat,
-	EmitOuts<'d, E>: Copy, {
-	let mut scratch = <<E as Emit>::Deps as DepFlat>::Scratch::default();
+	E::Deps: DepFlat,
+	DepOuts<'d, E>: Copy, {
+	let mut scratch = <E::Deps as DepFlat>::Scratch::default();
 	let mut emitted = alloc::vec::Vec::new();
 	let mut clone = pre.clone();
 	let deps = j.deps;
 	fd_cols(j.dep_buf, j.out_buf, j.out, j.bumped, |slot, h, bumped| {
-		let dh = <<E as Emit>::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
+		let dh = <E::Deps as DepFlat>::stage(deps, &mut scratch, slot, h);
 		emitted.clear();
 		clone.clone_from(pre);
-		<E as Runs>::emit(&mut clone, <<E as Emit>::Deps as DepFlat>::view(&scratch), &mut emitted);
+		<E as Runs>::emit(&mut clone, <E::Deps as DepFlat>::view(&scratch), &mut emitted);
 		(emitted.as_slice().flat(bumped), dh)
 	});
 }
@@ -4293,7 +4295,7 @@ where
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Item: Flat + Glance,
 	E::Deps: Pull<'t, F, I> + DepFlat,
-	EmitOuts<'t, E>: Copy,
+	DepOuts<'t, E>: Copy,
 	F: 't, {
 	const {
 		assert!(

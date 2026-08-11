@@ -92,7 +92,7 @@ slope is zero off the boundary, and at it the step is not a slope any reading ma
 impl<const TF: Timeframe, const OVER: Timeframe> Scans for Change<TF, OVER> {
     type Deps = (Buffering<Bars<TF>, Over<OVER>>,);
 
-    fn read<W: Witness>((bars,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+    fn read<W: Witness>((bars,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
         let (b, lag) = bars.lagged_at(i, 0)?;
         env.dep(0).lag(lag).put(b);                          // slots 0..=4 — Bar::DIMS
         match bars.trailing_at(i) {
@@ -126,7 +126,7 @@ scatter that same gradient over the whole reach in one pass.
 impl<const TF: Timeframe> Closes for Ohlcs<TF> {
     type Deps = (Folding<Trades, Over<TF>>,);
     const PERIOD: Timeframe = TF;
-    fn read<W: Witness>((trades,): &CloseOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> { .. }
+    fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> { .. }
     fn open(&self, v: Vars) -> impl Slots { let p = v.get::<0>(); (p, p, p, p) }
     fn fold(&self, v: Vars) -> impl Slots {
         let (price, open, high, low) = (v.get::<0>(), v.get::<2>(), v.get::<3>(), v.get::<4>());
@@ -155,7 +155,7 @@ impl Folds for Cvd {
     const EXTRA: usize = 1;      // slots put by env.opaque()
     const STATE: usize = 1;      // slots the recurrence carries
 
-    fn read<W: Witness>((trades,): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+    fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
         let (exec, lag) = trades.exec().at(i)?;
         env.dep(0).lag(lag).put(&[price, qty]);      // slots 0,1
         env.opaque().put(&signed(trades.side[i], 1.0));  // slot 2 — the EXTRA
@@ -188,7 +188,7 @@ a statement about the element sequence, identical under every grouping.
 impl Runs for BookTop {
     type Deps = (Book,);
     const WHY: &'static str = "reading the top of a book is a lookup into a fold, not an expression over it";
-    fn emit(&mut self, (book,): RunOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) { .. }
+    fn emit(&mut self, (book,): DepOuts<'_, Self>, out: &mut Vec<Option<BookTopSnap>>) { .. }
 }
 slice_nudge!(BookTop, Option<BookTopSnap>);
 ```

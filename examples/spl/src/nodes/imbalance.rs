@@ -1,4 +1,4 @@
-use trading_data::{Cell, Env, Lagged, Plot, Reading, ScanOuts, Scans, Slots, Vars, Witness, constant, gt, node, select, slice_nudge};
+use trading_data::{Cell, Env, Lagged, Plot, Reading, DepOuts, Scans, Slots, Vars, Witness, constant, gt, node, select, slice_nudge};
 
 use super::book_top::BookTop;
 
@@ -19,7 +19,7 @@ impl Scans for Imbalance {
 		..Plot::DEFAULT
 	}];
 
-	fn read<W: Witness>((top,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((top,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let (t, lag) = top.at(i)?;
 		// a book still filling has one side empty and no top to read: declined before the put, so no
 		// absence reaches the body as an operand.

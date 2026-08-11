@@ -18,7 +18,7 @@
 //! `trading_data_dag/tests/gate.rs` does, so every state reached here is production-reachable.
 
 use trading_data::{
-	Blind, Buffering, Bump, Carried, Cell, DepOuts, Elems, Env, Flat, FoldOuts, Folding, Folds, Gate, Gating, Glance, Lagged, Over, Reading, RunOuts, Runs, Sampling, Slots, Stamped,
+	Blind, Buffering, Bump, Carried, Cell, DepOuts, Elems, Env, Flat, Folding, Folds, Gate, Gating, Glance, Lagged, Over, Reading, Runs, Sampling, Slots, Stamped,
 	Unbounded, Vars, Witness, absent, always_present, constant, graph, lt, min, node, select, slice_nudge, value_nudge,
 };
 use v_utils::TF_1MIN;
@@ -130,7 +130,7 @@ impl Runs for Total {
 
 	const WHY: &'static str = "a fold fixture";
 
-	fn emit(&mut self, (items,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+	fn emit(&mut self, (items,): DepOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		for x in items {
 			self.sum += x.v;
 			// a negative element declines: an `Option` item is the absence spelling a rate-preserving
@@ -154,7 +154,7 @@ impl Runs for Bucket {
 
 	const WHY: &'static str = "a fold fixture";
 
-	fn emit(&mut self, (items,): RunOuts<'_, Self>, out: &mut Vec<f64>) {
+	fn emit(&mut self, (items,): DepOuts<'_, Self>, out: &mut Vec<f64>) {
 		for x in items {
 			let period = x.ts / (TF_1MIN.0 * 1_000_000) as i64;
 			match &mut self.0 {
@@ -188,7 +188,7 @@ impl Folds for Warmup {
 	/// The running sum, and how many elements have reached it.
 	const STATE: usize = 2;
 
-	fn read<W: Witness>((src,): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((src,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let (x, lag) = src.at(i)?;
 		env.dep(0).lag(lag).put(x);
 		Some(0)

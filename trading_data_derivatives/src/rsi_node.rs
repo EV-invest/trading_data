@@ -1,7 +1,7 @@
 use core::{fmt, marker::PhantomData};
 
 use trading_data_dag::{
-	Buffering, Bump, Carried, Cell, Elems, Env, Ex, Expr, Flat, FoldOuts, Folding, Folds, Glance, Lagged, Plot, Present, Reading, Rows, ScanOuts, Scans, Series, Slots, Stamped, Tag,
+	Buffering, Bump, Carried, Cell, DepOuts, Elems, Env, Ex, Expr, Flat, Folding, Folds, Glance, Lagged, Plot, Present, Reading, Rows, Scans, Series, Slots, Stamped, Tag,
 	Unbounded, Unflat, Vars, Witness, absent, constant, gt, lt, max, min, node, select, slice_nudge,
 };
 
@@ -54,7 +54,7 @@ impl<B: Series<Item = Bar, Batch = Rows<Bar>>> Scans for RsiDelta<B> {
 	/// engine's retention rather than the node's, so nothing here survives a tick.
 	type Deps = (Buffering<B, Elems<2>>,);
 
-	fn read<W: Witness>((bars,): &ScanOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((bars,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let (b, lag) = bars.lagged_at(i, 0).expect("element i of this tick's own fresh run");
 		// the first bar of a run has nothing behind it, and an absence is declined rather than put:
 		// a NaN in the env is an operand, where a decline is an out.
@@ -116,7 +116,7 @@ macro_rules! wilder_half {
 
 			/// The first bar has no delta, and an average is not advanced by an absence — which is
 			/// exactly what declining leaves the state doing.
-			fn read<W: Witness>((deltas,): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+			fn read<W: Witness>((deltas,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 				let (d, lag) = deltas.at(i)?;
 				env.dep(0).lag(lag).put(&d.present()?);
 				Some(0)
@@ -256,7 +256,7 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Folds for Rsi<B, S> {
 	const STATE: usize = 2;
 
 	/// Both legs warm together, so an element either carries both averages or neither.
-	fn read<W: Witness>((gain, loss): &FoldOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((gain, loss): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		assert_eq!(gain.len(), loss.len(), "AvgGain/AvgLoss rate mismatch");
 		let ((g, g_lag), (l, l_lag)) = (gain.at(i)?, loss.at(i)?);
 		let (g, l) = (g.present()?, l.present()?);

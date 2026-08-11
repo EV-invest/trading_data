@@ -7,7 +7,7 @@
 //! batch whose terminal element is *not* last still commutates (`Episode for &[T]` is `any`, not
 //! `last`).
 
-use trading_data_dag::{Armed, Blind, Bump, Cell, DepOuts, Episode, Episodic, Flat, Gate, Gating, Glance, RunOuts, Runs, TriggerOut, graph, node, slice_nudge, value_nudge};
+use trading_data_dag::{Armed, Blind, Bump, Cell, DepOuts, Episode, Episodic, Flat, Gate, Gating, Glance, Runs, TriggerOut, graph, node, slice_nudge, value_nudge};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Pulse;
@@ -160,7 +160,7 @@ impl Runs for Deprec {
 
 	const WHY: &'static str = "a latch fixture";
 
-	fn emit(&mut self, (_, _, feed): RunOuts<'_, Self>, out: &mut Vec<Option<Phase>>) {
+	fn emit(&mut self, (_, _, feed): DepOuts<'_, Self>, out: &mut Vec<Option<Phase>>) {
 		for _ in feed {
 			if self.idle {
 				out.push(None);
@@ -197,7 +197,7 @@ impl Runs for Leg {
 
 	const WHY: &'static str = "an internal-latch fixture";
 
-	fn emit(&mut self, (_, feed): RunOuts<'_, Self>, out: &mut Vec<Option<Pulse>>) {
+	fn emit(&mut self, (_, feed): DepOuts<'_, Self>, out: &mut Vec<Option<Pulse>>) {
 		out.extend(feed.iter().copied().map(Some));
 	}
 }
