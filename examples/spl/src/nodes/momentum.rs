@@ -46,7 +46,8 @@ impl<const TF: Timeframe, const WIN: usize> Runs for Momentum<TF, WIN> {
 		labels: &[&["sharpe"]],
 		..Plot::DEFAULT
 	}];
-	const WHY: &'static str = "a recurrence carried across elements, which the `Fold` kernel is not built for yet";
+	const WHY: &'static str = "a Sharpe over a whole retained window, and no kernel indexes a window: `Scan` reads a point, `Close` a period, `Fold` all history through state. A window \
+	                          body would also want one `Var` per retained element, and this one runs at `WIN = 181` against a `MAX_VARS` of 16";
 
 	fn emit(&mut self, (bars,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(bars.trailing().map(|w| w.and_then(sharpe)));

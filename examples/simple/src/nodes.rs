@@ -201,7 +201,8 @@ impl<const TF: Timeframe, const WIN: usize> Cell for Lambda<TF, WIN> {
 impl<const TF: Timeframe, const WIN: usize> Runs for Lambda<TF, WIN> {
 	type Deps = (Buffering<Flows<TF>, Elems<WIN>>,);
 
-	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
+	const WHY: &'static str = "a through-origin fit over a whole retained window, and no kernel indexes a window: `Scan` reads a point, `Close` a period, `Fold` all history through \
+	                          state. A window body would also want one `Var` per retained element, against a `MAX_VARS` of 16";
 
 	fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(hist.narrowed(Horizon::Elems(WIN)).trailing().map(|w| w.map(kyle_lambda)));
@@ -224,7 +225,8 @@ impl<const TF: Timeframe, const WIN: usize> Cell for RollingVolUsd<TF, WIN> {
 impl<const TF: Timeframe, const WIN: usize> Runs for RollingVolUsd<TF, WIN> {
 	type Deps = (Buffering<trading_data::Bars<TF>, Elems<WIN>>,);
 
-	const WHY: &'static str = "an accumulation into whole bars, which the `Close` kernel is not built for yet";
+	const WHY: &'static str = "a sum over a whole retained window, and no kernel indexes a window: `Scan` reads a point, `Close` a period, `Fold` all history through state. A window \
+	                          body would also want one `Var` per retained element, against a `MAX_VARS` of 16";
 
 	fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
 		out.extend(hist.narrowed(Horizon::Elems(WIN)).trailing().map(|w| w.map(|w| w.iter().map(|b| b.vol_base * b.close).sum())));

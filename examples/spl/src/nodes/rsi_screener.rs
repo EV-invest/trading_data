@@ -21,7 +21,8 @@ impl Blind for RsiScreener {
 		Sampling<trading_data::Rsi<trading_data::Bars<{ TF_5MIN }>, Knobs>>,
 	);
 
-	const WHY: &'static str = "a screen is a threshold predicate, awaiting the `Predicate` kernel";
+	const WHY: &'static str = "`Decides` reads a non-leading dep at its last element, and this asks whether *any* day-change in the whole run cleared the threshold — a quantifier no \
+	                          `Expr` body states. `StdScreener` fits `Predicate` because its test is one comparison";
 
 	fn advance<'t>(&'t mut self, (bars, change_1d, rsi): DepOuts<'t, Self>) -> Self::Out<'t> {
 		assert_eq!(bars.len(), change_1d.len(), "Bar:1m/ChangeBack:1m/1d rate mismatch");
