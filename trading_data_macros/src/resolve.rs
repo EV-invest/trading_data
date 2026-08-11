@@ -170,10 +170,11 @@ fn visit(st: &mut State, dep: Dep) -> Result<Option<TokenStream>> {
 	let (cell, wrap) = ty::unwrap_dep(&full)?;
 	let key = ty::norm(&cell);
 
-	if let Wrap::Buf { reach } = wrap {
-		// A cell reached through a `node_alias!` answers under its own key. Keying the retention on the
-		// spelling instead would put a second `Buffer` over one series in the frame, which makes every
-		// `Buffering` of it ambiguous — so the cell is resolved first and the key taken from its answer.
+	// The two retaining wrappers, keyed alike: a cell reached through a `node_alias!` answers under
+	// its own key, and keying on the spelling instead would put two retentions over one series in the
+	// frame — a second `Buffer` makes every `Buffering` of it ambiguous, a second carry every
+	// `Sampling`. So the cell is resolved first and the key taken from its answer.
+	if matches!(wrap, Wrap::Buf { .. } | Wrap::Sample) {
 		let settled = is_root(st, &key) || st.known.iter().any(|n| n.key == key);
 		let key = match st.aliases.iter().find(|(a, _)| *a == key) {
 			Some((_, answered)) => answered.clone(),
@@ -183,6 +184,15 @@ fn visit(st: &mut State, dep: Dep) -> Result<Option<TokenStream>> {
 				return Ok(Some(ask(st, &dep.shim, &cell)));
 			}
 			None => key,
+		};
+
+		let Wrap::Buf { reach } = wrap else {
+			// no node, and so no demand formula, no pin and no card: the carry is filled in the same
+			// generated line as the series it follows, which is what leaves it nothing to sleep through.
+			if !st.samples.iter().any(|s| s.key == key) {
+				st.samples.push(Sample { key, ty: cell.to_token_stream() });
+			}
+			return Ok(None);
 		};
 		let dag = &st.cfg.dag;
 		// the join is over `Horizon` values, so the [`Reach`] type the dep stated is projected here.
@@ -213,27 +223,6 @@ fn visit(st: &mut State, dep: Dep) -> Result<Option<TokenStream>> {
 			},
 		)
 		.map(|()| None);
-	}
-
-	if let Wrap::Sample = wrap {
-		// keyed on the cell's own answer, for the reason a `Buffer` is: two spellings of one series
-		// would put two carries in the frame, which makes every `Sampling` of it ambiguous.
-		let settled = is_root(st, &key) || st.known.iter().any(|n| n.key == key);
-		let key = match st.aliases.iter().find(|(a, _)| *a == key) {
-			Some((_, answered)) => answered.clone(),
-			None if !settled => {
-				re_walk(st, &dep);
-				st.awaiting = Awaiting::Node(key, cell.to_token_stream());
-				return Ok(Some(ask(st, &dep.shim, &cell)));
-			}
-			None => key,
-		};
-		// no node, and so no demand formula, no pin and no card: the carry is filled in the same
-		// generated line as the series it follows, which is what leaves it nothing to sleep through.
-		if !st.samples.iter().any(|s| s.key == key) {
-			st.samples.push(Sample { key, ty: cell.to_token_stream() });
-		}
-		return Ok(None);
 	}
 
 	if is_root(st, &key) {

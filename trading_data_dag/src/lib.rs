@@ -2041,6 +2041,23 @@ pub struct PerElem {
 	stride: usize,
 }
 
+impl PerElem {
+	/// The one-step reading, for every kernel that took one: the body's rows are `stride` wide and
+	/// the Jacobian's are `dep_buf`, and the prefix `read` filled from the deps' own elements is what
+	/// makes the copy a truncation rather than a remap.
+	fn jac<D>(&self, j: Jac<'_, D>) {
+		let dep_w = j.dep_buf.len();
+		for (row, out) in j.out.chunks_exact_mut(dep_w).enumerate() {
+			out.copy_from_slice(&self.grad[row * self.stride..row * self.stride + dep_w]);
+		}
+	}
+
+	/// The same reading as a block, at lag 0 and no further — what a kernel whose reach lives in its
+	/// own state rather than in a dep's out has to say.
+	fn point<D>(&self, x: Exact<'_, D>, dims: &'static [&'static [usize]]) {
+		point_block(&self.grad, self.stride, x.out_buf.len(), dims, x.out, x.widths);
+	}
+}
 
 /// The slot count a [`Scans`] body fills, checked once against the buffer that holds it.
 const fn scan_slots<E: Scans>() -> usize
@@ -2123,12 +2140,7 @@ where
 		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		let Some(alg) = pre else { return false };
-		let dep_w = j.dep_buf.len();
-		// the body's rows are `stride` wide and the Jacobian's are `dep_w`; the prefix `read` filled
-		// from the deps' own elements is what makes the copy a truncation rather than a remap.
-		for (row, out) in j.out.chunks_exact_mut(dep_w).enumerate() {
-			out.copy_from_slice(&alg.grad[row * alg.stride..row * alg.stride + dep_w]);
-		}
+		alg.jac(j);
 		true
 	}
 
@@ -2338,12 +2350,7 @@ where
 		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		let Some(alg) = pre else { return false };
-		let dep_w = j.dep_buf.len();
-		// the body's rows are `stride` wide and the Jacobian's are `dep_w`; the prefix `read` filled
-		// from the deps' own elements is what makes the copy a truncation rather than a remap.
-		for (row, out) in j.out.chunks_exact_mut(dep_w).enumerate() {
-			out.copy_from_slice(&alg.grad[row * alg.stride..row * alg.stride + dep_w]);
-		}
+		alg.jac(j);
 		true
 	}
 
@@ -2358,7 +2365,7 @@ where
 		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		let Some(alg) = pre else { return false };
-		point_block(&alg.grad, alg.stride, x.out_buf.len(), <E::Deps as DepFlat>::DIMS, x.out, x.widths);
+		alg.point(x, <E::Deps as DepFlat>::DIMS);
 		true
 	}
 }
@@ -2533,12 +2540,7 @@ where
 		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		let Some(alg) = pre else { return false };
-		let dep_w = j.dep_buf.len();
-		// the body's rows are `stride` wide and the Jacobian's are `dep_w`; the prefix `read` filled
-		// from the deps' own elements is what makes the copy a truncation rather than a remap.
-		for (row, out) in j.out.chunks_exact_mut(dep_w).enumerate() {
-			out.copy_from_slice(&alg.grad[row * alg.stride..row * alg.stride + dep_w]);
-		}
+		alg.jac(j);
 		true
 	}
 
@@ -2550,7 +2552,7 @@ where
 		DepOuts<'d, E>: Copy,
 		E::Item: Flat, {
 		let Some(alg) = pre else { return false };
-		point_block(&alg.grad, alg.stride, x.out_buf.len(), <E::Deps as DepFlat>::DIMS, x.out, x.widths);
+		alg.point(x, <E::Deps as DepFlat>::DIMS);
 		true
 	}
 }
@@ -3372,31 +3374,7 @@ where
 	const RETAINED: bool = true;
 }
 
-impl<C: Series> Nudge for Sampling<C>
-where
-	C::Item: Present,
-	<C::Item as Present>::Val: Bump,
-{
-	type Scratch = Option<<C::Item as Present>::Val>;
-
-	fn stage<'t>(out: Self::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
-		match bump {
-			Some(slot) => {
-				let (v, dh) = Bump::bump(out, slot, h);
-				*s = v;
-				dh
-			}
-			None => {
-				*s = out;
-				0.0
-			}
-		}
-	}
-
-	fn view<'l>(s: &'l Self::Scratch) -> Self::Out<'l> {
-		*s
-	}
-}
+value_nudge!([C: Series<Item: Present<Val: Bump>>] Sampling<C>);
 
 /// Dep position only, never a frame field: "this dep, `H` of which I hold myself". The out is the
 /// bare cell's — nothing wraps the data and nothing is retained for it, so this is a pure
@@ -3468,29 +3446,9 @@ impl<'t, C: Gate, T> Has<'t, Gating<C>, Here> for Cons<'t, C, T> {
 	}
 }
 
-/// A gate carries no signal to differentiate against — [`Bump`] for `bool` already reads as much —
-/// so the column its slot owns stays NaN.
-impl<C: Gate> Nudge for Gating<C> {
-	type Scratch = bool;
-
-	fn stage<'t>(out: <Self as Cell>::Out<'t>, s: &mut Self::Scratch, bump: Option<usize>, h: f64) -> f64 {
-		match bump {
-			Some(slot) => {
-				let (v, dh) = Bump::bump(out, slot, h);
-				*s = v;
-				dh
-			}
-			None => {
-				*s = out;
-				0.0
-			}
-		}
-	}
-
-	fn view<'l>(s: &'l Self::Scratch) -> <Self as Cell>::Out<'l> {
-		*s
-	}
-}
+// a gate carries no signal to differentiate against — `Bump` for `bool` already reads as much — so
+// the column its slot owns stays NaN.
+value_nudge!([C: Gate] Gating<C>);
 
 impl DepSet for () {
 	type Lead = No;
@@ -4261,8 +4219,10 @@ where
 }
 
 /// [`fd_cols`] over an [`Emit`]'s re-`emit`. It stays separate from [`fd_jac`] because the two
-/// re-step through different traits — merging them would cost a vtable, which is the one thing this
-/// leg cannot pay. The re-`emit` needs no [`fd_col`]-style lifetime isolation (`&mut self` never
+/// re-step through different traits, and the trait that would abstract "re-run me into a flat
+/// buffer" over both is the merged [`Level`]/[`Run`] kernel — which is a question about the sweep,
+/// not about this leg. Nothing here needs dynamic dispatch: a generic re-run would monomorphize like
+/// everything else. The re-`emit` needs no [`fd_col`]-style lifetime isolation (`&mut self` never
 /// lends the node), so its column body is inline; everything a column overwrites wholly — the deps'
 /// scratch, the clone, its output run — is hoisted across the loop.
 fn fd_jac_emit<'d, E>(pre: &E, j: Jac<'_, DepOuts<'d, E>>)
