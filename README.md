@@ -46,7 +46,7 @@ pub struct RollingVolUsd<const TF: Timeframe, const WIN: usize>;
 impl<const TF: Timeframe, const WIN: usize> Runs for RollingVolUsd<TF, WIN> {
     type Deps = (Buffering<Bars<TF>, Elems<WIN>>,);
 
-    fn emit(&mut self, (hist,): RunOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
+    fn emit(&mut self, (hist,): DepOuts<'_, Self>, out: &mut Vec<Option<f64>>) {
         out.extend(hist.narrowed(Horizon::Elems(WIN)).trailing().map(|w| w.map(|w| w.iter().map(|b| b.vol_base * b.close).sum())));
     }
 }
