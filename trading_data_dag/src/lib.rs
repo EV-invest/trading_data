@@ -3789,6 +3789,69 @@ fn same(a: &[f64], b: &[f64]) -> bool {
 	a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
+/// A level output as the tick hands it over: the out that stands, and whether this tick moved it.
+///
+/// r[impl outs.moved.outputs-plane]
+/// The value-plane edge, not the observation plane's publication edge: a level whose out went
+/// *absent* moved — `None` is a value (`r[outs.absence.one-reading]`), and a consumer acting on
+/// changes has to see it change to nothing. What "moved" compares is the [`Flat`] slots, so what the
+/// flattening leaves out (spl's `Intent` omits its timestamp) is what a change is not.
+#[derive(Clone, Copy, Debug)]
+pub struct Moved<T> {
+	pub out: T,
+	pub moved: bool,
+}
+impl<T> core::ops::Deref for Moved<T> {
+	type Target = T;
+
+	fn deref(&self) -> &T {
+		&self.out
+	}
+}
+/// Against the bare value only — two `Moved` are not comparable, because equating the bits would
+/// bury the one axis this type exists to carry.
+impl<T: PartialEq<U>, U> PartialEq<U> for Moved<T> {
+	fn eq(&self, other: &U) -> bool {
+		self.out == *other
+	}
+}
+impl core::ops::Not for Moved<bool> {
+	type Output = bool;
+
+	fn not(self) -> bool {
+		!self.out
+	}
+}
+
+/// Per level output, what it last flattened to — the outputs-plane sibling of [`Sweep::prev`], kept
+/// apart because an observer is optional and `prev` is only maintained where one asked
+/// ([`Want::Nothing`] skips the flatten entirely).
+#[doc(hidden)]
+#[derive(Default)]
+pub struct PrevOut {
+	prev: alloc::vec::Vec<f64>,
+	cur: alloc::vec::Vec<f64>,
+}
+impl PrevOut {
+	#[doc(hidden)]
+	pub fn moved<O: Flat>(&mut self, out: &O) -> bool {
+		// r[impl outs.flat.nonempty]
+		const {
+			assert!(O::LEN > 0, "an out flattens to at least one slot: a zero-slot out could never be seen to move");
+		}
+		self.cur.clear();
+		self.cur.resize(O::LEN, f64::NAN);
+		flatten(out, &mut self.cur);
+		// before the first tick nothing stood, which is what an absent flattening spells.
+		if self.prev.is_empty() {
+			self.prev.resize(O::LEN, f64::NAN);
+		}
+		let moved = !same(&self.prev, &self.cur);
+		core::mem::swap(&mut self.prev, &mut self.cur);
+		moved
+	}
+}
+
 /// The un-bumped flattenings of one node's out and deps, plus the Jacobian read off them — the
 /// observed leg every stepped node shares, whatever kind of node it is. A view into the [`Sweep`]
 /// rather than an owner: the next node overwrites all of it.

@@ -63,7 +63,10 @@ impl TrailingStop {
 	}
 }
 
-/// One book tick of an open episode — the persisted intent stream, minus the execution fields.
+/// A change in the standing intent of an open episode — the persisted intent stream, minus the
+/// execution fields. A book tick that would republish the last value publishes nothing: the out is
+/// read as what stands (`Sampling`-shaped), so an element is a *move*, and absence of elements
+/// means the last one still holds.
 #[derive(Clone, Copy, Debug)]
 pub struct Intent {
 	pub ts_ns: i64,
@@ -96,6 +99,18 @@ impl core::hash::Hash for Intent {
 		}
 		h.write_u64(self.trail_stop.get().map_or(0, f64::to_bits));
 		h.write_u8(self.draining as u8 | (self.terminal as u8) << 1);
+	}
+}
+
+impl Intent {
+	/// Value-plane equality: the `flat` slots plus the booleans beside them. `ts_ns` is when, not
+	/// what, which is the whole difference between this and the digest's bit-identity above.
+	pub fn same_value(&self, other: &Self) -> bool {
+		let (mut a, mut b) = ([0.0; 8], [0.0; 8]);
+		self.flat(&mut a);
+		other.flat(&mut b);
+		// bitwise, so an absent trail_stop reads equal to an absent trail_stop
+		a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()) && self.side == other.side && self.draining == other.draining && self.terminal == other.terminal
 	}
 }
 
@@ -132,6 +147,9 @@ impl Glance for Intent {
 pub struct Deprecator {
 	state: State,
 	last_decision: Option<Decided>,
+	/// What the stream last said, so a book tick that moves nothing publishes nothing. Dropped by
+	/// the commutation reset with everything else, so an episode's first intent always publishes.
+	last_published: Option<Intent>,
 }
 #[derive(Clone)]
 struct Active {
@@ -151,7 +169,7 @@ enum State {
 }
 
 impl Cell for Deprecator {
-	type Out<'t> = &'t [Option<Intent>];
+	type Out<'t> = &'t [Intent];
 }
 #[node]
 impl Runs for Deprecator {
@@ -175,7 +193,7 @@ impl Runs for Deprecator {
 	];
 	const WHY: &'static str = "an episode walk driven by control flow rather than arithmetic";
 
-	fn emit(&mut self, (armed, decision, atr, top): DepOuts<'_, Self>, out: &mut Vec<Option<Intent>>) {
+	fn emit(&mut self, (armed, decision, atr, top): DepOuts<'_, Self>, out: &mut Vec<Intent>) {
 		assert!(armed, "a gating dep reads true inside `emit`");
 		let liq = &strategy().classification.liquidations;
 		// The arming tick and the ticks that act on it are different lanes: `Decision` is trade-clocked,
@@ -187,10 +205,8 @@ impl Runs for Deprecator {
 		}
 
 		for d in top {
-			let Some(d) = d else {
-				out.push(None);
-				continue;
-			};
+			// nothing to read is nothing to move: the last published intent still stands.
+			let Some(d) = d else { continue };
 			if let (State::Idle, Some(dec)) = (&self.state, self.last_decision) {
 				let entry_price = d.mid();
 				let side = Side::try_from(dec.direction).expect("the latch arms on a non-flat direction");
@@ -203,10 +219,7 @@ impl Runs for Deprecator {
 				});
 			}
 			// Management needs `target_q` off the ATR envelope; skip until the first ATR lands.
-			let (State::Active(a), Some(atr)) = (&mut self.state, atr) else {
-				out.push(None);
-				continue;
-			};
+			let (State::Active(a), Some(atr)) = (&mut self.state, atr) else { continue };
 			let mid = d.mid();
 			let (trail_mult, trail_fraction, trail_stop) = a.trail.step(mid);
 			let (sl, tp) = match a.side {
@@ -228,7 +241,7 @@ impl Runs for Deprecator {
 			}
 			let draining = a.drain_deadline_ns.is_some();
 			let terminal = a.drain_deadline_ns.is_some_and(|dl| d.ts_ns >= dl);
-			out.push(Some(Intent {
+			let intent = Intent {
 				ts_ns: d.ts_ns,
 				side: a.side,
 				base_q: a.base_q,
@@ -241,14 +254,18 @@ impl Runs for Deprecator {
 				trail_stop,
 				draining,
 				terminal,
-			}));
+			};
+			if !self.last_published.is_some_and(|l| l.same_value(&intent)) {
+				self.last_published = Some(intent);
+				out.push(intent);
+			}
 			if terminal {
 				self.state = State::Idle;
 			}
 		}
 	}
 }
-slice_nudge!(Deprecator, Option<Intent>);
+slice_nudge!(Deprecator, Intent);
 
 #[node]
 impl Episodic for Deprecator {

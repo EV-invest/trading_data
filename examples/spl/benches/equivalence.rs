@@ -77,12 +77,12 @@ async fn main() {
 				oi,
 				mc,
 			};
-			let want: Vec<Option<Intent>> = graph.tick(l.ts_venue.as_nanos(), batches()).deprecator.to_vec();
+			let want: Vec<Intent> = graph.tick(l.ts_venue.as_nanos(), batches()).deprecator.to_vec();
 			want_ran.absorb(&want);
 			got_ran.absorb(direct.tick(trades, deltas, anchor, oi, mc));
 
 			let mut counted = Counted(past, 0);
-			let woke: Vec<Option<Intent>> = slept.tick_rewind(l.ts_venue.as_nanos(), batches(), &mut counted).deprecator.to_vec();
+			let woke: Vec<Intent> = slept.tick_rewind(l.ts_venue.as_nanos(), batches(), &mut counted).deprecator.to_vec();
 			slept_ran.absorb(&woke);
 			wakes += counted.1;
 			ticks += 1;
@@ -123,14 +123,14 @@ struct Outcome {
 	short: usize,
 	/// Σ over episodes of the size it committed
 	committed: f64,
-	/// Σ over every intent of `target_q` — the held-size integral, this stream's nearest reading of
-	/// how much position the strategy actually carried
+	/// Σ over every published change of `target_q` — a digest of the stream, not a held-size
+	/// integral now that a tick moving nothing publishes nothing
 	exposure: f64,
 }
 
 impl Outcome {
-	fn absorb(&mut self, intents: &[Option<Intent>]) {
-		for i in intents.iter().flatten() {
+	fn absorb(&mut self, intents: &[Intent]) {
+		for i in intents {
 			self.exposure += i.target_q;
 			if i.terminal {
 				self.episodes += 1;
@@ -207,7 +207,7 @@ struct Direct {
 	b_vol_usd_1h: Vec<f64>,
 	b_imb: Vec<Reading>,
 	b_spr: Vec<Reading>,
-	b_dep: Vec<Option<Intent>>,
+	b_dep: Vec<Intent>,
 
 	/// The frame's carries over `Atr` / `Momentum`. Engine storage, so a replica of the graph owns
 	/// them too — ungated, and so untouched by the commutation reset below.
@@ -221,7 +221,7 @@ struct Direct {
 }
 
 impl Direct {
-	fn tick(&mut self, trades: TradeCols<'_>, deltas: &[BookDelta], anchor: Option<&BookShape>, oi: &[Oi], mc: &[Mc]) -> &[Option<Intent>] {
+	fn tick(&mut self, trades: TradeCols<'_>, deltas: &[BookDelta], anchor: Option<&BookShape>, oi: &[Oi], mc: &[Mc]) -> &[Intent] {
 		if self.pending {
 			self.pending = false;
 			self.armed.commutate();

@@ -31,3 +31,11 @@ r[outs.fired.on-change]
 A level node MUST be observed firing only on the ticks its flattening differs from the one it last published. A run's fire count stays its element count: three identical trades are three events, and "unchanged" is not defined for a run.
 
 This is the observation plane and nowhere else. What a consumer reads off the frame is the node's out, which stands either way; the fired bit is an axis no dep read can reach ([`rates.deps.tick-opaque`](rates.md#ratesdepstick-opaque)), which is what leaves it free to mean *moved* rather than *ran*.
+
+r[outs.moved.outputs-plane]
+
+A graph's typed outputs are an observation plane of their own. A level output MUST be read as `Moved`: the out that stands, plus whether this tick's flattening differs from last tick's — computed by the engine, never by the consumer, because value-plane equality (absent equals absent) is the engine's to define and `PartialEq` is refused on anything that may decline ([`outs.absence.typed`](#outsabsencetyped)).
+
+`moved` is the value-plane edge where `fired` is the publication edge, and the two part ways exactly once: a level whose out went *absent* moved without firing — `None` is a value ([`outs.absence.one-reading`](#outsabsenceone-reading)), and a consumer acting on changes has to see it change to nothing. Both compare the `Flat` slots, so what a flattening leaves out (an intent's timestamp) is what a change is not.
+
+A run output carries no `Moved`: its edge is its elements, and what a run publishes is its producer's own policy. The dep plane is untouched either way — a dep read still cannot reach any of it.

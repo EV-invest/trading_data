@@ -270,10 +270,7 @@ impl Day {
 		}
 	}
 
-	fn check_intent(&mut self, intent: Option<Intent>) {
-		// An idle slot, or a book tick that declined to publish mid-episode — neither ends an episode.
-		// Only `Intent::terminal` does, below.
-		let Some(i) = intent else { return };
+	fn check_intent(&mut self, i: Intent) {
 		self.intents += 1;
 		flag!(self, i.ts_ns > self.last_intent_ns, "intents not strictly increasing: {} <= {}", i.ts_ns, self.last_intent_ns);
 		self.last_intent_ns = i.ts_ns;
