@@ -95,8 +95,9 @@ macro_rules! defined_over {
 
 /// Whether a `Min`/`Max` takes its **left** operand, given the strict comparison that decides it
 /// where both are numbers. The tie goes right; an absent right is skipped, and an absent left is
-/// skipped by the comparison already being false. One function, so the value, the gradient and
-/// [`Ast::diff`] cannot drift apart at the branch.
+/// skipped by the comparison already being false. Which way round the comparison goes is the `skip`
+/// row's to say, and it says it once — this reads it, and `Ast::strictly` reads the same tokens as
+/// a tree, so the value's branch and the symbolic derivative's cannot be written apart.
 fn takes_left(strictly: bool, rv: f64) -> bool {
 	strictly || rv.is_nan()
 }
@@ -176,6 +177,18 @@ macro_rules! grad_fn {
 	};
 }
 
+/// [`grad_fn`]'s `skip` shape read on the other plane: the same two operands in the same order, as
+/// a tree rather than as a comparison over numbers. Every other shape contributes nothing, which is
+/// what leaves `Ast::strictly` answering for the rows that named a comparison and no others.
+macro_rules! strictly_case {
+	(skip; $node:ident, $V:path, ($a:ident, $b:ident), [$x:ident < $y:ident]) => {
+		if let $V($a, $b) = $node {
+			return Ast::Cmp(Box::new((**$x).clone()), Box::new((**$y).clone()));
+		}
+	};
+	($shape:tt; $node:ident, $V:path, ($a:ident, $b:ident), [$($g:tt)*]) => {};
+}
+
 /// One row per operator, and both planes are read off it: the `Copy` marker struct and its [`Expr`]
 /// impl on the compute path, the [`Ast`] variant and every mechanical walk over it on the
 /// documentation path. A row is
@@ -188,7 +201,9 @@ macro_rules! grad_fn {
 /// and into `Ast::eval` — which is the point: two evaluators of one semantics that cannot be edited
 /// apart. `Ast::diff` and `Ast::simplify` are not here because they are not mechanical: a
 /// derivative is per-operator mathematics and an identity is a per-operator claim, and a row that
-/// carried a closure for each would have bought nothing.
+/// carried a closure for each would have bought nothing. What a `skip` row states *is* mechanical,
+/// though, and reaches them: its comparison is emitted twice, once over numbers for `Expr::grad`
+/// and once as a tree for `Ast::strictly`, so `Ast::diff` names the branch without restating it.
 macro_rules! ops {
 	(
 		binds($seed:ident, $val:ident);
@@ -263,6 +278,15 @@ macro_rules! ops {
 		}
 
 		impl Ast {
+			/// The comparison a `skip` row named, over the operands in the order it named them — the
+			/// same order [`Expr::grad`] branches on, so the value's branch and the symbolic
+			/// derivative's are one declaration. Panics off a `skip` row, which is a caller matching
+			/// something the table did not mark skipping.
+			fn strictly(&self) -> Ast {
+				$(strictly_case!($bshape; self, Ast::$B, ($ba, $bb), [$($bg)*]);)+
+				panic!("no row named a comparison for this node, so nothing here skips an absent operand")
+			}
+
 			pub fn eval(&self, $eenv: &[f64]) -> f64 {
 				match self {
 					$(Ast::$B($ba, $bb) => { let $ba = $ba.eval($eenv); let $bb = $bb.eval($eenv); $bbody })+
@@ -794,7 +818,7 @@ impl<E: Expr> ops::Neg for Ex<E> {
 }
 
 /// [`takes_left`] as a tree: the right operand absent takes the left, the left absent then takes the
-/// right, and only where both are numbers does `strictly` decide. Nested rather than one disjunction
+/// right, and only where both are numbers does the row's comparison decide. Nested rather than one disjunction
 /// because `Select` evaluates the taken branch alone, which is what keeps the comparison off an
 /// operand it refuses.
 fn skipping(l: &Ast, r: &Ast, strictly: Ast, var: usize) -> Ast {
@@ -852,12 +876,11 @@ impl Ast {
 			Ast::Sqrt(e) => Ast::Div(b(e.diff(var)), b(Ast::Mul(b(Ast::Const(2.0)), b(Ast::Sqrt(e.clone()))))),
 			Ast::Exp(e) => Ast::Mul(b(Ast::Exp(e.clone())), b(e.diff(var))),
 			Ast::Powi(e, n) => Ast::Mul(b(Ast::Mul(b(Ast::Const(f64::from(*n))), b(Ast::Powi(e.clone(), n - 1)))), b(e.diff(var))),
-			// the kink is a branch, not a slope: which piece is live is what `Cmp` says, and the
-			// derivative is that piece's. Strict `<` with the tie going right, matching the `skip` row's
-			// `takes_left` — and the two presence tests ahead of it are that row's skip, spelled so that
-			// the `Cmp` is never reached over an operand it may not read.
-			Ast::Min(l, r) => skipping(l, r, Ast::Cmp(l.clone(), r.clone()), var),
-			Ast::Max(l, r) => skipping(l, r, Ast::Cmp(r.clone(), l.clone()), var),
+			// the kink is a branch, not a slope: which piece is live is what the row's comparison says,
+			// and the derivative is that piece's. `strictly` is that comparison, so which operand this
+			// takes is not restated here — and the two presence tests ahead of it are the row's skip,
+			// spelled so that the `Cmp` is never reached over an operand it may not read.
+			Ast::Min(l, r) | Ast::Max(l, r) => skipping(l, r, self.strictly(), var),
 			Ast::Cmp(_, _) | Ast::IsNan(_) => Ast::Const(0.0),
 			Ast::Select(c, a, b_) => Ast::Select(c.clone(), b(a.diff(var)), b(b_.diff(var))),
 			Ast::Sum(xs) => Ast::Sum(xs.iter().map(|e| e.diff(var)).collect()),
