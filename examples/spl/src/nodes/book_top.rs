@@ -1,6 +1,6 @@
 use core::fmt;
 
-use trading_data::{Cell, Glance, Plot, DepOuts, Runs, node, slice_nudge};
+use trading_data::{Cell, DepOuts, Glance, Plot, Runs, node, slice_nudge};
 
 use crate::DEPTH;
 

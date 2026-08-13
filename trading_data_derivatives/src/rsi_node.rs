@@ -1,8 +1,8 @@
 use core::{fmt, marker::PhantomData};
 
 use trading_data_dag::{
-	Buffering, Bump, Carried, Cell, DepOuts, Elems, Env, Ex, Expr, Flat, Folding, Folds, Glance, Lagged, Plot, Present, Reading, Rows, Scans, Series, Slots, Stamped, Tag,
-	Unbounded, Unflat, Vars, Witness, absent, constant, gt, lt, max, min, node, select, slice_nudge,
+	Buffering, Bump, Carried, Cell, DepOuts, Elems, Env, Ex, Expr, Flat, Folding, Folds, Glance, Lagged, Plot, Present, Reading, Rows, Scans, Series, Slots, Stamped, Tag, Unbounded, Unflat,
+	Vars, Witness, absent, constant, gt, lt, max, min, node, select, slice_nudge,
 };
 
 use crate::{bar::Bar, wilder};

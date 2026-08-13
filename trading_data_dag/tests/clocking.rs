@@ -2,7 +2,7 @@
 //! the boundary. The question the whole thing answers is which of two readings a consumer holds —
 //! the one taken when the period closed, or the one the last tick happened to revise.
 
-use trading_data_dag::{Bump, Cell, Flat, Folding, Glance, Horizon, Over, DepOuts, Runs, Sampling, Stamped, always_present, graph, node, slice_nudge};
+use trading_data_dag::{Bump, Cell, DepOuts, Flat, Folding, Glance, Horizon, Over, Runs, Sampling, Stamped, always_present, graph, node, slice_nudge};
 use v_utils::Timeframe;
 
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.

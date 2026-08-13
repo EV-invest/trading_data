@@ -1,4 +1,4 @@
-use trading_data::{Cell, Env, Lagged, Plot, Reading, DepOuts, Scans, Slots, Vars, Witness, constant, gt, node, select, slice_nudge};
+use trading_data::{Cell, DepOuts, Env, Lagged, Plot, Reading, Scans, Slots, Vars, Witness, constant, gt, node, select, slice_nudge};
 
 use super::book_top::BookTop;
 

@@ -2,9 +2,7 @@
 //! two ways the run it samples can say nothing — an empty batch, and a batch of items carrying their
 //! own absence. Neither may unseat what is held.
 
-use trading_data_dag::{
-	Blind, Buffering, Bump, Cell, DepOuts, Elems, Fire, Flat, Glance, Observer, Runs, Sampling, Stamped, Want, always_present, graph, node, slice_nudge, value_nudge,
-};
+use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Fire, Flat, Glance, Observer, Runs, Sampling, Stamped, Want, always_present, graph, node, slice_nudge, value_nudge};
 
 /// One unit of `v` is one second of `ts`, so a fixture's numbers double as its timeline.
 #[derive(Clone, Copy, Debug, PartialEq)]

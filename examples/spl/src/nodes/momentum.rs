@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Elems, Plot, DepOuts, Runs, Tag, Timeframe, node, slice_nudge};
+use trading_data::{Buffering, Cell, DepOuts, Elems, Plot, Runs, Tag, Timeframe, node, slice_nudge};
 
 use super::Bar;
 use crate::config::strategy;

@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, Env, Over, Reading, DepOuts, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, absent, constant, gt, node, select, slice_nudge};
+use trading_data::{Buffering, Cell, DepOuts, Env, Over, Reading, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, absent, constant, gt, node, select, slice_nudge};
 
 /// Percent change over the trailing `OVER`, off the closed `TF` bars inside it. SPL's backtest mode:
 /// reading it off a live Trades window instead is a live-only fidelity choice.

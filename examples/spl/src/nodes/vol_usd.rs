@@ -1,4 +1,4 @@
-use trading_data::{Cell, Env, Lagged, DepOuts, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, node, slice_nudge};
+use trading_data::{Cell, DepOuts, Env, Lagged, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, node, slice_nudge};
 
 /// A closed bar's notional, `volume * close` — the close standing in for vwap, as SPL's own volume
 /// indie does. The period is a parameter, as [`trading_data::Bars`]'s is; a consumer clocked faster

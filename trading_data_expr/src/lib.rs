@@ -104,10 +104,18 @@ fn takes_left(strictly: bool, rv: f64) -> bool {
 /// The definedness lattice a row names, over the operand types it is written across
 /// (`r[impl outs.absence.typed]`).
 macro_rules! lattice {
-	(propagates; $A:ident, $B:ident) => { <$A>::MAYBE | <$B>::MAYBE };
-	(propagates; $A:ident) => { <$A>::MAYBE };
-	(skips; $A:ident, $B:ident) => { <$A>::MAYBE & <$B>::MAYBE };
-	(never; $($T:ident),+) => { false };
+	(propagates; $A:ident, $B:ident) => {
+		<$A>::MAYBE | <$B>::MAYBE
+	};
+	(propagates; $A:ident) => {
+		<$A>::MAYBE
+	};
+	(skips; $A:ident, $B:ident) => {
+		<$A>::MAYBE & <$B>::MAYBE
+	};
+	(never; $($T:ident),+) => {
+		false
+	};
 }
 
 /// [`Expr::grad`] for one row, in the shape the row names. The four shapes are the four ways a seed

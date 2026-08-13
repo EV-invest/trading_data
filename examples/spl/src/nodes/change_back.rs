@@ -1,5 +1,5 @@
 use trading_data::{
-	Buffering, Cell, Env, Exact, Lagged, Over, Reading, DepOuts, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, abs, absent, closed_by, constant, gt, node, select, slice_nudge,
+	Buffering, Cell, DepOuts, Env, Exact, Lagged, Over, Reading, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, abs, absent, closed_by, constant, gt, node, select, slice_nudge,
 };
 
 /// Percent change against the `REF` close standing `BACK` back, asked once per closed `CLK` bar.

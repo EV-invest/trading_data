@@ -1,6 +1,5 @@
 use trading_data::{
-	Carried, Cell, Env, DepOuts, Folding, Folds, Lagged, Reading, Slots, Stamped, Tag, Timeframe, Unbounded, Vars, Witness, abs, absent, constant, lt, max, node, select, slice_nudge,
-	wilder,
+	Carried, Cell, DepOuts, Env, Folding, Folds, Lagged, Reading, Slots, Stamped, Tag, Timeframe, Unbounded, Vars, Witness, abs, absent, constant, lt, max, node, select, slice_nudge, wilder,
 };
 
 use crate::config::strategy;

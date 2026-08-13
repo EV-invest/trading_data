@@ -3,8 +3,8 @@
 //! `Book`, and 1m bars off the same trades — the bars are what the chart draws price from.
 
 use trading_data::{
-	BookAnchors, BookDelta, BookDeltas, BookShape, Carried, Cell, DepOuts, Env, Folding, Folds, FrameKind, Lagged, Lanes, Over, Runs, Side, Slots, TradeCols, Trades, Unbounded,
-	Vars, Witness, node, slice_nudge,
+	BookAnchors, BookDelta, BookDeltas, BookShape, Carried, Cell, DepOuts, Env, Folding, Folds, FrameKind, Lagged, Lanes, Over, Runs, Side, Slots, TradeCols, Trades, Unbounded, Vars,
+	Witness, node, slice_nudge,
 };
 use v_utils::*;
 
