@@ -2246,19 +2246,24 @@ where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
+	/// Env slots past the deps' own flattenings — a lag, a window's edge, or a discrete attribute
+	/// [`Flat`] leaves out because it is no derivative's variable. [`Folds::EXTRA`]'s twin: a slot a
+	/// body computes from is a slot no column may stand for, so the room to put one is what keeps
+	/// every column a copy (`r[kernels.selection.index-is-not-a-variable]`).
+	const EXTRA: usize = 0;
 	/// The period the walk closes on, floored from the epoch.
 	const PERIOD: Timeframe;
 
-	/// Fills the driving element's own slots — `DepFlat::LEN` of them, the same prefix
-	/// [`Scans::read`] fills — and returns its event time, which is what the walk is keyed on and is
+	/// Fills the driving element's own slots and then [`EXTRA`](Closes::EXTRA) more, exactly as
+	/// [`Scans::read`] does, and returns its event time — which is what the walk is keyed on and is
 	/// deliberately not a slot (`r[kernels.selection.index-is-not-a-variable]`).
 	fn read<W: Witness>(deps: &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
 
 	/// What a period's first element opens the accumulator with, over the element's slots alone.
 	fn open(&self, vars: Vars) -> impl Slots;
 
-	/// What a further element folds into it. The accumulator's own slots follow the element's, at
-	/// `DepFlat::LEN..`, so both bodies read the element at one set of indices.
+	/// What a further element folds into it. The accumulator's own slots follow the reading's, at
+	/// `DepFlat::LEN + EXTRA..`, so both bodies read the element at one set of indices.
 	fn fold(&self, vars: Vars) -> impl Slots;
 
 	fn pending(&self) -> &Pending;
@@ -2269,16 +2274,19 @@ where
 pub struct Close;
 impl sealed::Kernel for Close {}
 
-/// The element width, the slot width, and the env width the two bodies share.
-const fn close_widths<E: Closes>() -> (usize, usize, usize)
+/// The element width, where the accumulator starts, the env width, and the item's slot count —
+/// [`fold_widths`]'s shape, because the two kernels lay their env out the same way.
+const fn close_widths<E: Closes>() -> (usize, usize, usize, usize)
 where
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Deps: DepFlat,
 	E::Item: Flat, {
-	let (elem, slots) = (<E::Deps as DepFlat>::LEN, <E::Item as Flat>::LEN);
-	assert!(elem + slots <= MAX_VARS, "a Closes env outgrew MAX_VARS: raise it in trading_data_dag");
+	let elem = <E::Deps as DepFlat>::LEN;
+	let base = elem + <E as Closes>::EXTRA;
+	let (env, slots) = (base + <E::Item as Flat>::LEN, <E::Item as Flat>::LEN);
+	assert!(env <= MAX_VARS, "a Closes env outgrew MAX_VARS: raise it in trading_data_dag");
 	assert!(slots <= MAX_SLOTS, "a Closes accumulator outgrew MAX_SLOTS: raise it in trading_data_dag");
-	(elem, slots, elem + slots)
+	(elem, base, env, slots)
 }
 
 /// The walk itself, against a caller-owned node and run. `advance` is this with the [`Emitter`]'s
@@ -2292,7 +2300,7 @@ impl Close {
 		for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 		E::Item: Unflat,
 		E::Deps: DepFlat, {
-		let (elem_w, slots_w, env_w) = const { close_widths::<E>() };
+		let (_, base_w, env_w, slots_w) = const { close_widths::<E>() };
 		let step = Horizon::ns(<E as Closes>::PERIOD);
 		let mut p = *e.pending();
 		let (mut buf, mut slots) = ([f64::NAN; MAX_VARS], [f64::NAN; MAX_SLOTS]);
@@ -2309,12 +2317,12 @@ impl Close {
 			for i in 0..<E::Deps as DepFlat>::lead_fires(&deps) {
 				env.rewind();
 				let Some(ts) = <E as Closes>::read(&deps, i, &mut env) else { continue };
-				debug_assert_eq!(env.filled().len(), elem_w, "a Closes reading is the driving element and nothing else");
+				debug_assert_eq!(env.filled().len(), base_w, "a Closes reading is the driving element and its EXTRA, and the accumulator follows");
 				let ts_close = ts - ts.rem_euclid(step) + step;
 				let env = env.buf();
 				match p.live && p.ts_close == ts_close {
 					true => {
-						env[elem_w..env_w].copy_from_slice(&p.slots[..slots_w]);
+						env[base_w..env_w].copy_from_slice(&p.slots[..slots_w]);
 						fold.eval_slots(&env[..env_w], &mut slots[..slots_w]);
 					}
 					false => {
@@ -2364,7 +2372,7 @@ where
 		if want < Want::Jac {
 			return None;
 		}
-		let (elem_w, slots_w, env_w) = const { close_widths::<E>() };
+		let (_, base_w, env_w, slots_w) = const { close_widths::<E>() };
 		let step = Horizon::ns(<E as Closes>::PERIOD);
 		let mut p = *e.pending();
 		let (mut buf, mut slots) = ([0.0f64; MAX_VARS], [0.0f64; MAX_SLOTS]);
@@ -2381,7 +2389,7 @@ where
 			let cur = env.buf();
 			match folding {
 				true => {
-					cur[elem_w..env_w].copy_from_slice(&p.slots[..slots_w]);
+					cur[base_w..env_w].copy_from_slice(&p.slots[..slots_w]);
 					fold.eval_slots(&cur[..env_w], &mut slots[..slots_w]);
 				}
 				false => {

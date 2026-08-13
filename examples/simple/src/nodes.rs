@@ -11,6 +11,17 @@ use trading_data::{
 };
 use v_utils::*;
 
+const _: () = {
+	let (partial, opaque) = trading_data::Fidelity::hatches(Graph::FIDELITY);
+	assert!(
+		partial <= 7,
+		"a kernel here covers less of what its body read than the graph pins for: print `Graph::FIDELITY`, then raise this number in a diff that says which node lost its reach and why"
+	);
+	assert!(
+		opaque <= 2,
+		"a kernel here computes with no algebra at all where the graph pins fewer: print `Graph::FIDELITY`, then raise this number in a diff carrying the node's `WHY`"
+	);
+};
 /// Wilder's own lengths, and the whole of what this graph configures.
 pub struct Len14;
 impl RsiSpec for Len14 {
@@ -159,28 +170,27 @@ impl<const TF: Timeframe> Closes for Flows<TF> {
 	/// The partial period is the whole of the state, so the trades it holds reach back exactly one.
 	type Deps = (Folding<Trades, Over<TF>>,);
 
+	/// The side, which `Flat` leaves out because a side has no slope — exactly as [`Cvd`] carries it.
+	const EXTRA: usize = 1;
 	const PERIOD: Timeframe = TF;
 
-	/// The side signs the *quantity* rather than riding beside it: a `Closes` reading is the driving
-	/// element's own slots and nothing else, so unlike [`Cvd`] there is no `EXTRA` slot a discrete
-	/// attribute could be put in. The column for slot 1 is therefore a derivative in signed qty.
 	fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let (exec, lag) = trades.exec().at(i)?;
-		env.dep(0).lag(lag).put(&[
-			trades.price[i] as f64 / trades.prec.price.scale(),
-			signed(trades.side[i], trades.qty[i] as f64 / trades.prec.qty.scale()),
-		]);
+		env.dep(0)
+			.lag(lag)
+			.put(&[trades.price[i] as f64 / trades.prec.price.scale(), trades.qty[i] as f64 / trades.prec.qty.scale()]);
+		env.opaque().put(&signed(trades.side[i], 1.0));
 		Some(exec.as_nanos())
 	}
 
 	fn open(&self, v: Vars) -> impl Slots {
-		let (price, qty) = (v.get::<0>(), v.get::<1>());
-		(price, price * qty)
+		let (price, qty, side) = (v.get::<0>(), v.get::<1>(), v.get::<2>());
+		(price, side * (price * qty))
 	}
 
 	fn fold(&self, v: Vars) -> impl Slots {
-		let (price, qty, quote) = (v.get::<0>(), v.get::<1>(), v.get::<3>());
-		(price, quote + price * qty)
+		let (price, qty, side, quote) = (v.get::<0>(), v.get::<1>(), v.get::<2>(), v.get::<4>());
+		(price, quote + side * (price * qty))
 	}
 
 	fn pending(&self) -> &Pending {
@@ -273,17 +283,6 @@ trading_data::graph! {
 // r[impl kernels.opaque.stated]
 // r[impl kernels.fidelity.stated]
 // `<=`, not `==`: a count that falls is the direction of travel, and only a rise owes a diff.
-const _: () = {
-	let (partial, opaque) = trading_data::Fidelity::hatches(Graph::FIDELITY);
-	assert!(
-		partial <= 7,
-		"a kernel here covers less of what its body read than the graph pins for: print `Graph::FIDELITY`, then raise this number in a diff that says which node lost its reach and why"
-	);
-	assert!(
-		opaque <= 2,
-		"a kernel here computes with no algebra at all where the graph pins fewer: print `Graph::FIDELITY`, then raise this number in a diff carrying the node's `WHY`"
-	);
-};
 
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it
 /// takes. No discriminant to re-dispatch, no `Default` fill.
