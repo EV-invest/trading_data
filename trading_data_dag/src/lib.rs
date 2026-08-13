@@ -1534,6 +1534,26 @@ pub enum Fidelity {
 	Opaque(&'static str),
 }
 
+impl Fidelity {
+	/// The two hatch counts of a graph's `FIDELITY` census, `(partial, opaque)` — apart, because they
+	/// are different admissions (`r[kernels.fidelity.stated]`). A graph pins them by asserting each is
+	/// at most what it declares: either may fall silently, and either may only rise in a diff that
+	/// edits the pin.
+	pub const fn hatches(census: &[(&str, Fidelity)]) -> (usize, usize) {
+		let (mut partial, mut opaque) = (0, 0);
+		let mut i = 0;
+		while i < census.len() {
+			match census[i].1 {
+				Fidelity::Exact => {}
+				Fidelity::Partial(_) => partial += 1,
+				Fidelity::Opaque(_) => opaque += 1,
+			}
+			i += 1;
+		}
+		(partial, opaque)
+	}
+}
+
 /// How a node computes, and therefore what can be read off it. Sealed: the kernel set is the
 /// framework's, so a node's only choice is which one it names and there is no way to supply a body
 /// the engine cannot also read (`r[kernels.closed]`).

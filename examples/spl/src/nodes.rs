@@ -122,6 +122,21 @@ trading_data::graph! {
 	outputs { bar: trading_data::Bars<{ TF_1MIN }>, deprecator: Deprecator, rsi: trading_data::Rsi<trading_data::Bars<{ TF_5MIN }>, Knobs> }
 }
 
+// r[impl kernels.opaque.stated]
+// r[impl kernels.fidelity.stated]
+// `<=`, not `==`: a count that falls is the direction of travel, and only a rise owes a diff.
+const _: () = {
+	let (partial, opaque) = trading_data::Fidelity::hatches(Graph::FIDELITY);
+	assert!(
+		partial <= 10,
+		"a kernel here covers less of what its body read than the graph pins for: print `Graph::FIDELITY`, then raise this number in a diff that says which node lost its reach and why"
+	);
+	assert!(
+		opaque <= 7,
+		"a kernel here computes with no algebra at all where the graph pins fewer: print `Graph::FIDELITY`, then raise this number in a diff carrying the node's `WHY`"
+	);
+};
+
 /// The whole of the routing an app needs: every lane is present, and the graph names the ones it
 /// takes. No discriminant to re-dispatch, no `Default` fill.
 impl<'t> From<Lanes<'t>> for Batches<'t> {
