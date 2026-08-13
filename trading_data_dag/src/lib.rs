@@ -56,7 +56,7 @@
 //! and every [`Emit`] is `fn emit(&mut self, deps: DepOuts<'_, Self>, out: ..)`. One alias for both
 //! sides, because [`Wired`] is the one place a node's `Deps` is declared.
 //!
-//! A node does not carry its own compute method: it names the [`Level`] kernel that computes it, and
+//! A node does not carry its own compute method: it names the [`Kernel`] that computes it, and
 //! `#[node]` writes the [`Node`] impl from whichever body trait was implemented. [`Symbolic`] (an
 //! [`Expr`] body) earns [`Pure`]; [`Blind`] — the stated hatch — earns [`Opaque`].
 //!
@@ -104,7 +104,7 @@ mod shape;
 use core::any::TypeId;
 
 pub use shape::{Kind, NodeShape, Pin, Shape, Under};
-use trading_data_expr::Ast;
+use trading_data_expr::{Ast, Trace};
 /// The algebra a body is written in, re-exported so a crate declaring nodes needs only this one.
 pub use trading_data_expr::{Ex, Expr, Slots, Vars, abs, absent, constant, exp, gt, lt, max, min, or, powi_of, present, select, sqrt, square, sum};
 use v_utils::Timeframe;
@@ -470,7 +470,7 @@ pub trait Flat: Copy {
 	/// check its [`Expr::MAYBE`] against.
 	const ABSENTABLE: bool = false;
 	/// Whether this out is a *run* — several elements, of which the flattening is only the last. A
-	/// [`Level`] node reading one would be reading how the feed grouped its messages
+	/// A level node reading one would be reading how the feed grouped its messages
 	/// (`r[rates.deps.tick-opaque]`), which is why [`env_of`]/[`verdict_env`] const-assert against it.
 	const RUN: bool = false;
 	/// Writes all `LEN` slots of `out`; returns fired. `!fired` ⇒ NaN-filled.
@@ -487,7 +487,7 @@ pub trait Flat: Copy {
 /// flattening the engine takes goes through here, so such an out is caught at its own boundary
 /// rather than inside some downstream body's `Cmp`.
 ///
-/// `debug_assert` for the reason the algebra's own are: a `Level` kernel flattens its deps on the
+/// `debug_assert` for the reason the algebra's own are: a level kernel flattens its deps on the
 /// live path, and `r[kernels.pure.zero-cost]` is an equality in retired instructions.
 #[inline]
 fn flatten<T: Flat>(v: &T, out: &mut [f64]) -> bool {
@@ -1020,7 +1020,7 @@ pub trait DepFlat: DepSet {
 	const RUNS: &'static [bool];
 	/// Per-dep scratch for the finite-difference re-advance (slice deps copy their batch here).
 	type Scratch: Default;
-	/// Writes every dep's slots and returns whether *all* of them fired. A [`Level`] kernel reads that
+	/// Writes every dep's slots and returns whether *all* of them fired. A level kernel reads that
 	/// answer rather than the slots' NaN-ness, because the deps of one are levels
 	/// (`r[impl rates.deps.tick-opaque]`) and "has never stood" is invariant under grouping.
 	fn flat(outs: &Self::Outs<'_>, dst: &mut [f64]) -> bool;
@@ -1190,21 +1190,21 @@ impl<T: Latent> Dark<Yes> for T {
 	}
 }
 
-/// A cell the sweep advances. It carries no compute method of its own: it names the [`Level`] kernel
+/// A cell the sweep advances. It carries no compute method of its own: it names the [`Kernel`]
 /// that computes it, and every reading the engine offers — the value, the formula, the Jacobian, the
 /// value-annotated trace — comes off that one declaration (`r[kernels.closed]`).
 ///
 /// Nobody writes this impl by hand; `#[node]` writes it from the body trait ([`Symbolic`] ⇒ [`Pure`],
 /// [`Blind`] ⇒ [`Opaque`]), which is also where `Deps` and `PLOTS` are stated.
 pub trait Node: Cell + Wired {
-	type Kernel: Level<Self>;
+	type Kernel: Kernel<Self>;
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep, and
 	/// the viz can still be asked for it.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
 }
 
 /// [`Node`]'s run-shaped sibling: the out is the run of items filled each tick, and like `Node` it
-/// carries no compute method — it names the [`Run`] kernel that computes it, and every reading comes
+/// carries no compute method — it names the [`Kernel`] that computes it, and every reading comes
 /// off that one declaration (`r[kernels.closed]`).
 ///
 /// Nobody writes this impl by hand either; `#[node]` writes it from the body trait ([`Runs`] ⇒
@@ -1215,7 +1215,7 @@ pub trait Node: Cell + Wired {
 pub trait Emit: Series + Wired
 where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
-	type Kernel: Run<Self>;
+	type Kernel: Kernel<Self>;
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep, and
 	/// the viz can still be asked for it.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
@@ -1318,6 +1318,15 @@ where
 		}
 		let period = ts / Horizon::ns(tf);
 		core::mem::replace(&mut self.last_period, period) != period
+	}
+
+	/// The node and its cleared run, for a [`Kernel`] to fill. Two fields rather than `&mut self`, and
+	/// that is the point: `last_period` is not lent, so the rate a node declared stays as far out of
+	/// the kernel's reach as it is out of the declarer's. Clearing here is what makes "the engine owns
+	/// the run" true of every kernel at once instead of once per kernel.
+	fn lend(&mut self) -> (&mut E, &mut alloc::vec::Vec<E::Item>) {
+		self.buf.clear();
+		(&mut self.node, &mut self.buf)
 	}
 }
 
@@ -1519,8 +1528,8 @@ impl<W: Witness> Put<'_, '_, W> {
 }
 
 /// How much of what a node's body read the kernel's *fullest* reading covers
-/// (`r[kernels.fidelity.stated]`) — [`Level::jac`] where there is nothing wider, and
-/// [`Level::exact`] where there is. Three answers rather than two, because the middle one is the
+/// (`r[kernels.fidelity.stated]`) — [`Kernel::jac`] where there is nothing wider, and
+/// [`Kernel::exact`] where there is. Three answers rather than two, because the middle one is the
 /// case nothing else can show: a derivative may be algebraic and still be narrower than the reading
 /// it was taken from, and a partial derivative of a body that reads a window looks exactly like an
 /// exact one of a body that reads a point.
@@ -1559,24 +1568,49 @@ impl Fidelity {
 /// the engine cannot also read (`r[kernels.closed]`).
 ///
 /// Each kernel demands its own body trait, so naming one without the body does not compile. The
-/// split into [`pre`](Level::pre) and [`jac`](Level::jac) is what lets the two readings cost their
+/// split into [`pre`](Kernel::pre) and [`jac`](Kernel::jac) is what lets the two readings cost their
 /// own price: [`Pure`] captures one `grad` pass and nothing else, where [`Opaque`] captures the
 /// pre-advance clone its finite differences re-advance.
-pub trait Level<N: Node + ?Sized>: sealed::Kernel {
-	/// How much of what the body read [`jac`](Level::jac) covers.
+///
+/// One trait for both node shapes. What used to be a second, run-shaped copy of it was the level
+/// side read against a different owner of the out — so [`Host`](Kernel::Host) names the owner and
+/// the rest is one declaration.
+pub trait Kernel<N: Cell + Wired + ?Sized>: sealed::Kernel {
+	/// How much of what the body read [`jac`](Kernel::jac) covers.
 	const FIDELITY: Fidelity;
 
-	fn advance<'t>(n: &'t mut N, deps: DepOuts<'t, N>) -> N::Out<'t>;
+	/// What the sweep advances. A level node is its own host; a run node's is the [`Emitter`] beside
+	/// it, which owns the buffer the run is filled into and the `last_period` its rate is enforced
+	/// against. That the storage sits here rather than in a second argument is the whole of why one
+	/// trait can serve both: an out borrowed from the node and an out borrowed from the engine differ
+	/// in *who* is lent for the tick, and naming the lender is enough to say it.
+	type Host;
+
+	fn advance<'t>(host: &'t mut Self::Host, deps: DepOuts<'t, N>) -> N::Out<'t>;
 
 	/// Whatever the derivative reading needs off the node *before* `advance` consumes it for the
 	/// tick. Below [`Want::Jac`] every kernel captures nothing, which is what makes an unobserved
 	/// sweep the bare chain.
 	type Pre;
-	fn pre<'d>(n: &N, want: Want, deps: DepOuts<'d, N>) -> Self::Pre;
+	fn pre<'d>(host: &Self::Host, want: Want, deps: DepOuts<'d, N>) -> Self::Pre;
 
 	/// The equation, where there is one — [`None`] under [`Want::Jac`] means this kernel has no
 	/// algebra, not that the node did not fire.
 	fn formula(pre: &Self::Pre) -> Option<&Ast>;
+
+	/// The value-annotated reading of the body over this tick's dep flattening, where that flattening
+	/// *is* the env the body was read over. The default declines, which is the honest answer for a
+	/// per-element kernel: its env is filled by `read` — wider than the deps' own slots, and in the
+	/// order the body asked for them — so a trace taken over the flattening would be evaluating the
+	/// body against an env that is not the one it read (`Ast::Var` indexes, so it would not even be
+	/// wrong quietly).
+	///
+	/// A reading rather than a flag, because every other reading the engine offers comes off this one
+	/// declaration and a `bool` here would leave the last one being reconstructed outside
+	/// (`r[kernels.closed]`).
+	fn trace(_: &Self::Pre, _: &[f64]) -> Option<Trace> {
+		None
+	}
 
 	/// Fills the Jacobian and reports whether it is exact. Called once, for a node that fired at
 	/// [`Want::Jac`]. What it fills is the *one-step* reading — each dep's last element perturbed,
@@ -1727,12 +1761,13 @@ where
 	(env, fired)
 }
 
-impl<N> Level<N> for Pure
+impl<N> Kernel<N> for Pure
 where
 	N: Symbolic + Node,
 	for<'t> N::Out<'t>: Unflat,
 	N::Deps: DepFlat,
 {
+	type Host = N;
 	type Pre = Option<Algebra>;
 
 	/// `env_of` const-asserts one scalar env slot per dep, so a `Symbolic` body's reach is a point
@@ -1784,6 +1819,12 @@ where
 		pre.as_ref().map(|a| &a.formula)
 	}
 
+	/// `env_of` const-asserts one scalar env slot per dep, so the dep flattening *is* the env the body
+	/// was read over and the trace is a reading of the same numbers the value came from.
+	fn trace(pre: &Self::Pre, deps: &[f64]) -> Option<Trace> {
+		Some(pre.as_ref()?.formula.trace(deps))
+	}
+
 	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, N>>) -> bool
 	where
 		N::Deps: DepFlat,
@@ -1808,10 +1849,11 @@ where
 	}
 }
 
-impl<N> Level<N> for Opaque
+impl<N> Kernel<N> for Opaque
 where
 	N: Blind + Node,
 {
+	type Host = N;
 	type Pre = Option<N>;
 
 	const FIDELITY: Fidelity = Fidelity::Opaque(<N as Blind>::WHY);
@@ -1882,12 +1924,13 @@ where
 	(env, fired)
 }
 
-impl<N> Level<N> for Predicate
+impl<N> Kernel<N> for Predicate
 where
 	N: Decides + Node,
 	for<'t> N: Cell<Out<'t> = bool>,
 	N::Deps: DepFlat,
 {
+	type Host = N;
 	type Pre = Option<Ast>;
 
 	/// A predicate's slope is zero off the boundary, and at the boundary it is a step no reading may
@@ -1910,6 +1953,12 @@ where
 
 	fn formula(pre: &Self::Pre) -> Option<&Ast> {
 		pre.as_ref()
+	}
+
+	/// `verdict_env` reads the deps at their flattenings, so the trace is over the env the verdict was
+	/// taken on — the leading dep at its last element, the rest at their levels.
+	fn trace(pre: &Self::Pre, deps: &[f64]) -> Option<Trace> {
+		Some(pre.as_ref()?.trace(deps))
 	}
 
 	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, N>>) -> bool
@@ -1940,62 +1989,29 @@ where
 	}
 }
 
-/// [`Level`]'s run-shaped sibling: how an [`Emit`] fills its run, and therefore what can be read off
-/// it. Sealed by the same [`sealed::Kernel`], and split into [`pre`](Run::pre) and [`jac`](Run::jac)
-/// for the same reason — so a sweep nobody is observing captures nothing.
-pub trait Run<E: Emit + ?Sized>: sealed::Kernel
-where
-	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>, {
-	/// How much of what the body read [`jac`](Run::jac) covers.
-	const FIDELITY: Fidelity;
-
-	fn emit<'t>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>);
-
-	/// Whatever the derivative reading needs off the node *before* `emit` consumes it for the tick.
-	type Pre;
-	fn pre<'d>(e: &E, want: Want, deps: DepOuts<'d, E>) -> Self::Pre;
-
-	/// The equation, where there is one — see [`Level::formula`].
-	fn formula(pre: &Self::Pre) -> Option<&Ast>;
-
-	/// Fills the Jacobian and reports whether it is exact — the *one-step* reading, exactly as
-	/// [`Level::jac`] is (`r[kernels.jac.two-quantities]`).
-	fn jac<'d>(pre: &Self::Pre, j: Jac<'_, DepOuts<'d, E>>) -> bool
-	where
-		E::Deps: DepFlat,
-		DepOuts<'d, E>: Copy,
-		E::Item: Flat;
-
-	/// The exact reading, exactly as [`Level::exact`] is — and defaulting to the same refusal.
-	fn exact<'d>(_: &Self::Pre, _: Exact<'_, DepOuts<'d, E>>) -> bool
-	where
-		E::Deps: DepFlat,
-		DepOuts<'d, E>: Copy,
-		E::Item: Flat, {
-		false
-	}
-}
-
 /// The kernel of a [`Runs`] node: the run is the node's own `emit`, and the Jacobian is the
 /// finite-difference witness taken off a clone. [`Opaque`]'s run-shaped sibling.
 pub struct Raw;
 impl sealed::Kernel for Raw {}
 
-impl<E> Run<E> for Raw
+impl<E> Kernel<E> for Raw
 where
 	E: Runs + Emit,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 {
+	type Host = Emitter<E>;
 	type Pre = Option<E>;
 
 	const FIDELITY: Fidelity = Fidelity::Opaque(<E as Runs>::WHY);
 
-	fn emit<'t>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
-		<E as Runs>::emit(e, deps, out)
+	fn advance<'t>(host: &'t mut Emitter<E>, deps: DepOuts<'t, E>) -> &'t [E::Item] {
+		let (e, out) = host.lend();
+		<E as Runs>::emit(e, deps, out);
+		out
 	}
 
-	fn pre<'d>(e: &E, want: Want, _: DepOuts<'d, E>) -> Self::Pre {
-		(want >= Want::Jac).then(|| e.clone())
+	fn pre<'d>(host: &Emitter<E>, want: Want, _: DepOuts<'d, E>) -> Self::Pre {
+		(want >= Want::Jac).then(|| host.node.clone())
 	}
 
 	fn formula(_: &Self::Pre) -> Option<&Ast> {
@@ -2006,7 +2022,7 @@ where
 	where
 		E::Deps: DepFlat,
 		DepOuts<'d, E>: Copy,
-		E::Item: Flat, {
+		for<'x> E::Out<'x>: Flat, {
 		if let Some(pre) = pre {
 			fd_jac_emit::<E>(pre, j);
 		}
@@ -2035,7 +2051,7 @@ where
 	/// Slots are appended in the order the body reads them, each naming the dep and the lag it came
 	/// off ([`Env::dep`]) or standing for no element at all ([`Env::opaque`]). Leading with the deps'
 	/// own elements at lag 0, in `Deps` order, is what lines the body's gradient up with the
-	/// Jacobian's columns; naming the lag is what lets [`Run::exact`] cover the rest of the reach.
+	/// Jacobian's columns; naming the lag is what lets [`Kernel::exact`] cover the rest of the reach.
 	fn read<W: Witness>(deps: &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
 
 	/// One expression per slot of [`Series::Item`], over the env [`read`](Scans::read) filled.
@@ -2088,20 +2104,17 @@ where
 	<E::Item as Flat>::LEN
 }
 
-impl<E> Run<E> for Scan
-where
-	E: Scans + Emit,
-	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
-	E::Item: Unflat,
-	E::Deps: DepFlat,
-{
-	type Pre = Option<PerElem>;
-
-	/// Every slot of a per-element env is a copy of one element slot, and [`Env`] reports which — so
-	/// whatever the body reached back over, [`exact`](Run::exact) covers it.
-	const FIDELITY: Fidelity = Fidelity::Exact;
-
-	fn emit<'t>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
+/// The walk itself, against a caller-owned node and run. `advance` is this with the [`Emitter`]'s
+/// two fields handed in, and the two exist apart because the engine's storage is only *one* owner of
+/// a run: a caller holding its own node and buffer — a hand-rolled pipeline being compared against
+/// the sweep — has the same walk to do and no `Emitter` to do it in.
+impl Scan {
+	pub fn emit<'t, E>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>)
+	where
+		E: Scans + Emit,
+		for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+		E::Item: Unflat,
+		E::Deps: DepFlat, {
 		let slots_w = const { scan_slots::<E>() };
 		let body = e.body(Vars);
 		debug_assert_eq!(body.len(), slots_w, "a Scans body states one expression per slot of its item");
@@ -2124,8 +2137,30 @@ where
 			}
 		}
 	}
+}
 
-	fn pre<'d>(e: &E, want: Want, deps: DepOuts<'d, E>) -> Self::Pre {
+impl<E> Kernel<E> for Scan
+where
+	E: Scans + Emit,
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+	E::Item: Unflat,
+	E::Deps: DepFlat,
+{
+	type Host = Emitter<E>;
+	type Pre = Option<PerElem>;
+
+	/// Every slot of a per-element env is a copy of one element slot, and [`Env`] reports which — so
+	/// whatever the body reached back over, [`exact`](Kernel::exact) covers it.
+	const FIDELITY: Fidelity = Fidelity::Exact;
+
+	fn advance<'t>(host: &'t mut Emitter<E>, deps: DepOuts<'t, E>) -> &'t [E::Item] {
+		let (e, out) = host.lend();
+		Self::emit(e, deps, out);
+		out
+	}
+
+	fn pre<'d>(host: &Emitter<E>, want: Want, deps: DepOuts<'d, E>) -> Self::Pre {
+		let e = &host.node;
 		if want < Want::Jac {
 			return None;
 		}
@@ -2158,7 +2193,7 @@ where
 	where
 		E::Deps: DepFlat,
 		DepOuts<'d, E>: Copy,
-		E::Item: Flat, {
+		for<'x> E::Out<'x>: Flat, {
 		let Some(alg) = pre else { return false };
 		alg.jac(j);
 		true
@@ -2172,7 +2207,7 @@ where
 	where
 		E::Deps: DepFlat,
 		DepOuts<'d, E>: Copy,
-		E::Item: Flat, {
+		for<'x> E::Out<'x>: Flat, {
 		let Some(alg) = pre else { return false };
 		let Some(last) = <E::Deps as DepFlat>::lead_fires(&x.deps).checked_sub(1) else {
 			return false;
@@ -2246,23 +2281,17 @@ where
 	(elem, slots, elem + slots)
 }
 
-impl<E> Run<E> for Close
-where
-	E: Closes + Emit,
-	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
-	E::Item: Unflat,
-	E::Deps: DepFlat,
-{
-	type Pre = Option<PerElem>;
-
-	/// The one-step column stands for the trade that *closed* the reported element, and the elements
-	/// earlier in its period reached it only through the accumulator, which is no dep and has no
-	/// column. Narrower than [`Fold`]'s omission — a period is discharged at its boundary, where a
-	/// recurrence is not — but the same kind of omission, and `r[kernels.fidelity.stated]` is exactly
-	/// the rule against calling it exact.
-	const FIDELITY: Fidelity = Fidelity::Partial("the elements earlier in the period, which the accumulator carries and no column stands for");
-
-	fn emit<'t>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
+/// The walk itself, against a caller-owned node and run. `advance` is this with the [`Emitter`]'s
+/// two fields handed in, and the two exist apart because the engine's storage is only *one* owner of
+/// a run: a caller holding its own node and buffer — a hand-rolled pipeline being compared against
+/// the sweep — has the same walk to do and no `Emitter` to do it in.
+impl Close {
+	pub fn emit<'t, E>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>)
+	where
+		E: Closes + Emit,
+		for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+		E::Item: Unflat,
+		E::Deps: DepFlat, {
 		let (elem_w, slots_w, env_w) = const { close_widths::<E>() };
 		let step = Horizon::ns(<E as Closes>::PERIOD);
 		let mut p = *e.pending();
@@ -2302,11 +2331,36 @@ where
 		}
 		*e.pending_mut() = p;
 	}
+}
+
+impl<E> Kernel<E> for Close
+where
+	E: Closes + Emit,
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+	E::Item: Unflat,
+	E::Deps: DepFlat,
+{
+	type Host = Emitter<E>;
+	type Pre = Option<PerElem>;
+
+	/// The one-step column stands for the trade that *closed* the reported element, and the elements
+	/// earlier in its period reached it only through the accumulator, which is no dep and has no
+	/// column. Narrower than [`Fold`]'s omission — a period is discharged at its boundary, where a
+	/// recurrence is not — but the same kind of omission, and `r[kernels.fidelity.stated]` is exactly
+	/// the rule against calling it exact.
+	const FIDELITY: Fidelity = Fidelity::Partial("the elements earlier in the period, which the accumulator carries and no column stands for");
+
+	fn advance<'t>(host: &'t mut Emitter<E>, deps: DepOuts<'t, E>) -> &'t [E::Item] {
+		let (e, out) = host.lend();
+		Self::emit(e, deps, out);
+		out
+	}
 
 	/// The walk again, for its indices alone: the out flattens to the last element this batch
 	/// *closed*, and the derivative belongs to the element that closed it — not to the batch's
 	/// newest, whose period nothing has emitted yet.
-	fn pre<'d>(e: &E, want: Want, deps: DepOuts<'d, E>) -> Self::Pre {
+	fn pre<'d>(host: &Emitter<E>, want: Want, deps: DepOuts<'d, E>) -> Self::Pre {
+		let e = &host.node;
 		if want < Want::Jac {
 			return None;
 		}
@@ -2368,13 +2422,13 @@ where
 	where
 		E::Deps: DepFlat,
 		DepOuts<'d, E>: Copy,
-		E::Item: Flat, {
+		for<'x> E::Out<'x>: Flat, {
 		let Some(alg) = pre else { return false };
 		alg.jac(j);
 		true
 	}
 
-	/// Lag 0 and no further, which is the [`jac`](Run::jac) column re-laid — and why this kernel
+	/// Lag 0 and no further, which is the [`jac`](Kernel::jac) column re-laid — and why this kernel
 	/// stays [`Fidelity::Partial`] with a block in hand. The period's earlier elements *are* in the
 	/// dep, but in its **declaration** (`Folding<Trades, Over<TF>>`) rather than in its out: the
 	/// accumulator holds them, and an out that never carried them has no lag to index them at.
@@ -2383,7 +2437,7 @@ where
 	where
 		E::Deps: DepFlat,
 		DepOuts<'d, E>: Copy,
-		E::Item: Flat, {
+		for<'x> E::Out<'x>: Flat, {
 		let Some(alg) = pre else { return false };
 		alg.point(x, <E::Deps as DepFlat>::DIMS);
 		true
@@ -2451,18 +2505,17 @@ where
 	(dep, base, env, slots)
 }
 
-impl<E> Run<E> for Fold
-where
-	E: Folds + Emit,
-	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
-	E::Item: Unflat,
-	E::Deps: DepFlat,
-{
-	type Pre = Option<PerElem>;
-
-	const FIDELITY: Fidelity = Fidelity::Partial("state history, by design");
-
-	fn emit<'t>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>) {
+/// The walk itself, against a caller-owned node and run. `advance` is this with the [`Emitter`]'s
+/// two fields handed in, and the two exist apart because the engine's storage is only *one* owner of
+/// a run: a caller holding its own node and buffer — a hand-rolled pipeline being compared against
+/// the sweep — has the same walk to do and no `Emitter` to do it in.
+impl Fold {
+	pub fn emit<'t, E>(e: &mut E, deps: DepOuts<'t, E>, out: &mut alloc::vec::Vec<E::Item>)
+	where
+		E: Folds + Emit,
+		for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+		E::Item: Unflat,
+		E::Deps: DepFlat, {
 		let (_, base, env_w, slots_w) = const { fold_widths::<E>() };
 		let carry = <E as Folds>::STATE;
 		let mut c = *e.carried();
@@ -2499,8 +2552,28 @@ where
 		}
 		*e.carried_mut() = c;
 	}
+}
 
-	fn pre<'d>(e: &E, want: Want, deps: DepOuts<'d, E>) -> Self::Pre {
+impl<E> Kernel<E> for Fold
+where
+	E: Folds + Emit,
+	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
+	E::Item: Unflat,
+	E::Deps: DepFlat,
+{
+	type Host = Emitter<E>;
+	type Pre = Option<PerElem>;
+
+	const FIDELITY: Fidelity = Fidelity::Partial("state history, by design");
+
+	fn advance<'t>(host: &'t mut Emitter<E>, deps: DepOuts<'t, E>) -> &'t [E::Item] {
+		let (e, out) = host.lend();
+		Self::emit(e, deps, out);
+		out
+	}
+
+	fn pre<'d>(host: &Emitter<E>, want: Want, deps: DepOuts<'d, E>) -> Self::Pre {
+		let e = &host.node;
 		if want < Want::Jac {
 			return None;
 		}
@@ -2558,19 +2631,19 @@ where
 	where
 		E::Deps: DepFlat,
 		DepOuts<'d, E>: Copy,
-		E::Item: Flat, {
+		for<'x> E::Out<'x>: Flat, {
 		let Some(alg) = pre else { return false };
 		alg.jac(j);
 		true
 	}
 
-	/// Lag 0 and no further, which is the [`jac`](Run::jac) column re-laid: what this kernel omits is
+	/// Lag 0 and no further, which is the [`jac`](Kernel::jac) column re-laid: what this kernel omits is
 	/// the state, which is no dep and has no reach to index — by design, and permanently.
 	fn exact<'d>(pre: &Self::Pre, x: Exact<'_, DepOuts<'d, E>>) -> bool
 	where
 		E::Deps: DepFlat,
 		DepOuts<'d, E>: Copy,
-		E::Item: Flat, {
+		for<'x> E::Out<'x>: Flat, {
 		let Some(alg) = pre else { return false };
 		alg.point(x, <E::Deps as DepFlat>::DIMS);
 		true
@@ -3643,12 +3716,12 @@ impl_arity!(@all
 #[cfg_attr(feature = "profile", inline(never))]
 pub fn step<'t, N, F, I>(frame: F, node: &'t mut N) -> Cons<'t, N, F>
 where
-	N: Node,
+	N: Node<Kernel: Kernel<N, Host = N>>,
 	N::Deps: Pull<'t, F, I>,
 	N::Out<'t>: Dark<<N::Deps as DepSet>::Lead>,
 	F: 't, {
 	let out = match <N::Deps as Pull<'t, F, I>>::open(&frame) {
-		true => <N::Kernel as Level<N>>::advance(node, <N::Deps as Pull<'t, F, I>>::pull(&frame)),
+		true => <N::Kernel as Kernel<N>>::advance(node, <N::Deps as Pull<'t, F, I>>::pull(&frame)),
 		false => Dark::dark(),
 	};
 	Cons { out, tail: frame }
@@ -3665,15 +3738,18 @@ where
 #[cfg_attr(feature = "profile", inline(never))]
 pub fn step_emit<'t, E, F, I>(frame: F, e: &'t mut Emitter<E>, demanded: bool, ts: i64) -> Cons<'t, E, F>
 where
-	E: Emit,
+	E: Emit<Kernel: Kernel<E, Host = Emitter<E>>>,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Deps: Pull<'t, F, I>,
 	F: 't, {
-	e.buf.clear();
-	if demanded && <E::Deps as Pull<'t, F, I>>::open(&frame) && e.opens(ts) {
-		<E::Kernel as Run<E>>::emit(&mut e.node, <E::Deps as Pull<'t, F, I>>::pull(&frame), &mut e.buf);
-	}
-	Cons { out: &e.buf, tail: frame }
+	let out = match demanded && <E::Deps as Pull<'t, F, I>>::open(&frame) && e.opens(ts) {
+		true => <E::Kernel as Kernel<E>>::advance(e, <E::Deps as Pull<'t, F, I>>::pull(&frame)),
+		// the empty run, which is what a dark, undemanded or off-clock emit node publishes — and what
+		// `Latent for &[T]` already says, so this branch needs no reading of its own. The buffer is
+		// left as it stands: `Emitter::lend` clears at the head of every fill, so nothing reads it.
+		false => Latent::latent(),
+	};
+	Cons { out, tail: frame }
 }
 
 /// One node firing, flattened: values and the finite-difference local Jacobian wrt its deps,
@@ -4160,21 +4236,27 @@ impl<N: Node> Rewound<N> for Awake {
 
 /// [`step`] + [`Observer::on`] before the push. The `()` observer erases to exactly `step`.
 ///
-/// Under an active observer, each fired node's Jacobian comes from its [`Level`] kernel: a [`Pure`]
+/// Under an active observer, each fired node's Jacobian comes from its [`Kernel`]: a [`Pure`]
 /// node differentiates its body, a [`Blind`] one is finite-differenced — clone the pre-advance node,
 /// [`Nudge`] the *last* element of one dep (batch deps copied into scratch), re-advance the clone at
 /// a shorter lifetime, diff the last out elements.
 #[cfg_attr(feature = "profile", inline(never))]
 pub fn step_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, N, F>
 where
-	N: Node,
+	N: Node<Kernel: Kernel<N, Host = N>>,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
 	N::Out<'t>: Glance + Dark<<N::Deps as DepSet>::Lead>,
 	F: 't, {
-	let run = <N::Deps as Pull<'t, F, I>>::open(&frame);
-	step_seen(frame, node, run, <N::Out<'t> as Dark<<N::Deps as DepSet>::Lead>>::dark, sweep, obs)
+	const {
+		assert!(
+			Plot::coherent(N::PLOTS, <N::Out<'static> as Flat>::DIMS),
+			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay; a plot's `labels` axes must multiply out to its slot count"
+		)
+	}
+	let ran = <N::Deps as Pull<'t, F, I>>::open(&frame);
+	step_seen::<N, N::Kernel, _, _, _>(frame, node, ran, true, <N::Out<'t> as Dark<<N::Deps as DepSet>::Lead>>::dark, N::PLOTS, sweep, obs)
 }
 
 /// [`step_obs`] for a node the graph derived no standing demand for: it advances only while every
@@ -4185,27 +4267,11 @@ where
 #[cfg_attr(feature = "profile", inline(never))]
 pub fn step_when_obs<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, demanded: bool, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, N, F>
 where
-	N: Node,
+	N: Node<Kernel: Kernel<N, Host = N>>,
 	N::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, N>: Copy,
 	for<'x> N::Out<'x>: Flat,
 	N::Out<'t>: Glance + Latent,
-	F: 't, {
-	let run = demanded && <N::Deps as Pull<'t, F, I>>::open(&frame);
-	step_seen(frame, node, run, <N::Out<'t> as Latent>::latent, sweep, obs)
-}
-
-/// The observed sweep of one level node, given whether it runs at all and what it reads if it does
-/// not. `unrun` is a thunk rather than a value because [`Dark<No>::dark`](Dark) is unreachable by
-/// construction — an ungated node has no dark branch to evaluate.
-#[cfg_attr(feature = "profile", inline(always))]
-fn step_seen<'t, N, F, I, O: Observer>(frame: F, node: &'t mut N, run: bool, unrun: impl FnOnce() -> N::Out<'t>, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, N, F>
-where
-	N: Node,
-	N::Deps: Pull<'t, F, I> + DepFlat,
-	DepOuts<'t, N>: Copy,
-	for<'x> N::Out<'x>: Flat,
-	N::Out<'t>: Glance,
 	F: 't, {
 	const {
 		assert!(
@@ -4213,41 +4279,79 @@ where
 			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay; a plot's `labels` axes must multiply out to its slot count"
 		)
 	}
+	let ran = demanded && <N::Deps as Pull<'t, F, I>>::open(&frame);
+	step_seen::<N, N::Kernel, _, _, _>(frame, node, ran, true, <N::Out<'t> as Latent>::latent, N::PLOTS, sweep, obs)
+}
 
+/// The observed sweep of one node, whatever shape it is: given whether it ran, whether its clock
+/// admitted it, and what it reads if either says no.
+///
+/// `unrun` is a thunk rather than a value because [`Dark<No>::dark`](Dark) is unreachable by
+/// construction — an ungated node has no dark branch to evaluate.
+///
+/// `ran` and `admits` are two answers and not one. A node the sweep never reached did not run; a
+/// clocked node whose period is still open *was* reached and published nothing, and `Fire::ran`
+/// exists to tell those apart. Only a run node has the second (see [`Emitter::opens`]), so the level
+/// entry points pass `true`.
+///
+/// Generic over the kernel rather than over [`Node`]/[`Emit`], because which of the two named the
+/// kernel is the one thing the observed sweep never has to know: `plots` is the only thing it would
+/// have read off either, and both declare it identically.
+#[cfg_attr(feature = "profile", inline(always))]
+fn step_seen<'t, N, K, F, I, O: Observer>(
+	frame: F,
+	host: &'t mut K::Host,
+	ran: bool,
+	admits: bool,
+	unrun: impl FnOnce() -> N::Out<'t>,
+	plots: &'static [Plot],
+	sweep: &mut Sweep,
+	obs: &mut O,
+) -> Cons<'t, N, F>
+where
+	N: Cell + Wired,
+	K: Kernel<N>,
+	N::Deps: Pull<'t, F, I> + DepFlat,
+	DepOuts<'t, N>: Copy,
+	for<'x> N::Out<'x>: Flat,
+	N::Out<'t>: Glance,
+	F: 't, {
 	let want = obs.want(N::NAME);
-	// before every early return: the seat is the node's position in the walk, and a node that skipped
-	// taking one would hand its seat to whoever stepped next.
-	let seat = sweep.seat();
+	// r[impl outs.fired.on-change]
+	// A seat is a level node's place in `Sweep::prev`, which is what "only when it changes" is
+	// measured against. A run has no such reading — three identical trades are three events — so it
+	// claims no seat, and the walk stays dense for the nodes that do.
+	let seat = (!<N::Out<'static> as Flat>::RUN).then(|| sweep.seat());
 
-	// gate closed or nobody reading: no advance, no dep flatten, no derivative — an unfired `Fire` is
-	// the honest view.
-	if !run {
+	// gate closed, nobody reading, or the period still running: no advance, no dep flatten, no
+	// derivative — an unfired `Fire` is the honest view.
+	if !ran || !admits {
 		let out: N::Out<'t> = unrun();
 		if want != Want::Nothing {
-			let fire = Fire::of(&out, N::PLOTS, <N as Cell>::CLOCK, <N::Kernel as Level<N>>::FIDELITY, <N::Deps as DepFlat>::DIMS, false, None);
+			let fire = Fire::of(&out, plots, <N as Cell>::CLOCK, K::FIDELITY, <N::Deps as DepFlat>::DIMS, ran, None);
 			obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 		}
 		return Cons { out, tail: frame };
 	}
 
 	if want == Want::Nothing {
-		let out = <N::Kernel as Level<N>>::advance(node, <N::Deps as Pull<'t, F, I>>::pull(&frame));
+		let out = K::advance(host, <N::Deps as Pull<'t, F, I>>::pull(&frame));
 		return Cons { out, tail: frame };
 	}
 
 	let deps = <N::Deps as Pull<'t, F, I>>::pull(&frame);
-	// before the advance, which lends the node for the rest of the tick: the derivative reading is of
+	// before the advance, which lends the host for the rest of the tick: the derivative reading is of
 	// the state the value was computed from, and `r[observe.noninvasive]` is what makes taking it
 	// invisible to the run.
-	let pre = <N::Kernel as Level<N>>::pre(node, want, deps);
-	let out = <N::Kernel as Level<N>>::advance(node, deps);
+	let pre = K::pre(host, want, deps);
+	let out = K::advance(host, deps);
 	let flat = Flats::of::<_, N::Deps>(
 		sweep,
-		Some(seat),
+		seat,
 		&out,
 		&deps,
 		(want >= Want::Jac).then_some(|r: Reads<'_>| {
-			let exact = <N::Kernel as Level<N>>::jac(
+			let exact = K::jac(
 				&pre,
 				Jac {
 					deps,
@@ -4258,7 +4362,7 @@ where
 				},
 			);
 			let block = want >= Want::Exact
-				&& <N::Kernel as Level<N>>::exact(
+				&& K::exact(
 					&pre,
 					Exact {
 						deps,
@@ -4274,14 +4378,15 @@ where
 
 	// the algebra reading, where the kernel has one: `formula` is `None` for every `Opaque` node and
 	// for every node below `Want::Jac`, so both fall out of the same `map`.
-	let formula = <N::Kernel as Level<N>>::formula(&pre);
+	let formula = K::formula(&pre);
 	let deriv = formula.map(|f| Derivs {
 		names: <N::Deps as DepSet>::NAMES,
 		parts: (0..<N::Deps as DepFlat>::LEN).map(|i| f.diff(i).simplify()).collect(),
 	});
 	// the value reading is taken behind `every dep stood`, and a trace of a body over an operand the
-	// kernel refused to read would be a fifth answer none of the other three gave.
-	let trace = formula.filter(|_| flat.deps_fired).map(|f| f.trace(flat.deps));
+	// kernel refused to read would be a fifth answer none of the other three gave. Which kernels have
+	// one at all is theirs to say — see [`Kernel::trace`].
+	let trace = flat.deps_fired.then(|| K::trace(&pre, flat.deps)).flatten();
 
 	let fire = Fire {
 		formula: formula.map(|f| f as &dyn core::fmt::Display),
@@ -4289,9 +4394,9 @@ where
 		trace: trace.as_ref().map(|t| t as &dyn core::fmt::Display),
 		..Fire::of(
 			&out,
-			N::PLOTS,
+			plots,
 			<N as Cell>::CLOCK,
-			<N::Kernel as Level<N>>::FIDELITY,
+			K::FIDELITY,
 			<N::Deps as DepFlat>::DIMS,
 			true,
 			Some(flat),
@@ -4303,16 +4408,16 @@ where
 
 /// [`fd_cols`] over an [`Emit`]'s re-`emit`. It stays separate from [`fd_jac`] because the two
 /// re-step through different traits, and the trait that would abstract "re-run me into a flat
-/// buffer" over both is the merged [`Level`]/[`Run`] kernel — which is a question about the sweep,
-/// not about this leg. Nothing here needs dynamic dispatch: a generic re-run would monomorphize like
-/// everything else. The re-`emit` needs no [`fd_col`]-style lifetime isolation (`&mut self` never
+/// buffer" over both would be [`Kernel`] itself, one rung below where the two re-runs actually
+/// differ: this one re-`emit`s a clone into a local `Vec` and never touches an [`Emitter`]. Nothing
+/// here needs dynamic dispatch — a generic re-run would monomorphize like everything else. The re-`emit` needs no [`fd_col`]-style lifetime isolation (`&mut self` never
 /// lends the node), so its column body is inline; everything a column overwrites wholly — the deps'
 /// scratch, the clone, its output run — is hoisted across the loop.
 fn fd_jac_emit<'d, E>(pre: &E, j: Jac<'_, DepOuts<'d, E>>)
 where
 	E: Runs + Emit,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
-	E::Item: Flat,
+	for<'x> E::Out<'x>: Flat,
 	E::Deps: DepFlat,
 	DepOuts<'d, E>: Copy, {
 	let mut scratch = <E::Deps as DepFlat>::Scratch::default();
@@ -4334,95 +4439,21 @@ where
 #[cfg_attr(feature = "profile", inline(never))]
 pub fn step_emit_obs<'t, E, F, I, O: Observer>(frame: F, e: &'t mut Emitter<E>, demanded: bool, ts: i64, sweep: &mut Sweep, obs: &mut O) -> Cons<'t, E, F>
 where
-	E: Emit,
+	E: Emit<Kernel: Kernel<E, Host = Emitter<E>>>,
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Item: Flat + Glance,
 	E::Deps: Pull<'t, F, I> + DepFlat,
 	DepOuts<'t, E>: Copy,
 	F: 't, {
-	const {
-		assert!(
-			Plot::coherent(<E as Emit>::PLOTS, <E::Item as Flat>::DIMS),
-			"a multi-plot node must name each plot's slots (`[]` claims all of them); a candle plot must name four and be an overlay; a plot's `labels` axes must multiply out to its slot count"
-		)
-	}
-	e.buf.clear();
-	let want = obs.want(E::NAME);
-
-	// gate closed, nobody reading, or the period still running: no emit, no dep flatten, no FD — the
-	// empty run is the honest view. The clock is not part of `ran`: a period still running is a node
-	// the sweep *did* reach, which is the whole distinction `Fire::ran` carries.
+	// the clock is read here and not inside, because it is the one question only an `Emitter` can
+	// answer — and it is kept out of `ran` deliberately: a period still running is a node the sweep
+	// *did* reach, which is the whole distinction `Fire::ran` carries.
 	let ran = demanded && <E::Deps as Pull<'t, F, I>>::open(&frame);
-	if !ran || !e.opens(ts) {
-		let out: &'t [E::Item] = &e.buf;
-		if want != Want::Nothing {
-			let fire = Fire::of(
-				&out,
-				<E as Emit>::PLOTS,
-				<E as Cell>::CLOCK,
-				<E::Kernel as Run<E>>::FIDELITY,
-				<E::Deps as DepFlat>::DIMS,
-				ran,
-				None,
-			);
-			obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
-		}
-		return Cons { out, tail: frame };
-	}
-
-	if want == Want::Nothing {
-		<E::Kernel as Run<E>>::emit(&mut e.node, <E::Deps as Pull<'t, F, I>>::pull(&frame), &mut e.buf);
-		return Cons { out: &e.buf, tail: frame };
-	}
-
-	let deps = <E::Deps as Pull<'t, F, I>>::pull(&frame);
-	// before the emit, for the same reason [`step_seen`]'s is: the derivative belongs to the state
-	// the run was filled from.
-	let pre = <E::Kernel as Run<E>>::pre(&e.node, want, deps);
-	<E::Kernel as Run<E>>::emit(&mut e.node, deps, &mut e.buf);
-	let out: &'t [E::Item] = &e.buf;
-	let flat = Flats::of::<_, E::Deps>(
-		sweep,
-		None,
-		&out,
-		&deps,
-		(want >= Want::Jac).then_some(|r: Reads<'_>| {
-			let exact = <E::Kernel as Run<E>>::jac(
-				&pre,
-				Jac {
-					deps,
-					dep_buf: r.dep_buf,
-					out_buf: r.out_buf,
-					out: r.jac,
-					bumped: r.bumped,
-				},
-			);
-			let block = want >= Want::Exact
-				&& <E::Kernel as Run<E>>::exact(
-					&pre,
-					Exact {
-						deps,
-						dep_buf: r.dep_buf,
-						out_buf: r.out_buf,
-						out: r.block,
-						widths: r.widths,
-					},
-				);
-			(exact, block)
-		}),
-	);
-
-	let fire = Fire::of(
-		&out,
-		<E as Emit>::PLOTS,
-		<E as Cell>::CLOCK,
-		<E::Kernel as Run<E>>::FIDELITY,
-		<E::Deps as DepFlat>::DIMS,
-		true,
-		Some(flat),
-	);
-	obs.on(E::NAME, <E::Deps as DepSet>::NAMES, <E::Deps as DepSet>::GATES, fire);
-	Cons { out, tail: frame }
+	let admits = e.opens(ts);
+	// nothing clears the buffer here: `Emitter::lend` clears at the head of every fill, so what a dark
+	// tick leaves standing is never read — this tick publishes the empty run, and the next one that
+	// fills starts from empty either way.
+	step_seen::<E, E::Kernel, _, _, _>(frame, e, ran, admits, Latent::latent, <E as Emit>::PLOTS, sweep, obs)
 }
 
 /// The per-dep simplified derivatives of a [`Pure`] node, `∂out/∂dep` one per line — the `deriv`

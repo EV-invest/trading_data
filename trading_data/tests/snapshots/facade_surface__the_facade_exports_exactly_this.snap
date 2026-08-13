@@ -38,9 +38,9 @@ trading_data_dag::Hist
 trading_data_dag::Horizon
 trading_data_dag::Ink
 trading_data_dag::Item
+trading_data_dag::Kernel
 trading_data_dag::Lagged
 trading_data_dag::Latch
-trading_data_dag::Level
 trading_data_dag::Moved
 trading_data_dag::Nudge
 trading_data_dag::Observer
@@ -55,7 +55,6 @@ trading_data_dag::Reading
 trading_data_dag::Rewound
 trading_data_dag::Roots
 trading_data_dag::Rows
-trading_data_dag::Run
 trading_data_dag::Runs
 trading_data_dag::Sampling
 trading_data_dag::Scan

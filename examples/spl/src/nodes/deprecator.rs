@@ -86,6 +86,17 @@ pub struct Intent {
 	/// tick that merely declined to publish.
 	pub terminal: bool,
 }
+impl Intent {
+	/// Value-plane equality: the `flat` slots plus the booleans beside them. `ts_ns` is when, not
+	/// what, which is the whole difference between this and the digest's bit-identity above.
+	pub fn same_value(&self, other: &Self) -> bool {
+		let (mut a, mut b) = ([0.0; 8], [0.0; 8]);
+		self.flat(&mut a);
+		other.flat(&mut b);
+		// bitwise, so an absent trail_stop reads equal to an absent trail_stop
+		a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()) && self.side == other.side && self.draining == other.draining && self.terminal == other.terminal
+	}
+}
 
 /// Bit-identity, so an intent stream can be compared across implementations that share nothing else.
 /// Deliberately not `PartialEq`: an intent carries `f64`s, and equality on those is the comparison
@@ -99,18 +110,6 @@ impl core::hash::Hash for Intent {
 		}
 		h.write_u64(self.trail_stop.get().map_or(0, f64::to_bits));
 		h.write_u8(self.draining as u8 | (self.terminal as u8) << 1);
-	}
-}
-
-impl Intent {
-	/// Value-plane equality: the `flat` slots plus the booleans beside them. `ts_ns` is when, not
-	/// what, which is the whole difference between this and the digest's bit-identity above.
-	pub fn same_value(&self, other: &Self) -> bool {
-		let (mut a, mut b) = ([0.0; 8], [0.0; 8]);
-		self.flat(&mut a);
-		other.flat(&mut b);
-		// bitwise, so an absent trail_stop reads equal to an absent trail_stop
-		a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()) && self.side == other.side && self.draining == other.draining && self.terminal == other.terminal
 	}
 }
 

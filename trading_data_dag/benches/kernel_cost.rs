@@ -24,7 +24,7 @@ use std::hint::black_box;
 
 use iai_callgrind::{Callgrind, EventKind, LibraryBenchmarkConfig, library_benchmark, library_benchmark_group, main};
 use trading_data_dag::{
-	Blind, Cell, Cons, DepOuts, Emit, Emitter, Env, Lagged, Nil, Node, Opaque, Pure, Raw, Runs, Scan, Scans, Slots, Symbolic, Wired, Witness, step, step_emit, value_nudge,
+	Blind, Cell, Cons, DepOuts, Emit, Emitter, Env, Kernel, Lagged, Nil, Node, Opaque, Pure, Raw, Runs, Scan, Scans, Slots, Symbolic, Wired, Witness, step, step_emit, value_nudge,
 };
 use trading_data_expr::{Expr, Vars, constant};
 
@@ -88,7 +88,7 @@ impl Node for Handwritten {
 /// node they instantiate — the frame cons, the `Pull` and the `step` are one body.
 fn tick<N>(node: &mut N, (lambda, vol, cvd): (f64, f64, f64)) -> f64
 where
-	N: Node + Wired<Deps = (Lambda, Vol, Cvd)>,
+	N: Node<Kernel: Kernel<N, Host = N>> + Wired<Deps = (Lambda, Vol, Cvd)>,
 	for<'t> N: Cell<Out<'t> = f64>, {
 	let f = Cons::<Lambda, Nil> { out: lambda, tail: Nil };
 	let f = Cons::<Vol, _> { out: vol, tail: f };
@@ -176,7 +176,7 @@ impl Emit for Handrun {
 /// One tick of a one-node run graph, generic for the reason [`tick`] is.
 fn tick_run<E>(e: &mut Emitter<E>, src: &[[f64; 3]]) -> usize
 where
-	E: Emit + Wired<Deps = (Src,)>,
+	E: Emit<Kernel: Kernel<E, Host = Emitter<E>>> + Wired<Deps = (Src,)>,
 	for<'t> E: Cell<Out<'t> = &'t [<E as trading_data_dag::Series>::Item]>, {
 	let f = Cons::<Src, Nil> { out: src, tail: Nil };
 	step_emit(f, e, true, 0).head().len()

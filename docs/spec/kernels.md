@@ -4,11 +4,15 @@ Derived from the compute plane in [`model.typ`](../../trading_data_dag/model.typ
 
 r[kernels.closed]
 
-A node MUST compute through a kernel the framework provides. `Level` and `Run` are sealed by one
-`sealed::Kernel`, so the set of kernels is closed and a node's only choice is which one it names;
-there MUST be no way for a node to supply a compute body the framework cannot also read. This binds
-the run side as it binds the level side: an `Emit` names a `Run` kernel exactly as a `Node` names a
-`Level` one.
+A node MUST compute through a kernel the framework provides. `Kernel` is sealed by `sealed::Kernel`,
+so the set of kernels is closed and a node's only choice is which one it names; there MUST be no way
+for a node to supply a compute body the framework cannot also read. This binds the run side as it
+binds the level side: one trait serves both, and an `Emit` names a kernel exactly as a `Node` does.
+
+What used to be two traits — a level-shaped one and a run-shaped copy of it — differed in one
+member's signature and nothing else, because a level node's out is borrowed from the node and a run
+node's from the engine. `Kernel::Host` names that owner (`N` for a level, `Emitter<E>` for a run), so
+the difference is stated once and the readings are declared once.
 
 The set is `Pure` (a scalar `Expr`), `Predicate` (a `bool` one), `Opaque` (the level hatch), `Scan`
 (one out element per driving element, no state), `Close` (elements are whole periods), `Fold` (a

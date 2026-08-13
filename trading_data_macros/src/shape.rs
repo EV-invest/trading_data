@@ -66,8 +66,8 @@ pub fn shape_const(st: &State, d: &Demand, node_tys: &[TokenStream]) -> TokenStr
 		let (n, ty) = (info[i], &node_tys[i]);
 		let deps_ty = quote!(<#ty as #dag::Wired>::Deps);
 		let fidelity = match n.emit {
-			true => quote!(<<#ty as #dag::Emit>::Kernel as #dag::Run<#ty>>::FIDELITY),
-			false => quote!(<<#ty as #dag::Node>::Kernel as #dag::Level<#ty>>::FIDELITY),
+			true => quote!(<<#ty as #dag::Emit>::Kernel as #dag::Kernel<#ty>>::FIDELITY),
+			false => quote!(<<#ty as #dag::Node>::Kernel as #dag::Kernel<#ty>>::FIDELITY),
 		};
 
 		// the `Buffer` key is the driver's own spelling, so a node is one exactly where the driver wrote

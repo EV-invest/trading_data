@@ -27,7 +27,7 @@ use nautilus_model::{
 };
 use serde::{Deserialize, Serialize};
 use trading_data::{
-	Armed, Bar, Blind as _, Buffering, Direction, Elems, Episode, Fold, Latch as _, Level as _, Local, Mc, McRoot, Oi, OiRoot, Over, Predicate, Reading, Run as _, Runs as _, Scan, Ts, Usd,
+	Armed, Bar, Blind as _, Buffering, Direction, Elems, Episode, Fold, Latch as _, Local, Mc, McRoot, Oi, OiRoot, Over, Predicate, Reading, Runs as _, Scan, Ts, Usd,
 	bench::{COUNTERS, Digest, ring::Ring},
 };
 use trading_data_spl::{
@@ -377,7 +377,7 @@ impl DataActor for Screen {
 		}
 		let bar = [Bar::from(decode::<BarDto>(signal))];
 		COUNTERS.screener.fetch_add(1, Ordering::Relaxed);
-		let hit = Predicate::advance(&mut self.node, (&bar, self.mom));
+		let hit = <Predicate as trading_data::Kernel<StdScreener>>::advance(&mut self.node, (&bar, self.mom));
 		self.publish_signal(SCREENER, encode(&(hit, BarDto::from(&bar[0]))), signal.ts_event);
 		Ok(())
 	}

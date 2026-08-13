@@ -417,8 +417,8 @@ fn emit(st: State) -> Result<TokenStream> {
 		.filter(|(n, _)| !n.generated)
 		.map(|(n, t)| {
 			let fid = match n.emit {
-				true => quote!(<<#t as #dag::Emit>::Kernel as #dag::Run<#t>>::FIDELITY),
-				false => quote!(<<#t as #dag::Node>::Kernel as #dag::Level<#t>>::FIDELITY),
+				true => quote!(<<#t as #dag::Emit>::Kernel as #dag::Kernel<#t>>::FIDELITY),
+				false => quote!(<<#t as #dag::Node>::Kernel as #dag::Kernel<#t>>::FIDELITY),
 			};
 			(&n.key, fid)
 		})
