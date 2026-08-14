@@ -94,7 +94,7 @@ proc-macro2 = "1"
 quote = "1"
 serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
-snapshot_fonts = { version = "1.3", path = "../../snapshot_fonts" }
+snapshot_fonts = { version = "2.0", path = "../../snapshot_fonts" }
 strum = "0.28"
 syn = { version = "^3", features = ["full", "extra-traits"] }
 tempfile = "3"
