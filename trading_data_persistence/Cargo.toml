@@ -25,14 +25,17 @@ trading_data_macros.workspace = true
 v_utils.workspace = true
 
 [dev-dependencies]
-color-eyre.workspace = true
 iai-callgrind.workspace = true
-miette.workspace = true
 tempfile = { workspace = true }
 
 [[bench]]
 name = "write_throughput"
 harness = false
+
+# One integration binary, per matklad's "delete cargo integration tests".
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
 
 [lints]
 workspace = true

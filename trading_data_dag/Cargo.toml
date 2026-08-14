@@ -34,5 +34,9 @@ harness = false
 name = "kernel_cost"
 harness = false
 
+[[bench]]
+name = "buffer_cost"
+harness = false
+
 [lints]
 workspace = true

@@ -126,7 +126,8 @@ fn oi(v: f64) -> Oi {
 	}
 }
 
-fn main() {
+#[test]
+fn what_live_recorded_is_what_replay_reads_back() {
 	let dir = tempdir().expect("temp dir");
 	let catalog = Catalog::new(dir.path());
 	let clock = Arc::new(EventClock(AtomicI64::new(1_000_000_000)));
@@ -183,10 +184,6 @@ fn main() {
 	assert!(live_summary.iter().any(|s| s.anchor.is_some()), "our own checkpoint must weave into both streams");
 	assert!(live_summary.iter().filter(|s| !s.trades.is_empty()).count() >= 1, "trades must weave");
 	assert!(live_summary.iter().filter(|s| !s.oi.is_empty()).count() >= 1, "oi must weave");
-
-	println!("sync_round_trip: {} events round-tripped incl. book state. ok", events(&live_summary).len());
-
-	concurrent_streaming_matches_replay();
 }
 
 /// The paramount path: consume a `Live` feed *concurrently* with a producer thread (bounded
@@ -195,7 +192,8 @@ fn main() {
 ///
 /// Flattened, not step-wise, for the reason in the module doc: how the two group is theirs to
 /// decide, what they contain is not.
-fn concurrent_streaming_matches_replay() {
+#[test]
+fn a_concurrently_recorded_session_replays_the_same() {
 	use std::{thread, time::Duration};
 
 	let dir = tempdir().expect("temp dir");
@@ -238,7 +236,6 @@ fn concurrent_streaming_matches_replay() {
 
 	assert_eq!(live_flat, replay_flat, "replay of a concurrently-recorded session lost or reordered events");
 	assert_eq!(live_flat.iter().filter(|(lane, _)| *lane == b't').count(), 40, "all 40 trades must weave");
-	println!("concurrent streaming: {} events round-tripped. ok", live_flat.len());
 }
 
 /// Flatten collected steps to one entry per event, in emission order. `monotonic_seq` is globally

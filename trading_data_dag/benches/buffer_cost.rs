@@ -2,14 +2,14 @@
 //! `drain(..n)` moves the whole retained window every time — a window that is deep precisely because
 //! something needs it deep. Drive a deep one at one element a tick and count.
 //!
-//! Measure with `perf stat -e instructions:u`, not the clock: this box is shared.
+//! Counted, not clocked: this box is shared, so the wall reads whatever the neighbours are doing.
 
 use std::hint::black_box;
 
-use trading_data::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Flat, Glance, Reach, Stamped, graph, node, slice_nudge};
+use iai_callgrind::{library_benchmark, library_benchmark_group, main};
+use trading_data_dag::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Flat, Glance, Stamped, graph, node, slice_nudge};
 
-const TICKS: usize = 200_000;
-/// Deep enough that the memmove dominates, and of the order an indicator's window actually is.
+const TICKS: usize = 20_000;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Tick {
@@ -57,6 +57,7 @@ impl Cell for Ends {
 }
 #[node]
 impl Blind for Ends {
+	/// Deep enough that the memmove dominates, and of the order an indicator's window actually is.
 	type Deps = (Buffering<Src, Elems<512>>,);
 
 	const WHY: &'static str = "the bench's consumer: what it measures is the window's retention, not the arithmetic it reads off the ends";
@@ -78,7 +79,8 @@ graph! {
 	outputs { ends: Ends, hist: Buffering<Src, Elems<512>> }
 }
 
-fn main() {
+#[library_benchmark]
+fn retention() {
 	let mut g = G::default();
 	for i in 0..TICKS {
 		let one = [Tick {
@@ -87,5 +89,8 @@ fn main() {
 		}];
 		black_box(g.tick(one[0].ts, Batches { src: &one }));
 	}
-	println!("{TICKS} ticks over a {:?} window", <Elems<512> as Reach>::HORIZON);
+	black_box(&g);
 }
+
+library_benchmark_group!(name = buffer; benchmarks = retention);
+main!(library_benchmark_groups = buffer);

@@ -1,5 +1,5 @@
 //! **Phase 1 — the weaver.** `weaver.typ` §1.9's five promises, over a generated multi-lane session
-//! instead of a hand-written one, and the storage round-trip `sync_round_trip.rs` fixes.
+//! instead of a hand-written one, and the storage round-trip `round_trip.rs` fixes.
 //!
 //! Two targets over one generated trace:
 //!
