@@ -3,7 +3,7 @@
 `model.typ` §1.5 says what each kernel *is* and §1.6 what an out must be able to say about itself.
 This is the shape you type.
 
-The kernel set is sealed (`r[kernels.closed]`): **the body trait you implement is the choice of
+The kernel set is sealed: **the body trait you implement is the choice of
 kernel**, and there is no attribute spelling one you have no body for. That seal is what makes the
 value, the formula, the exact Jacobian and the annotated trace all fall out of one declaration.
 
@@ -21,8 +21,8 @@ value, the formula, the exact Jacobian and the annotated trace all fall out of o
 | — | `Episodic` | — | not a body: it makes `Armed<Self>` the only gate this node can have |
 
 Reach for a hatch last. `WHY` is the price, and it is a claim someone can disagree with — `Book`'s
-"an order book fold is not a scalar function of its deltas" is one; a bare escape is not
-(`r[kernels.opaque.stated]`). `graph!` exposes `Graph::FIDELITY`, and a graph may pin the `Partial`
+"an order book fold is not a scalar function of its deltas" is one; a bare escape is not.
+`graph!` exposes `Graph::FIDELITY`, and a graph may pin the `Partial`
 and `Opaque` counts so neither rises without a diff that says why.
 
 ## Every cell owes this much
@@ -110,10 +110,10 @@ slice_nudge!([const TF: Timeframe, const OVER: Timeframe] Change<TF, OVER>, Opti
 Slots are **appended** in `read` order, and are one of two things: a reading the dep minted
 (`env.put(bars.at(i)?)`, `.slot(Bar::OPEN)` for one field of it), carrying the dep, the lag and the
 element slot it was copied off — or `env.attr(x)`, a number the body computed and no column stands
-for. There is no way to state a reading's coordinates, and so no way to misstate them. Leading with
-the deps' own elements at lag 0 lines the gradient up with the Jacobian's columns; the lags are what
-let `exact` scatter that same gradient over the whole reach in one pass.
+for. Leading with the deps' own elements at lag 0 lines the gradient up with the Jacobian's columns;
+the lags are what let `exact` scatter that same gradient over the whole reach in one pass.
 
+- `attr` takes any number, so a `#[slot]` field handed to it reports a real dependence as zero.
 - `read -> None` is absence **arriving** — answered without evaluating anything.
 - `NaN` out of the body is the body **declining**.
 - Which elements you read is Rust, and must not depend on anything being differentiated: index by
@@ -140,9 +140,10 @@ impl<const TF: Timeframe> Closes for Ohlcs<TF> {
 The kernel owns the walk, the floor-to-period and the close time — a timestamp is not a slot, so it
 never could be the body's. The body owns the numbers: what a first element opens with, what a further
 one folds in. The accumulator sits at `DepFlat::LEN`, so both bodies read the element and the
-accumulator at one set of indices whatever else the reading put. Permanently `Partial`: the rest of the period reached the reported element only through the
-accumulator, and those elements live in the dep's *declaration* (`Folding<Trades, Over<TF>>`), not in
-its out, so there is no lag to index them at.
+accumulator at one set of indices whatever else the reading put. Permanently `Partial`: the rest of
+the period reached the reported element only through the accumulator, and those elements live in the
+dep's *declaration* (`Folding<Trades, Over<TF>>`), not in its out, so there is no lag to index them
+at.
 
 ### `Folds` — a recurrence
 

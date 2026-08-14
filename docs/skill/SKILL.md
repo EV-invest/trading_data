@@ -59,8 +59,8 @@ instantiated, and neither is the source lane that would have fed it.
 
 1. **Read** `ARCHITECTURE.md` and `model.typ` §1.3–§1.5. Skipping this produces code that compiles
    into the wrong semantics.
-2. **Pick the kernel** — the body trait *is* the choice, there is no attribute for it
-   (`r[kernels.closed]`). See [references/nodes.md](references/nodes.md).
+2. **Pick the kernel** — the body trait *is* the choice, there is no attribute for it.
+   See [references/nodes.md](references/nodes.md).
 3. **Spell the deps** — five wrappers, no sixth; the axis they partition is *who holds the history*.
    See [references/deps.md](references/deps.md).
 4. **Pay the out plane** — `Flat`, `Bump`, the `slice_nudge!`/`value_nudge!` witness, and whatever

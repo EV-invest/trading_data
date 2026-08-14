@@ -276,7 +276,6 @@ trading_data::graph! {
 	}
 }
 
-// r[impl kernels.opaque.stated]
 // r[impl kernels.fidelity.stated]
 // `<=`, not `==`: a count that falls is the direction of travel, and only a rise owes a diff.
 

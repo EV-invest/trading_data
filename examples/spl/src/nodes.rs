@@ -122,7 +122,6 @@ trading_data::graph! {
 	outputs { bar: trading_data::Bars<{ TF_1MIN }>, deprecator: Deprecator, rsi: trading_data::Rsi<trading_data::Bars<{ TF_5MIN }>, Knobs> }
 }
 
-// r[impl kernels.opaque.stated]
 // r[impl kernels.fidelity.stated]
 // `<=`, not `==`: a count that falls is the direction of travel, and only a rise owes a diff.
 const _: () = {

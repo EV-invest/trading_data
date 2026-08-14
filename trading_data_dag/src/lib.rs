@@ -1203,7 +1203,7 @@ impl<T: Latent> Dark<Yes> for T {
 
 /// A cell the sweep advances. It carries no compute method of its own: it names the [`Kernel`]
 /// that computes it, and every reading the engine offers — the value, the formula, the Jacobian, the
-/// value-annotated trace — comes off that one declaration (`r[kernels.closed]`).
+/// value-annotated trace — comes off that one declaration.
 ///
 /// Nobody writes this impl by hand; `#[node]` writes it from the body trait ([`Symbolic`] ⇒ [`Pure`],
 /// [`Blind`] ⇒ [`Opaque`]), which is also where `Deps` and `PLOTS` are stated.
@@ -1216,7 +1216,7 @@ pub trait Node: Cell + Wired {
 
 /// [`Node`]'s run-shaped sibling: the out is the run of items filled each tick, and like `Node` it
 /// carries no compute method — it names the [`Kernel`] that computes it, and every reading comes
-/// off that one declaration (`r[kernels.closed]`).
+/// off that one declaration.
 ///
 /// Nobody writes this impl by hand either; `#[node]` writes it from the body trait ([`Runs`] ⇒
 /// [`Raw`]), which is also where `Deps` and `PLOTS` are stated.
@@ -1369,7 +1369,7 @@ where
 }
 
 /// The stated hatch: a node that computes in Rust and therefore has no algebra reading. `WHY` is not
-/// documentation, it is the cost of using it (`r[kernels.opaque.stated]`) — `graph!` counts these,
+/// documentation, it is the cost of using it — `graph!` counts these,
 /// and a graph that pins the count only lets it fall.
 ///
 /// [`Clone`] because the finite-difference witness is what stands in for the missing derivative: it
@@ -1765,7 +1765,7 @@ pub enum Fidelity {
 	Exact,
 	/// Algebraic, but narrower than the body's reach — the string says what it omits.
 	Partial(&'static str),
-	/// No algebra at all — the string says why (`r[kernels.opaque.stated]`).
+	/// No algebra at all — the string says why.
 	Opaque(&'static str),
 }
 
@@ -1791,7 +1791,7 @@ impl Fidelity {
 
 /// How a node computes, and therefore what can be read off it. Sealed: the kernel set is the
 /// framework's, so a node's only choice is which one it names and there is no way to supply a body
-/// the engine cannot also read (`r[kernels.closed]`).
+/// the engine cannot also read.
 ///
 /// Each kernel demands its own body trait, so naming one without the body does not compile. The
 /// split into [`pre`](Kernel::pre) and [`jac`](Kernel::jac) is what lets the two readings cost their
@@ -1832,8 +1832,7 @@ pub trait Kernel<N: Cell + Wired + ?Sized>: sealed::Kernel {
 	/// wrong quietly).
 	///
 	/// A reading rather than a flag, because every other reading the engine offers comes off this one
-	/// declaration and a `bool` here would leave the last one being reconstructed outside
-	/// (`r[kernels.closed]`).
+	/// declaration and a `bool` here would leave the last one being reconstructed outside.
 	fn trace(_: &Self::Pre, _: &[f64]) -> Option<Trace> {
 		None
 	}

@@ -12,4 +12,15 @@ specs (
       }
     )
   }
+  {
+    name trading_data_dag
+    include (trading_data_dag/spec.md)
+    impls (
+      {
+        name rust
+        include (**/*.rs)
+        exclude (**/target/** tmp/**)
+      }
+    )
+  }
 )

@@ -387,7 +387,7 @@ gateable the moment the lane became a run of rows the engine could retain for it
    │                        counts it into `FIDELITY`. `Clone` is a supertrait because the
    │                        finite-difference witness is what it has instead of a derivative.
    │
-   ├── Scans: Series+Clone  fn read<W: Witness>(deps, i, &mut Env<W>) -> Option<i64>
+   ├── Scans: Series+Clone  fn read<W: Witness>(DepReads, i, &mut Env<W>) -> Option<i64>
    │                        · fn body(&self, Vars) -> impl Slots               ⇒ kernel `Scan`
    │                        ONE out element per element of the LEADING dep, whose rate it
    │                        therefore keeps, carrying nothing between them. WHICH elements the
@@ -398,12 +398,13 @@ gateable the moment the lane became a run of rows the engine could retain for it
    │                        anything); NaN out of the body is the body DECLINING.
    │                        Exact unconditionally, and that is what `Env` bought: a slot is
    │                        either a reading the DEP minted — `env.put(bars.at(i)?)`, carrying
-   │                        the dep, the lag and the element slot it was copied off, so no site
-   │                        states a provenance — or `env.attr(x)`, a number the body computed
-   │                        and no column stands for. Leading with the deps' own elements at lag
-   │                        0 lines the gradient up with the Jacobian's columns; the lags are
-   │                        what let `exact` scatter that same gradient over the whole reach in
-   │                        one pass.
+   │                        the dep, the lag and the element slot it was copied off — or
+   │                        `env.attr(x)`, a number the body computed and no column stands for.
+   │                        Leading with the deps' own elements at lag 0 lines the gradient up
+   │                        with the Jacobian's columns; the lags are what let `exact` scatter
+   │                        that same gradient over the whole reach in one pass.
+   │                        `attr` takes any number: a `#[slot]` field handed to it reports a
+   │                        real dependence as zero, and nothing catches that.
    │
    ├── Closes: Series+Clone PERIOD · fn read(..) · fn open(Vars) · fn fold(Vars)
    │                        · fn pending(_mut)                                 ⇒ kernel `Close`
@@ -588,9 +589,9 @@ gateable the moment the lane became a run of rows the engine could retain for it
                the kernel carries because a timestamp is no derivative's variable.
   Kernel       sealed by a private supertrait — the kernel set is the framework's, and each
                kernel demands its body trait, so naming one you have no body for does not
-               compile (`r[kernels.closed]`). `FIDELITY` is per kernel, and `graph!` counts
-               Partial and Opaque apart into `FIDELITY` for a graph to pin
-               (`r[kernels.fidelity.stated]`).
+               compile. `FIDELITY` is per kernel and must be true of the reading it fills
+               (`r[kernels.fidelity.stated]`); `graph!` counts Partial and Opaque apart for a
+               graph to pin.
   Symbolic     every dep scalar, arity ≤ MAX_VARS.
   graph!       `distinct` node names · `cut_gated` · `deadlocked` · `clock_divides(CLOCK, CLOCKS)`
                — a node's declared rate must be a whole multiple of every rate feeding it, else it
