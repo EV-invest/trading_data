@@ -9,6 +9,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
+include = ["src/lib.rs"]
 
 [dependencies]
 # `sqrt`/`exp` are std-only on `f64`; this crate stays `no_std`, so the two transcendentals come

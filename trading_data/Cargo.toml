@@ -10,6 +10,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
+include = ["src/**/*"]
 
 # Forwarded, not re-invented: an example depends on this facade only, and the switch it needs is the
 # engine's. Off by default here too — an implementor who never asks cannot acquire it by accident.

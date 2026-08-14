@@ -9,6 +9,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
+include = ["src/**/*"]
 
 [dependencies]
 arrayvec.workspace = true
