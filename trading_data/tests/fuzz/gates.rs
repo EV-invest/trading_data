@@ -9,13 +9,11 @@
 use std::collections::BTreeMap;
 
 use trading_data::{Fire, Observer, Want};
+use v_utils::fuzz::Frng;
 
-use crate::{
-	fixture::{self, G, Outs, Step},
-	frng::Frng,
-};
+use crate::fixture::{self, G, Outs, Step};
 
-pub const VERSION: u32 = crate::corpus::fnv(&[include_str!("frng.rs"), include_str!("fixture.rs"), include_str!("gates.rs")]);
+pub const VERSION: u32 = v_utils::fuzz::fnv(&[v_utils::fuzz::FRNG_SRC, include_str!("fixture.rs"), include_str!("gates.rs")]);
 
 /// Which fixture root drives which gate. The fuzzer owns the fixture, so this is a statement about
 /// it rather than a guess — and `G::SHAPE.gates()` is what says the set is still these two.

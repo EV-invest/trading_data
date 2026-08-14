@@ -39,6 +39,10 @@ insta.workspace = true
 syn = { workspace = true, features = ["visit"] }
 # the fuzz binary records a `Live` session to a throwaway catalog and replays it back
 tempfile.workspace = true
+# the FRNG/minimizer/corpus kernel the fuzz binary is a target table over. A separate dev-dep entry
+# rather than a feature on the normal one: under `resolver = "3"` that keeps `fuzz` out of the
+# published facade's feature set.
+v_utils = { workspace = true, features = ["fuzz"] }
 
 # One integration binary, per matklad's "delete cargo integration tests": every fuzz target shares one
 # FRNG kernel, one corpus and one driver, and a target is a line in its registry.

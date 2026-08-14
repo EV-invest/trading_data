@@ -13,13 +13,11 @@
 //! would be asserting that a backtest reproduces a live run, which §2 warns against by name.
 
 use trading_data::{Present, Reading};
+use v_utils::fuzz::Frng;
 
-use crate::{
-	fixture::{self, G, Outs, Step, Tick, WARM},
-	frng::Frng,
-};
+use crate::fixture::{self, G, Outs, Step, Tick, WARM};
 
-pub const VERSION: u32 = crate::corpus::fnv(&[include_str!("frng.rs"), include_str!("fixture.rs"), include_str!("schedule.rs")]);
+pub const VERSION: u32 = v_utils::fuzz::fnv(&[v_utils::fuzz::FRNG_SRC, include_str!("fixture.rs"), include_str!("schedule.rs")]);
 
 /// Groupings per run. Two is enough for the claim; the third is what makes a *pair* of coarse
 /// groupings comparable rather than only each against the degenerate one.

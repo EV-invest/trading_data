@@ -21,11 +21,10 @@
 use std::{fmt::Write as _, path::Path};
 
 use trading_data::bench::Census;
+use v_utils::fuzz::Frng;
 
 use crate::{
-	corpus,
 	fixture::{self, G, Outs, Step, Tick, WARM},
-	frng::Frng,
 	schedule,
 };
 
@@ -69,13 +68,17 @@ struct Frame {
 	caption: String,
 }
 
+fn env_usize(key: &str, default: usize) -> usize {
+	std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
 pub fn film(out: &Path) {
 	// Its own default, a ninth of the fuzzer's: a keyframe is a tick, and every element the trace
 	// draws is another tick under the one-element-per-tick grouping. At `DEFAULT_SIZE` the four
 	// groupings came to 567 of them — three minutes of film and 1.5 MB of asset. This lands at ~62
 	// ticks and ~180 KB, and still reaches every bucket below.
-	let size = crate::env_usize("FUZZ_SIZE", 28);
-	let seeds: u64 = crate::env_usize("FUZZ_FILM_SEEDS", 128) as u64;
+	let size = env_usize("FUZZ_SIZE", 28);
+	let seeds: u64 = env_usize("FUZZ_FILM_SEEDS", 128) as u64;
 	let mut counts = [0u64; BUCKETS.len()];
 	let mut best = (0u64, 0u32);
 	for seed in 0..seeds {
@@ -139,7 +142,7 @@ pub fn film(out: &Path) {
 		folded.iter().all(|x| *x == folded[0]),
 		"the filmed groupings disagree, which `schedule::run` just said they do not"
 	);
-	let digest = corpus::fnv(&[&format!("{:?}", folded[0])]);
+	let digest = v_utils::fuzz::fnv(&[&format!("{:?}", folded[0])]);
 	let footer = format!(
 		"{} elements · {} ticks under {} groupings · folded stream fnv {digest:08x}, the same under every one of them",
 		els.len(),

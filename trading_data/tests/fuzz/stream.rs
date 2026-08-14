@@ -11,8 +11,7 @@
 use trading_data::{
 	Aggregate, BatchTrades, BookShape, BookUpdate, Clock, Exact, InnerTrade, Instrument, Local, Mc, Oi, Precision, PrecisionPriceQty, ReadClock, Side, Sink, Span, Symbol, Ts, Venue,
 };
-
-use crate::frng::Frng;
+use v_utils::fuzz::Frng;
 
 pub const PREC: PrecisionPriceQty = PrecisionPriceQty {
 	price: Precision(2),

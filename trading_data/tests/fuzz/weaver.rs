@@ -19,14 +19,11 @@ use std::sync::Arc;
 
 use tempfile::tempdir;
 use trading_data::{Batch as _, Book, BookChunk, Catalog, ExchangeName, Feed, FrameKind, Horizon, LaneKind, LatencyConfig, Live, ReadClock, Replay, Ts};
-use v_utils::TF_15MIN;
+use v_utils::{TF_15MIN, fuzz::Frng};
 
-use crate::{
-	frng::Frng,
-	stream::{self, Msg, PREC, Session, StampClock, symbol},
-};
+use crate::stream::{self, Msg, PREC, Session, StampClock, symbol};
 
-pub const VERSION: u32 = crate::corpus::fnv(&[include_str!("frng.rs"), include_str!("stream.rs"), include_str!("weaver.rs")]);
+pub const VERSION: u32 = v_utils::fuzz::fnv(&[v_utils::fuzz::FRNG_SRC, include_str!("stream.rs"), include_str!("weaver.rs")]);
 
 /// The lanes, in the order the weaver's own tie-break ranks them — a book message feeds 1 and 2, and
 /// that pair at one stamp is the tie `weaver.typ` §1.5 pins.

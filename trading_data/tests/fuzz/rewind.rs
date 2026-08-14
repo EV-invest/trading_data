@@ -17,11 +17,9 @@ use trading_data::{
 	Aggregate, Blind, Book, BookAnchors, BookDelta, BookDeltas, BookShape, Buffering, Cell, DepOuts, FrameKind, Gate, Gating, Local, Nudge, Over, Precision, PrecisionPriceQty, Rewound,
 	Side, Span, TradeBuf, TradeCols, Trades, Ts, Venue, graph, node,
 };
-use v_utils::TF_15MIN;
+use v_utils::{TF_15MIN, fuzz::Frng};
 
-use crate::frng::Frng;
-
-pub const VERSION: u32 = crate::corpus::fnv(&[include_str!("frng.rs"), include_str!("rewind.rs")]);
+pub const VERSION: u32 = v_utils::fuzz::fnv(&[v_utils::fuzz::FRNG_SRC, include_str!("rewind.rs")]);
 
 const PREC: PrecisionPriceQty = PrecisionPriceQty {
 	price: Precision(2),

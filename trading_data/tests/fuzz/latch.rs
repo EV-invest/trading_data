@@ -15,13 +15,11 @@
 //! function of the element stream, and is checked against it directly.
 
 use trading_data::{Blind, Buffering, Bump, Cell, DepOuts, Elems, Episode, Flat, Gate, Gating, Glance, Latch, graph, node, slice_nudge, value_nudge};
+use v_utils::fuzz::Frng;
 
-use crate::{
-	fixture::{self, Tick},
-	frng::Frng,
-};
+use crate::fixture::{self, Tick};
 
-pub const VERSION: u32 = crate::corpus::fnv(&[include_str!("frng.rs"), include_str!("latch.rs")]);
+pub const VERSION: u32 = v_utils::fuzz::fnv(&[v_utils::fuzz::FRNG_SRC, include_str!("latch.rs")]);
 
 /// Ticks an episode runs before it is terminal. The model below is the only other place that knows.
 const EPISODE: u32 = 3;

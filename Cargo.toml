@@ -104,7 +104,7 @@ tracing = "^0.1"
 trading_data = { path = "trading_data" } # re-export for the examples, the only members naming it; leave unpinned, a `version` here duplicates the crate's own
 ui_test = "0.30"
 ureq = "^3"
-v_utils = { version = "^2.17.2", features = ["io", "macros", "cli", "distributions"] }
+v_utils = { version = "^2.18", features = ["io", "macros", "cli", "distributions"] }
 
 # A separate profile, so `release` stays bit-for-bit what it is. `debug = 1` is line tables only —
 # enough for `perf`/`samply` to name a frame, and no `force-frame-pointer`, which would need
@@ -121,3 +121,4 @@ strip = false
 # graphs resolve to an incompatible second copy of the shared parse-boundary types.
 trading_data_core = { path = "trading_data_core" }
 trading_data_dag = { path = "trading_data_dag" } # same, for `exec_viz`
+v_utils = { path = "/home/v/s/v_utils/v_utils" } # TEMPORARY: until v_utils 2.18.0 (`fuzz`) is published

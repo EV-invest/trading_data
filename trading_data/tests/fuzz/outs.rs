@@ -2,13 +2,11 @@
 //! the phase 2/3 fixture.
 
 use trading_data::{Fire, Observer, Want};
+use v_utils::fuzz::Frng;
 
-use crate::{
-	fixture::{self, G, Outs, Step},
-	frng::Frng,
-};
+use crate::fixture::{self, G, Outs, Step};
 
-pub const VERSION: u32 = crate::corpus::fnv(&[include_str!("frng.rs"), include_str!("fixture.rs"), include_str!("outs.rs")]);
+pub const VERSION: u32 = v_utils::fuzz::fnv(&[v_utils::fuzz::FRNG_SRC, include_str!("fixture.rs"), include_str!("outs.rs")]);
 
 fn trace(f: &mut Frng) -> Vec<Step> {
 	let (mut out, mut ts) = (Vec::new(), 0i64);

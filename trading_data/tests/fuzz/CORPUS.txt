@@ -3,7 +3,7 @@
 # fix the bug, commit the new line, and `regressions` replays it forever. Do not hand-edit the
 # numbers — the trailing comment is the only free-form part.
 #
-# `version` is the generator fingerprint from `corpus.rs`, taken per target over the sources that
+# `version` is the generator fingerprint (`v_utils::fuzz::fnv`), taken per target over the sources that
 # decide what its `(seed, size)` means. A pair names a *trace* only under that generator: reshape it
 # and the same pair replays some unrelated trace — a random run wearing a regression test's name,
 # which is worse than no test, because it reports green for a case it never runs. So `regressions`
