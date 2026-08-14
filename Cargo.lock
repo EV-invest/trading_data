@@ -1517,7 +1517,7 @@ dependencies = [
 
 [[package]]
 name = "exchange_interactions"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "exchange_interactions_methods",
 ]
@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "exchange_interactions_methods"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "ahash 0.8.12",
  "arrayvec",
@@ -4705,7 +4705,7 @@ checksum = "199905e6153d6405f9728fe44daace35f8f837bbf830bb6e85fbd5828709a886"
 
 [[package]]
 name = "snapshot_fonts"
-version = "1.3.0"
+version = "2.0.0"
 dependencies = [
  "bon",
  "clap",
@@ -5466,10 +5466,8 @@ version = "0.5.1"
 dependencies = [
  "arrayvec",
  "arrow",
- "color-eyre",
  "iai-callgrind",
  "jiff",
- "miette",
  "parquet",
  "tempfile",
  "thiserror 2.0.19",

@@ -181,12 +181,12 @@ macro_rules! grad_fn {
 /// a tree rather than as a comparison over numbers. Every other shape contributes nothing, which is
 /// what leaves `Ast::strictly` answering for the rows that named a comparison and no others.
 macro_rules! strictly_case {
-	(skip; $node:ident, $V:path, ($a:ident, $b:ident), [$x:ident < $y:ident]) => {
+	(skip; $node:ident, $V:path,($a:ident, $b:ident),[$x:ident < $y:ident]) => {
 		if let $V($a, $b) = $node {
 			return Ast::Cmp(Box::new((**$x).clone()), Box::new((**$y).clone()));
 		}
 	};
-	($shape:tt; $node:ident, $V:path, ($a:ident, $b:ident), [$($g:tt)*]) => {};
+	($shape:tt; $node:ident, $V:path,($a:ident, $b:ident),[$($g:tt)*]) => {};
 }
 
 /// One row per operator, and both planes are read off it: the `Copy` marker struct and its [`Expr`]

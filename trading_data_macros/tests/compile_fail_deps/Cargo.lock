@@ -1732,9 +1732,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils"
-version = "2.17.2"
+version = "2.17.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11ca6de6cb55c2676380b7b01b396eb2ff9b4793f0266f472dc8340827d8d917"
+checksum = "54272218e4500a69cec30d05aedb9375c0633385b4346ef849c89fe19b4adeb1"
 dependencies = [
  "ahash",
  "bon",
@@ -1774,9 +1774,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils_macros"
-version = "2.12.3"
+version = "2.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e7266f052df0361c06adf1a4e1ba0a800f2b0eb9e792ed2f847b1b0f6718c32"
+checksum = "719313c7eef1d9433ddff1c2cd7c0c2bca9b0a684f826beea31257238dce56a9"
 dependencies = [
  "eyre",
  "heck",

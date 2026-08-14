@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 
 use trading_data::{
 	Armed, Bar, Batch as _, Blind as _, Book, BookChunk, BookDelta, BookShape, Buffering, Close, Elems, Episode, Exact, ExchangeName, Feed as _, Fold, Horizon, Latch as _, LatencyConfig,
-	Mc, McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, Past, Predicate, ReadClock, Reading, Replay, Rewound, Runs as _, Scan, Side, Step, TradeCols, Volume, Volumes,
-	bench::ring::Ring, required_lanes,
+	Mc, McRoot, Ohlc, Ohlcs, Oi, OiRoot, Over, Past, Predicate, ReadClock, Reading, Replay, Rewound, Runs as _, Scan, Side, Step, TradeCols, Volume, Volumes, bench::ring::Ring,
+	required_lanes,
 };
 use trading_data_spl::{
 	config::Config,
