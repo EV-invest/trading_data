@@ -11,4 +11,4 @@ The same graph runs live or over a recorded month; the only seam between the two
 ![one element sequence, four groupings of it into ticks](docs/.readme_assets/fuzz.svg)
 
 A fuzz trace, not a demo: the same elements grouped into ticks four different ways, drawn as the `Census` the engine already prints. The fire counts diverge, the folded element stream does not — which is the claim `rates.folds.exactly-once` makes and the `schedule` fuzz target checks.
-// film it yourself: `FUZZ_FILM=docs/.readme_assets/fuzz.svg cargo t -p trading_data --features bench --test fuzz`.
+// film it yourself: `nix run .#film`.

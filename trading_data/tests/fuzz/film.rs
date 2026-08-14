@@ -162,7 +162,7 @@ pub fn film(out: &Path) {
 	);
 
 	let svg = render(&frames, &footer);
-	// A relative path is the workspace root's, not the test runner's cwd — same reason `corpus::path`
+	// A relative path is the workspace root's, not the test runner's cwd — same reason the corpus path
 	// leans on `CARGO_MANIFEST_DIR`, and the asset this writes lives one level above that.
 	let out = match out.is_absolute() {
 		true => out.to_path_buf(),

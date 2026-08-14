@@ -25,6 +25,16 @@
           enable = true;
           lastSupportedVersion = "nightly-2026-07-14";
           jobs.default = true;
+          # The film is generated and committed, so nothing else notices when the generator moves
+          # under it. Daily rather than per-run: it builds the whole workspace to redraw one SVG.
+          jobs.other.augment = [{
+            name = "asset-gate";
+            args = {
+              asset = "docs/.readme_assets/fuzz.svg";
+              command = "nix run .#film";
+              everySeconds = 86400;
+            };
+          }];
           lfs = false;
         };
         readme = v_flakes.readme-fw {
@@ -35,6 +45,19 @@
           badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
         };
         combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
+
+        # Redraws the README's fuzz film. The seed is pinned rather than left to the film's own
+        # best-of-scan: an asset a CI job diffs has to be a function of the tree alone, and
+        # best-of-scan makes it a function of the scan too.
+        film = pkgs.writeShellApplication {
+          name = "film";
+          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold ];
+          text = ''
+            cd "$(git rev-parse --show-toplevel)"
+            FUZZ_SEED=0 FUZZ_FILM="''${ASSET_OUT:-''${1:-docs/.readme_assets/fuzz.svg}}" \
+              cargo test -p trading_data --features bench --test fuzz fuzz -- --nocapture
+          '';
+        };
 
         # `viz <simple|live|spl>` — our example owns the runtime, the graph and the port; exec_viz is a
         # library plus a bundle builder, so all we take from it is a directory to serve. It builds
@@ -122,6 +145,7 @@
           spl = { type = "app"; program = "${pkgs.writeShellScript "spl" ''exec ${viz}/bin/viz spl "$@"''}"; };
           spl_bench = { type = "app"; program = pkgs.lib.getExe spl_bench; };
           measure = { type = "app"; program = pkgs.lib.getExe measure; };
+          film = { type = "app"; program = pkgs.lib.getExe film; };
         };
 
         packages =
