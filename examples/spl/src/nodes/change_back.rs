@@ -1,5 +1,5 @@
 use trading_data::{
-	Buffering, Cell, DepOuts, Env, Exact, Lagged, Over, Reading, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, abs, absent, closed_by, constant, gt, node, select, slice_nudge,
+	Buffering, Cell, DepReads, Env, Exact, Over, Reading, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, abs, absent, closed_by, constant, gt, node, select, slice_nudge,
 };
 
 /// Percent change against the `REF` close standing `BACK` back, asked once per closed `CLK` bar.
@@ -27,17 +27,17 @@ impl<const CLK: Timeframe, const REF: Timeframe, const BACK: Timeframe, const RE
 	/// is that lookback plus one period of the buffered series itself.
 	type Deps = (trading_data::Bars<CLK>, Buffering<trading_data::Bars<REF>, Over<REACH>>);
 
-	fn read<W: Witness>((clk, refs): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((clk, refs): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		let () = Self::REACHES_A_PERIOD_PAST;
-		let (b, lag) = clk.at(i)?;
+		let b = clk.at(i)?;
 		let closed = closed_by(refs.all(), b.ts_close);
 		let back_to = b.ts_close - Exact::from(BACK.duration());
 		// The close standing `BACK` back is the first one after `back_to`; index 0 means the retained
 		// run does not reach behind it, so there is nothing that old to compare against yet — which
 		// declines, rather than putting an absence the body would have to compare.
-		let (h, h_lag) = closed.as_slice().iter().position(|h| h.ts_close > back_to).filter(|&i| i > 0).and_then(|i| closed.at(i))?;
-		env.dep(0).lag(lag).put(b);
-		env.dep(1).lag(h_lag).put(h);
+		let h = closed.as_slice().iter().position(|h| h.ts_close > back_to).filter(|&i| i > 0).and_then(|i| closed.at(i))?;
+		env.put(b);
+		env.put(h);
 		Some(b.ts_ns())
 	}
 

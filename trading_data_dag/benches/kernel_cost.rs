@@ -24,7 +24,7 @@ use std::hint::black_box;
 
 use iai_callgrind::{Callgrind, EventKind, LibraryBenchmarkConfig, library_benchmark, library_benchmark_group, main};
 use trading_data_dag::{
-	Blind, Cell, Cons, DepOuts, Emit, Emitter, Env, Kernel, Lagged, Nil, Node, Opaque, Pure, Raw, Runs, Scan, Scans, Slots, Symbolic, Wired, Witness, step, step_emit, value_nudge,
+	Blind, Cell, Cons, DepOuts, DepReads, Emit, Emitter, Env, Kernel, Nil, Node, Opaque, Pure, Raw, Runs, Scan, Scans, Slots, Symbolic, Wired, Witness, step, step_emit, value_nudge,
 };
 use trading_data_expr::{Expr, Vars, constant};
 
@@ -136,9 +136,8 @@ impl Wired for Scanned {
 	type Deps = (Src,);
 }
 impl Scans for Scanned {
-	fn read<W: Witness>((src,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-		let (e, lag) = src.at(i)?;
-		env.dep(0).lag(lag).put(e);
+	fn read<W: Witness>((src,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		env.put(src.at(i)?);
 		Some(0)
 	}
 

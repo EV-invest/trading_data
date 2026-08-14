@@ -18,8 +18,8 @@
 //! `trading_data_dag/tests/gate.rs` does, so every state reached here is production-reachable.
 
 use trading_data::{
-	Blind, Buffering, Bump, Carried, Cell, DepOuts, Elems, Env, Flat, Folding, Folds, Gate, Gating, Glance, Lagged, Over, Reading, Runs, Sampling, Slots, Stamped, Unbounded, Vars, Witness,
-	absent, always_present, constant, graph, lt, min, node, select, slice_nudge, value_nudge,
+	Blind, Buffering, Bump, Carried, Cell, DepOuts, DepReads, Elems, Env, Flat, Folding, Folds, Gate, Gating, Glance, Over, Reading, Runs, Sampling, Slots, Stamped, Unbounded, Vars,
+	Witness, absent, always_present, constant, graph, lt, min, node, select, slice_nudge, value_nudge,
 };
 use v_utils::TF_1MIN;
 
@@ -188,9 +188,8 @@ impl Folds for Warmup {
 	/// The running sum, and how many elements have reached it.
 	const STATE: usize = 2;
 
-	fn read<W: Witness>((src,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-		let (x, lag) = src.at(i)?;
-		env.dep(0).lag(lag).put(x);
+	fn read<W: Witness>((src,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		env.put(src.at(i)?);
 		Some(0)
 	}
 

@@ -4,8 +4,8 @@
 //! the point of engine-owned retention.
 
 use trading_data_dag::{
-	Blind, Buffer, Buffering, Bump, Cell, DepOuts, Elems, Env, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Over, Reading, Runs, Scans, Slots, Stamped, Vars, Want,
-	Witness, graph, node, slice_nudge,
+	Blind, Buffer, Buffering, Bump, Cell, DepOuts, DepReads, Elems, Env, Episode, Fire, Flat, Gate, Gating, Glance, Horizon, Latch, Observer, Over, Reading, Runs, Scans, Slots, Stamped,
+	Vars, Want, Witness, graph, node, slice_nudge,
 };
 use v_utils::{Timeframe, TimeframeDesignator};
 
@@ -80,12 +80,12 @@ impl Cell for Sum3 {
 impl Scans for Sum3 {
 	type Deps = (Buffering<Src, Elems<3>>,);
 
-	fn read<W: Witness>((hist,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-		let (win, oldest) = hist.trailing_at(i)?;
-		for (k, x) in win.iter().enumerate() {
-			env.dep(0).lag(oldest - k).put(x);
+	fn read<W: Witness>((hist,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let win = hist.trailing_at(i)?;
+		for x in win.picks() {
+			env.put(x);
 		}
-		Some(win[win.len() - 1].ts)
+		Some(win.as_slice()[win.len() - 1].ts)
 	}
 
 	fn body(&self, v: Vars) -> impl Slots {

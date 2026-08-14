@@ -111,6 +111,11 @@ pub fn item(input: TokenStream) -> Result<TokenStream> {
 	let dag = dag_path()?;
 
 	let n = slots.len();
+	// one `Field` per slot, so a partial reading names a field where it would otherwise number one.
+	let fields = slots.iter().enumerate().map(|(i, s)| {
+		let name = Ident::new(&s.name.to_string().to_uppercase(), s.name.span());
+		quote!(pub const #name: #dag::Field<Self> = #dag::Field::at(#i);)
+	});
 	// One absent slot is an absence channel on the whole out: `ABSENTABLE` is what a declining body
 	// publishes through, and it is per-out because that is what the kernels can check.
 	let absentable = slots.iter().any(|s| s.absent);
@@ -140,6 +145,10 @@ pub fn item(input: TokenStream) -> Result<TokenStream> {
 	});
 
 	Ok(quote! {
+		impl #ty {
+			#(#fields)*
+		}
+
 		impl #dag::Flat for #ty {
 			const ABSENTABLE: bool = #absentable;
 			const DIMS: &'static [usize] = &[#n];

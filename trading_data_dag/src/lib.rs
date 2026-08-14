@@ -930,6 +930,11 @@ impl Plot {
 )]
 pub trait DepSet {
 	type Outs<'t>;
+	/// The same outs as *positions* — each dep wrapped in the [`Dep`] it is, so a `read` selects off a
+	/// view that already knows which dep it is and the reading it hands back needs no author to say.
+	/// Only the three per-element body traits take these; every other body destructures [`Outs`](DepSet::Outs)
+	/// and uses the outs directly, with no `read`-only concern to pay for.
+	type Reads<'t>: Copy;
 	const NAMES: &'static [&'static str];
 	/// Per-dep [`Cell::REACH`], positionally — how far back a revived node must look, input by input.
 	const REACH: &'static [Horizon];
@@ -948,6 +953,9 @@ pub trait DepSet {
 	/// The leading dep's [`Cell::Gates`], which — gating deps leading, as [`Pull::open`] const-asserts
 	/// — is "is this node gated at all", in the type position [`Dark`] dispatches on.
 	type Lead: Bit;
+
+	/// The pulled outs at their positions, for a per-element kernel to hand its body.
+	fn reads<'t>(outs: &Self::Outs<'t>) -> Self::Reads<'t>;
 }
 
 /// What a cell reads, stated once. Every trait a node is written through — the body traits, [`Node`]
@@ -971,6 +979,9 @@ pub trait Wired {
 /// (concrete types there hit E0195). One alias rather than one per trait: [`Wired`] is the only
 /// place a `Deps` is declared, so there is only one projection to name.
 pub type DepOuts<'t, N> = <<N as Wired>::Deps as DepSet>::Outs<'t>;
+
+/// [`DepOuts`] at their positions — what a per-element kernel's `read` selects off.
+pub type DepReads<'t, N> = <<N as Wired>::Deps as DepSet>::Reads<'t>;
 
 const fn any(flags: &[bool]) -> bool {
 	let mut i = 0;
@@ -1435,32 +1446,71 @@ impl Witness for Provenance {
 /// What a per-element kernel's `read` fills: the body's env, and — where one is watching — which
 /// element of which dep each slot was copied from.
 ///
-/// Slots are appended in the order they are put, so a site names the dep and the lag rather than
-/// counting offsets by hand.
+/// Three kinds of slot, each producible only by its owner: a copy of one element ([`put`](Env::put),
+/// which takes a reading a dep minted and reads all three coordinates off it), the kernel's own
+/// carry at a static `[base, base + carry)`, and an [`attr`](Env::attr) the body computed and no
+/// column stands for.
 pub struct Env<'a, W: Witness> {
 	slots: &'a mut [f64],
 	at: usize,
+	/// Where the kernel's carry sits — `DepFlat::LEN`, so the deps' own elements lead the env (which
+	/// is what lines the body's gradient up with the Jacobian's columns) and both bodies of a
+	/// recurrence read the carry at one index whatever else the reading put.
+	base: usize,
+	carry: usize,
 	witness: W,
 }
 
 impl<'a, W: Witness> Env<'a, W> {
-	/// The values written next come off dep `dep`, at [`lag`](Put::lag) 0 until said otherwise.
-	pub fn dep(&mut self, dep: usize) -> Put<'_, 'a, W> {
-		Put { env: self, src: Some((dep, 0, 0)) }
+	/// Appends a reading a dep handed out — its element's slots, and the `(dep, lag, slot)` it came
+	/// from. There is no other way in, so no site states a provenance and none can misstate one.
+	// r[impl outs.absence.typed]
+	pub fn put<P: Put>(&mut self, p: P) {
+		let at = self.take(P::LEN);
+		let fired = p.write(&mut self.slots[at..at + P::LEN]);
+		// the one route by which an absent *dep* becomes a NaN *operand*. A `read` holding an absent
+		// element declines — `Some(x?)` — rather than NaN-filling the env behind the body's back.
+		debug_assert!(fired, "an absent reading is a decline, not an operand: return `None` from `read` instead of putting one");
+		for k in 0..P::LEN {
+			self.witness.see(
+				at + k,
+				Source::Dep {
+					dep: P::DEP,
+					lag: p.lag(),
+					slot: p.slot() + k,
+				},
+			);
+		}
 	}
 
-	/// A reading no element stands behind — a side, a count, a threshold. Written like any other,
-	/// and claimed by no column.
-	pub fn opaque(&mut self) -> Put<'_, 'a, W> {
-		Put { env: self, src: None }
+	/// A number the body computed rather than copied — a side, a count, a threshold. Claimed by no
+	/// column, which is the whole of what putting one here says.
+	pub fn attr(&mut self, v: f64) {
+		let at = self.take(1);
+		self.slots[at] = v;
+		self.witness.see(at, Source::Opaque);
 	}
 
-	pub(crate) fn new(slots: &'a mut [f64]) -> Self {
+	pub(crate) fn new(slots: &'a mut [f64], base: usize, carry: usize) -> Self {
+		debug_assert!(base + carry <= slots.len(), "the env buffer holds the deps' elements and the kernel's carry");
 		Self {
 			slots,
 			at: 0,
+			base,
+			carry,
 			witness: W::default(),
 		}
+	}
+
+	/// The carry's band is the kernel's, so a reading that has filled the deps' own width continues
+	/// past it.
+	fn take(&mut self, n: usize) -> usize {
+		if self.at == self.base {
+			self.at = self.base + self.carry;
+		}
+		let at = self.at;
+		self.at += n;
+		at
 	}
 
 	/// Back to the start, for the next element of the walk. The witness is left standing: only the
@@ -1469,12 +1519,24 @@ impl<'a, W: Witness> Env<'a, W> {
 		self.at = 0;
 	}
 
-	/// What the reading filled — the env the body is evaluated over, and its width.
-	pub(crate) fn filled(&self) -> &[f64] {
-		&self.slots[..self.at]
+	/// The env the body is evaluated over — never shorter than the deps' elements and the carry,
+	/// however little of it the reading named.
+	pub(crate) fn width(&self) -> usize {
+		self.at.max(self.base + self.carry)
 	}
 
-	/// The whole buffer, for a kernel appending its own state past the reading.
+	/// What the reading filled — the env the body is evaluated over, and its width.
+	pub(crate) fn filled(&self) -> &[f64] {
+		&self.slots[..self.width()]
+	}
+
+	/// Whether the reading left the carry's band alone: it either stopped at the deps' own width or
+	/// carried on past the band.
+	pub(crate) fn aligned(&self) -> bool {
+		self.at == self.base || self.at >= self.base + self.carry
+	}
+
+	/// The whole buffer, for a kernel writing its own state into the band it reserved.
 	pub(crate) fn buf(&mut self) -> &mut [f64] {
 		self.slots
 	}
@@ -1484,46 +1546,210 @@ impl<'a, W: Witness> Env<'a, W> {
 	}
 }
 
-/// One reading being written into an [`Env`], and where it came from.
-pub struct Put<'e, 'a, W: Witness> {
-	env: &'e mut Env<'a, W>,
-	/// `(dep, lag, slot)`, or nothing a derivative has a variable for.
-	src: Option<(usize, usize, usize)>,
+/// One reading an [`Env`] takes: a copy of one element's slots, and the three coordinates it came
+/// from. Implemented by the tokens a [`Dep`] mints and by nothing else — which is what leaves an
+/// author no way to state a provenance, and so no way to state a wrong one.
+pub trait Put {
+	/// Which dep the element came off, read off the position the view carried.
+	const DEP: usize;
+	/// How many env slots this copies.
+	const LEN: usize;
+	/// How far back the element stands from the one this dep's [`Jac`] column describes.
+	fn lag(&self) -> usize;
+	/// Which slot of the element the first value copied is.
+	fn slot(&self) -> usize;
+	fn write(&self, out: &mut [f64]) -> bool;
 }
 
-impl<W: Witness> Put<'_, '_, W> {
-	/// How far back the element read stands from the one this dep's [`Jac`] column describes.
-	pub fn lag(mut self, lag: usize) -> Self {
-		self.src = self.src.map(|(d, _, s)| (d, lag, s));
-		self
-	}
+/// A named slot of an item — one per `#[slot]` field, written by `#[derive(Item)]`. Carrying the
+/// item in the type is what makes a field of some *other* item a compile error rather than a column
+/// silently describing the wrong number.
+pub struct Field<T> {
+	at: usize,
+	item: core::marker::PhantomData<T>,
+}
 
-	/// Which slot of the dep's element the first value written is — for a reading that takes one
-	/// field rather than the whole element.
-	pub fn slot(mut self, slot: usize) -> Self {
-		self.src = self.src.map(|(d, l, _)| (d, l, slot));
-		self
+// hand-written: `derive` would demand `T: Copy`, which is a bound on the item and not on naming one
+// of its fields.
+impl<T> Clone for Field<T> {
+	fn clone(&self) -> Self {
+		*self
 	}
+}
+impl<T> Copy for Field<T> {}
 
-	/// Appends `v`'s slots, provenance and all.
-	// r[impl outs.absence.typed]
-	pub fn put<T: Flat>(self, v: &T) {
-		let Put { env, src } = self;
-		let (at, n) = (env.at, T::LEN);
-		let fired = flatten(v, &mut env.slots[at..at + n]);
-		// the one route by which an absent *dep* becomes a NaN *operand*. A `read` holding an absent
-		// element declines — `Some(x?)` — rather than NaN-filling the env behind the body's back.
-		debug_assert!(fired, "an absent reading is a decline, not an operand: return `None` from `read` instead of putting one");
-		for k in 0..n {
-			env.witness.see(
-				at + k,
-				match src {
-					Some((dep, lag, slot)) => Source::Dep { dep, lag, slot: slot + k },
-					None => Source::Opaque,
-				},
-			);
+impl<T: Flat> Field<T> {
+	#[doc(hidden)]
+	pub const fn at(at: usize) -> Self {
+		assert!(at < T::LEN, "a field of an item is one of its slots");
+		Self {
+			at,
+			item: core::marker::PhantomData,
 		}
-		env.at = at + n;
+	}
+}
+
+/// One element of one dep, at the lag that dep handed it out at — the reading a body puts. Derefs to
+/// the element, so a selection may read what is not a slot: an event time above all, which is the
+/// kernel's to carry and never a variable (`r[kernels.selection.index-is-not-a-variable]`).
+pub struct Pick<const D: usize, T> {
+	elem: T,
+	lag: usize,
+}
+
+impl<const D: usize, T: Copy> Clone for Pick<D, T> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+impl<const D: usize, T: Copy> Copy for Pick<D, T> {}
+
+impl<const D: usize, T> core::ops::Deref for Pick<D, T> {
+	type Target = T;
+
+	fn deref(&self) -> &T {
+		&self.elem
+	}
+}
+
+impl<const D: usize, T: Flat> Pick<D, T> {
+	/// One named field of the element, for a reading that takes a field rather than the whole of it.
+	pub fn slot(self, f: Field<T>) -> Part<D, T> {
+		Part { pick: self, at: f.at }
+	}
+}
+
+impl<const D: usize, T: Flat> Put for Pick<D, T> {
+	const DEP: usize = D;
+	const LEN: usize = T::LEN;
+
+	fn lag(&self) -> usize {
+		self.lag
+	}
+
+	fn slot(&self) -> usize {
+		0
+	}
+
+	fn write(&self, out: &mut [f64]) -> bool {
+		flatten(&self.elem, out)
+	}
+}
+
+/// One named field of one element — [`Pick`]'s partial, landing in that field's own column.
+pub struct Part<const D: usize, T> {
+	pick: Pick<D, T>,
+	at: usize,
+}
+
+impl<const D: usize, T: Flat> Put for Part<D, T> {
+	const DEP: usize = D;
+	const LEN: usize = 1;
+
+	fn lag(&self) -> usize {
+		self.pick.lag
+	}
+
+	fn slot(&self) -> usize {
+		self.at
+	}
+
+	fn write(&self, out: &mut [f64]) -> bool {
+		const { assert!(T::LEN <= MAX_SLOTS, "an item outgrew MAX_SLOTS: raise it in trading_data_dag") }
+		let mut all = [f64::NAN; MAX_SLOTS];
+		let fired = flatten(&self.pick.elem, &mut all[..T::LEN]);
+		out[0] = all[self.at];
+		fired
+	}
+}
+
+/// A dep as its *position*: the view a `read` selects off, and what mints every reading. A body names
+/// which element it wants and gets it back tagged with the dep it came from, so provenance records
+/// what happened rather than what was claimed.
+pub struct Dep<const D: usize, O>(O);
+
+impl<const D: usize, O: Copy> Clone for Dep<D, O> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+impl<const D: usize, O: Copy> Copy for Dep<D, O> {}
+
+impl<const D: usize, O: Lagged> Dep<D, O> {
+	/// Element `i` of the run, at its own lag from the newest.
+	pub fn at(self, i: usize) -> Option<Pick<D, O::Elem>> {
+		let (elem, lag) = self.0.nth(i)?;
+		Some(Pick { elem, lag })
+	}
+
+	pub fn len(self) -> usize {
+		self.0.count()
+	}
+
+	pub fn is_empty(self) -> bool {
+		self.len() == 0
+	}
+}
+
+impl<'t, const D: usize, T: Flat + Stamped> Dep<D, Hist<'t, T>> {
+	/// The element `n` back from `fresh()[i]` — see [`Hist::lagged_at`].
+	pub fn lagged_at(self, i: usize, n: usize) -> Option<Pick<D, T>> {
+		let (elem, lag) = self.0.lagged_at(i, n)?;
+		Some(Pick { elem: *elem, lag })
+	}
+
+	/// The window ending at `fresh()[i]`, every element of it carrying its own lag — see
+	/// [`Hist::trailing_at`].
+	pub fn trailing_at(self, i: usize) -> Option<Win<'t, D, T>> {
+		let (xs, oldest) = self.0.trailing_at(i)?;
+		Some(Win { xs, oldest })
+	}
+
+	/// `past ++ fresh`, for a cross-rate reader that has to search for the element it wants — see
+	/// [`Hist::all`].
+	pub fn all(self) -> Tail<'t, D, T> {
+		Tail { xs: self.0.all(), back: 0 }
+	}
+}
+
+/// A trailing window, every element of which knows its own lag — so a body folding one names no
+/// offsets and computes none.
+pub struct Win<'t, const D: usize, T> {
+	xs: &'t [T],
+	/// The lag of the window's *first* element.
+	oldest: usize,
+}
+
+impl<const D: usize, T> Clone for Win<'_, D, T> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+impl<const D: usize, T> Copy for Win<'_, D, T> {}
+
+impl<'t, const D: usize, T: Flat> Win<'t, D, T> {
+	/// The window's elements, oldest first.
+	pub fn picks(self) -> impl Iterator<Item = Pick<D, T>> + 't {
+		self.xs.iter().enumerate().map(move |(k, x)| Pick { elem: *x, lag: self.oldest - k })
+	}
+
+	/// The element the window opens on — a window is never empty, so this is a reading and not an
+	/// `Option`.
+	pub fn oldest(self) -> Pick<D, T> {
+		Pick { elem: self.xs[0], lag: self.oldest }
+	}
+
+	/// The elements themselves, for a search that reads more than one of them.
+	pub fn as_slice(self) -> &'t [T] {
+		self.xs
+	}
+
+	pub fn len(self) -> usize {
+		self.xs.len()
+	}
+
+	pub fn is_empty(self) -> bool {
+		self.xs.is_empty()
 	}
 }
 
@@ -2048,11 +2274,12 @@ where
 	/// driving element carried nothing, which is absence arriving rather than the body declining, and
 	/// is answered without evaluating anything.
 	///
-	/// Slots are appended in the order the body reads them, each naming the dep and the lag it came
-	/// off ([`Env::dep`]) or standing for no element at all ([`Env::opaque`]). Leading with the deps'
-	/// own elements at lag 0, in `Deps` order, is what lines the body's gradient up with the
-	/// Jacobian's columns; naming the lag is what lets [`Kernel::exact`] cover the rest of the reach.
-	fn read<W: Witness>(deps: &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
+	/// Slots are appended in the order the body reads them: a reading a dep minted ([`Env::put`]),
+	/// which carries the dep, the lag and the element slot it was copied from, or a number the body
+	/// computed and no column stands for ([`Env::attr`]). Leading with the deps' own elements at lag
+	/// 0, in `Deps` order, is what lines the body's gradient up with the Jacobian's columns; the lag
+	/// the reading carries is what lets [`Kernel::exact`] cover the rest of the reach.
+	fn read<W: Witness>(deps: DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
 
 	/// One expression per slot of [`Series::Item`], over the env [`read`](Scans::read) filled.
 	fn body(&self, vars: Vars) -> impl Slots;
@@ -2124,10 +2351,11 @@ impl Scan {
 			"this body declines, and the item it fills has nowhere to say so: give it a `Reading`"
 		);
 		let (mut buf, mut slots) = ([f64::NAN; MAX_VARS], [f64::NAN; MAX_SLOTS]);
-		let mut env = Env::<Blindfold>::new(&mut buf);
+		let mut env = Env::<Blindfold>::new(&mut buf, <E::Deps as DepFlat>::LEN, 0);
+		let reads = <E::Deps as DepSet>::reads(&deps);
 		for i in 0..<E::Deps as DepFlat>::lead_fires(&deps) {
 			env.rewind();
-			match <E as Scans>::read(&deps, i, &mut env) {
+			match <E as Scans>::read(reads, i, &mut env) {
 				Some(ts) => {
 					body.eval_slots(env.filled(), &mut slots[..slots_w]);
 					out.push(<E::Item as Unflat>::unflat(ts, &slots[..slots_w]));
@@ -2170,8 +2398,8 @@ where
 		// zeroed, not NaN-filled: `grad` accumulates, and a slot the body never reads has a partial of
 		// 0 rather than no partial.
 		let mut buf = [0.0f64; MAX_VARS];
-		let mut env = Env::<Blindfold>::new(&mut buf);
-		<E as Scans>::read(&deps, last, &mut env)?;
+		let mut env = Env::<Blindfold>::new(&mut buf, <E::Deps as DepFlat>::LEN, 0);
+		<E as Scans>::read(<E::Deps as DepSet>::reads(&deps), last, &mut env)?;
 		let stride = env.filled().len();
 		let body = e.body(Vars);
 		let mut grad = [0.0f64; MAX_SLOTS * MAX_VARS];
@@ -2213,8 +2441,8 @@ where
 			return false;
 		};
 		let mut buf = [0.0f64; MAX_VARS];
-		let mut env = Env::<Provenance>::new(&mut buf);
-		if <E as Scans>::read(&x.deps, last, &mut env).is_none() {
+		let mut env = Env::<Provenance>::new(&mut buf, <E::Deps as DepFlat>::LEN, 0);
+		if <E as Scans>::read(<E::Deps as DepSet>::reads(&x.deps), last, &mut env).is_none() {
 			return false;
 		}
 		debug_assert_eq!(env.filled().len(), alg.stride, "the reading `pre` differentiated and the one scattered here are one");
@@ -2246,24 +2474,20 @@ where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
-	/// Env slots past the deps' own flattenings — a lag, a window's edge, or a discrete attribute
-	/// [`Flat`] leaves out because it is no derivative's variable. [`Folds::EXTRA`]'s twin: a slot a
-	/// body computes from is a slot no column may stand for, so the room to put one is what keeps
-	/// every column a copy (`r[kernels.selection.index-is-not-a-variable]`).
-	const EXTRA: usize = 0;
 	/// The period the walk closes on, floored from the epoch.
 	const PERIOD: Timeframe;
 
-	/// Fills the driving element's own slots and then [`EXTRA`](Closes::EXTRA) more, exactly as
-	/// [`Scans::read`] does, and returns its event time — which is what the walk is keyed on and is
-	/// deliberately not a slot (`r[kernels.selection.index-is-not-a-variable]`).
-	fn read<W: Witness>(deps: &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
+	/// Fills the driving element's own slots, exactly as [`Scans::read`] does, and returns its event
+	/// time — which is what the walk is keyed on and is deliberately not a slot
+	/// (`r[kernels.selection.index-is-not-a-variable]`). Anything the body computes rather than copies
+	/// ([`Env::attr`]) lands past the accumulator, so no node declares an offset for it.
+	fn read<W: Witness>(deps: DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
 
 	/// What a period's first element opens the accumulator with, over the element's slots alone.
 	fn open(&self, vars: Vars) -> impl Slots;
 
-	/// What a further element folds into it. The accumulator's own slots follow the reading's, at
-	/// `DepFlat::LEN + EXTRA..`, so both bodies read the element at one set of indices.
+	/// What a further element folds into it. The accumulator's own slots follow the deps' at
+	/// `DepFlat::LEN..`, so both bodies read the element at one set of indices.
 	fn fold(&self, vars: Vars) -> impl Slots;
 
 	fn pending(&self) -> &Pending;
@@ -2274,19 +2498,18 @@ where
 pub struct Close;
 impl sealed::Kernel for Close {}
 
-/// The element width, where the accumulator starts, the env width, and the item's slot count —
-/// [`fold_widths`]'s shape, because the two kernels lay their env out the same way.
-const fn close_widths<E: Closes>() -> (usize, usize, usize, usize)
+/// The deps' own width — where the accumulator starts — and the item's slot count, which is how wide
+/// the accumulator is. [`fold_widths`]'s shape, because the two kernels lay their env out the same
+/// way.
+const fn close_widths<E: Closes>() -> (usize, usize)
 where
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Deps: DepFlat,
 	E::Item: Flat, {
-	let elem = <E::Deps as DepFlat>::LEN;
-	let base = elem + <E as Closes>::EXTRA;
-	let (env, slots) = (base + <E::Item as Flat>::LEN, <E::Item as Flat>::LEN);
-	assert!(env <= MAX_VARS, "a Closes env outgrew MAX_VARS: raise it in trading_data_dag");
+	let (base, slots) = (<E::Deps as DepFlat>::LEN, <E::Item as Flat>::LEN);
+	assert!(base + slots <= MAX_VARS, "a Closes env outgrew MAX_VARS: raise it in trading_data_dag");
 	assert!(slots <= MAX_SLOTS, "a Closes accumulator outgrew MAX_SLOTS: raise it in trading_data_dag");
-	(elem, base, env, slots)
+	(base, slots)
 }
 
 /// The walk itself, against a caller-owned node and run. `advance` is this with the [`Emitter`]'s
@@ -2300,12 +2523,13 @@ impl Close {
 		for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 		E::Item: Unflat,
 		E::Deps: DepFlat, {
-		let (_, base_w, env_w, slots_w) = const { close_widths::<E>() };
+		let (base_w, slots_w) = const { close_widths::<E>() };
 		let step = Horizon::ns(<E as Closes>::PERIOD);
 		let mut p = *e.pending();
 		let (mut buf, mut slots) = ([f64::NAN; MAX_VARS], [f64::NAN; MAX_SLOTS]);
 		{
-			let mut env = Env::<Blindfold>::new(&mut buf);
+			let mut env = Env::<Blindfold>::new(&mut buf, base_w, slots_w);
+			let reads = <E::Deps as DepSet>::reads(&deps);
 			let (open, fold) = (e.open(Vars), e.fold(Vars));
 			debug_assert_eq!(open.len(), slots_w, "a Closes body states one expression per slot of its item");
 			debug_assert_eq!(fold.len(), slots_w, "a Closes body states one expression per slot of its item");
@@ -2316,13 +2540,14 @@ impl Close {
 			);
 			for i in 0..<E::Deps as DepFlat>::lead_fires(&deps) {
 				env.rewind();
-				let Some(ts) = <E as Closes>::read(&deps, i, &mut env) else { continue };
-				debug_assert_eq!(env.filled().len(), base_w, "a Closes reading is the driving element and its EXTRA, and the accumulator follows");
+				let Some(ts) = <E as Closes>::read(reads, i, &mut env) else { continue };
+				debug_assert!(env.aligned(), "a Closes reading is the driving element's own slots, and the accumulator follows them");
 				let ts_close = ts - ts.rem_euclid(step) + step;
+				let env_w = env.width();
 				let env = env.buf();
 				match p.live && p.ts_close == ts_close {
 					true => {
-						env[base_w..env_w].copy_from_slice(&p.slots[..slots_w]);
+						env[base_w..base_w + slots_w].copy_from_slice(&p.slots[..slots_w]);
 						fold.eval_slots(&env[..env_w], &mut slots[..slots_w]);
 					}
 					false => {
@@ -2372,24 +2597,26 @@ where
 		if want < Want::Jac {
 			return None;
 		}
-		let (_, base_w, env_w, slots_w) = const { close_widths::<E>() };
+		let (base_w, slots_w) = const { close_widths::<E>() };
 		let step = Horizon::ns(<E as Closes>::PERIOD);
 		let mut p = *e.pending();
 		let (mut buf, mut slots) = ([0.0f64; MAX_VARS], [0.0f64; MAX_SLOTS]);
-		let mut env = Env::<Blindfold>::new(&mut buf);
+		let mut env = Env::<Blindfold>::new(&mut buf, base_w, slots_w);
+		let reads = <E::Deps as DepSet>::reads(&deps);
 		let (open, fold) = (e.open(Vars), e.fold(Vars));
 		// the newest element to have touched the open period, and whether it folded or opened it —
 		// which is what the element closed by the *next* boundary was last computed from.
 		let (mut newest, mut closed) = (None, None);
 		for i in 0..<E::Deps as DepFlat>::lead_fires(&deps) {
 			env.rewind();
-			let Some(ts) = <E as Closes>::read(&deps, i, &mut env) else { continue };
+			let Some(ts) = <E as Closes>::read(reads, i, &mut env) else { continue };
 			let ts_close = ts - ts.rem_euclid(step) + step;
 			let folding = p.live && p.ts_close == ts_close;
+			let env_w = env.width();
 			let cur = env.buf();
 			match folding {
 				true => {
-					cur[base_w..env_w].copy_from_slice(&p.slots[..slots_w]);
+					cur[base_w..base_w + slots_w].copy_from_slice(&p.slots[..slots_w]);
 					fold.eval_slots(&cur[..env_w], &mut slots[..slots_w]);
 				}
 				false => {
@@ -2401,14 +2628,14 @@ where
 			}
 			let mut held = [0.0f64; MAX_VARS];
 			held.copy_from_slice(cur);
-			newest = Some((held, folding));
+			newest = Some((held, folding, env_w));
 			p.slots[..slots_w].copy_from_slice(&slots[..slots_w]);
 			p.ts_close = ts_close;
 			p.live = true;
 		}
 		// nothing closed this batch, or what closed was carried in from before it — either way no
 		// element of this tick's deps is the one to differentiate against.
-		let (env, folding) = closed?;
+		let (env, folding, env_w) = closed?;
 		let mut grad = [0.0f64; MAX_SLOTS * MAX_VARS];
 		match folding {
 			true => fold.grad_slots(&env[..env_w], &mut grad[..slots_w * env_w]),
@@ -2471,16 +2698,14 @@ where
 	for<'x> Self: Cell<Out<'x> = &'x [<Self as Series>::Item]>, {
 	/// `&[]` draws nothing *by default* — the node stays in the topology and resolvable as a dep.
 	const PLOTS: &'static [Plot] = &[Plot::DEFAULT];
-	/// Env slots past the deps' own flattenings — a lag, a window's edge, or a discrete attribute
-	/// [`Flat`] leaves out because it is no derivative's variable.
-	const EXTRA: usize = 0;
 	/// How many slots the recurrence carries.
 	const STATE: usize;
 
-	/// Fills the driving element's own slots and then [`EXTRA`](Folds::EXTRA) more, exactly as
-	/// [`Scans::read`] does; the state follows at `DepFlat::LEN + EXTRA`. `None` declines the element
-	/// *and leaves the state where it stood* — an average is not advanced by an absence.
-	fn read<W: Witness>(deps: &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
+	/// Fills the driving element's own slots, exactly as [`Scans::read`] does; the state follows at
+	/// `DepFlat::LEN`, and anything the body computes rather than copies ([`Env::attr`]) lands past
+	/// it. `None` declines the element *and leaves the state where it stood* — an average is not
+	/// advanced by an absence.
+	fn read<W: Witness>(deps: DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64>;
 
 	/// What the state becomes, over the env with the state as it stood.
 	fn step(&self, vars: Vars) -> impl Slots;
@@ -2496,21 +2721,16 @@ where
 pub struct Fold;
 impl sealed::Kernel for Fold {}
 
-/// The element width, where the state starts, the env width, and the item's slot count.
-const fn fold_widths<E: Folds>() -> (usize, usize, usize, usize)
+/// The deps' own width — where the state starts — how wide the state is, and the item's slot count.
+const fn fold_widths<E: Folds>() -> (usize, usize, usize)
 where
 	for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 	E::Deps: DepFlat,
 	E::Item: Flat, {
-	let dep = <E::Deps as DepFlat>::LEN;
-	let base = dep + <E as Folds>::EXTRA;
-	let (env, slots) = (base + <E as Folds>::STATE, <E::Item as Flat>::LEN);
-	assert!(env <= MAX_VARS, "a Folds env outgrew MAX_VARS: raise it in trading_data_dag");
-	assert!(
-		slots <= MAX_SLOTS && <E as Folds>::STATE <= MAX_SLOTS,
-		"a Folds item or state outgrew MAX_SLOTS: raise it in trading_data_dag"
-	);
-	(dep, base, env, slots)
+	let (base, carry, slots) = (<E::Deps as DepFlat>::LEN, <E as Folds>::STATE, <E::Item as Flat>::LEN);
+	assert!(base + carry <= MAX_VARS, "a Folds env outgrew MAX_VARS: raise it in trading_data_dag");
+	assert!(slots <= MAX_SLOTS && carry <= MAX_SLOTS, "a Folds item or state outgrew MAX_SLOTS: raise it in trading_data_dag");
+	(base, carry, slots)
 }
 
 /// The walk itself, against a caller-owned node and run. `advance` is this with the [`Emitter`]'s
@@ -2524,12 +2744,12 @@ impl Fold {
 		for<'x> E: Cell<Out<'x> = &'x [<E as Series>::Item]>,
 		E::Item: Unflat,
 		E::Deps: DepFlat, {
-		let (_, base, env_w, slots_w) = const { fold_widths::<E>() };
-		let carry = <E as Folds>::STATE;
+		let (base, carry, slots_w) = const { fold_widths::<E>() };
 		let mut c = *e.carried();
 		let (mut buf, mut slots) = ([f64::NAN; MAX_VARS], [f64::NAN; MAX_SLOTS]);
 		{
-			let mut env = Env::<Blindfold>::new(&mut buf);
+			let mut env = Env::<Blindfold>::new(&mut buf, base, carry);
+			let reads = <E::Deps as DepSet>::reads(&deps);
 			let (step, value) = (e.step(Vars), e.value(Vars));
 			debug_assert_eq!(step.len(), carry, "a Folds `step` states one expression per state slot");
 			debug_assert_eq!(value.len(), slots_w, "a Folds `value` states one expression per slot of its item");
@@ -2543,17 +2763,18 @@ impl Fold {
 			);
 			for i in 0..<E::Deps as DepFlat>::lead_fires(&deps) {
 				env.rewind();
-				let Some(ts) = <E as Folds>::read(&deps, i, &mut env) else {
+				let Some(ts) = <E as Folds>::read(reads, i, &mut env) else {
 					// rate-preserving, and the state untouched: nothing arrived to advance it.
 					out.push(<E::Item as Unflat>::unflat(0, &[f64::NAN; MAX_SLOTS][..slots_w]));
 					continue;
 				};
-				debug_assert_eq!(env.filled().len(), base, "a Folds reading is the driving element and its EXTRA, and the state follows");
+				debug_assert!(env.aligned(), "a Folds reading is the driving element's own slots, and the state follows them");
+				let env_w = env.width();
 				let cur = env.buf();
-				cur[base..env_w].copy_from_slice(&c.slots[..carry]);
+				cur[base..base + carry].copy_from_slice(&c.slots[..carry]);
 				step.eval_slots(&cur[..env_w], &mut slots[..carry]);
 				c.slots[..carry].copy_from_slice(&slots[..carry]);
-				cur[base..env_w].copy_from_slice(&c.slots[..carry]);
+				cur[base..base + carry].copy_from_slice(&c.slots[..carry]);
 				value.eval_slots(&cur[..env_w], &mut slots[..slots_w]);
 				out.push(<E::Item as Unflat>::unflat(ts, &slots[..slots_w]));
 			}
@@ -2585,32 +2806,34 @@ where
 		if want < Want::Jac {
 			return None;
 		}
-		let (dep_w, base, env_w, slots_w) = const { fold_widths::<E>() };
-		let carry = <E as Folds>::STATE;
+		let (base, carry, slots_w) = const { fold_widths::<E>() };
+		let dep_w = <E::Deps as DepFlat>::LEN;
 		let mut c = *e.carried();
 		let (mut buf, mut slots) = ([0.0f64; MAX_VARS], [0.0f64; MAX_SLOTS]);
-		let mut env = Env::<Blindfold>::new(&mut buf);
+		let mut env = Env::<Blindfold>::new(&mut buf, base, carry);
+		let reads = <E::Deps as DepSet>::reads(&deps);
 		let (step, value) = (e.step(Vars), e.value(Vars));
 		// the walk again, for the last element's two envs: a recurrence's derivative is of the state
 		// the value was computed from, and that state is only reached by replaying the batch.
 		let mut last = None;
 		for i in 0..<E::Deps as DepFlat>::lead_fires(&deps) {
 			env.rewind();
-			if <E as Folds>::read(&deps, i, &mut env).is_none() {
+			if <E as Folds>::read(reads, i, &mut env).is_none() {
 				continue;
 			}
+			let env_w = env.width();
 			let cur = env.buf();
-			cur[base..env_w].copy_from_slice(&c.slots[..carry]);
+			cur[base..base + carry].copy_from_slice(&c.slots[..carry]);
 			let mut before = [0.0f64; MAX_VARS];
 			before.copy_from_slice(cur);
 			step.eval_slots(&cur[..env_w], &mut slots[..carry]);
 			c.slots[..carry].copy_from_slice(&slots[..carry]);
-			cur[base..env_w].copy_from_slice(&c.slots[..carry]);
+			cur[base..base + carry].copy_from_slice(&c.slots[..carry]);
 			let mut after = [0.0f64; MAX_VARS];
 			after.copy_from_slice(cur);
-			last = Some((before, after));
+			last = Some((before, after, env_w));
 		}
-		let (before, after) = last?;
+		let (before, after, env_w) = last?;
 
 		// the chain rule across the two bodies: the element reaches the out directly and through the
 		// state it just moved, and holding the *prior* state fixed is what makes the sum the one-step
@@ -3080,35 +3303,48 @@ macro_rules! always_present {
 
 always_present!(f64);
 
-/// A run read for one of its elements, lag and all — so no per-element kernel counts `len - 1 - i`
-/// on its own. The lag is from the run's newest, which is the element a dep's [`Jac`] column stands
-/// for; [`Hist`] hands its own back from [`lagged_at`](Hist::lagged_at).
-pub trait Lagged<T> {
-	fn at(&self, i: usize) -> Option<(&T, usize)>;
+/// A dep out one element of which a reading may select, with how far that element stands behind the
+/// run's newest — the element a dep's [`Jac`] column stands for. Nothing reaches this directly: the
+/// element travels as a [`Pick`], which is [`Dep`]'s to mint, so no site counts `len - 1 - i`.
+pub trait Lagged: Copy {
+	type Elem: Flat;
 
-	fn newest(&self) -> Option<(&T, usize)>;
+	/// How many elements the walk has.
+	fn count(self) -> usize;
+
+	/// Element `i`, and its lag.
+	fn nth(self, i: usize) -> Option<(Self::Elem, usize)>;
 }
 
-impl<T> Lagged<T> for [T] {
-	fn at(&self, i: usize) -> Option<(&T, usize)> {
-		Some((self.get(i)?, self.len() - 1 - i))
+impl<T: Flat> Lagged for &[T] {
+	type Elem = T;
+
+	fn count(self) -> usize {
+		self.len()
 	}
 
-	fn newest(&self) -> Option<(&T, usize)> {
-		self.at(self.len().checked_sub(1)?)
+	fn nth(self, i: usize) -> Option<(T, usize)> {
+		Some((*self.get(i)?, self.len() - 1 - i))
 	}
 }
 
-/// A *prefix* of a run, carrying how far its own end stands behind the run's newest. A cross-rate
-/// reader cuts a series at its own deadline and then picks inside the cut; without this the pick
-/// would report a lag against the cut instead of against the column it lands in.
-#[derive(Clone, Copy, Debug)]
-pub struct Tail<'t, T> {
+/// A *prefix* of a run, carrying how far its own end stands behind the run's newest, and the dep it
+/// was cut from. A cross-rate reader cuts a series at its own deadline and then picks inside the cut;
+/// without this the pick would report a lag against the cut instead of against the column it lands
+/// in.
+pub struct Tail<'t, const D: usize, T> {
 	xs: &'t [T],
 	back: usize,
 }
 
-impl<'t, T> Tail<'t, T> {
+impl<const D: usize, T> Clone for Tail<'_, D, T> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+impl<const D: usize, T> Copy for Tail<'_, D, T> {}
+
+impl<'t, const D: usize, T: Flat> Tail<'t, D, T> {
 	/// The elements themselves, for a search that reads more than one of them.
 	pub fn as_slice(self) -> &'t [T] {
 		self.xs
@@ -3122,22 +3358,10 @@ impl<'t, T> Tail<'t, T> {
 			xs: &self.xs[..n],
 		}
 	}
-}
 
-impl<T> Lagged<T> for Tail<'_, T> {
-	fn at(&self, i: usize) -> Option<(&T, usize)> {
-		let (x, lag) = self.xs.at(i)?;
-		Some((x, lag + self.back))
-	}
-
-	fn newest(&self) -> Option<(&T, usize)> {
-		self.at(self.xs.len().checked_sub(1)?)
-	}
-}
-
-impl<'t, T> From<&'t [T]> for Tail<'t, T> {
-	fn from(xs: &'t [T]) -> Self {
-		Self { xs, back: 0 }
+	pub fn at(self, i: usize) -> Option<Pick<D, T>> {
+		let (elem, lag) = self.xs.nth(i)?;
+		Some(Pick { elem, lag: lag + self.back })
 	}
 }
 
@@ -3286,6 +3510,20 @@ impl<T: Flat> Flat for Hist<'_, T> {
 impl<T: Glance> Glance for Hist<'_, T> {
 	fn glance(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		self.fresh().glance(f)
+	}
+}
+
+/// The walk is over `fresh`, as every per-element kernel's is; the reach behind it is reached
+/// through the lagged readings rather than by walking further.
+impl<T: Flat + Stamped> Lagged for Hist<'_, T> {
+	type Elem = T;
+
+	fn count(self) -> usize {
+		self.fresh
+	}
+
+	fn nth(self, i: usize) -> Option<(T, usize)> {
+		self.lagged_at(i, 0).map(|(x, lag)| (*x, lag))
 	}
 }
 
@@ -3554,6 +3792,7 @@ value_nudge!([C: Gate] Gating<C>);
 impl DepSet for () {
 	type Lead = No;
 	type Outs<'t> = ();
+	type Reads<'t> = ();
 
 	const CLOCKS: &'static [Option<Timeframe>] = &[];
 	const FOLDS: &'static [bool] = &[];
@@ -3561,6 +3800,8 @@ impl DepSet for () {
 	const NAMES: &'static [&'static str] = &[];
 	const REACH: &'static [Horizon] = &[];
 	const RETAINS: &'static [bool] = &[];
+
+	fn reads<'t>(_: &Self::Outs<'t>) -> Self::Reads<'t> {}
 }
 impl<'t, F> Pull<'t, F, ()> for () {
 	fn pull(_: &F) {}
@@ -3592,6 +3833,16 @@ impl DepFlat for () {
 	}
 }
 
+/// The dep tuple as positions, `Dep<0, _>` first. Counted here rather than carried per name, because
+/// [`impl_arity`] peels the head off its list and a name's position is therefore not its own.
+macro_rules! reads_ty {
+	(@go $lt:lifetime, $i:expr, ($($acc:tt)*),) => { ($($acc)*) };
+	(@go $lt:lifetime, $i:expr, ($($acc:tt)*), $T:ident $(, $R:ident)*) => {
+		reads_ty!(@go $lt, $i + 1, ($($acc)* Dep<{$i}, <$T as Cell>::Out<$lt>>,), $($R),*)
+	};
+	($lt:lifetime; $($T:ident),*) => { reads_ty!(@go $lt, 0usize, (), $($T),*) };
+}
+
 macro_rules! impl_arity {
 	// every arity at once: impl the whole list, then recurse on its tail. Names are macro-local, so a
 	// suffix of the alphabet is as good a type list as a prefix.
@@ -3605,6 +3856,7 @@ macro_rules! impl_arity {
 	($Th:ident $Ih:ident $vh:ident $sh:ident $(, $T:ident $I:ident $v:ident $s:ident)*) => {
 		impl<$Th: Cell $(, $T: Cell)*> DepSet for ($Th, $($T,)*) {
 			type Outs<'t> = ($Th::Out<'t>, $($T::Out<'t>,)*);
+			type Reads<'t> = reads_ty!('t; $Th $(, $T)*);
 			type Lead = <$Th as Cell>::Gates;
 
 			const CLOCKS: &'static [Option<Timeframe>] = &[$Th::CLOCK $(, $T::CLOCK)*];
@@ -3613,6 +3865,11 @@ macro_rules! impl_arity {
 			const NAMES: &'static [&'static str] = &[$Th::NAME $(, $T::NAME)*];
 			const REACH: &'static [Horizon] = &[$Th::REACH $(, $T::REACH)*];
 			const RETAINS: &'static [bool] = &[$Th::RETAINED $(, $T::RETAINED)*];
+
+			fn reads<'t>(outs: &Self::Outs<'t>) -> Self::Reads<'t> {
+				let ($vh, $($v,)*) = outs;
+				(Dep(*$vh), $(Dep(*$v),)*)
+			}
 		}
 		impl<'t, F, $Th: Cell, $Ih $(, $T: Cell, $I)*> Pull<'t, F, ($Ih, $($I,)*)> for ($Th, $($T,)*)
 		where F: Has<'t, $Th, $Ih> $(+ Has<'t, $T, $I>)* {
@@ -4400,15 +4657,7 @@ where
 		formula: formula.map(|f| f as &dyn core::fmt::Display),
 		deriv: deriv.as_ref().map(|d| d as &dyn core::fmt::Display),
 		trace: trace.as_ref().map(|t| t as &dyn core::fmt::Display),
-		..Fire::of(
-			&out,
-			plots,
-			<N as Cell>::CLOCK,
-			K::FIDELITY,
-			<N::Deps as DepFlat>::DIMS,
-			true,
-			Some(flat),
-		)
+		..Fire::of(&out, plots, <N as Cell>::CLOCK, K::FIDELITY, <N::Deps as DepFlat>::DIMS, true, Some(flat))
 	};
 	obs.on(N::NAME, <N::Deps as DepSet>::NAMES, <N::Deps as DepSet>::GATES, fire);
 	Cons { out, tail: frame }

@@ -6,7 +6,7 @@
 use core::fmt;
 
 use trading_data::{
-	Buffering, Bump, Carried, Cell, Closes, DepOuts, Elems, Env, Expr, Flat, Folding, Folds, Glance, Horizon, Lagged, Lanes, Over, Pending, Reading, RsiSpec, Runs, Sampling, Side, Slots,
+	Buffering, Bump, Carried, Cell, Closes, DepOuts, DepReads, Elems, Env, Expr, Flat, Folding, Folds, Glance, Horizon, Lanes, Over, Pending, Reading, RsiSpec, Runs, Sampling, Side, Slots,
 	Stamped, Symbolic, Tag, Timeframe, TradeCols, Trades, Unflat, Vars, Witness, always_present, constant, node, slice_nudge,
 };
 use v_utils::*;
@@ -93,26 +93,24 @@ impl Cell for Cvd {
 impl Folds for Cvd {
 	type Deps = (Trades,);
 
-	/// The side, which `Flat` leaves out because a side has no slope.
-	const EXTRA: usize = 1;
 	const STATE: usize = 1;
 
-	fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-		let (exec, lag) = trades.exec().at(i)?;
-		env.dep(0)
-			.lag(lag)
-			.put(&[trades.price[i] as f64 / trades.prec.price.scale(), trades.qty[i] as f64 / trades.prec.qty.scale()]);
-		env.opaque().put(&signed(trades.side[i], 1.0));
-		Some(exec.as_nanos())
+	fn read<W: Witness>((trades,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let t = trades.at(i)?;
+		env.put(t);
+		env.attr(signed(t.side, 1.0));
+		Some(t.exec.as_nanos())
 	}
 
+	/// The side is an attribute — `Flat` leaves it out because a side has no slope — so it sits past
+	/// the state the recurrence carries.
 	fn step(&self, v: Vars) -> impl Slots {
-		let (price, qty, side, sum) = (v.get::<0>(), v.get::<1>(), v.get::<2>(), v.get::<3>());
+		let (price, qty, sum, side) = (v.get::<0>(), v.get::<1>(), v.get::<2>(), v.get::<3>());
 		sum + side * (price * qty)
 	}
 
 	fn value(&self, v: Vars) -> impl Slots {
-		v.get::<3>()
+		v.get::<2>()
 	}
 
 	fn carried(&self) -> &Carried {
@@ -170,26 +168,24 @@ impl<const TF: Timeframe> Closes for Flows<TF> {
 	/// The partial period is the whole of the state, so the trades it holds reach back exactly one.
 	type Deps = (Folding<Trades, Over<TF>>,);
 
-	/// The side, which `Flat` leaves out because a side has no slope — exactly as [`Cvd`] carries it.
-	const EXTRA: usize = 1;
 	const PERIOD: Timeframe = TF;
 
-	fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-		let (exec, lag) = trades.exec().at(i)?;
-		env.dep(0)
-			.lag(lag)
-			.put(&[trades.price[i] as f64 / trades.prec.price.scale(), trades.qty[i] as f64 / trades.prec.qty.scale()]);
-		env.opaque().put(&signed(trades.side[i], 1.0));
-		Some(exec.as_nanos())
+	fn read<W: Witness>((trades,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let t = trades.at(i)?;
+		env.put(t);
+		env.attr(signed(t.side, 1.0));
+		Some(t.exec.as_nanos())
 	}
 
+	/// The side is an attribute — `Flat` leaves it out because a side has no slope, exactly as [`Cvd`]
+	/// reads it — so it sits past the accumulator.
 	fn open(&self, v: Vars) -> impl Slots {
-		let (price, qty, side) = (v.get::<0>(), v.get::<1>(), v.get::<2>());
+		let (price, qty, side) = (v.get::<0>(), v.get::<1>(), v.get::<4>());
 		(price, side * (price * qty))
 	}
 
 	fn fold(&self, v: Vars) -> impl Slots {
-		let (price, qty, side, quote) = (v.get::<0>(), v.get::<1>(), v.get::<2>(), v.get::<4>());
+		let (price, qty, quote, side) = (v.get::<0>(), v.get::<1>(), v.get::<3>(), v.get::<4>());
 		(price, quote + side * (price * qty))
 	}
 

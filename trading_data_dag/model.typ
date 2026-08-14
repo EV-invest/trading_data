@@ -396,12 +396,14 @@ gateable the moment the lane became a run of rows the engine could retain for it
    │                        it has no slope to state; the numbers are all algebra.
    │                        `read -> None` is absence ARRIVING (answered without evaluating
    │                        anything); NaN out of the body is the body DECLINING.
-   │                        Exact unconditionally, and that is what `Env` bought: slots are
-   │                        APPENDED, each naming the dep and the lag it was copied off
-   │                        (`env.dep(0).lag(n).put(&b)`) or standing for no element at all
-   │                        (`env.opaque()`). Leading with the deps' own elements at lag 0 lines
-   │                        the gradient up with the Jacobian's columns; the lags are what let
-   │                        `exact` scatter that same gradient over the whole reach in one pass.
+   │                        Exact unconditionally, and that is what `Env` bought: a slot is
+   │                        either a reading the DEP minted — `env.put(bars.at(i)?)`, carrying
+   │                        the dep, the lag and the element slot it was copied off, so no site
+   │                        states a provenance — or `env.attr(x)`, a number the body computed
+   │                        and no column stands for. Leading with the deps' own elements at lag
+   │                        0 lines the gradient up with the Jacobian's columns; the lags are
+   │                        what let `exact` scatter that same gradient over the whole reach in
+   │                        one pass.
    │
    ├── Closes: Series+Clone PERIOD · fn read(..) · fn open(Vars) · fn fold(Vars)
    │                        · fn pending(_mut)                                 ⇒ kernel `Close`
@@ -409,15 +411,15 @@ gateable the moment the lane became a run of rows the engine could retain for it
    │                        boundary. The kernel owns the walk, the floor-to-period and the
    │                        close time (a timestamp is not a slot, so it never could be the
    │                        body's); the body owns the numbers, as what a first element opens
-   │                        with and what a further one folds in — the accumulator's slots
-   │                        following the element's, so both read the element at one set of
-   │                        indices. Rate-CHANGING by construction. Partial, `exact` block and
+   │                        with and what a further one folds in — the accumulator sitting at
+   │                        `DepFlat::LEN`, so both bodies read the element and the accumulator
+   │                        at one set of indices whatever else the reading put. Rate-CHANGING by construction. Partial, `exact` block and
    │                        all: the column stands for the element that closed the reported one,
    │                        and the rest of its period reached it only through the accumulator —
    │                        those elements live in the dep's DECLARATION (`Folding<Trades,
    │                        Over<TF>>`) and not in its out, so there is no lag to index them at.
    │
-   ├── Folds: Series+Clone  STATE · EXTRA · fn read(..) · fn step(Vars) · fn value(Vars)
+   ├── Folds: Series+Clone  STATE · fn read(..) · fn step(Vars) · fn value(Vars)
    │                        · fn carried(_mut)                                  ⇒ kernel `Fold`
    │                        a RECURRENCE: `step` says what the state becomes, `value` what the
    │                        element then is, both over one env with the state after the element.
@@ -488,7 +490,12 @@ gateable the moment the lane became a run of rows the engine could retain for it
   edge(<cell>, <ep>, "->"),
 
   node((-3.8, 1.3), align(center)[`Blind` \ #text(7pt)[`WHY` · `advance` self-borrows]], name: <bl>),
-  node((-3.0, 2.7), align(center)[`Kernel` (sealed) \ #text(7pt)[`Pure` · `Predicate` · `Opaque` · `Scan` · `Close` · `Fold` · `Raw`] \ #text(7pt)[`FIDELITY`: how much it covers]], fill: rgb("#eef0e4"), name: <lv>),
+  node(
+    (-3.0, 2.7),
+    align(center)[`Kernel` (sealed) \ #text(7pt)[`Pure` · `Predicate` · `Opaque` · `Scan` · `Close` · `Fold` · `Raw`] \ #text(7pt)[`FIDELITY`: how much it covers]],
+    fill: rgb("#eef0e4"),
+    name: <lv>,
+  ),
   node((1.1, 2.7), align(center)[`Gate` \ #text(7pt)[`Out = bool`]], name: <ga>),
 
   edge(<cell>, <bl>, "->"),

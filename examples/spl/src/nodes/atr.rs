@@ -1,5 +1,5 @@
 use trading_data::{
-	Carried, Cell, DepOuts, Env, Folding, Folds, Lagged, Reading, Slots, Stamped, Tag, Timeframe, Unbounded, Vars, Witness, abs, absent, constant, lt, max, node, select, slice_nudge, wilder,
+	Carried, Cell, DepReads, Env, Folding, Folds, Reading, Slots, Stamped, Tag, Timeframe, Unbounded, Vars, Witness, abs, absent, constant, lt, max, node, select, slice_nudge, wilder,
 };
 
 use crate::config::strategy;
@@ -27,9 +27,9 @@ impl<const TF: Timeframe> Folds for Atr<TF> {
 	/// zero that is not zero.
 	const STATE: usize = 3;
 
-	fn read<W: Witness>((bars,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-		let (b, lag) = bars.at(i)?;
-		env.dep(0).lag(lag).put(b);
+	fn read<W: Witness>((bars,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let b = bars.at(i)?;
+		env.put(b);
 		Some(b.ts_ns())
 	}
 

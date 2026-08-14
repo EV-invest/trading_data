@@ -3,7 +3,7 @@
 //! `Book`, and 1m bars off the same trades — the bars are what the chart draws price from.
 
 use trading_data::{
-	BookAnchors, BookDelta, BookDeltas, BookShape, Carried, Cell, DepOuts, Env, Folding, Folds, FrameKind, Lagged, Lanes, Over, Runs, Side, Slots, TradeCols, Trades, Unbounded, Vars,
+	BookAnchors, BookDelta, BookDeltas, BookShape, Carried, Cell, DepOuts, DepReads, Env, Folding, Folds, FrameKind, Lanes, Over, Runs, Side, Slots, TradeCols, Trades, Unbounded, Vars,
 	Witness, node, slice_nudge,
 };
 use v_utils::*;
@@ -19,29 +19,28 @@ impl Folds for Cvd {
 	/// A running sum reaches to the start of the run.
 	type Deps = (Folding<Trades, Unbounded>,);
 
-	/// The side, which `Flat` leaves out because a side has no slope — it picks which way the
-	/// notional points, and picking is not a variable
-	/// (`r[kernels.selection.index-is-not-a-variable]`).
-	const EXTRA: usize = 1;
 	const STATE: usize = 1;
 
-	fn read<W: Witness>((t,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-		let (exec, lag) = t.exec().at(i)?;
-		env.dep(0).lag(lag).put(&[t.price[i] as f64 / t.prec.price.scale(), t.qty[i] as f64 / t.prec.qty.scale()]);
-		env.opaque().put(&match t.side[i] {
+	fn read<W: Witness>((trades,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let t = trades.at(i)?;
+		env.put(t);
+		// the side, which `Flat` leaves out because a side has no slope — it picks which way the
+		// notional points, and picking is not a variable
+		// (`r[kernels.selection.index-is-not-a-variable]`).
+		env.attr(match t.side {
 			Side::Buy => 1.0,
 			Side::Sell => -1.0,
 		});
-		Some(exec.as_nanos())
+		Some(t.exec.as_nanos())
 	}
 
 	fn step(&self, v: Vars) -> impl Slots {
-		let (price, qty, side, sum) = (v.get::<0>(), v.get::<1>(), v.get::<2>(), v.get::<3>());
+		let (price, qty, sum, side) = (v.get::<0>(), v.get::<1>(), v.get::<2>(), v.get::<3>());
 		sum + side * (price * qty)
 	}
 
 	fn value(&self, v: Vars) -> impl Slots {
-		v.get::<3>()
+		v.get::<2>()
 	}
 
 	fn carried(&self) -> &Carried {

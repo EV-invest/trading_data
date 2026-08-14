@@ -1,8 +1,8 @@
 use core::{fmt, marker::PhantomData};
 
 use trading_data_dag::{
-	Buffering, Bump, Carried, Cell, DepOuts, Elems, Env, Ex, Expr, Flat, Folding, Folds, Glance, Lagged, Plot, Present, Reading, Rows, Scans, Series, Slots, Stamped, Tag, Unbounded, Unflat,
-	Vars, Witness, absent, constant, gt, lt, max, min, node, select, slice_nudge,
+	Buffering, Bump, Carried, Cell, DepReads, Elems, Env, Ex, Expr, Flat, Folding, Folds, Glance, Plot, Present, Reading, Rows, Scans, Series, Slots, Stamped, Tag, Unbounded, Unflat, Vars,
+	Witness, absent, constant, gt, lt, max, min, node, select, slice_nudge,
 };
 
 use crate::{bar::Bar, wilder};
@@ -54,15 +54,15 @@ impl<B: Series<Item = Bar, Batch = Rows<Bar>>> Scans for RsiDelta<B> {
 	/// engine's retention rather than the node's, so nothing here survives a tick.
 	type Deps = (Buffering<B, Elems<2>>,);
 
-	fn read<W: Witness>((bars,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-		let (b, lag) = bars.lagged_at(i, 0).expect("element i of this tick's own fresh run");
+	fn read<W: Witness>((bars,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let b = bars.at(i).expect("element i of this tick's own fresh run");
 		// the first bar of a run has nothing behind it, and an absence is declined rather than put:
 		// a NaN in the env is an operand, where a decline is an out.
-		let (p, p_lag) = bars.lagged_at(i, 1)?;
-		env.dep(0).lag(lag).put(b);
-		// `close` is slot 3 of a bar, and saying so is what puts this partial in the lagged element's
-		// own column rather than in a column of its own.
-		env.dep(0).lag(p_lag).slot(3).put(&p.close);
+		let p = bars.lagged_at(i, 1)?;
+		env.put(b);
+		// the one field this reading takes, so the partial lands in that field's own column of the
+		// lagged element rather than in a column of its own.
+		env.put(p.slot(Bar::CLOSE));
 		Some(b.ts_ns())
 	}
 
@@ -116,9 +116,12 @@ macro_rules! wilder_half {
 
 			/// The first bar has no delta, and an average is not advanced by an absence — which is
 			/// exactly what declining leaves the state doing.
-			fn read<W: Witness>((deltas,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-				let (d, lag) = deltas.at(i)?;
-				env.dep(0).lag(lag).put(&d.present()?);
+			fn read<W: Witness>((deltas,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+				let d = deltas.at(i)?;
+				// an absence is declined rather than put: a NaN in the env is an operand, where a
+				// decline leaves the state where it stood.
+				d.present()?;
+				env.put(d);
 				Some(0)
 			}
 
@@ -256,12 +259,13 @@ impl<B: Series<Item = Bar>, S: RsiSpec> Folds for Rsi<B, S> {
 	const STATE: usize = 2;
 
 	/// Both legs warm together, so an element either carries both averages or neither.
-	fn read<W: Witness>((gain, loss): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((gain, loss): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		assert_eq!(gain.len(), loss.len(), "AvgGain/AvgLoss rate mismatch");
-		let ((g, g_lag), (l, l_lag)) = (gain.at(i)?, loss.at(i)?);
-		let (g, l) = (g.present()?, l.present()?);
-		env.dep(0).lag(g_lag).put(&g);
-		env.dep(1).lag(l_lag).put(&l);
+		let (g, l) = (gain.at(i)?, loss.at(i)?);
+		g.present()?;
+		l.present()?;
+		env.put(g);
+		env.put(l);
 		Some(0)
 	}
 

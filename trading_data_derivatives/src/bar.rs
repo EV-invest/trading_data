@@ -2,7 +2,7 @@ use core::fmt;
 
 use trading_data_core::{Timestamped, Timestamps, TradeCols, Trades, Ts, Venue};
 use trading_data_dag::{
-	Cell, Closes, DepOuts, Env, Folding, Glance, Ink, Item, Lagged, Over, Pending, Plot, Scans, Slots, Stamped, Tag, Tail, Vars, Witness, always_present, max, min, node, slice_nudge,
+	Cell, Closes, Dep, DepReads, Env, Folding, Glance, Ink, Item, Over, Pending, Plot, Scans, Slots, Stamped, Tag, Tail, Vars, Witness, always_present, max, min, node, slice_nudge,
 };
 use v_utils::Timeframe;
 
@@ -83,23 +83,20 @@ impl Timestamped for Bar {
 // a period that closed had trades in it, so these three are absent only by not being emitted.
 always_present!(Ohlc, Volume, Bar);
 
-/// One trade's price and quantity, at the run's own precision — the element a period accumulates.
-/// The whole of what tells one accumulator from another is its two bodies; this is what they are
-/// bodies *of*, and it is the same reading for both.
-fn trade<W: Witness>(trades: TradeCols<'_>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-	let (exec, lag) = trades.exec().at(i)?;
-	env.dep(0)
-		.lag(lag)
-		.put(&[trades.price[i] as f64 / trades.prec.price.scale(), trades.qty[i] as f64 / trades.prec.qty.scale()]);
-	Some(exec.as_nanos())
+/// The trade a period accumulates. The whole of what tells one accumulator from another is its two
+/// bodies; this is what they are bodies *of*, and it is the same reading for both.
+fn trade<W: Witness>(trades: Dep<0, TradeCols<'_>>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	let t = trades.at(i)?;
+	env.put(t);
+	Some(t.exec.as_nanos())
 }
 
 /// The prefix of a slower series that has *closed* by `deadline` — the cross-rate read a node
 /// clocked by a faster series makes against a [`trading_data_dag::Buffering`] dep. A [`Tail`] and
 /// not a slice: the cut hides however many elements stand past the deadline, and a pick inside it
 /// still has to report its lag against the column it lands in.
-pub fn closed_by(bars: &[Bar], deadline: Ts<Venue>) -> Tail<'_, Bar> {
-	Tail::from(bars).upto(|b| b.ts_close <= deadline)
+pub fn closed_by<const D: usize>(bars: Tail<'_, D, Bar>, deadline: Ts<Venue>) -> Tail<'_, D, Bar> {
+	bars.upto(|b| b.ts_close <= deadline)
 }
 
 /// The series over a period, in three: the two accumulators over trades, and the bar that is their
@@ -128,8 +125,8 @@ impl<const TF: Timeframe> Closes for Ohlcs<TF> {
 	/// [`Bars`] joins this with [`Volumes`] and draws for all three.
 	const PLOTS: &'static [Plot] = &[];
 
-	fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-		trade(*trades, i, env)
+	fn read<W: Witness>((trades,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		trade(trades, i, env)
 	}
 
 	fn open(&self, v: Vars) -> impl Slots {
@@ -175,8 +172,8 @@ impl<const TF: Timeframe> Closes for Volumes<TF> {
 	/// [`Bars`] joins this with [`Ohlcs`] and draws for all three.
 	const PLOTS: &'static [Plot] = &[];
 
-	fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-		trade(*trades, i, env)
+	fn read<W: Witness>((trades,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		trade(trades, i, env)
 	}
 
 	fn open(&self, v: Vars) -> impl Slots {
@@ -230,12 +227,12 @@ impl<const TF: Timeframe> Scans for Bars<TF> {
 		..Plot::DEFAULT
 	}];
 
-	fn read<W: Witness>((ohlc, vol): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+	fn read<W: Witness>((ohlc, vol): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
 		assert_eq!(ohlc.len(), vol.len(), "one Ohlc and one Volume per period closed");
-		let ((o, o_lag), (v, v_lag)) = (ohlc.at(i)?, vol.at(i)?);
+		let (o, v) = (ohlc.at(i)?, vol.at(i)?);
 		assert_eq!(o.ts_close, v.ts_close, "the two accumulators walk one boundary");
-		env.dep(0).lag(o_lag).put(o);
-		env.dep(1).lag(v_lag).put(v);
+		env.put(o);
+		env.put(v);
 		Some(o.ts_ns())
 	}
 

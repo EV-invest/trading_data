@@ -24,7 +24,12 @@ selection MUST index by count or by timestamp, and a timestamp MUST NOT be a `Fl
 This is the assumption every reading over a range rests on: at fixed indices the algebraic derivative
 is exact, it is merely indexed over a range instead of over a point. A lag and a window index by
 count; an as-of read indexes by timestamp, and `Bar::DIMS = &[5]` deliberately excludes `ts_close`,
-so no timestamp is ever a variable. The one value-dependent pick the workspace has — `high` and `low`
+so no timestamp is ever a variable. Every env slot a per-element kernel reads is therefore a *copy*
+of one element slot and never a computation of one, so `∂env/∂element` is a 0/1 selection — which is
+what lets a body's gradient scatter over a dep's whole reach in one pass. A body states which element
+it wants and the dep hands it over carrying where it came from, so the three coordinates of a reading
+are what happened rather than what was claimed; a number the body computed instead of copying enters
+by its own act and no column stands for it. The one value-dependent pick the workspace has — `high` and `low`
 as max and min over a period — lives inside the algebra as `Min`/`Max`/`Select` with a pinned
 tie-break, where each branch is differentiable and the tie resolves the same way in the value and in
 the derivative. A value-dependent selector added outside the algebra would break every reading over a

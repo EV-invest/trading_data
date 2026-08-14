@@ -5,9 +5,24 @@
 
 use core::ops::Range;
 
-use trading_data_dag::{Bump, Flat, Glance, Stamped};
+use trading_data_dag::{Bump, Flat, Glance, Item, Lagged, Stamped};
 
 use crate::{Local, PrecisionPriceQty, RelayCols, Side, Span, Timestamped, Timestamps, Ts, Venue};
+
+/// One trade of a [`TradeCols`] run, at the run's own precision — the element a per-element kernel
+/// reads, where the columns are what the venue sent. `side` is carried rather than flattened: it
+/// picks which way a notional points, and picking is not a differentiation variable
+/// (`r[kernels.selection.index-is-not-a-variable]`).
+#[derive(Clone, Copy, Debug, Item)]
+pub struct Trade {
+	#[stamp]
+	pub exec: Ts<Venue>,
+	#[slot]
+	pub price: f64,
+	#[slot]
+	pub qty: f64,
+	pub side: Side,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct TradeCols<'a> {
@@ -32,6 +47,29 @@ impl TradeCols<'_> {
 	/// [`RelayCols`] is there for runs whose origin does not.
 	pub fn exec(&self) -> &[Ts<Venue>] {
 		self.ts.exec.expect("a trade lane attests every element's execution time")
+	}
+}
+
+/// The columns read one element at a time, which is what every `&[Item]` dep already hands over —
+/// so a per-element kernel takes a trade off this dep the same way it takes a bar off any other.
+impl Lagged for TradeCols<'_> {
+	type Elem = Trade;
+
+	fn count(self) -> usize {
+		self.len()
+	}
+
+	fn nth(self, i: usize) -> Option<(Trade, usize)> {
+		let &exec = self.exec().get(i)?;
+		Some((
+			Trade {
+				exec,
+				price: self.price[i] as f64 / self.prec.price.scale(),
+				qty: self.qty[i] as f64 / self.prec.qty.scale(),
+				side: self.side[i],
+			},
+			self.len() - 1 - i,
+		))
 	}
 }
 

@@ -1,4 +1,4 @@
-use trading_data::{Buffering, Cell, DepOuts, Env, Over, Reading, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, absent, constant, gt, node, select, slice_nudge};
+use trading_data::{Bar, Buffering, Cell, DepReads, Env, Over, Reading, Scans, Slots, Stamped, Tag, Timeframe, Vars, Witness, absent, constant, gt, node, select, slice_nudge};
 
 /// Percent change over the trailing `OVER`, off the closed `TF` bars inside it. SPL's backtest mode:
 /// reading it off a live Trades window instead is a live-only fidelity choice.
@@ -16,14 +16,13 @@ impl<const TF: Timeframe, const OVER: Timeframe> Cell for Change<TF, OVER> {
 impl<const TF: Timeframe, const OVER: Timeframe> Scans for Change<TF, OVER> {
 	type Deps = (Buffering<trading_data::Bars<TF>, Over<OVER>>,);
 
-	fn read<W: Witness>((bars,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-		let (b, lag) = bars.lagged_at(i, 0).expect("element i of this tick's own fresh run");
+	fn read<W: Witness>((bars,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+		let b = bars.at(i).expect("element i of this tick's own fresh run");
 		// an incomplete window has no base to measure against, and that declines rather than putting an
 		// absence the body would then have to compare.
-		let (w, base_lag) = bars.trailing_at(i)?;
-		env.dep(0).lag(lag).put(b);
-		// `open` is slot 0 of a bar, which is the default this leaves unsaid.
-		env.dep(0).lag(base_lag).put(&w[0].open);
+		let w = bars.trailing_at(i)?;
+		env.put(b);
+		env.put(w.oldest().slot(Bar::OPEN));
 		Some(b.ts_ns())
 	}
 

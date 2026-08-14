@@ -92,13 +92,11 @@ slope is zero off the boundary, and at it the step is not a slope any reading ma
 impl<const TF: Timeframe, const OVER: Timeframe> Scans for Change<TF, OVER> {
     type Deps = (Buffering<Bars<TF>, Over<OVER>>,);
 
-    fn read<W: Witness>((bars,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-        let (b, lag) = bars.lagged_at(i, 0)?;
-        env.dep(0).lag(lag).put(b);                          // slots 0..=4 — Bar::DIMS
-        match bars.trailing_at(i) {
-            Some((w, lag)) => env.dep(0).lag(lag).put(&w[0].open),   // slot 5
-            None => env.opaque().put(&f64::NAN),                     // slot 5, standing for no element
-        }
+    fn read<W: Witness>((bars,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+        let b = bars.at(i)?;
+        env.put(b);                                  // slots 0..=4 — Bar::DIMS
+        // an incomplete window has no base to measure against, and that declines
+        env.put(bars.trailing_at(i)?.oldest().slot(Bar::OPEN));   // slot 5
         Some(b.ts_ns())
     }
     fn body(&self, v: Vars) -> impl Slots {
@@ -109,10 +107,12 @@ impl<const TF: Timeframe, const OVER: Timeframe> Scans for Change<TF, OVER> {
 slice_nudge!([const TF: Timeframe, const OVER: Timeframe] Change<TF, OVER>, Option<f64>);
 ```
 
-Slots are **appended** in `read` order. Each names the dep and the lag it was copied off
-(`env.dep(0).lag(n)`) or stands for no element at all (`env.opaque()`). Leading with the deps' own
-elements at lag 0 lines the gradient up with the Jacobian's columns; the lags are what let `exact`
-scatter that same gradient over the whole reach in one pass.
+Slots are **appended** in `read` order, and are one of two things: a reading the dep minted
+(`env.put(bars.at(i)?)`, `.slot(Bar::OPEN)` for one field of it), carrying the dep, the lag and the
+element slot it was copied off — or `env.attr(x)`, a number the body computed and no column stands
+for. There is no way to state a reading's coordinates, and so no way to misstate them. Leading with
+the deps' own elements at lag 0 lines the gradient up with the Jacobian's columns; the lags are what
+let `exact` scatter that same gradient over the whole reach in one pass.
 
 - `read -> None` is absence **arriving** — answered without evaluating anything.
 - `NaN` out of the body is the body **declining**.
@@ -126,7 +126,7 @@ scatter that same gradient over the whole reach in one pass.
 impl<const TF: Timeframe> Closes for Ohlcs<TF> {
     type Deps = (Folding<Trades, Over<TF>>,);
     const PERIOD: Timeframe = TF;
-    fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> { .. }
+    fn read<W: Witness>((trades,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> { .. }
     fn open(&self, v: Vars) -> impl Slots { let p = v.get::<0>(); (p, p, p, p) }
     fn fold(&self, v: Vars) -> impl Slots {
         let (price, open, high, low) = (v.get::<0>(), v.get::<2>(), v.get::<3>(), v.get::<4>());
@@ -139,8 +139,8 @@ impl<const TF: Timeframe> Closes for Ohlcs<TF> {
 
 The kernel owns the walk, the floor-to-period and the close time — a timestamp is not a slot, so it
 never could be the body's. The body owns the numbers: what a first element opens with, what a further
-one folds in. The accumulator's slots follow the element's, so both read the element at one set of
-indices. Permanently `Partial`: the rest of the period reached the reported element only through the
+one folds in. The accumulator sits at `DepFlat::LEN`, so both bodies read the element and the
+accumulator at one set of indices whatever else the reading put. Permanently `Partial`: the rest of the period reached the reported element only through the
 accumulator, and those elements live in the dep's *declaration* (`Folding<Trades, Over<TF>>`), not in
 its out, so there is no lag to index them at.
 
@@ -152,20 +152,19 @@ impl Cell for Cvd { type Out<'t> = &'t [f64]; }
 #[node]
 impl Folds for Cvd {
     type Deps = (Trades,);
-    const EXTRA: usize = 1;      // slots put by env.opaque()
     const STATE: usize = 1;      // slots the recurrence carries
 
-    fn read<W: Witness>((trades,): &DepOuts<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
-        let (exec, lag) = trades.exec().at(i)?;
-        env.dep(0).lag(lag).put(&[price, qty]);      // slots 0,1
-        env.opaque().put(&signed(trades.side[i], 1.0));  // slot 2 — the EXTRA
-        Some(exec.as_nanos())
+    fn read<W: Witness>((trades,): DepReads<'_, Self>, i: usize, env: &mut Env<'_, W>) -> Option<i64> {
+        let t = trades.at(i)?;
+        env.put(t);                                  // slots 0,1 — the trade's own
+        env.attr(signed(t.side, 1.0));               // slot 3, past the state, claimed by no column
+        Some(t.exec.as_nanos())
     }
-    fn step(&self, v: Vars) -> impl Slots {           // slot 3 is the state, after the element's
-        let (price, qty, side, sum) = (v.get::<0>(), v.get::<1>(), v.get::<2>(), v.get::<3>());
+    fn step(&self, v: Vars) -> impl Slots {           // slot 2 is the state, after the element's
+        let (price, qty, sum, side) = (v.get::<0>(), v.get::<1>(), v.get::<2>(), v.get::<3>());
         sum + side * (price * qty)
     }
-    fn value(&self, v: Vars) -> impl Slots { v.get::<3>() }
+    fn value(&self, v: Vars) -> impl Slots { v.get::<2>() }
     fn carried(&self) -> &Carried { &self.0 }
     fn carried_mut(&mut self) -> &mut Carried { &mut self.0 }
 }
