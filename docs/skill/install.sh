@@ -3,9 +3,6 @@
 #
 #   ./install.sh              → ~/.claude/skills/  and  ${CODEX_HOME:-~/.codex}/skills/
 #   ./install.sh <project>    → <project>/.claude/skills/  and  <project>/.agents/skills/
-#
-# Both agents read the same `SKILL.md` + YAML frontmatter, so there is one payload and no
-# per-agent build step — only where the link lands differs.
 set -eu
 
 src=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
