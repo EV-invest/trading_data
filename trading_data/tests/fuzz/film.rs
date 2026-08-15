@@ -1,7 +1,7 @@
-//! Animates a real fuzz trace into one self-contained SMIL SVG — the asset `docs/.readme_assets/`
+//! Animates a real fuzz trace into one self-contained SMIL SVG — the asset `docs/.readme_assets/assets/`
 //! carries — and prints the coverage tally the film exists to make checkable.
 //!
-//! `FUZZ_FILM=docs/.readme_assets/fuzz.svg cargo t -p trading_data --features bench --test fuzz`
+//! `FUZZ_FILM=docs/.readme_assets/assets/fuzz.svg cargo t -p trading_data --features bench --test fuzz`
 //!
 //! It films [`schedule`], because that target's claim is the one a film can *show*: one element
 //! sequence, [`schedule::K`] groupings of it into ticks, and the folded element streams identical

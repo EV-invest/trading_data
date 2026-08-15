@@ -30,7 +30,7 @@
           jobs.other.augment = [{
             name = "asset-gate";
             args = {
-              asset = "docs/.readme_assets/fuzz.svg";
+              asset = "docs/.readme_assets/assets/fuzz.svg";
               command = "nix run .#film";
               everySeconds = 86400;
             };
@@ -54,7 +54,7 @@
           runtimeInputs = with pkgs; [ rust git pkg-config openssl mold ];
           text = ''
             cd "$(git rev-parse --show-toplevel)"
-            FUZZ_SEED=0 FUZZ_FILM="''${ASSET_OUT:-''${1:-docs/.readme_assets/fuzz.svg}}" \
+            FUZZ_SEED=0 FUZZ_FILM="''${ASSET_OUT:-''${1:-docs/.readme_assets/assets/fuzz.svg}}" \
               cargo test -p trading_data --features bench --test fuzz fuzz -- --nocapture
           '';
         };
