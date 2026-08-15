@@ -4705,7 +4705,7 @@ checksum = "199905e6153d6405f9728fe44daace35f8f837bbf830bb6e85fbd5828709a886"
 
 [[package]]
 name = "snapshot_fonts"
-version = "2.0.0"
+version = "1.4.0"
 dependencies = [
  "bon",
  "clap",
