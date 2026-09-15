@@ -39,11 +39,11 @@ categories = ["command-line-utilities"]
 
 [workspace.lints.clippy]
 # Stable
-float_cmp = "allow" # is bad for `==` direct comparisons, but `<` and `>` should be allowed
-len_zero = "allow" # `.empty()` is O(1) but on &str only
+float_cmp = "allow"                 # is bad for `==` direct comparisons, but `<` and `>` should be allowed
+len_zero = "allow"                  # `.empty()` is O(1) but on &str only
 undocumented_unsafe_blocks = "warn"
 tabs_in_doc_comments = "allow"
-doc_lazy_continuation = "allow" # tries to make me add a newline after a list in docs
+doc_lazy_continuation = "allow"     # tries to make me add a newline after a list in docs
 
 # Questionable
 # const fns, so actually more performant
@@ -67,7 +67,7 @@ trading_data_persistence = { path = "trading_data_persistence", version = "0.5.1
 anyhow = "1"
 arrayvec = "0.7"
 arrow = "59"
-clap = { version = "^4.6.5", features = ["derive", "env"] }
+clap = { version = "^4.6.7", features = ["derive", "env"] }
 color-eyre = "^0.6.5"
 derive-new = "0"
 derive_more = "2.1"
@@ -82,7 +82,11 @@ indicatif = "0.18"
 insta = "^1"
 jiff = { version = "^0.2", features = ["serde"] }
 libm = "0.2"
-miette = { version = "^7.6.0", features = ["fancy", "serde", "syntect-highlighter"] }
+miette = { version = "^7.6.0", features = [
+    "fancy",
+    "serde",
+    "syntect-highlighter",
+] }
 nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
 nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
 nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader", rev = "d5e550feeb175e2695055f372936715dc2011de2", default-features = false }
@@ -94,17 +98,27 @@ proc-macro2 = "1"
 quote = "1"
 serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
-snapshot_fonts = { version = "^1.4", path = "../../snapshot_fonts" }
+snapshot_fonts = { version = "^1.4" }
 strum = "0.28"
 syn = { version = "^3", features = ["full", "extra-traits"] }
 tempfile = "3"
 thiserror = "^2.0"
-tokio = { version = "^1", features = ["macros", "rt-multi-thread", "time", "sync"] }
+tokio = { version = "^1", features = [
+    "macros",
+    "rt-multi-thread",
+    "time",
+    "sync",
+] }
 tracing = "^0.1"
 trading_data = { path = "trading_data" } # re-export for the examples, the only members naming it; leave unpinned, a `version` here duplicates the crate's own
 ui_test = "0.30"
 ureq = "^3"
-v_utils = { version = "^2.17.7", features = ["io", "macros", "cli", "distributions"] }
+v_utils = { version = "^2.18.0", features = [
+    "io",
+    "macros",
+    "cli",
+    "distributions",
+] }
 
 # A separate profile, so `release` stays bit-for-bit what it is. `debug = 1` is line tables only —
 # enough for `perf`/`samply` to name a frame, and no `force-frame-pointer`, which would need
@@ -120,4 +134,4 @@ strip = false
 # `[patch]` is only honored from the top-level workspace, so the redirect has to live here or those
 # graphs resolve to an incompatible second copy of the shared parse-boundary types.
 trading_data_core = { path = "trading_data_core" }
-trading_data_dag = { path = "trading_data_dag" } # same, for `exec_viz`
+trading_data_dag = { path = "trading_data_dag" }   # same, for `exec_viz`
